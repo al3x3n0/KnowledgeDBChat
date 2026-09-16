@@ -233,3 +233,32 @@ def test_the_prompt_survives_a_schema_an_author_left_incomplete():
 
     assert "p_x_y" in described and "p_x_z" in described
     assert "(no description)" in described
+
+
+def test_both_chat_planners_accept_contributed_tools():
+    """Streaming chat plans through a different entry point than the
+    agent-routed path. Offering a user's tools on one and not the other is the
+    "works over there" failure: the same question typed into the same box would
+    find the tool or not, depending on which handler took it.
+    """
+    import inspect
+
+    for planner in (
+        AgentService._plan_tool_calls,
+        AgentService._plan_tool_calls_for_agent,
+    ):
+        assert "contributed" in inspect.signature(planner).parameters, (
+            f"{planner.__name__} cannot be given contributed tools"
+        )
+
+
+def test_the_streaming_path_actually_passes_them():
+    """A parameter nothing passes is the same as no parameter at all."""
+    import inspect
+
+    from app.api.endpoints import agent as agent_endpoints
+
+    source = inspect.getsource(agent_endpoints._process_message_with_streaming)
+
+    assert "_contributed_tool_schemas" in source
+    assert "contributed=contributed" in source

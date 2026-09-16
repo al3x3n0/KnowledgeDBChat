@@ -111,6 +111,35 @@ class PluginDraftRequest(BaseModel):
     )
 
 
+class PluginDraftQueued(BaseModel):
+    """A draft that has been started, not finished."""
+
+    task_id: str
+    #: What to poll. Returned rather than assumed so the client is not
+    #: constructing API paths from a template.
+    poll_url: str
+
+
+class PluginDraftStatus(BaseModel):
+    """Where a draft has got to.
+
+    `notes` grows as the loop turns, so a caller sees *why* a draft is taking
+    a third attempt rather than watching a spinner: the repair loop is what
+    makes the output worth having, and its reasons are the interesting part.
+    """
+
+    state: str
+    #: 'drafting' | 'checking' | 'done', or None before the task starts.
+    stage: Optional[str] = None
+    attempt: int = 0
+    notes: List[str] = Field(default_factory=list)
+    #: Present only once finished.
+    manifest: Optional[Dict[str, Any]] = None
+    attempts: int = 0
+    #: True while the task is queued or running.
+    pending: bool = True
+
+
 class PluginDraftResponse(BaseModel):
     """A drafted manifest, and an account of how it got there.
 

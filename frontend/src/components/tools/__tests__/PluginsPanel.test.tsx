@@ -17,6 +17,7 @@ jest.mock('../../../services/api', () => ({
     uninstallPlugin: jest.fn(),
     deletePlugin: jest.fn(),
     draftPlugin: jest.fn(),
+    getPluginDraft: jest.fn(),
   },
 }));
 
@@ -134,10 +135,15 @@ describe('PluginsPanel', () => {
 
   describe('drafting from a description', () => {
     it('fills the manifest box with what was drafted', async () => {
-      apiClient.draftPlugin.mockResolvedValue({
-        manifest: { id: 'drafted', name: 'Drafted', version: '0.1.0' },
+      apiClient.draftPlugin.mockResolvedValue({ task_id: 't1', poll_url: '/x' });
+      apiClient.getPluginDraft.mockResolvedValue({
+        state: 'SUCCESS',
+        stage: 'done',
+        attempt: 1,
         notes: [],
+        manifest: { id: 'drafted', name: 'Drafted', version: '0.1.0' },
         attempts: 1,
+        pending: false,
       });
       render(<PluginsPanel />);
       await screen.findByText('Benchmarks');
@@ -157,10 +163,15 @@ describe('PluginsPanel', () => {
     });
 
     it('shows what the draft had to fix, so a repaired draft gets read harder', async () => {
-      apiClient.draftPlugin.mockResolvedValue({
-        manifest: { id: 'drafted', name: 'Drafted' },
+      apiClient.draftPlugin.mockResolvedValue({ task_id: 't1', poll_url: '/x' });
+      apiClient.getPluginDraft.mockResolvedValue({
+        state: 'SUCCESS',
+        stage: 'done',
+        attempt: 2,
         notes: ["Attempt 1: id 'Draft-ed' must be lowercase"],
+        manifest: { id: 'drafted', name: 'Drafted' },
         attempts: 2,
+        pending: false,
       });
       render(<PluginsPanel />);
       await screen.findByText('Benchmarks');
@@ -178,10 +189,15 @@ describe('PluginsPanel', () => {
     });
 
     it('does not install anything by drafting', async () => {
-      apiClient.draftPlugin.mockResolvedValue({
-        manifest: { id: 'drafted' },
+      apiClient.draftPlugin.mockResolvedValue({ task_id: 't1', poll_url: '/x' });
+      apiClient.getPluginDraft.mockResolvedValue({
+        state: 'SUCCESS',
+        stage: 'done',
+        attempt: 1,
         notes: [],
+        manifest: { id: 'drafted' },
         attempts: 1,
+        pending: false,
       });
       render(<PluginsPanel />);
       await screen.findByText('Benchmarks');
@@ -237,5 +253,70 @@ describe('PluginsPanel', () => {
     expect(await screen.findByText('Stamp a note')).toBeInTheDocument();
     expect(screen.getByText(/3 nodes, 2 edges/)).toBeInTheDocument();
     expect(screen.getByText(/stay if you uninstall/)).toBeInTheDocument();
+  });
+
+  it('shows why a draft is on its second attempt, not just that it is busy', async () => {
+    // The repair loop is what makes the output worth having, so its reasons
+    // are the interesting part of the wait. A spinner throws them away.
+    apiClient.draftPlugin.mockResolvedValue({ task_id: 't1', poll_url: '/x' });
+    apiClient.getPluginDraft
+      .mockResolvedValueOnce({
+        state: 'PROGRESS',
+        stage: 'drafting',
+        attempt: 2,
+        notes: ["Attempt 1: id 'my-plugin' must be lowercase"],
+        manifest: null,
+        attempts: 0,
+        pending: true,
+      })
+      .mockResolvedValue({
+        state: 'SUCCESS',
+        stage: 'done',
+        attempt: 2,
+        notes: ["Attempt 1: id 'my-plugin' must be lowercase"],
+        manifest: { id: 'fixed' },
+        attempts: 2,
+        pending: false,
+      });
+
+    render(<PluginsPanel />);
+    await screen.findByText('Benchmarks');
+    fireEvent.click(screen.getByRole('button', { name: /New Plugin/ }));
+    fireEvent.change(screen.getByLabelText('Describe the plugin'), {
+      target: { value: 'a thing' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^Draft$/ }));
+
+    expect(await screen.findByText(/must be lowercase/)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText('Plugin manifest') as HTMLTextAreaElement).value
+      ).toContain('"id": "fixed"')
+    );
+  });
+
+  it('polls rather than waiting on the request', async () => {
+    apiClient.draftPlugin.mockResolvedValue({ task_id: 't1', poll_url: '/x' });
+    apiClient.getPluginDraft.mockResolvedValue({
+      state: 'SUCCESS',
+      stage: 'done',
+      attempt: 1,
+      notes: [],
+      manifest: { id: 'd' },
+      attempts: 1,
+      pending: false,
+    });
+
+    render(<PluginsPanel />);
+    await screen.findByText('Benchmarks');
+    fireEvent.click(screen.getByRole('button', { name: /New Plugin/ }));
+    fireEvent.change(screen.getByLabelText('Describe the plugin'), {
+      target: { value: 'a thing' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^Draft$/ }));
+
+    await waitFor(() => expect(apiClient.getPluginDraft).toHaveBeenCalledWith('t1'));
+    // The POST hands back a task and returns; it does not carry the manifest.
+    expect(apiClient.draftPlugin).toHaveBeenCalledWith('a thing');
   });
 });

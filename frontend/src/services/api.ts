@@ -4649,14 +4649,31 @@ class ApiClient {
    * because one that validates is not the same as one that does what somebody
    * meant, and only the person who asked can tell.
    */
-  async draftPlugin(description: string): Promise<{
-    manifest: Record<string, any> | null;
-    notes: string[];
-    attempts: number;
-  }> {
+  async draftPlugin(
+    description: string
+  ): Promise<{ task_id: string; poll_url: string }> {
     const response = await this.client.post('/api/v1/plugins/draft', {
       description,
     });
+    return response.data;
+  }
+
+  /**
+   * Where a draft has got to.
+   *
+   * `notes` grows as the repair loop turns, so a caller can show *why* a draft
+   * is on its third attempt rather than a spinner that says nothing.
+   */
+  async getPluginDraft(taskId: string): Promise<{
+    state: string;
+    stage: string | null;
+    attempt: number;
+    notes: string[];
+    manifest: Record<string, any> | null;
+    attempts: number;
+    pending: boolean;
+  }> {
+    const response = await this.client.get(`/api/v1/plugins/draft/${taskId}`);
     return response.data;
   }
 

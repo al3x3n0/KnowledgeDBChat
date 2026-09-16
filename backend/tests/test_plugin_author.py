@@ -217,3 +217,67 @@ def test_the_path_walker_matches_the_renderer(data, path, found, stopped):
 def test_the_shape_summary_is_readable():
     assert author._shape({"items": [{"a": 1}]}) == "{items: [{a: int}]}"
     assert author._shape([]) == "[]"
+
+
+# --------------------------------------------------------------------------
+# Progress, and running it off the request thread
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_each_attempt_is_reported_as_it_happens(scripted):
+    """The repair loop's reasons are the interesting part of the wait. A caller
+    that only learns them at the end has watched a spinner for two minutes."""
+    scripted([_manifest(id="Bad-Id"), _manifest()])
+    seen: List[Any] = []
+
+    await author.draft_manifest(
+        "a run board", on_progress=lambda *args: seen.append(args)
+    )
+
+    stages = [stage for stage, _attempt, _notes in seen]
+    assert stages[0] == "drafting"
+    assert stages[-1] == "done"
+    # The second attempt must carry the reason the first was refused, or the
+    # progress says "still working" and nothing more.
+    second = next(notes for stage, attempt, notes in seen if attempt == 2)
+    assert second and "lowercase" in second[0]
+
+
+@pytest.mark.asyncio
+async def test_a_broken_progress_callback_does_not_lose_the_draft(scripted):
+    """Progress is a courtesy. A caller whose reporting breaks must not take
+    the draft down with it."""
+
+    def boom(*_args):
+        raise RuntimeError("reporting is broken")
+
+    scripted([_manifest()])
+
+    result = await author.draft_manifest("a run board", on_progress=boom)
+
+    assert result["manifest"]["id"] == "bench"
+
+
+def test_the_task_is_registered_and_bounded():
+    """A wedged provider must not hold a worker for ever."""
+    from app.core.celery import celery_app
+    from app.tasks import plugin_tasks
+
+    assert "app.tasks.plugin_tasks.draft_plugin_manifest" in celery_app.tasks
+    assert plugin_tasks.HARD_LIMIT_SECONDS > plugin_tasks.SOFT_LIMIT_SECONDS
+    # Generous against the two minutes observed, finite so it cannot hang.
+    assert plugin_tasks.SOFT_LIMIT_SECONDS >= 180
+
+
+def test_the_task_carries_its_owner_in_every_state():
+    """A task id is unguessable, which is not the same as checked: the polling
+    endpoint compares this against the caller."""
+    import inspect
+
+    from app.tasks import plugin_tasks
+
+    source = inspect.getsource(plugin_tasks.draft_plugin_manifest)
+
+    assert '"user_id": str(user_id)' in source
+    assert 'state="PROGRESS"' in source

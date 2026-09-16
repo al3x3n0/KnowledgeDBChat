@@ -247,9 +247,9 @@ def test_both_chat_planners_accept_contributed_tools():
         AgentService._plan_tool_calls,
         AgentService._plan_tool_calls_for_agent,
     ):
-        assert "contributed" in inspect.signature(planner).parameters, (
-            f"{planner.__name__} cannot be given contributed tools"
-        )
+        assert (
+            "contributed" in inspect.signature(planner).parameters
+        ), f"{planner.__name__} cannot be given contributed tools"
 
 
 def test_the_streaming_path_actually_passes_them():

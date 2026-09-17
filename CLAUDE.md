@@ -142,8 +142,29 @@ database that already has a revision recorded.
 - `alembic/versions/` - Database migrations
 
 ### Frontend Structure (`frontend/src/`)
-- `pages/` - 35 page components (ChatPage, DocumentsPage, AdminPage, AutonomousAgentsPage, AgentControlPlanePage, AgentBuilderPage, LatexStudioPage, PapersPage, ResearchNotesPage, ReadingListsPage, PatchPRsPage, RepoReportsPage, PresentationsPage, SynthesisPage, WorkflowsPage/WorkflowEditorPage, AIHubPage, KGAdminPage, GlobalGraphPage, ToolsPage, UsagePage, RoutingExperimentsPage, etc.)
+- `pages/` - 41 page components (ChatPage, DocumentsPage, AdminPage, AutonomousAgentsPage, AgentControlPlanePage, AgentBuilderPage, LatexStudioPage, PapersPage, ResearchNotesPage, ReadingListsPage, ResearchInboxPage, CodingBacklogPage, ResearchFleetPage, DomainProfilesPage, PatchPRsPage, RepoReportsPage, PresentationsPage, SynthesisPage, WorkflowsPage/WorkflowEditorPage, AIHubPage, KGAdminPage, GlobalGraphPage, ToolsPage, UsagePage, RoutingExperimentsPage, etc.)
 - `components/` - Reusable UI, grouped by domain (`agent/`, `common/`, `docx/`, `kg/`, `notifications/`, `presentations/`, `search/`, `workflows/`)
+- **The agent surface** was one 16,270-line `AutonomousAgentsPage` with thirteen
+  tabs; it is now ~4,700 lines and a set of destinations. Each tab lives in
+  `components/agent/tabs/`, and four moved out of Runs entirely because they are
+  a different *noun*: Research Inbox (`/research/inbox`, Library — it is triage
+  of papers, not a view of a run), Coding Backlog (`/coding-backlog`, beside
+  Patch PRs — an item here becomes a patch there), Research Fleet
+  (`/research/fleet`) and Domain Profiles (`/settings/domain-profiles`). Old
+  `?tab=` links redirect, carrying their parameters.
+  Shared machinery: `agent/useOpportunitySurface.tsx` (everything a domain
+  profile and a research portfolio have in common — they render the same
+  controls but are different nouns), `agent/autonomyShared.tsx` (their
+  presentational half), `agent/agentJobMutations.ts` (job mutations both
+  surfaces need), `agent/drilldowns.ts` (a URL parameter's parser and its
+  printer, kept together), `agent/propTypes.ts` (prop types the tabs share).
+  **Two rules, each learned from a bug that type-checked and passed tests.**
+  State lives where its *writers* are, not its readers — splitting it yields two
+  `useState` calls sharing a name, where one side's edits silently vanish;
+  `tabs/__tests__/splitState.test.ts` fails on that. And never type a lifted
+  prop `any`: it disables inference *inside* the component, which is how a badge
+  got typed as a ReactNode when it is an object, and how two invented response
+  shapes silently dropped fields the code reads.
 - `services/api.ts` - Single `ApiClient` class (~4700 lines, 460+ methods) wrapping Axios with `/api/v1` base, token interceptor, and toast-based error handling — add new endpoints here
 - `contexts/` - `AuthContext.tsx`, `NotificationContext.tsx`
 - `hooks/` - `useWebSocket`, `useKeyboardShortcuts`, `useElementSize`

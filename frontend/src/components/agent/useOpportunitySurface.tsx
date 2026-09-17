@@ -257,6 +257,15 @@ const resolveOpportunityReasonCode = (row: Record<string, any>) => (
   ).trim()
 );
 
+/**
+ * Everything the surface hands back.
+ *
+ * The two tabs that render it take these as props, and derive their types from
+ * here rather than restating twenty function signatures each -- the hook is the
+ * one declaration, and a change to it reaches both tabs without being copied.
+ */
+export type OpportunitySurface = ReturnType<typeof useOpportunitySurface>;
+
 export interface OpportunitySurfaceDeps {
   navigate: NavigateFunction;
   queryClient: QueryClient;

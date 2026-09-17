@@ -1,3 +1,4 @@
+import type { OpportunitySurface } from '../useOpportunitySurface';
 import type {
   AnyMutation,
   AnyVoidMutation,
@@ -92,14 +93,14 @@ export interface DomainProfilesTabProps {
   domainProfilesData?: { items?: DomainResearchProfile[] };
   domainProfilesLoading: boolean;
   refetchDomainProfiles: Refetch;
-  beginOpportunityRelaunch: any;
-  beginOpportunitySuppression: any;
+  beginOpportunityRelaunch: OpportunitySurface['beginOpportunityRelaunch'];
+  beginOpportunitySuppression: OpportunitySurface['beginOpportunitySuppression'];
   buildAutonomousAgentsUrl: BuildRunsUrl;
-  buildAutonomyCardKey: any;
-  buildAutonomyOpportunityRowKey: any;
-  buildAutonomyReviewRowKey: any;
-  buildResearchNoteExperimentUrl: any;
-  cancelOpportunityAction: any;
+  buildAutonomyCardKey: OpportunitySurface['buildAutonomyCardKey'];
+  buildAutonomyOpportunityRowKey: OpportunitySurface['buildAutonomyOpportunityRowKey'];
+  buildAutonomyReviewRowKey: OpportunitySurface['buildAutonomyReviewRowKey'];
+  buildResearchNoteExperimentUrl: OpportunitySurface['buildResearchNoteExperimentUrl'];
+  cancelOpportunityAction: OpportunitySurface['cancelOpportunityAction'];
   codeSources: any[];
   createScientificResearchPackMutation: AnyVoidMutation;
   domainAvailableSandboxProfiles: ScientificSandboxProfile[];
@@ -134,20 +135,20 @@ export interface DomainProfilesTabProps {
   opportunityNoteDraft: { mode: 'suppress' | 'launch' | 'relaunch'; surface: 'domain' | 'fleet'; ownerId: string; opportunityId: string; value: string } | null;
   setOpportunityNoteDraft: React.Dispatch<React.SetStateAction<{ mode: 'suppress' | 'launch' | 'relaunch'; surface: 'domain' | 'fleet'; ownerId: string; opportunityId: string; value: string } | null>>;
   queryClient: QueryClient;
-  registerAutonomyCardRef: any;
-  registerAutonomyRowRef: any;
-  renderAutonomySummaryRow: any;
-  renderBulkFollowUpControls: any;
-  renderInlineFollowUpApprovalRow: any;
-  renderInlineManualRecommendationRow: any;
-  renderInlineSuppressedRelaunchRow: any;
-  renderOpportunityExplainabilityPanel: any;
-  renderScientificSandboxManagementPanel: any;
-  renderScientificValidationRuns: any;
-  resolveOpportunityContextRow: any;
-  resolveSandboxProfileId: any;
-  scientificSandboxProfileById: any;
-  submitOpportunityAction: any;
+  registerAutonomyCardRef: OpportunitySurface['registerAutonomyCardRef'];
+  registerAutonomyRowRef: OpportunitySurface['registerAutonomyRowRef'];
+  renderAutonomySummaryRow: OpportunitySurface['renderAutonomySummaryRow'];
+  renderBulkFollowUpControls: OpportunitySurface['renderBulkFollowUpControls'];
+  renderInlineFollowUpApprovalRow: OpportunitySurface['renderInlineFollowUpApprovalRow'];
+  renderInlineManualRecommendationRow: OpportunitySurface['renderInlineManualRecommendationRow'];
+  renderInlineSuppressedRelaunchRow: OpportunitySurface['renderInlineSuppressedRelaunchRow'];
+  renderOpportunityExplainabilityPanel: OpportunitySurface['renderOpportunityExplainabilityPanel'];
+  renderScientificSandboxManagementPanel: OpportunitySurface['renderScientificSandboxManagementPanel'];
+  renderScientificValidationRuns: OpportunitySurface['renderScientificValidationRuns'];
+  resolveOpportunityContextRow: OpportunitySurface['resolveOpportunityContextRow'];
+  resolveSandboxProfileId: OpportunitySurface['resolveSandboxProfileId'];
+  scientificSandboxProfileById: OpportunitySurface['scientificSandboxProfileById'];
+  submitOpportunityAction: OpportunitySurface['submitOpportunityAction'];
   updateDomainProfileMutation: AnyMutation;
 }
 

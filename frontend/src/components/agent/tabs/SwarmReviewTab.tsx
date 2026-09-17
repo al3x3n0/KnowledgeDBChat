@@ -10,6 +10,9 @@
  */
 
 import type {
+  AgentJobSwarmAnalytics,
+} from '../../../types';
+import type {
   AnyMutation,
 } from '../propTypes';
 import { Layers, RefreshCw, XCircle } from 'lucide-react';
@@ -27,7 +30,7 @@ export interface SwarmReviewTabProps {
   onVisibilityScopeChange: (scope: 'mine' | 'shared' | 'all') => void;
   swarmReviewJobsLoading: boolean;
   refetchSwarmReviewJobs: () => void;
-  swarmAnalyticsData: any;
+  swarmAnalyticsData: AgentJobSwarmAnalytics | undefined;
   swarmAnalyticsLoading: boolean;
   refetchSwarmAnalytics: () => void;
   backlogBySwarmJobId: Record<string, any[]>;

@@ -19,6 +19,8 @@ import { apiClient } from '../../../services/api';
 import { copyText } from '../../../utils/clipboard';
 import { humanizeSwarmOutcome } from '../../../utils/agentJobDetail';
 import type {
+  AgentJobSwarmOutcomeCase,
+  CodingBacklogItemListResponse,
   User,
   CodingBacklogDecomposition,
   CodingBacklogItem,
@@ -30,12 +32,12 @@ import type {
 } from '../../../types';
 
 export interface CodingBacklogTabProps {
-  codingBacklogData: any;
+  codingBacklogData: CodingBacklogItemListResponse | undefined;
   codingBacklogLoading: boolean;
   refetchCodingBacklog: Refetch;
   setActiveTab: SetActiveTab;
   setSelectedJob: SetSelectedJob;
-  swarmOutcomeBySwarmJobId: any;
+  swarmOutcomeBySwarmJobId: Record<string, AgentJobSwarmOutcomeCase>;
   user: User | null;
   backlogAssignmentFilter: string;
   setBacklogAssignmentFilter: React.Dispatch<React.SetStateAction<string>>;
@@ -49,7 +51,7 @@ export interface CodingBacklogTabProps {
   setBacklogFilePathsText: React.Dispatch<React.SetStateAction<string>>;
   backlogGoal: string;
   setBacklogGoal: React.Dispatch<React.SetStateAction<string>>;
-  backlogItems: any;
+  backlogItems: CodingBacklogItem[];
   backlogNoteDrafts: Record<string, string>;
   setBacklogNoteDrafts: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   backlogQueueStateFilter: string;

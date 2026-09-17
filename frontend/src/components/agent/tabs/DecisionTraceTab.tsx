@@ -22,9 +22,9 @@ import {
   summarizeSchedulerState,
 } from '../../../utils/agentJobDetail';
 import type {
+  AgentDecisionTraceView,
   AgentDecisionTraceAnalyticsResponse,
   AgentDecisionTraceResponse,
-  AgentDecisionTraceView,
   AgentDecisionTraceEvent,
   User,
 } from '../../../types';
@@ -115,11 +115,11 @@ export interface DecisionTraceTabProps {
   refetchDecisionTraceAnalytics: Refetch;
   traceViewsData?: { items: AgentDecisionTraceView[] };
   setActiveTab: SetActiveTab;
-  applyTraceView: any;
+  applyTraceView: (view: AgentDecisionTraceView | null | undefined) => void;
   buildAutonomousAgentsUrl: BuildRunsUrl;
-  buildTraceShareUrl: any;
+  buildTraceShareUrl: (baseSearch?: string, traceEventId?: string) => string;
   collaborationUsers: User[];
-  currentTraceViewFilters: any;
+  currentTraceViewFilters: Record<string, any>;
   decisionTraceActionMutation: AnyMutation;
   expandedTraceEventId: string;
   setExpandedTraceEventId: React.Dispatch<React.SetStateAction<string>>;
@@ -148,7 +148,7 @@ export interface DecisionTraceTabProps {
   setTraceDueAtDrafts: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   traceEscalationStateFilter: string;
   setTraceEscalationStateFilter: React.Dispatch<React.SetStateAction<string>>;
-  traceFiltersDirtyRef: any;
+  traceFiltersDirtyRef: React.MutableRefObject<boolean>;
   traceOffset: number;
   setTraceOffset: React.Dispatch<React.SetStateAction<number>>;
   traceOperatorPreset: string;
@@ -159,7 +159,7 @@ export interface DecisionTraceTabProps {
   setTraceSeverityFilter: React.Dispatch<React.SetStateAction<string>>;
   traceSourceKindFilter: string;
   setTraceSourceKindFilter: React.Dispatch<React.SetStateAction<string>>;
-  traceStartAt: any;
+  traceStartAt: string | undefined;
   traceStatusFilter: string;
   setTraceStatusFilter: React.Dispatch<React.SetStateAction<string>>;
   traceTriageStatusFilter: string;
@@ -170,7 +170,7 @@ export interface DecisionTraceTabProps {
   setTraceViewIsDefaultDraft: React.Dispatch<React.SetStateAction<boolean>>;
   traceViewNameDraft: string;
   setTraceViewNameDraft: React.Dispatch<React.SetStateAction<string>>;
-  userLabelById: any;
+  userLabelById: (candidateId?: string | null) => string;
 }
 
 export const DecisionTraceTab: React.FC<DecisionTraceTabProps> = ({

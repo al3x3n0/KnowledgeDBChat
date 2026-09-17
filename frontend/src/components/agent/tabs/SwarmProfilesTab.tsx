@@ -29,10 +29,10 @@ const codingSwarmPresetLabel = (presetKey?: string | null) => {
 
 export interface SwarmProfilesTabProps {
   setActiveTab: SetActiveTab;
-  setCodingSwarmLaunchSeed: any;
-  setShowBugTriageSwarmQuickStartModal: any;
-  setShowBuildBreakSwarmQuickStartModal: any;
-  setShowFrontendRegressionSwarmQuickStartModal: any;
+  setCodingSwarmLaunchSeed: React.Dispatch<React.SetStateAction<{ presetKey: string; profileId?: string; sourceId?: string } | null>>;
+  setShowBugTriageSwarmQuickStartModal: React.Dispatch<React.SetStateAction<boolean>>;
+  setShowBuildBreakSwarmQuickStartModal: React.Dispatch<React.SetStateAction<boolean>>;
+  setShowFrontendRegressionSwarmQuickStartModal: React.Dispatch<React.SetStateAction<boolean>>;
   user: User | null;
   codeSources: any[];
   codingSwarmProfileDraft: CodingSwarmProfileUpdate & { source_id?: string; duplicate_mode?: boolean; title: string };

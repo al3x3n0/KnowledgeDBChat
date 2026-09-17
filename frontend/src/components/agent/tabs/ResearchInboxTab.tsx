@@ -18,6 +18,10 @@
  */
 
 import type {
+  AgentJobChainDefinitionListResponse,
+  ResearchInboxStats,
+} from '../../../types';
+import type {
   AnyMutation,
   BuildRunsUrl,
   NavigateFunction,
@@ -53,14 +57,14 @@ import {
 import type { InboxHealthDrilldown, InboxPolicyDrilldown } from '../drilldowns';
 
 export interface ResearchInboxTabProps {
-  chainsData: any;
+  chainsData: AgentJobChainDefinitionListResponse | undefined;
   inboxLoading: boolean;
-  inboxStats: any;
-  myPreferences: any;
+  inboxStats: ResearchInboxStats | undefined;
+  myPreferences: Record<string, any> | undefined;
   refetchInbox: Refetch;
   setActiveTab: SetActiveTab;
-  setShowInboxMonitorModal: any;
-  setShowMonitorProfilesModal: any;
+  setShowInboxMonitorModal: React.Dispatch<React.SetStateAction<boolean>>;
+  setShowMonitorProfilesModal: React.Dispatch<React.SetStateAction<boolean>>;
   activeFollowUpReviewKey: string;
   buildAutonomousAgentsUrl: BuildRunsUrl;
   createFromChainMutation: AnyMutation;

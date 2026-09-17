@@ -56,3 +56,25 @@ export const formatQueueHealthDrilldownLabel = (value: QueueHealthDrilldown): st
   if (value === 'blocked_follow_up') return 'blocked follow-ups';
   return '';
 };
+
+
+/** Every filter is a URL parameter, so a filtered inbox is a link. */
+const FILTER_PARAMS = [
+  'inbox_status', 'inbox_type', 'inbox_q', 'inbox_job',
+  'inbox_customer', 'inbox_health_drilldown', 'inbox_policy_drilldown',
+  // Not a filter: focuses one item. The tab reads it straight off location.
+  'inbox',
+] as const;
+
+export type InboxUrlParams = typeof FILTER_PARAMS[number];
+
+export function buildResearchInboxUrl(params: Partial<Record<InboxUrlParams, string | null>> = {}) {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    const normalized = String(value ?? '').trim();
+    if (normalized) search.set(key, normalized);
+  });
+  const query = search.toString();
+  return query ? `/research/inbox?${query}` : '/research/inbox';
+}
+

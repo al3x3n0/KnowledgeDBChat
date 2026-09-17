@@ -36,6 +36,7 @@ import type {
   ResearchMonitorPolicyHistoryEntry,
   ResearchMonitorPolicySimulationResponse,
 } from '../../../types';
+import { buildResearchInboxUrl } from '../drilldowns';
 import { invalidateAgentRunQueries } from '../../../utils/agentRunQueries';
 import Button from '../../common/Button';
 import LoadingSpinner from '../../common/LoadingSpinner';
@@ -151,13 +152,6 @@ export interface AutonomyHealthTabProps {
   openHealthPolicyComparison: any;
   setActiveTab: any;
   setHealthCustomerFilter: React.Dispatch<React.SetStateAction<string>>;
-  setInboxCustomerFilter: any;
-  setInboxHealthDrilldown: any;
-  setInboxJobFilter: any;
-  setInboxPolicyDrilldown: any;
-  setInboxSearch: any;
-  setInboxStatusFilter: any;
-  setInboxTypeFilter: any;
   setQueueCustomerFilter: any;
   setQueueHealthDrilldown: any;
   setQueueJobFilter: any;
@@ -201,13 +195,6 @@ export const AutonomyHealthTab: React.FC<AutonomyHealthTabProps> = ({
   openHealthPolicyComparison,
   setActiveTab,
   setHealthCustomerFilter,
-  setInboxCustomerFilter,
-  setInboxHealthDrilldown,
-  setInboxJobFilter,
-  setInboxPolicyDrilldown,
-  setInboxSearch,
-  setInboxStatusFilter,
-  setInboxTypeFilter,
   setQueueCustomerFilter,
   setQueueHealthDrilldown,
   setQueueJobFilter,
@@ -739,20 +726,10 @@ export const AutonomyHealthTab: React.FC<AutonomyHealthTabProps> = ({
                       <Button
                         size="sm"
                         variant="ghost"
-                        onClick={() => {
-                          setActiveTab('inbox');
-                          setInboxCustomerFilter(customerRow.customer);
-                          setInboxStatusFilter('accepted');
-                          setInboxTypeFilter('');
-                          setInboxSearch('');
-                          navigate(buildAutonomousAgentsUrl(undefined, {
-                            tab: 'inbox',
-                            inbox_customer: customerRow.customer,
-                            inbox_job: null,
-                            inbox_health_drilldown: null,
-                            inbox_policy_drilldown: null,
-                          }), { replace: true });
-                        }}
+                        onClick={() => navigate(buildResearchInboxUrl({
+                          inbox_status: 'accepted',
+                          inbox_customer: customerRow.customer,
+                        }))}
                       >
                         View Inbox
                       </Button>
@@ -1166,20 +1143,11 @@ export const AutonomyHealthTab: React.FC<AutonomyHealthTabProps> = ({
                                             <Button
                                               size="sm"
                                               variant="ghost"
-                                              onClick={() => {
-                                                setActiveTab('inbox');
-                                                setInboxCustomerFilter(customerRow.customer);
-                                                setInboxStatusFilter('accepted');
-                                                setInboxTypeFilter('');
-                                                setInboxSearch('');
-                                                setInboxJobFilter(sample.monitor_job_id ? String(sample.monitor_job_id) : '');
-                                                const params = new URLSearchParams(location.search);
-                                                params.set('tab', 'inbox');
-                                                params.set('customer', customerRow.customer);
-                                                if (sample.monitor_job_id) params.set('inbox_job', String(sample.monitor_job_id));
-                                                params.set('inbox', sample.item_id);
-                                                navigate(`${location.pathname}?${params.toString()}`, { replace: true });
-                                              }}
+                                              onClick={() => navigate(buildResearchInboxUrl({
+                                                inbox_status: 'accepted',
+                                                inbox_customer: customerRow.customer,
+                                                inbox_job: sample.monitor_job_id ? String(sample.monitor_job_id) : null,
+                                              }))}
                                             >
                                               Open in Inbox
                                             </Button>
@@ -1457,14 +1425,7 @@ export const AutonomyHealthTab: React.FC<AutonomyHealthTabProps> = ({
                     <Button
                       size="sm"
                       variant="ghost"
-                        onClick={() => {
-                          setActiveTab('inbox');
-                          setInboxStatusFilter('');
-                          setInboxTypeFilter('');
-                          setInboxSearch('');
-                          setInboxHealthDrilldown('');
-                          setInboxPolicyDrilldown('');
-                        }}
+                        onClick={() => navigate(buildResearchInboxUrl())}
                       >
                         View Inbox
                     </Button>

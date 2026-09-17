@@ -37,7 +37,6 @@ import {
   FileText,
   Filter,
   GitBranch,
-  Inbox,
   Layers,
   ListChecks,
   Loader2,
@@ -95,8 +94,6 @@ import type {
   AgentJobStatus,
   AgentJobChainDefinition,
   AgentJobChainStatus,
-  ResearchInboxItem,
-  ResearchInboxItemStatus,
   ResearchMonitorAnalyticsResponse,
   ResearchMonitorCustomerRebalanceEvaluationDetail,
   ResearchMonitorPolicyEvaluationDetail,
@@ -112,6 +109,7 @@ import {
 } from '../utils/experimentRunSummary';
 import Button from '../components/common/Button';
 import {
+  buildResearchInboxUrl,
   normalizeInboxHealthDrilldown,
   normalizeInboxPolicyDrilldown,
   normalizeQueueHealthDrilldown,
@@ -166,6 +164,7 @@ import {
   useUpsertMonitorProfileMutation,
 } from '../components/agent/agentJobMutations';
 
+
 // Tabs load when their tab is opened, not when the page is.
 //
 // Extraction alone did not shrink the bundle -- the components landed in the
@@ -173,7 +172,6 @@ import {
 // is what extraction was *for*; it just is not what extraction *is*.
 const JobChainsTab = lazy(() => import('../components/agent/tabs/JobChainsTab'));
 const SwarmReviewTab = lazy(() => import('../components/agent/tabs/SwarmReviewTab'));
-const ResearchInboxTab = lazy(() => import('../components/agent/tabs/ResearchInboxTab'));
 const CodingBacklogTab = lazy(() => import('../components/agent/tabs/CodingBacklogTab'));
 const DecisionTraceTab = lazy(() => import('../components/agent/tabs/DecisionTraceTab'));
 const OperatorQueueTab = lazy(() => import('../components/agent/tabs/OperatorQueueTab'));
@@ -530,7 +528,6 @@ const TAB_GROUPS: Array<{
     name: 'Needs you',
     tabs: [
       { id: 'queue', label: 'Checkpoints', icon: AlertCircle, urgent: true },
-      { id: 'inbox', label: 'Inbox', icon: Inbox, urgent: true },
       { id: 'swarm', label: 'Swarm Review', icon: Users, urgent: true },
     ],
   },
@@ -560,7 +557,7 @@ const TAB_GROUPS: Array<{
 
 
 const AutonomousAgentsPage: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'queue' | 'trace' | 'health' | 'jobs' | 'swarm' | 'outcomes' | 'profiles' | 'templates' | 'chains' | 'inbox' | 'backlog' | 'domain' | 'fleet' | 'create'>('jobs');
+  const [activeTab, setActiveTab] = useState<AgentJobsTab>('jobs');
   const [showSystemMap, setShowSystemMap] = useState(false);
   const [selectedJob, setSelectedJob] = useState<AgentJob | null>(null);
   // The jobs filter row holds twelve controls and is collapsed by default.
@@ -729,18 +726,10 @@ const AutonomousAgentsPage: React.FC = () => {
   const [exportingJob, setExportingJob] = useState<AgentJob | null>(null);
   const landingTabInitializedRef = useRef(false);
 
-  const [inboxStatusFilter, setInboxStatusFilter] = useState<ResearchInboxItemStatus | ''>('');
-  const [inboxTypeFilter, setInboxTypeFilter] = useState<string>('');
-  const [inboxSearch, setInboxSearch] = useState<string>('');
   const [inboxCustomerFilter, setInboxCustomerFilter] = useState<string>('');
   const [inboxJobFilter, setInboxJobFilter] = useState<string>('');
   const [inboxHealthDrilldown, setInboxHealthDrilldown] = useState<InboxHealthDrilldown>('');
   const [inboxPolicyDrilldown, setInboxPolicyDrilldown] = useState<InboxPolicyDrilldown>('');
-  const [selectedInboxIds, setSelectedInboxIds] = useState<Record<string, boolean>>({});
-  const [inboxBulkRejectReason, setInboxBulkRejectReason] = useState<string>('');
-  const [inboxBulkFollowUpNote, setInboxBulkFollowUpNote] = useState<string>('');
-  const [inboxRejectReasonDrafts, setInboxRejectReasonDrafts] = useState<Record<string, string>>({});
-  const [paperRepoSelectionDrafts, setPaperRepoSelectionDrafts] = useState<Record<string, string>>({});
   const [queueItemTypeFilter, setQueueItemTypeFilter] = useState<string>('');
   const [queueStatusFilter, setQueueStatusFilter] = useState<string>('');
   const [queueCustomerFilter, setQueueCustomerFilter] = useState<string>('');
@@ -871,28 +860,19 @@ const AutonomousAgentsPage: React.FC = () => {
 
 
 
+  // The inbox is its own page now, so a drilldown is a navigation and the URL
+  // is the whole of the state being handed over.
   const openInboxHealthDrilldown = useCallback((
     drilldown: InboxHealthDrilldown,
     context?: { customer?: string | null; monitorJobId?: string | null }
   ) => {
-    const customer = String(context?.customer || '').trim();
-    const monitorJobId = String(context?.monitorJobId || '').trim();
-    setActiveTab('inbox');
-    setInboxStatusFilter('accepted');
-    setInboxTypeFilter('');
-    setInboxSearch('');
-    setInboxCustomerFilter(customer);
-    setInboxJobFilter(monitorJobId);
-    setInboxHealthDrilldown(drilldown);
-    setInboxPolicyDrilldown('');
-    navigate(buildAutonomousAgentsUrl(undefined, {
-      tab: 'inbox',
-      inbox_customer: customer || null,
-      inbox_job: monitorJobId || null,
+    navigate(buildResearchInboxUrl({
+      inbox_status: 'accepted',
+      inbox_customer: String(context?.customer || '').trim() || null,
+      inbox_job: String(context?.monitorJobId || '').trim() || null,
       inbox_health_drilldown: drilldown || null,
-      inbox_policy_drilldown: null,
-    }), { replace: true });
-  }, [buildAutonomousAgentsUrl, navigate]);
+    }));
+  }, [navigate]);
 
   const openQueueHealthDrilldown = useCallback((
     drilldown: QueueHealthDrilldown,
@@ -1315,8 +1295,18 @@ const AutonomousAgentsPage: React.FC = () => {
       setActiveTab('fleet');
     }
     if (deepLinkedInboxTab) {
-      landingTabInitializedRef.current = true;
-      setActiveTab('inbox');
+      // The inbox moved to the Library. Old links -- ?tab=inbox, with whatever
+      // filters they carried -- still land on it rather than on a tab that no
+      // longer exists.
+      const inboxParams = new URLSearchParams(location.search);
+      navigate(buildResearchInboxUrl({
+        inbox: inboxParams.get('inbox'),
+        inbox_job: inboxParams.get('inbox_job'),
+        inbox_customer: inboxParams.get('inbox_customer'),
+        inbox_health_drilldown: inboxParams.get('inbox_health_drilldown'),
+        inbox_policy_drilldown: inboxParams.get('inbox_policy_drilldown'),
+      }), { replace: true });
+      return;
     }
     const normalizedInboxJobId = String(deepLinkedInboxJobId || '').trim();
     const normalizedInboxCustomer = String(deepLinkedInboxCustomer || '').trim();
@@ -1369,7 +1359,7 @@ const AutonomousAgentsPage: React.FC = () => {
       setSelectedJob(null);
       navigate(buildAutonomousAgentsUrl(), { replace: true });
     }
-  }, [deepLinkedTraceTab, deepLinkedHealthTab, deepLinkedJobId, deepLinkedJobData, deepLinkedJobError, deepLinkedQueueTab, deepLinkedQueueCustomer, deepLinkedQueueJobId, deepLinkedQueueHealthDrilldown, deepLinkedDomainTab, deepLinkedFleetTab, deepLinkedInboxTab, deepLinkedInboxJobId, deepLinkedInboxCustomer, deepLinkedInboxHealthDrilldown, deepLinkedInboxPolicyDrilldown, deepLinkedHealthCustomer, healthCustomerFilter, inboxCustomerFilter, inboxHealthDrilldown, inboxPolicyDrilldown, inboxJobFilter, queueCustomerFilter, queueHealthDrilldown, queueJobFilter, jobsData, navigate, buildAutonomousAgentsUrl]);
+  }, [deepLinkedTraceTab, deepLinkedHealthTab, deepLinkedJobId, deepLinkedJobData, deepLinkedJobError, deepLinkedQueueTab, deepLinkedQueueCustomer, deepLinkedQueueJobId, deepLinkedQueueHealthDrilldown, deepLinkedDomainTab, deepLinkedFleetTab, deepLinkedInboxTab, deepLinkedInboxJobId, deepLinkedInboxCustomer, deepLinkedInboxHealthDrilldown, deepLinkedInboxPolicyDrilldown, deepLinkedHealthCustomer, healthCustomerFilter, inboxCustomerFilter, inboxHealthDrilldown, inboxPolicyDrilldown, inboxJobFilter, queueCustomerFilter, queueHealthDrilldown, queueJobFilter, jobsData, navigate, buildAutonomousAgentsUrl, location.search]);
 
   useEffect(() => {
     if (deepLinkedFleetId) {
@@ -1871,7 +1861,7 @@ const AutonomousAgentsPage: React.FC = () => {
       // that dropdown empty unless you had opened Autonomy Health earlier in
       // the same session -- a filter offering nothing, depending on where you
       // had been.
-      enabled: activeTab === 'health' || activeTab === 'inbox',
+      enabled: activeTab === 'health',
       staleTime: 30000,
     }
   );
@@ -2223,31 +2213,7 @@ const AutonomousAgentsPage: React.FC = () => {
   }, [portfolioAvailableSandboxProfiles, portfolioSandboxProfileId, resolveSandboxProfileId]);
 
   // Research Inbox
-  const { data: inboxStats } = useQuery(
-    ['research-inbox-stats'],
-    () => apiClient.getResearchInboxStats(),
-    {
-      refetchInterval: 20000,
-    }
-  );
 
-  const { data: inboxData, isLoading: inboxLoading, refetch: refetchInbox } = useQuery(
-    ['research-inbox', inboxStatusFilter, inboxTypeFilter, inboxCustomerFilter, inboxSearch, inboxJobFilter],
-    () =>
-      apiClient.listResearchInboxItems({
-        status: inboxStatusFilter || undefined,
-        item_type: inboxTypeFilter || undefined,
-        customer: inboxCustomerFilter || undefined,
-        job_id: inboxJobFilter || undefined,
-        q: inboxSearch.trim() || undefined,
-        limit: 100,
-        offset: 0,
-      }),
-    {
-      enabled: activeTab === 'inbox',
-      refetchInterval: 15000,
-    }
-  );
 
   const { data: monitorProfiles, isLoading: monitorProfilesLoading, refetch: refetchMonitorProfiles } = useQuery(
     ['research-monitor-profiles'],
@@ -2702,33 +2668,14 @@ const AutonomousAgentsPage: React.FC = () => {
 
   const openInboxForMonitorSignal = useCallback(
     (monitorJobId: string, inboxItemId?: string, policyDrilldown?: InboxPolicyDrilldown) => {
-      setActiveTab('inbox');
-      setInboxStatusFilter('accepted');
-      setInboxTypeFilter('');
-      setInboxSearch('');
-      setInboxCustomerFilter('');
-      setInboxJobFilter(String(monitorJobId || '').trim());
-      setInboxHealthDrilldown('');
-      setInboxPolicyDrilldown(policyDrilldown || '');
-      const params = new URLSearchParams(location.search);
-      params.set('tab', 'inbox');
-      params.set('inbox_job', String(monitorJobId || '').trim());
-      params.delete('inbox_customer');
-      params.delete('inbox_health_drilldown');
-      if (inboxItemId && String(inboxItemId).trim()) {
-        params.set('inbox', String(inboxItemId).trim());
-      } else {
-        params.delete('inbox');
-      }
-      if (policyDrilldown && String(policyDrilldown).trim()) {
-        params.set('inbox_policy_drilldown', String(policyDrilldown).trim());
-      } else {
-        params.delete('inbox_policy_drilldown');
-      }
-      params.delete('job');
-      navigate(`${location.pathname}?${params.toString()}`, { replace: true });
+      navigate(buildResearchInboxUrl({
+        inbox_status: 'accepted',
+        inbox_job: String(monitorJobId || '').trim() || null,
+        inbox: String(inboxItemId || '').trim() || null,
+        inbox_policy_drilldown: String(policyDrilldown || '').trim() || null,
+      }));
     },
-    [location.pathname, location.search, navigate]
+    [navigate]
   );
 
   // View chain status
@@ -3620,35 +3567,7 @@ const AutonomousAgentsPage: React.FC = () => {
 
 
 
-  const visibleInboxItems = useMemo(
-    () => ((inboxData?.items || []) as ResearchInboxItem[]).filter((item) => {
-      if (!inboxHealthDrilldown) return true;
-      if (String(item.status || '').trim().toLowerCase() !== 'accepted') return false;
-      if (String(item.item_type || '').trim() !== 'follow_up_recommendation') return false;
-      const outcomeStatus = String(item.follow_up_outcome_status || '').trim().toLowerCase();
-      const operatorDecision = String(item.follow_up_operator_decision || '').trim().toLowerCase();
-      if (inboxHealthDrilldown === 'completed_follow_up') return outcomeStatus === 'completed';
-      if (inboxHealthDrilldown === 'failed_follow_up') return outcomeStatus === 'failed';
-      if (inboxHealthDrilldown === 'cancelled_follow_up') return outcomeStatus === 'cancelled';
-      if (inboxHealthDrilldown === 'suppressed_relaunch') return operatorDecision === 'rejected';
-      return true;
-    }),
-    [inboxData, inboxHealthDrilldown]
-  );
 
-  const selectedInboxItems = useMemo(
-    () => visibleInboxItems.filter((item) => selectedInboxIds[item.id]),
-    [selectedInboxIds, visibleInboxItems]
-  );
-
-  useEffect(() => {
-    const visibleIds = new Set(visibleInboxItems.map((item) => String(item.id)));
-    setSelectedInboxIds((prev) => {
-      const nextEntries = Object.entries(prev).filter(([id, enabled]) => enabled && visibleIds.has(id));
-      if (nextEntries.length === Object.keys(prev).length) return prev;
-      return Object.fromEntries(nextEntries);
-    });
-  }, [visibleInboxItems]);
 
   useEffect(() => {
     const visibleKeys = new Set(visibleQueueItems.map((item) => item.queue_key));
@@ -4748,10 +4667,6 @@ const AutonomousAgentsPage: React.FC = () => {
   );
 
 
-  const { data: myPreferences } = useQuery(['me-preferences'], () => apiClient.getMyPreferences(), {
-    staleTime: 60_000,
-    refetchOnWindowFocus: false,
-  });
 
   const { data: unsafeExecAvailability } = useQuery(
     ['unsafe-exec-availability'],
@@ -4938,7 +4853,6 @@ const AutonomousAgentsPage: React.FC = () => {
   const tabCounts: Partial<Record<AgentJobsTab, number>> = {
     queue: checkpointQueueData?.total || 0,
     trace: decisionTraceData?.total || 0,
-    inbox: inboxStats?.new || 0,
   };
 
   /** How many of the jobs-list filters are actually narrowing anything.
@@ -5831,13 +5745,6 @@ const AutonomousAgentsPage: React.FC = () => {
               openHealthPolicyComparison={openHealthPolicyComparison}
               setActiveTab={setActiveTab}
               setHealthCustomerFilter={setHealthCustomerFilter}
-              setInboxCustomerFilter={setInboxCustomerFilter}
-              setInboxHealthDrilldown={setInboxHealthDrilldown}
-              setInboxJobFilter={setInboxJobFilter}
-              setInboxPolicyDrilldown={setInboxPolicyDrilldown}
-              setInboxSearch={setInboxSearch}
-              setInboxStatusFilter={setInboxStatusFilter}
-              setInboxTypeFilter={setInboxTypeFilter}
               setQueueCustomerFilter={setQueueCustomerFilter}
               setQueueHealthDrilldown={setQueueHealthDrilldown}
               setQueueJobFilter={setQueueJobFilter}
@@ -6798,59 +6705,6 @@ const AutonomousAgentsPage: React.FC = () => {
           </Suspense>
         )}
 
-        {activeTab === 'inbox' && (
-          <Suspense fallback={<div className="p-6 text-sm text-gray-500">Loading…</div>}>
-            <ResearchInboxTab
-              chainsData={chainsData}
-              inboxLoading={inboxLoading}
-              inboxStats={inboxStats}
-              myPreferences={myPreferences}
-              refetchInbox={refetchInbox}
-              setActiveTab={setActiveTab}
-              setShowInboxMonitorModal={setShowInboxMonitorModal}
-              setShowMonitorProfilesModal={setShowMonitorProfilesModal}
-              activeFollowUpReviewKey={activeFollowUpReviewKey}
-              buildAutonomousAgentsUrl={buildAutonomousAgentsUrl}
-              createFromChainMutation={createFromChainMutation}
-              createMutation={createMutation}
-              followUpQueueActionMutation={followUpQueueActionMutation}
-              followUpReviewNoteDrafts={followUpReviewNoteDrafts}
-              setFollowUpReviewNoteDrafts={setFollowUpReviewNoteDrafts}
-              healthCustomers={healthCustomers}
-              inboxBulkFollowUpNote={inboxBulkFollowUpNote}
-              setInboxBulkFollowUpNote={setInboxBulkFollowUpNote}
-              inboxBulkRejectReason={inboxBulkRejectReason}
-              setInboxBulkRejectReason={setInboxBulkRejectReason}
-              inboxCustomerFilter={inboxCustomerFilter}
-              setInboxCustomerFilter={setInboxCustomerFilter}
-              inboxHealthDrilldown={inboxHealthDrilldown}
-              setInboxHealthDrilldown={setInboxHealthDrilldown}
-              inboxJobFilter={inboxJobFilter}
-              setInboxJobFilter={setInboxJobFilter}
-              inboxPolicyDrilldown={inboxPolicyDrilldown}
-              setInboxPolicyDrilldown={setInboxPolicyDrilldown}
-              inboxRejectReasonDrafts={inboxRejectReasonDrafts}
-              setInboxRejectReasonDrafts={setInboxRejectReasonDrafts}
-              inboxSearch={inboxSearch}
-              setInboxSearch={setInboxSearch}
-              inboxStatusFilter={inboxStatusFilter}
-              setInboxStatusFilter={setInboxStatusFilter}
-              inboxTypeFilter={inboxTypeFilter}
-              setInboxTypeFilter={setInboxTypeFilter}
-              location={location}
-              navigate={navigate}
-              paperRepoSelectionDrafts={paperRepoSelectionDrafts}
-              setPaperRepoSelectionDrafts={setPaperRepoSelectionDrafts}
-              queryClient={queryClient}
-              selectedInboxIds={selectedInboxIds}
-              setSelectedInboxIds={setSelectedInboxIds}
-              selectedInboxItems={selectedInboxItems}
-              unsafeExecBadge={unsafeExecBadge}
-              upsertMonitorProfileMutation={upsertMonitorProfileMutation}
-              visibleInboxItems={visibleInboxItems}
-            />
-          </Suspense>
-        )}
       </div>
 
       {/* Modals */}

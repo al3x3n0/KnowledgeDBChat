@@ -33,6 +33,7 @@ const SearchPage = lazy(() => import('./pages/SearchPage'));
 const PapersPage = lazy(() => import('./pages/PapersPage'));
 const LatexStudioPage = lazy(() => import('./pages/LatexStudioPage'));
 const ReadingListsPage = lazy(() => import('./pages/ReadingListsPage'));
+const ResearchInboxPage = lazy(() => import('./pages/ResearchInboxPage'));
 const ReadingListDetailPage = lazy(() => import('./pages/ReadingListDetailPage'));
 const ContextPackPage = lazy(() => import('./pages/ContextPackPage'));
 const UsagePage = lazy(() => import('./pages/UsagePage'));
@@ -191,6 +192,14 @@ const AppRoutes: React.FC = () => {
             element={
               <Suspense fallback={<PageLoader />}>
                 <LatexStudioPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="research/inbox"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <ResearchInboxPage />
               </Suspense>
             }
           />

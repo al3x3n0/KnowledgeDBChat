@@ -36,6 +36,7 @@ import {
   GitPullRequest,
   Key,
   Layers,
+  Inbox,
   ListChecks,
   MessageCircle,
   Network,
@@ -120,6 +121,9 @@ export const NAV_CATALOG: NavDoor[] = [
       item('Documents', '/documents', FileText),
       item('Papers', '/papers', BookOpen),
       item('Reading Lists', '/reading-lists', ListChecks),
+      // Triage of papers and documents the monitors surfaced. It was a tab on
+      // the Runs page, which made it a view of an agent run; it is not.
+      item('Research Inbox', '/research/inbox', Inbox),
       item('Research Notes', '/research-notes', StickyNote),
       item('Memory', '/memory', Brain),
       item('Knowledge Graph', '/kg/global', Network),

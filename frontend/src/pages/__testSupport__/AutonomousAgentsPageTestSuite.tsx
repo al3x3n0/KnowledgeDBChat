@@ -1,9 +1,10 @@
 import React from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from 'react-query';
 import type { RenderResult } from '@testing-library/react';
 import AutonomousAgentsPage from '../AutonomousAgentsPage';
+import ResearchInboxPage from '../ResearchInboxPage';
 import {
   buildBugTriageSwarmQuickStartPayload,
   buildDomainResearchQuickStartPayload,
@@ -301,6 +302,7 @@ const renderWithProviders = async (
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
           <AutonomousAgentsPage />
+          <LocationProbe />
         </AuthProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -308,6 +310,95 @@ const renderWithProviders = async (
   renderedViews.push(view);
   await flushMockPromises();
   return view;
+};
+
+/**
+ * The Research Inbox left the Runs page for the Library. These tests still
+ * describe the same behaviour, so they render the page it moved to rather than
+ * clicking a tab that no longer exists.
+ */
+/**
+ * Where the page navigated to. The inbox drilldowns used to switch a tab in
+ * place; they now leave for /research/inbox, so the URL they build IS the
+ * behaviour worth asserting -- it is the whole of what one page hands the other.
+ */
+let lastLocation: { pathname: string; search: string } = { pathname: '', search: '' };
+const LocationProbe: React.FC = () => {
+  const location = useLocation();
+  lastLocation = { pathname: location.pathname, search: location.search };
+  return null;
+};
+
+const inboxDrilldownParams = () => Object.fromEntries(new URLSearchParams(lastLocation.search));
+
+const renderInboxPage = async (
+  initialEntry: string = '/research/inbox',
+  options?: { documentSources?: typeof defaultDocumentSources }
+) => {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, cacheTime: 0 } },
+  });
+  if (options?.documentSources) {
+    queryClient.setQueryData(['document-sources', 'all'], options.documentSources);
+  }
+  const view = render(
+    <MemoryRouter
+      initialEntries={[initialEntry]}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
+          <ResearchInboxPage />
+          <LocationProbe />
+        </AuthProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  renderedViews.push(view);
+  await flushMockPromises();
+  return view;
+};
+
+/**
+ * Follow a drilldown across the page boundary: assert Runs navigated to the
+ * inbox, then render the inbox at exactly that URL. The handoff is the URL, so
+ * this asserts the contract rather than assuming both halves share state.
+ */
+/**
+ * Follow "Open Target" back to Runs: the inbox links to the domain or fleet
+ * opportunity a row came from, which lives on the other page. Assert the URL it
+ * builds, then render Runs there.
+ */
+const followInboxToRuns = async (expectedTab: 'domain' | 'fleet') => {
+  await waitFor(() => expect(lastLocation.pathname).toBe('/autonomous-agents'));
+  expect(new URLSearchParams(lastLocation.search).get('tab')).toBe(expectedTab);
+  const target = `${lastLocation.pathname}${lastLocation.search}`;
+  cleanupRenderedViews();
+  await renderWithProviders(target);
+};
+
+/**
+ * Tick an inbox row's checkbox by the row's title.
+ *
+ * These selections used to be positional -- getAllByRole('checkbox')[1] -- which
+ * described the chrome around the inbox as much as the rows themselves, so they
+ * broke when the inbox moved to its own page without any row behaviour changing.
+ */
+const selectInboxRow = (title: string) => {
+  const row = screen.getByText(title).closest('div[class*="border"]') as HTMLElement;
+  fireEvent.click(within(row).getAllByRole('checkbox')[0]);
+};
+
+const cleanupRenderedViews = () => {
+  while (renderedViews.length > 0) renderedViews.pop()?.unmount();
+};
+
+const followInboxDrilldown = async (expectedParams?: Record<string, string>) => {
+  await waitFor(() => expect(lastLocation.pathname).toBe('/research/inbox'));
+  if (expectedParams) expect(inboxDrilldownParams()).toEqual(expectedParams);
+  const target = `${lastLocation.pathname}${lastLocation.search}`;
+  cleanupRenderedViews();
+  await renderInboxPage(target);
 };
 
 const expectJobHeading = async (name: string) => {
@@ -3444,11 +3535,10 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       offset: 0,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
+    await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler follow-up source')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Open Target' }));
+    await followInboxToRuns('domain');
 
     await waitFor(() => {
       expect(apiClient.listDomainResearchProfiles).toHaveBeenCalled();
@@ -3487,11 +3577,10 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       offset: 0,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
+    await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Fleet follow-up source')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Open Target' }));
+    await followInboxToRuns('fleet');
 
     await waitFor(() => {
       expect(apiClient.listResearchPortfolios).toHaveBeenCalled();
@@ -3526,9 +3615,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       offset: 0,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
+    await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Detached follow-up source')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Open Target' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Open Follow-up' })).toBeInTheDocument();
@@ -3596,9 +3683,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       follow_up_job_id: 'job-follow-up-approve-1',
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
+    await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Queued compiler follow-up')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Inbox follow-up note for Queued compiler follow-up'), {
       target: { value: 'Looks safe to launch' },
@@ -3681,9 +3766,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       follow_up_operator_decision: 'rejected',
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
+    await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Risky compiler follow-up')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Inbox follow-up note for Risky compiler follow-up'), {
       target: { value: 'Need stronger evidence' },
@@ -3730,9 +3813,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       offset: 0,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
+    await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Completed compiler follow-up')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Approve Follow-up' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Reject Follow-up' })).not.toBeInTheDocument();
@@ -3830,12 +3911,10 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       ],
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
+    await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Queued compiler follow-up A')).toBeInTheDocument();
-    fireEvent.click(screen.getAllByRole('checkbox')[1]);
-    fireEvent.click(screen.getAllByRole('checkbox')[2]);
+    selectInboxRow('Queued compiler follow-up A');
+    selectInboxRow('Queued compiler follow-up B');
     fireEvent.change(screen.getByPlaceholderText('Bulk follow-up note (optional)'), {
       target: { value: 'Approve both compiler launches' },
     });
@@ -3915,12 +3994,10 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       ],
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
+    await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Queued fleet follow-up A')).toBeInTheDocument();
-    fireEvent.click(screen.getAllByRole('checkbox')[1]);
-    fireEvent.click(screen.getAllByRole('checkbox')[2]);
+    selectInboxRow('Queued fleet follow-up A');
+    selectInboxRow('Queued fleet follow-up B');
     fireEvent.change(screen.getByPlaceholderText('Bulk follow-up note (optional)'), {
       target: { value: 'Reject until evidence improves' },
     });
@@ -3991,12 +4068,10 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       offset: 0,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
+    await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Queued domain follow-up')).toBeInTheDocument();
-    fireEvent.click(screen.getAllByRole('checkbox')[1]);
-    fireEvent.click(screen.getAllByRole('checkbox')[2]);
+    selectInboxRow('Queued domain follow-up');
+    selectInboxRow('Queued fleet follow-up');
     await flushMockPromises();
 
     expect(screen.getByRole('button', { name: 'Approve Follow-ups' })).toBeDisabled();
@@ -4062,12 +4137,10 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       ],
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
+    await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Failed follow-up A')).toBeInTheDocument();
-    fireEvent.click(screen.getAllByRole('checkbox')[1]);
-    fireEvent.click(screen.getAllByRole('checkbox')[2]);
+    selectInboxRow('Failed follow-up A');
+    selectInboxRow('Cancelled follow-up B');
     fireEvent.change(screen.getByPlaceholderText('Bulk follow-up note (optional)'), {
       target: { value: 'Retry both terminal follow-ups' },
     });
@@ -4129,12 +4202,10 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       offset: 0,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
+    await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Failed follow-up')).toBeInTheDocument();
-    fireEvent.click(screen.getAllByRole('checkbox')[1]);
-    fireEvent.click(screen.getAllByRole('checkbox')[2]);
+    selectInboxRow('Failed follow-up');
+    selectInboxRow('Pending follow-up');
     await flushMockPromises();
 
     expect(screen.getByRole('button', { name: 'Relaunch Follow-ups' })).toBeDisabled();
@@ -4390,6 +4461,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     fireEvent.click(screen.getByText('Autonomy Health'));
     fireEvent.click(screen.getAllByRole('button', { name: 'View Inbox' })[0]);
 
+    await followInboxDrilldown();
     await waitFor(() => {
       expect(apiClient.listResearchInboxItems).toHaveBeenCalledWith({
         status: 'accepted',
@@ -4477,6 +4549,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     const monitorCard = (await screen.findByRole('heading', { name: 'Acme Monitor' })).closest('.border.rounded-lg.p-4') as HTMLElement;
     fireEvent.click(within(monitorCard).getByRole('button', { name: 'Failed 1' }));
 
+    await followInboxDrilldown();
     await waitFor(() => {
       expect(apiClient.listResearchInboxItems).toHaveBeenCalledWith({
         status: 'accepted',
@@ -4542,6 +4615,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     const customerCard = (await screen.findByRole('heading', { name: 'Beta' })).closest('.border.rounded-lg.p-4') as HTMLElement;
     fireEvent.click(within(customerCard).getByRole('button', { name: 'Cancelled 1' }));
 
+    await followInboxDrilldown();
     await waitFor(() => {
       expect(apiClient.listResearchInboxItems).toHaveBeenCalledWith({
         status: 'accepted',
@@ -4717,6 +4791,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     const monitorCard = (await screen.findByRole('heading', { name: 'Acme Monitor' })).closest('.border.rounded-lg.p-4') as HTMLElement;
     fireEvent.click(within(monitorCard).getByRole('button', { name: 'Suppressed 1' }));
 
+    await followInboxDrilldown();
     await waitFor(() => {
       expect(apiClient.listResearchInboxItems).toHaveBeenCalledWith({
         status: 'accepted',
@@ -4733,6 +4808,15 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     await waitFor(() => {
       expect(screen.queryByText('Acme ordinary failed relaunch')).not.toBeInTheDocument();
     });
+  });
+
+  shardIt('sends an old ?tab=inbox bookmark to the page the inbox moved to', async () => {
+    // The inbox left Runs for the Library. Links people already have must still
+    // land on it, carrying whatever filters they were saved with.
+    await renderWithProviders('/autonomous-agents?tab=inbox&inbox_customer=Acme&inbox_job=monitor-1');
+
+    await waitFor(() => expect(lastLocation.pathname).toBe('/research/inbox'));
+    expect(inboxDrilldownParams()).toEqual({ inbox_customer: 'Acme', inbox_job: 'monitor-1' });
   });
 
   shardIt('clears the inbox health drilldown context without clearing other inbox filters', async () => {
@@ -4760,7 +4844,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       offset: 0,
     });
 
-    await renderWithProviders('/autonomous-agents?tab=inbox&inbox_customer=Acme&inbox_job=monitor-1&inbox_health_drilldown=failed_follow_up');
+    await renderInboxPage('/research/inbox?inbox_customer=Acme&inbox_job=monitor-1&inbox_health_drilldown=failed_follow_up');
 
     expect(await screen.findByText('Showing accepted follow-ups for Acme · monitor-1 · failed outcomes')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Clear drilldown' }));
@@ -5349,6 +5433,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
 
     fireEvent.click(screen.getAllByText('Open in Inbox')[0]);
 
+    await followInboxDrilldown();
     await waitFor(() => {
       expect(apiClient.listResearchInboxItems).toHaveBeenCalledWith({
         status: 'accepted',
@@ -5400,6 +5485,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
 
     fireEvent.click(screen.getByText('Open in Inbox'));
 
+    await followInboxDrilldown();
     await waitFor(() => {
       expect(apiClient.listResearchInboxItems).toHaveBeenCalledWith({
         status: 'accepted',
@@ -5418,7 +5504,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
   });
 
   shardIt('clears the inbox policy drilldown context without clearing the monitor filter', async () => {
-    await renderWithProviders('/autonomous-agents?tab=inbox&inbox_job=monitor-1&inbox_policy_drilldown=simulated_policy_impact');
+    await renderInboxPage('/research/inbox?inbox_job=monitor-1&inbox_policy_drilldown=simulated_policy_impact');
 
     expect(await screen.findByText('Showing accepted signals for monitor-1 · simulated policy impact')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Clear drilldown' }));
@@ -10936,7 +11022,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     // had opened Autonomy Health earlier in the same session. A filter that
     // silently offers nothing depending on where you have been is worse than
     // one that is absent.
-    await renderWithProviders('/autonomous-agents?tab=inbox');
+    await renderInboxPage('/research/inbox');
 
     await waitFor(() =>
       expect(apiClient.getResearchMonitorAnalytics).toHaveBeenCalled()

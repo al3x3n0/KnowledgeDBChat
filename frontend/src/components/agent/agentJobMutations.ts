@@ -34,12 +34,14 @@ export interface FollowUpQueueActionVariables {
   reviewRowKey?: string;
 }
 
-export function useCreateAgentJobMutation(options: { onCreated?: (job: any) => void } = {}) {
+export function useCreateAgentJobMutation(
+  options: { onCreated?: (job: any) => void; successMessage?: string } = {}
+) {
   const queryClient = useQueryClient();
   return useMutation((data: AgentJobCreate) => apiClient.createAgentJob(data), {
     onSuccess: (job) => {
       invalidateAgentRunQueries(queryClient);
-      toast.success('Job created');
+      toast.success(options.successMessage || 'Job created');
       options.onCreated?.(job);
     },
     onError: (error: any) => {

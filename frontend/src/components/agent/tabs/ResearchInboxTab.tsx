@@ -716,9 +716,6 @@ export const ResearchInboxTab: React.FC<ResearchInboxTabProps> = ({
             variant="ghost"
             onClick={() => {
               setInboxCustomerFilter('');
-              navigate(buildAutonomousAgentsUrl(undefined, {
-                inbox_customer: null,
-              }), { replace: true });
             }}
           >
             Clear customer filter
@@ -760,9 +757,6 @@ export const ResearchInboxTab: React.FC<ResearchInboxTabProps> = ({
             variant="ghost"
             onClick={() => {
               setInboxHealthDrilldown('');
-              navigate(buildAutonomousAgentsUrl(undefined, {
-                inbox_health_drilldown: null,
-              }), { replace: true });
             }}
           >
             Clear drilldown
@@ -782,9 +776,6 @@ export const ResearchInboxTab: React.FC<ResearchInboxTabProps> = ({
             variant="ghost"
             onClick={() => {
               setInboxPolicyDrilldown('');
-              navigate(buildAutonomousAgentsUrl(undefined, {
-                inbox_policy_drilldown: null,
-              }), { replace: true });
             }}
           >
             Clear drilldown

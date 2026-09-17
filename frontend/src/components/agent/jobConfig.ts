@@ -88,7 +88,6 @@ export type AgentJobsTab =
   | 'profiles'
   | 'templates'
   | 'chains'
-  | 'inbox'
   | 'backlog'
   | 'domain'
   | 'fleet'

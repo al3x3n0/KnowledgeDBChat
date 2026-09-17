@@ -46,6 +46,8 @@ const AgentControlPlanePage = lazy(() => import('./pages/AgentControlPlanePage')
 const RepoReportsPage = lazy(() => import('./pages/RepoReportsPage'));
 const AutonomousAgentsPage = lazy(() => import('./pages/AutonomousAgentsPage'));
 const CodingBacklogPage = lazy(() => import('./pages/CodingBacklogPage'));
+const ResearchFleetPage = lazy(() => import('./pages/ResearchFleetPage'));
+const DomainProfilesPage = lazy(() => import('./pages/DomainProfilesPage'));
 const PatchPRsPage = lazy(() => import('./pages/PatchPRsPage'));
 const ArtifactDraftsPage = lazy(() => import('./pages/ArtifactDraftsPage'));
 const SynthesisPage = lazy(() => import('./pages/SynthesisPage'));
@@ -193,6 +195,22 @@ const AppRoutes: React.FC = () => {
             element={
               <Suspense fallback={<PageLoader />}>
                 <LatexStudioPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="research/fleet"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <ResearchFleetPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="settings/domain-profiles"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <DomainProfilesPage />
               </Suspense>
             }
           />

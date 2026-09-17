@@ -6,6 +6,8 @@ import type { RenderResult } from '@testing-library/react';
 import AutonomousAgentsPage from '../AutonomousAgentsPage';
 import ResearchInboxPage from '../ResearchInboxPage';
 import CodingBacklogPage from '../CodingBacklogPage';
+import DomainProfilesPage from '../DomainProfilesPage';
+import ResearchFleetPage from '../ResearchFleetPage';
 import {
   buildBugTriageSwarmQuickStartPayload,
   buildDomainResearchQuickStartPayload,
@@ -333,6 +335,46 @@ const LocationProbe: React.FC = () => {
 const inboxDrilldownParams = () => Object.fromEntries(new URLSearchParams(lastLocation.search));
 
 /** Coding Backlog moved to its own destination beside Patch PRs. */
+/**
+ * Domain profiles and research fleets are destinations of their own now -- the
+ * profile in Settings, the fleet in the R&D door. These tests describe the same
+ * behaviour, so they render the page each moved to.
+ */
+const renderOpportunityPage = async (
+  Page: React.ComponentType,
+  entry: string,
+  options?: { documentSources?: typeof defaultDocumentSources }
+) => {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, cacheTime: 0 } },
+  });
+  if (options?.documentSources) {
+    queryClient.setQueryData(['document-sources', 'all'], options.documentSources);
+  }
+  const view = render(
+    <MemoryRouter
+      initialEntries={[entry]}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
+          <Page />
+          <LocationProbe />
+        </AuthProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  renderedViews.push(view);
+  await flushMockPromises();
+  return view;
+};
+
+const renderDomainProfilesPage = async (o?: { documentSources?: typeof defaultDocumentSources }) =>
+  renderOpportunityPage(DomainProfilesPage, '/settings/domain-profiles', o);
+
+const renderResearchFleetPage = async (o?: { documentSources?: typeof defaultDocumentSources }) =>
+  renderOpportunityPage(ResearchFleetPage, '/research/fleet', o);
+
 const renderCodingBacklogPage = async (
   options?: { documentSources?: typeof defaultDocumentSources }
 ) => {
@@ -394,16 +436,20 @@ const renderInboxPage = async (
  * this asserts the contract rather than assuming both halves share state.
  */
 /**
- * Follow "Open Target" back to Runs: the inbox links to the domain or fleet
- * opportunity a row came from, which lives on the other page. Assert the URL it
- * builds, then render Runs there.
+ * Follow a link to whichever opportunity surface it points at. The inbox, the
+ * operator queue and the decision trace all link to a profile or a portfolio,
+ * and all three are now on other pages: assert the URL, then render the page it
+ * names. The URL is the contract between them.
  */
-const followInboxToRuns = async (expectedTab: 'domain' | 'fleet') => {
-  await waitFor(() => expect(lastLocation.pathname).toBe('/autonomous-agents'));
-  expect(new URLSearchParams(lastLocation.search).get('tab')).toBe(expectedTab);
+const followToOpportunityPage = async (expectedTab: 'domain' | 'fleet') => {
+  const path = expectedTab === 'domain' ? '/settings/domain-profiles' : '/research/fleet';
+  await waitFor(() => expect(lastLocation.pathname).toBe(path));
   const target = `${lastLocation.pathname}${lastLocation.search}`;
   cleanupRenderedViews();
-  await renderWithProviders(target);
+  await renderOpportunityPage(
+    expectedTab === 'domain' ? DomainProfilesPage : ResearchFleetPage,
+    target
+  );
 };
 
 /**
@@ -3040,6 +3086,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
 
     fireEvent.click(screen.getByText('Validation Run: Compiler hotspot: validation blocked'));
     fireEvent.click(screen.getByRole('button', { name: 'Open Domain' }));
+    await followToOpportunityPage('domain');
 
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     const row = await screen.findByText('Compiler hotspot');
@@ -3583,7 +3630,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler follow-up source')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Open Target' }));
-    await followInboxToRuns('domain');
+    await followToOpportunityPage('domain');
 
     await waitFor(() => {
       expect(apiClient.listDomainResearchProfiles).toHaveBeenCalled();
@@ -3625,7 +3672,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Fleet follow-up source')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Open Target' }));
-    await followInboxToRuns('fleet');
+    await followToOpportunityPage('fleet');
 
     await waitFor(() => {
       expect(apiClient.listResearchPortfolios).toHaveBeenCalled();
@@ -5944,6 +5991,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     });
 
     fireEvent.click(screen.getByRole('button', { name: 'Open Domain' }));
+    await followToOpportunityPage('domain');
 
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     const row = await screen.findByText('Target domain opportunity');
@@ -6507,9 +6555,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       .mockResolvedValueOnce({ id: 'profile-microarch' });
     apiClient.createResearchPortfolio.mockResolvedValueOnce({ id: 'portfolio-science' });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Seed Compiler + Microarch Pack')).toBeInTheDocument();
 
     fireEvent.click(screen.getByText('Seed Compiler + Microarch Pack'));
@@ -6968,9 +7014,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
   });
 
   shardIt('creates a domain research profile with the expected payload', async () => {
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Start Monitor')).toBeInTheDocument();
 
     fireEvent.input(screen.getByPlaceholderText('Profile title'), {
@@ -7278,9 +7322,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Opportunity queue')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Create Plan'));
 
@@ -7413,9 +7455,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
         total: 1,
       });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Opportunity queue')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Run Experiment'));
 
@@ -7475,9 +7515,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Top opportunities')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Suppress'));
     fireEvent.change(screen.getByLabelText('Fleet suppression note'), { target: { value: 'Low signal duplicate' } });
@@ -7582,9 +7620,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
         total: 1,
       });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Research Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Run Experiment'));
 
@@ -7647,9 +7683,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 2,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Sandboxes')).toBeInTheDocument();
 
     fireEvent.click(screen.getByText('Create custom sandbox profile'));
@@ -7787,9 +7821,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
 
@@ -7906,9 +7938,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
 
@@ -7991,9 +8021,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
 
@@ -8074,9 +8102,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
 
@@ -8142,9 +8168,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
 
@@ -8312,9 +8336,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       follow_up_job_id: 'job-follow-1',
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
 
@@ -8412,9 +8434,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       ],
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     fireEvent.click(await screen.findByText('Latest research ops state'));
     fireEvent.click(screen.getByLabelText('Select Queued compiler follow-up A'));
     fireEvent.click(screen.getByLabelText('Select Queued compiler follow-up B'));
@@ -8479,7 +8499,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents?tab=domain&profileId=profile-1&opportunityId=opp-target', {
+    await renderOpportunityPage(DomainProfilesPage, '/settings/domain-profiles?profileId=profile-1&opportunityId=opp-target', {
       documentSources: defaultDocumentSources,
     });
 
@@ -8537,9 +8557,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
     const blockedSection = screen.getByText('Blocked opportunities').closest('.bg-white') as HTMLElement;
@@ -8594,9 +8612,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     const card = screen.getByText('Compiler Frontier').closest('.border') as HTMLElement;
     fireEvent.click(within(card).getByText('Latest research ops state'));
@@ -8657,9 +8673,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Start Fleet')).toBeInTheDocument();
 
     fireEvent.input(screen.getByPlaceholderText('Portfolio title'), {
@@ -8793,9 +8807,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -8874,9 +8886,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
     fireEvent.click(screen.getAllByRole('button', { name: 'Show details' })[0]);
@@ -8946,9 +8956,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       },
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
     fireEvent.click(screen.getByRole('button', { name: 'Relaunch Follow-up' }));
@@ -9039,9 +9047,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       },
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
     const cooldownSection = screen.getByText('Cooldown opportunities').closest('.bg-white') as HTMLElement;
@@ -9116,9 +9122,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       profile: { id: 'profile-1', latest_summary: {}, opportunities: [] },
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
 
@@ -9193,9 +9197,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       portfolio: { id: 'portfolio-1', latest_summary: {}, opportunities: [] },
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -9270,9 +9272,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       portfolio: { id: 'portfolio-1', latest_summary: {}, opportunities: [] },
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -9354,9 +9354,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       .mockResolvedValueOnce({ profile: { id: 'profile-1', latest_summary: {}, opportunities: [] } })
       .mockResolvedValueOnce({ profile: { id: 'profile-1', latest_summary: {}, opportunities: [] } });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
 
@@ -9449,9 +9447,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       .mockResolvedValueOnce({ portfolio: { id: 'portfolio-1', latest_summary: {}, opportunities: [] } })
       .mockResolvedValueOnce({ portfolio: { id: 'portfolio-1', latest_summary: {}, opportunities: [] } });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -9546,9 +9542,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       .mockResolvedValueOnce({ portfolio: { id: 'portfolio-1', latest_summary: {}, opportunities: [] } })
       .mockResolvedValueOnce({ portfolio: { id: 'portfolio-1', latest_summary: {}, opportunities: [] } });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -9639,9 +9633,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -9736,9 +9728,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       follow_up_operator_decision: 'rejected',
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -9836,9 +9826,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       ],
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     fireEvent.click(await screen.findByText('Portfolio state'));
     fireEvent.click(screen.getByLabelText('Select Queued fleet follow-up A'));
     fireEvent.click(screen.getByLabelText('Select Queued fleet follow-up B'));
@@ -9909,9 +9897,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       profile: { id: 'profile-1', latest_summary: {}, opportunities: [] },
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
 
@@ -9984,9 +9970,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       portfolio: { id: 'portfolio-1', latest_summary: {}, opportunities: [] },
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -10044,9 +10028,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -10105,9 +10087,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
 
@@ -10180,9 +10160,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       .mockResolvedValueOnce({ profile: { id: 'profile-1', latest_summary: {}, opportunities: [] } })
       .mockResolvedValueOnce({ profile: { id: 'profile-1', latest_summary: {}, opportunities: [] } });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
 
@@ -10278,9 +10256,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       .mockResolvedValueOnce({ portfolio: { id: 'portfolio-1', latest_summary: {}, opportunities: [] } })
       .mockResolvedValueOnce({ portfolio: { id: 'portfolio-1', latest_summary: {}, opportunities: [] } });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -10374,9 +10350,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -10431,7 +10405,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents?tab=fleet&fleetId=portfolio-1&opportunityId=opp-manual-target', {
+    await renderOpportunityPage(ResearchFleetPage, '/research/fleet?fleetId=portfolio-1&opportunityId=opp-manual-target', {
       documentSources: defaultDocumentSources,
     });
 
@@ -10480,9 +10454,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -10548,9 +10520,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
     const waitingSection = screen.getByText('Waiting on evidence change').closest('.bg-white') as HTMLElement;
@@ -10627,9 +10597,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 

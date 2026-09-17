@@ -87,8 +87,13 @@ export function useUpsertMonitorProfileMutation() {
 }
 
 export function useFollowUpQueueActionMutation(options: {
-  setActiveFollowUpReviewKey: React.Dispatch<React.SetStateAction<string>>;
-  setFollowUpReviewNoteDrafts: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+  /**
+   * Inline review rows track which row is mid-action and clear its note draft
+   * afterwards. Only the opportunity surfaces render those rows -- the operator
+   * queue actions a follow-up without one -- so both are optional.
+   */
+  setActiveFollowUpReviewKey?: React.Dispatch<React.SetStateAction<string>>;
+  setFollowUpReviewNoteDrafts?: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   /** Refetch whatever list the acted-on row came from. Runs has two; the inbox has none. */
   onRefreshTarget?: (target: 'domain' | 'fleet') => void;
   /** Go to the job a launch produced. Return true if you navigated. */
@@ -109,7 +114,7 @@ export function useFollowUpQueueActionMutation(options: {
       }),
     {
       onMutate: (variables) => {
-        if (variables.reviewRowKey) setActiveFollowUpReviewKey(variables.reviewRowKey);
+        if (variables.reviewRowKey) setActiveFollowUpReviewKey?.(variables.reviewRowKey);
       },
       onSuccess: (response, variables) => {
         invalidateAgentRunQueries(queryClient, [
@@ -121,7 +126,7 @@ export function useFollowUpQueueActionMutation(options: {
         if (variables.refreshTarget) options.onRefreshTarget?.(variables.refreshTarget);
         if (variables.reviewRowKey) {
           const reviewKey = String(variables.reviewRowKey);
-          setFollowUpReviewNoteDrafts((prev) => {
+          setFollowUpReviewNoteDrafts?.((prev) => {
             if (!(reviewKey in prev)) return prev;
             const next = { ...prev };
             delete next[reviewKey];
@@ -144,7 +149,7 @@ export function useFollowUpQueueActionMutation(options: {
       },
       onSettled: (_data, _error, variables) => {
         if (variables?.reviewRowKey) {
-          setActiveFollowUpReviewKey((current) =>
+          setActiveFollowUpReviewKey?.((current) =>
             current === variables.reviewRowKey ? '' : current
           );
         }

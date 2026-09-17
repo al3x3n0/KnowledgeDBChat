@@ -37,6 +37,7 @@ import {
   Key,
   Layers,
   Inbox,
+  Compass,
   ListChecks,
   ListTodo,
   MessageCircle,
@@ -140,6 +141,8 @@ export const NAV_CATALOG: NavDoor[] = [
     sections: [
       item('Runs', '/autonomous-agents', Zap),
       item('Campaigns', '/campaigns', Rocket),
+      // A portfolio accumulates; a campaign concludes. Neighbours, not synonyms.
+      item('Research Fleet', '/research/fleet', Layers),
       item('Control Plane', '/agent-control-plane', Activity),
       item('Pipelines', '/pipelines', GitBranch),
       item('Workflows', '/workflows', Workflow),
@@ -169,6 +172,9 @@ export const NAV_CATALOG: NavDoor[] = [
     icon: Settings,
     utility: true,
     sections: [
+      // A standing line of enquiry and its automation policy: configuration
+      // for how research runs, which is what this door is for.
+      item('Domain Profiles', '/settings/domain-profiles', Compass),
       item('Tools', '/tools', Wrench),
       item('AI Hub', '/ai-hub', Cpu),
       item('API Keys', '/api-keys', Key),

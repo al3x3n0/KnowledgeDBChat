@@ -1202,20 +1202,18 @@ export const ResearchInboxTab: React.FC<ResearchInboxTabProps> = ({
                       size="sm"
                       variant="ghost"
                       onClick={() => {
+                        // Both surfaces are destinations of their own now. Link
+                        // straight there rather than to the tab URL that merely
+                        // redirects: a link that needs a redirect is a stale one.
                         const sourceKind = String(item.origin_source_kind || '').trim().toLowerCase();
-                        const extras = sourceKind === 'profile'
-                          ? {
-                              tab: 'domain',
-                              profileId: String(item.origin_source_id || ''),
-                              opportunityId: String(item.origin_opportunity_id || ''),
-                            }
-                          : {
-                              tab: 'fleet',
-                              fleetId: String(item.origin_source_id || ''),
-                              opportunityId: String(item.origin_opportunity_id || ''),
-                            };
-                        setActiveTab(sourceKind === 'profile' ? 'domain' : 'fleet');
-                        navigate(buildAutonomousAgentsUrl(undefined, extras), { replace: true });
+                        const isProfile = sourceKind === 'profile';
+                        const params = new URLSearchParams({
+                          [isProfile ? 'profileId' : 'fleetId']: String(item.origin_source_id || ''),
+                          opportunityId: String(item.origin_opportunity_id || ''),
+                        });
+                        navigate(
+                          `${isProfile ? '/settings/domain-profiles' : '/research/fleet'}?${params.toString()}`
+                        );
                       }}
                     >
                       Open Target

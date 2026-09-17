@@ -1,3 +1,8 @@
+import type {
+  AnyMutation,
+  QueryClient,
+  SetActiveTab,
+} from '../propTypes';
 import Button from '../../../components/common/Button';
 import type {
   User,
@@ -23,19 +28,19 @@ const codingSwarmPresetLabel = (presetKey?: string | null) => {
 };
 
 export interface SwarmProfilesTabProps {
-  setActiveTab: any;
+  setActiveTab: SetActiveTab;
   setCodingSwarmLaunchSeed: any;
   setShowBugTriageSwarmQuickStartModal: any;
   setShowBuildBreakSwarmQuickStartModal: any;
   setShowFrontendRegressionSwarmQuickStartModal: any;
-  user: any;
+  user: User | null;
   codeSources: any[];
   codingSwarmProfileDraft: CodingSwarmProfileUpdate & { source_id?: string; duplicate_mode?: boolean; title: string };
   setCodingSwarmProfileDraft: React.Dispatch<React.SetStateAction<CodingSwarmProfileUpdate & { source_id?: string; duplicate_mode?: boolean; title: string }>>;
   codingSwarmProfiles: CodingSwarmProfile[];
   collaborationUsers: User[];
-  createCodingSwarmProfileMutation: any;
-  deleteCodingSwarmProfileMutation: any;
+  createCodingSwarmProfileMutation: AnyMutation;
+  deleteCodingSwarmProfileMutation: AnyMutation;
   editingCodingSwarmProfileId: string;
   setEditingCodingSwarmProfileId: React.Dispatch<React.SetStateAction<string>>;
   profileDefaultOnly: boolean;
@@ -52,8 +57,8 @@ export interface SwarmProfilesTabProps {
   setProfileStatusFilter: React.Dispatch<React.SetStateAction<string>>;
   profileVisibilityFilter: string;
   setProfileVisibilityFilter: React.Dispatch<React.SetStateAction<string>>;
-  queryClient: any;
-  updateCodingSwarmProfileMutation: any;
+  queryClient: QueryClient;
+  updateCodingSwarmProfileMutation: AnyMutation;
   userLabelById: (candidateId?: string | null) => string;
 }
 

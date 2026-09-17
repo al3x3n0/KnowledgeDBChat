@@ -1,3 +1,11 @@
+import type {
+  AnyMutation,
+  BuildRunsUrl,
+  NavigateFunction,
+  QueryClient,
+  Refetch,
+  SetActiveTab,
+} from '../propTypes';
 import React, { useCallback, useMemo } from 'react';
 import type { QueueHealthDrilldown } from '../drilldowns';
 import {
@@ -28,23 +36,23 @@ import { useMutation } from 'react-query';
 
 export interface OperatorQueueTabProps {
   checkpointQueueData?: AgentCheckpointQueueResponse;
-  checkpointQueueLoading: any;
-  refetchCheckpointQueue: any;
-  setActiveTab: any;
+  checkpointQueueLoading: boolean;
+  refetchCheckpointQueue: Refetch;
+  setActiveTab: SetActiveTab;
   setHealthCustomerFilter: any;
   setQueueDrafts: React.Dispatch<React.SetStateAction<Record<string, { note: string; showEdit: boolean; tool: string; purpose: string; params: string }>>>;
   setShowInboxMonitorModal: any;
-  actionMutation: any;
-  buildAutonomousAgentsUrl: any;
-  createFromChainMutation: any;
-  createMutation: any;
-  followUpQueueActionMutation: any;
+  actionMutation: AnyMutation;
+  buildAutonomousAgentsUrl: BuildRunsUrl;
+  createFromChainMutation: AnyMutation;
+  createMutation: AnyMutation;
+  followUpQueueActionMutation: AnyMutation;
   getQueueDraft: any;
   getQueueDraftValue: any;
-  navigate: any;
+  navigate: NavigateFunction;
   openHealthPolicyComparison: any;
   openQueueItemTarget: any;
-  queryClient: any;
+  queryClient: QueryClient;
   queueBulkNote: string;
   setQueueBulkNote: React.Dispatch<React.SetStateAction<string>>;
   queueCustomerFilter: string;
@@ -71,9 +79,9 @@ export interface OperatorQueueTabProps {
   setQueueSortBy: React.Dispatch<React.SetStateAction<string>>;
   queueStatusFilter: string;
   setQueueStatusFilter: React.Dispatch<React.SetStateAction<string>>;
-  rollbackMonitorPolicyMutation: any;
+  rollbackMonitorPolicyMutation: AnyMutation;
   selectedQueueItems: AgentCheckpointQueueItem[];
-  updateMonitorPolicyMutation: any;
+  updateMonitorPolicyMutation: AnyMutation;
   visibleQueueItems: AgentCheckpointQueueItem[];
 }
 

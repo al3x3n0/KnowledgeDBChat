@@ -9,6 +9,9 @@
  * page made it look shared when it never was.
  */
 
+import type {
+  AnyMutation,
+} from '../propTypes';
 import { Layers, RefreshCw, XCircle } from 'lucide-react';
 import React, { useMemo, useState } from 'react';
 
@@ -34,8 +37,8 @@ export interface SwarmReviewTabProps {
   currentUserId?: string;
   noteDrafts: Record<string, string>;
   onNoteDraftsChange: React.Dispatch<React.SetStateAction<Record<string, string>>>;
-  actionMutation: any;
-  createCodingBacklogMutation: any;
+  actionMutation: AnyMutation;
+  createCodingBacklogMutation: AnyMutation;
   onOpenJob: (job: AgentJob) => void;
   onGoToBacklog: () => void;
 }

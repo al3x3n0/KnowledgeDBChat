@@ -1,3 +1,12 @@
+import type {
+  AnyMutation,
+  BuildRunsUrl,
+  NavigateFunction,
+  QueryClient,
+  Refetch,
+  RouterLocation,
+  SetActiveTab,
+} from '../propTypes';
 import React, { useCallback, useMemo } from 'react';
 import toast from 'react-hot-toast';
 import { useMutation } from 'react-query';
@@ -99,24 +108,24 @@ const isCompilerTraceEvent = (event: AgentDecisionTraceEvent) => (
 
 export interface DecisionTraceTabProps {
   decisionTraceAnalyticsData?: AgentDecisionTraceAnalyticsResponse;
-  decisionTraceAnalyticsLoading: any;
+  decisionTraceAnalyticsLoading: boolean;
   decisionTraceData?: AgentDecisionTraceResponse;
-  decisionTraceLoading: any;
-  refetchDecisionTrace: any;
-  refetchDecisionTraceAnalytics: any;
+  decisionTraceLoading: boolean;
+  refetchDecisionTrace: Refetch;
+  refetchDecisionTraceAnalytics: Refetch;
   traceViewsData?: { items: AgentDecisionTraceView[] };
-  setActiveTab: any;
+  setActiveTab: SetActiveTab;
   applyTraceView: any;
-  buildAutonomousAgentsUrl: any;
+  buildAutonomousAgentsUrl: BuildRunsUrl;
   buildTraceShareUrl: any;
   collaborationUsers: User[];
   currentTraceViewFilters: any;
-  decisionTraceActionMutation: any;
+  decisionTraceActionMutation: AnyMutation;
   expandedTraceEventId: string;
   setExpandedTraceEventId: React.Dispatch<React.SetStateAction<string>>;
-  location: any;
-  navigate: any;
-  queryClient: any;
+  location: RouterLocation;
+  navigate: NavigateFunction;
+  queryClient: QueryClient;
   selectedTraceViewId: string;
   setSelectedTraceViewId: React.Dispatch<React.SetStateAction<string>>;
   traceActionNoteDrafts: Record<string, string>;
@@ -244,12 +253,28 @@ export const DecisionTraceTab: React.FC<DecisionTraceTabProps> = ({
       setActiveTab('queue');
     } else if (deepLink.target_tab === 'health') {
       setActiveTab('health');
-    } else if (deepLink.target_tab === 'domain') {
-      setActiveTab('domain');
-    } else if (deepLink.target_tab === 'fleet') {
-      setActiveTab('fleet');
-    } else if (deepLink.target_tab === 'inbox') {
-      setActiveTab('inbox');
+    } else if (
+      deepLink.target_tab === 'domain'
+      || deepLink.target_tab === 'fleet'
+      || deepLink.target_tab === 'inbox'
+    ) {
+      // These three left the Runs page for destinations of their own. A trace
+      // event still carries the old target_tab, so translate it here rather
+      // than switching to a tab that no longer exists -- which is what this
+      // did until the prop was typed.
+      const carry = new URLSearchParams();
+      Object.entries(deepLink.params || {}).forEach(([key, value]) => {
+        const text = String(value ?? '').trim();
+        if (text && key !== 'tab') carry.set(key, text);
+      });
+      const query = carry.toString();
+      const base = deepLink.target_tab === 'domain'
+        ? '/settings/domain-profiles'
+        : deepLink.target_tab === 'fleet'
+          ? '/research/fleet'
+          : '/research/inbox';
+      navigate(query ? `${base}?${query}` : base);
+      return;
     } else if (deepLink.target_tab === 'jobs') {
       setActiveTab('jobs');
     }

@@ -17,6 +17,14 @@
  * it is triage of papers and documents, not a view of an agent run.
  */
 
+import type {
+  AnyMutation,
+  BuildRunsUrl,
+  NavigateFunction,
+  QueryClient,
+  Refetch,
+  SetActiveTab,
+} from '../propTypes';
 import React, { useMemo, useState } from 'react';
 import {
   Activity,
@@ -46,18 +54,18 @@ import type { InboxHealthDrilldown, InboxPolicyDrilldown } from '../drilldowns';
 
 export interface ResearchInboxTabProps {
   chainsData: any;
-  inboxLoading: any;
+  inboxLoading: boolean;
   inboxStats: any;
   myPreferences: any;
-  refetchInbox: any;
-  setActiveTab: any;
+  refetchInbox: Refetch;
+  setActiveTab: SetActiveTab;
   setShowInboxMonitorModal: any;
   setShowMonitorProfilesModal: any;
   activeFollowUpReviewKey: string;
-  buildAutonomousAgentsUrl: any;
-  createFromChainMutation: any;
-  createMutation: any;
-  followUpQueueActionMutation: any;
+  buildAutonomousAgentsUrl: BuildRunsUrl;
+  createFromChainMutation: AnyMutation;
+  createMutation: AnyMutation;
+  followUpQueueActionMutation: AnyMutation;
   followUpReviewNoteDrafts: Record<string, string>;
   setFollowUpReviewNoteDrafts: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   healthCustomers: string[];
@@ -82,15 +90,15 @@ export interface ResearchInboxTabProps {
   inboxTypeFilter: string;
   setInboxTypeFilter: React.Dispatch<React.SetStateAction<string>>;
   location: { pathname: string; search: string };
-  navigate: any;
+  navigate: NavigateFunction;
   paperRepoSelectionDrafts: Record<string, string>;
   setPaperRepoSelectionDrafts: React.Dispatch<React.SetStateAction<Record<string, string>>>;
-  queryClient: any;
+  queryClient: QueryClient;
   selectedInboxIds: Record<string, boolean>;
   setSelectedInboxIds: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
   selectedInboxItems: ResearchInboxItem[];
   unsafeExecBadge: { status: 'ready' | 'blocked' | 'off'; label: string; title: string; color: string };
-  upsertMonitorProfileMutation: any;
+  upsertMonitorProfileMutation: AnyMutation;
   visibleInboxItems: ResearchInboxItem[];
 }
 

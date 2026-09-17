@@ -1,3 +1,12 @@
+import type {
+  AnyMutation,
+  BuildRunsUrl,
+  NavigateFunction,
+  QueryClient,
+  Refetch,
+  SetActiveTab,
+  SetSelectedJob,
+} from '../propTypes';
 import React, { useCallback, useMemo, useState } from 'react';
 import { RefreshCw, XCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -22,12 +31,12 @@ import type {
 
 export interface CodingBacklogTabProps {
   codingBacklogData: any;
-  codingBacklogLoading: any;
-  refetchCodingBacklog: any;
-  setActiveTab: any;
-  setSelectedJob: any;
+  codingBacklogLoading: boolean;
+  refetchCodingBacklog: Refetch;
+  setActiveTab: SetActiveTab;
+  setSelectedJob: SetSelectedJob;
   swarmOutcomeBySwarmJobId: any;
-  user: any;
+  user: User | null;
   backlogAssignmentFilter: string;
   setBacklogAssignmentFilter: React.Dispatch<React.SetStateAction<string>>;
   backlogCloseReasonDrafts: Record<string, string>;
@@ -51,12 +60,12 @@ export interface CodingBacklogTabProps {
   setBacklogTitle: React.Dispatch<React.SetStateAction<string>>;
   backlogVisibilityScope: 'mine' | 'shared' | 'all';
   setBacklogVisibilityScope: React.Dispatch<React.SetStateAction<'mine' | 'shared' | 'all'>>;
-  buildAutonomousAgentsUrl: any;
-  codeSources: any;
+  buildAutonomousAgentsUrl: BuildRunsUrl;
+  codeSources: any[];
   collaborationUsers: User[];
-  createCodingBacklogMutation: any;
-  navigate: any;
-  queryClient: any;
+  createCodingBacklogMutation: AnyMutation;
+  navigate: NavigateFunction;
+  queryClient: QueryClient;
   userLabelById: (candidateId?: string | null) => string;
 }
 

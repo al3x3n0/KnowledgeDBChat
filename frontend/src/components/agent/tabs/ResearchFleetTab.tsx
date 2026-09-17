@@ -1,3 +1,11 @@
+import type {
+  AnyMutation,
+  AnyVoidMutation,
+  BuildRunsUrl,
+  NavigateFunction,
+  QueryClient,
+  Refetch,
+} from '../propTypes';
 import {
   AUTONOMY_FOCUS_CARD_CLASS,
   AUTONOMY_FOCUS_ROW_CLASS,
@@ -77,23 +85,23 @@ const buildResearchPortfolioUpdatePayload = (draft: ResearchPortfolioPolicyDraft
 
 export interface ResearchFleetTabProps {
   domainProfilesData: any;
-  refetchResearchPortfolios: any;
+  refetchResearchPortfolios: Refetch;
   researchPortfoliosData: any;
-  researchPortfoliosLoading: any;
+  researchPortfoliosLoading: boolean;
   beginOpportunityRelaunch: any;
   beginOpportunitySuppression: any;
-  buildAutonomousAgentsUrl: any;
+  buildAutonomousAgentsUrl: BuildRunsUrl;
   buildAutonomyCardKey: any;
   buildAutonomyOpportunityRowKey: any;
   buildAutonomyReviewRowKey: any;
   buildResearchNoteExperimentUrl: any;
   cancelOpportunityAction: any;
-  createScientificResearchPackMutation: any;
+  createScientificResearchPackMutation: AnyVoidMutation;
   expandedPortfolioIds: Record<string, boolean>;
   setExpandedPortfolioIds: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
   highlightedAutonomyCardKey: string;
   highlightedAutonomyRowKey: string;
-  navigate: any;
+  navigate: NavigateFunction;
   opportunityNoteDraft: { mode: 'suppress' | 'launch' | 'relaunch'; surface: 'domain' | 'fleet'; ownerId: string; opportunityId: string; value: string } | null;
   setOpportunityNoteDraft: React.Dispatch<React.SetStateAction<{ mode: 'suppress' | 'launch' | 'relaunch'; surface: 'domain' | 'fleet'; ownerId: string; opportunityId: string; value: string } | null>>;
   portfolioAvailableSandboxProfiles: ScientificSandboxProfile[];
@@ -107,7 +115,7 @@ export interface ResearchFleetTabProps {
   setPortfolioSandboxProfileId: React.Dispatch<React.SetStateAction<string>>;
   portfolioTitle: string;
   setPortfolioTitle: React.Dispatch<React.SetStateAction<string>>;
-  queryClient: any;
+  queryClient: QueryClient;
   registerAutonomyCardRef: any;
   registerAutonomyRowRef: any;
   renderAutonomySummaryRow: any;
@@ -118,11 +126,11 @@ export interface ResearchFleetTabProps {
   renderOpportunityExplainabilityPanel: any;
   renderScientificSandboxManagementPanel: any;
   renderScientificValidationRuns: any;
-  researchPortfolioOpportunityActionMutation: any;
+  researchPortfolioOpportunityActionMutation: AnyMutation;
   resolveOpportunityContextRow: any;
   resolveSandboxProfileId: any;
   submitOpportunityAction: any;
-  updateResearchPortfolioMutation: any;
+  updateResearchPortfolioMutation: AnyMutation;
 }
 
 export const ResearchFleetTab: React.FC<ResearchFleetTabProps> = ({

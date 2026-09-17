@@ -1,3 +1,11 @@
+import type {
+  AnyMutation,
+  AnyVoidMutation,
+  BuildRunsUrl,
+  NavigateFunction,
+  QueryClient,
+  Refetch,
+} from '../propTypes';
 import React, { useCallback, useMemo } from 'react';
 import Button from '../../../components/common/Button';
 import {
@@ -82,20 +90,20 @@ const buildDomainResearchProfileUpdatePayload = (draft: DomainResearchProfilePol
 
 export interface DomainProfilesTabProps {
   domainProfilesData?: { items?: DomainResearchProfile[] };
-  domainProfilesLoading: any;
-  refetchDomainProfiles: any;
+  domainProfilesLoading: boolean;
+  refetchDomainProfiles: Refetch;
   beginOpportunityRelaunch: any;
   beginOpportunitySuppression: any;
-  buildAutonomousAgentsUrl: any;
+  buildAutonomousAgentsUrl: BuildRunsUrl;
   buildAutonomyCardKey: any;
   buildAutonomyOpportunityRowKey: any;
   buildAutonomyReviewRowKey: any;
   buildResearchNoteExperimentUrl: any;
   cancelOpportunityAction: any;
-  codeSources: any;
-  createScientificResearchPackMutation: any;
+  codeSources: any[];
+  createScientificResearchPackMutation: AnyVoidMutation;
   domainAvailableSandboxProfiles: ScientificSandboxProfile[];
-  domainOpportunityActionMutation: any;
+  domainOpportunityActionMutation: AnyMutation;
   domainProfileBenchmarkQueriesText: string;
   setDomainProfileBenchmarkQueriesText: React.Dispatch<React.SetStateAction<string>>;
   domainProfileCadenceMinutes: string;
@@ -122,10 +130,10 @@ export interface DomainProfilesTabProps {
   setExpandedDomainProfileIds: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
   highlightedAutonomyCardKey: string;
   highlightedAutonomyRowKey: string;
-  navigate: any;
+  navigate: NavigateFunction;
   opportunityNoteDraft: { mode: 'suppress' | 'launch' | 'relaunch'; surface: 'domain' | 'fleet'; ownerId: string; opportunityId: string; value: string } | null;
   setOpportunityNoteDraft: React.Dispatch<React.SetStateAction<{ mode: 'suppress' | 'launch' | 'relaunch'; surface: 'domain' | 'fleet'; ownerId: string; opportunityId: string; value: string } | null>>;
-  queryClient: any;
+  queryClient: QueryClient;
   registerAutonomyCardRef: any;
   registerAutonomyRowRef: any;
   renderAutonomySummaryRow: any;
@@ -140,7 +148,7 @@ export interface DomainProfilesTabProps {
   resolveSandboxProfileId: any;
   scientificSandboxProfileById: any;
   submitOpportunityAction: any;
-  updateDomainProfileMutation: any;
+  updateDomainProfileMutation: AnyMutation;
 }
 
 export const DomainProfilesTab: React.FC<DomainProfilesTabProps> = ({

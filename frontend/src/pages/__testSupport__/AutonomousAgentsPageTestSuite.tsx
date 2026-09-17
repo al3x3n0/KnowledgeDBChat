@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from 'react-query';
 import type { RenderResult } from '@testing-library/react';
 import AutonomousAgentsPage from '../AutonomousAgentsPage';
 import ResearchInboxPage from '../ResearchInboxPage';
+import CodingBacklogPage from '../CodingBacklogPage';
 import {
   buildBugTriageSwarmQuickStartPayload,
   buildDomainResearchQuickStartPayload,
@@ -330,6 +331,34 @@ const LocationProbe: React.FC = () => {
 };
 
 const inboxDrilldownParams = () => Object.fromEntries(new URLSearchParams(lastLocation.search));
+
+/** Coding Backlog moved to its own destination beside Patch PRs. */
+const renderCodingBacklogPage = async (
+  options?: { documentSources?: typeof defaultDocumentSources }
+) => {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, cacheTime: 0 } },
+  });
+  if (options?.documentSources) {
+    queryClient.setQueryData(['document-sources', 'all'], options.documentSources);
+  }
+  const view = render(
+    <MemoryRouter
+      initialEntries={['/coding-backlog']}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
+          <CodingBacklogPage />
+          <LocationProbe />
+        </AuthProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  renderedViews.push(view);
+  await flushMockPromises();
+  return view;
+};
 
 const renderInboxPage = async (
   initialEntry: string = '/research/inbox',
@@ -6571,9 +6600,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
   });
 
   shardIt('creates a coding backlog item with the expected payload', async () => {
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Coding Backlog'));
+    await renderCodingBacklogPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Start Backlog')).toBeInTheDocument();
 
     fireEvent.input(screen.getByPlaceholderText('Backlog title'), {
@@ -6655,9 +6682,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     apiClient.performCodingBacklogAction.mockResolvedValueOnce(backlogItem);
     const promptSpy = jest.spyOn(window, 'prompt').mockImplementation(() => null as any);
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Coding Backlog'));
+    await renderCodingBacklogPage({ documentSources: defaultDocumentSources });
     const backlogCard = await screen.findByText('Manual collaboration backlog');
     const card = backlogCard.closest('.border') as HTMLElement;
     fireEvent.change(within(card).getByPlaceholderText('Backlog operator note'), {
@@ -10804,9 +10829,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       offset: 0,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Coding Backlog'));
+    await renderCodingBacklogPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Stabilize save pipeline')).toBeInTheDocument();
 
     fireEvent.click(screen.getByText('Orchestration detail'));
@@ -10825,10 +10848,12 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     expect(await screen.findByText(/Repair jobs: job-a/i)).toBeInTheDocument();
     expect(screen.getByText(/Selected proposal · proposal-a/i)).toBeInTheDocument();
     expect(screen.getAllByText('Copy ID').length).toBeGreaterThan(0);
+    // "Open Job" leaves for Runs now that the backlog is its own destination,
+    // so the URL it builds is what this page is responsible for; fetching the
+    // job is Runs' business and is tested there.
     fireEvent.click(screen.getAllByText('Open Job')[0]);
-    await waitFor(() => {
-      expect(apiClient.getAgentJob).toHaveBeenCalledWith('job-a');
-    });
+    await waitFor(() => expect(lastLocation.pathname).toBe('/autonomous-agents'));
+    expect(new URLSearchParams(lastLocation.search).get('job')).toBe('job-a');
   });
 
   shardIt('sends slice-level operator actions from the backlog tab', async () => {
@@ -10957,9 +10982,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       offset: 0,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Coding Backlog'));
+    await renderCodingBacklogPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Manual promotion backlog')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Orchestration detail'));
     fireEvent.click(screen.getByText('Artifacts and lineage'));

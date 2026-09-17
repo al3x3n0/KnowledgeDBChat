@@ -38,6 +38,7 @@ import {
   Layers,
   Inbox,
   ListChecks,
+  ListTodo,
   MessageCircle,
   Network,
   Presentation,
@@ -155,6 +156,10 @@ export const NAV_CATALOG: NavDoor[] = [
       item('LaTeX Studio', '/latex', Sigma, 'latex'),
       item('Repo Reports', '/repo-reports', FolderGit2),
       item('Draft Reviews', '/artifact-drafts', ClipboardCheck),
+      // The rest of the same pipeline as Patch PRs: an item here becomes a
+      // patch there. It was a tab on the Runs page, which split coding work
+      // across a page and a tab on an unrelated one.
+      item('Coding Backlog', '/coding-backlog', ListTodo),
       item('Patch PRs', '/patch-prs', GitPullRequest),
     ],
   },

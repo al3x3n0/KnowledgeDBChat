@@ -45,6 +45,7 @@ const AgentBuilderPage = lazy(() => import('./pages/AgentBuilderPage'));
 const AgentControlPlanePage = lazy(() => import('./pages/AgentControlPlanePage'));
 const RepoReportsPage = lazy(() => import('./pages/RepoReportsPage'));
 const AutonomousAgentsPage = lazy(() => import('./pages/AutonomousAgentsPage'));
+const CodingBacklogPage = lazy(() => import('./pages/CodingBacklogPage'));
 const PatchPRsPage = lazy(() => import('./pages/PatchPRsPage'));
 const ArtifactDraftsPage = lazy(() => import('./pages/ArtifactDraftsPage'));
 const SynthesisPage = lazy(() => import('./pages/SynthesisPage'));
@@ -403,6 +404,14 @@ const AppRoutes: React.FC = () => {
             element={
               <Suspense fallback={<PageLoader />}>
                 <AutonomousAgentsPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="coding-backlog"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <CodingBacklogPage />
               </Suspense>
             }
           />

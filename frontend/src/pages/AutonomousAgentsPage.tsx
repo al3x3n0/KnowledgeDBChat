@@ -38,7 +38,6 @@ import {
   Filter,
   GitBranch,
   Layers,
-  ListChecks,
   Loader2,
   Map as MapIcon,
   PanelRightClose,
@@ -170,7 +169,6 @@ import {
 // is what extraction was *for*; it just is not what extraction *is*.
 const JobChainsTab = lazy(() => import('../components/agent/tabs/JobChainsTab'));
 const SwarmReviewTab = lazy(() => import('../components/agent/tabs/SwarmReviewTab'));
-const CodingBacklogTab = lazy(() => import('../components/agent/tabs/CodingBacklogTab'));
 const DecisionTraceTab = lazy(() => import('../components/agent/tabs/DecisionTraceTab'));
 const OperatorQueueTab = lazy(() => import('../components/agent/tabs/OperatorQueueTab'));
 const DomainProfilesTab = lazy(() => import('../components/agent/tabs/DomainProfilesTab'));
@@ -541,7 +539,6 @@ const TAB_GROUPS: Array<{
     name: 'Portfolios',
     tabs: [
       { id: 'fleet', label: 'Research Fleet', icon: Sparkles },
-      { id: 'backlog', label: 'Coding Backlog', icon: ListChecks },
     ],
   },
   {
@@ -669,17 +666,6 @@ const AutonomousAgentsPage: React.FC = () => {
   const [traceViewIsDefaultDraft, setTraceViewIsDefaultDraft] = useState<boolean>(false);
   const [selectedChainStatus, setSelectedChainStatus] = useState<AgentJobChainStatus | null>(null);
   const [showExportModal, setShowExportModal] = useState(false);
-  const [backlogTitle, setBacklogTitle] = useState('');
-  const [backlogGoal, setBacklogGoal] = useState('');
-  const [backlogSourceId, setBacklogSourceId] = useState('');
-  const [backlogFailureSymptom, setBacklogFailureSymptom] = useState('');
-  const [backlogCommandsText, setBacklogCommandsText] = useState('');
-  const [backlogFilePathsText, setBacklogFilePathsText] = useState('');
-  const [backlogVisibilityScope, setBacklogVisibilityScope] = useState<'mine' | 'shared' | 'all'>('mine');
-  const [backlogAssignmentFilter, setBacklogAssignmentFilter] = useState<string>('');
-  const [backlogQueueStateFilter, setBacklogQueueStateFilter] = useState<string>('');
-  const [backlogNoteDrafts, setBacklogNoteDrafts] = useState<Record<string, string>>({});
-  const [backlogCloseReasonDrafts, setBacklogCloseReasonDrafts] = useState<Record<string, string>>({});
   // Stays on the page: it is a query key. Both the swarm-review job list
   // and the analytics refetch when it changes, and those queries live here.
   const [swarmReviewVisibilityScope, setSwarmReviewVisibilityScope] =
@@ -1713,11 +1699,6 @@ const AutonomousAgentsPage: React.FC = () => {
     },
     [collaborationUserById, user]
   );
-  useEffect(() => {
-    if (!backlogSourceId && codeSources.length > 0) {
-      setBacklogSourceId(String((codeSources[0] as any)?.id || ''));
-    }
-  }, [backlogSourceId, codeSources]);
   const claudeBackendTemplate = useMemo(
     () =>
       (((templatesData as any)?.templates || []) as AgentJobTemplate[]).find(
@@ -1971,16 +1952,17 @@ const AutonomousAgentsPage: React.FC = () => {
       return String(a.display_name || a.name || '').localeCompare(String(b.display_name || b.name || ''));
     });
   }, [chainsData]);
-  const { data: codingBacklogData, isLoading: codingBacklogLoading, refetch: refetchCodingBacklog } = useQuery(
-    ['coding-backlog-items', activeTab === 'backlog' ? backlogVisibilityScope : 'all', activeTab === 'backlog' ? backlogAssignmentFilter : ''],
+  const { data: codingBacklogData } = useQuery(
+    // Only the swarm and outcomes tabs read this now: they derive
+    // backlogBySwarmJobId and want every item, not one person's filters.
+    ['coding-backlog-items', 'all', ''],
     () => apiClient.listCodingBacklogItems({
       limit: 100,
       offset: 0,
-      visibility_scope: activeTab === 'backlog' ? backlogVisibilityScope : 'all',
-      assigned_user_id: activeTab === 'backlog' && backlogAssignmentFilter ? backlogAssignmentFilter : undefined,
+      visibility_scope: 'all',
     }),
     {
-      enabled: activeTab === 'backlog' || activeTab === 'swarm' || activeTab === 'outcomes',
+      enabled: activeTab === 'swarm' || activeTab === 'outcomes',
       refetchInterval: 15000,
     }
   );
@@ -2880,11 +2862,9 @@ const AutonomousAgentsPage: React.FC = () => {
         queryClient.invalidateQueries(['agent-jobs']);
         queryClient.invalidateQueries(['agent-jobs-stats']);
         toast.success('Coding backlog item created');
-        setBacklogTitle('');
-        setBacklogGoal('');
-        setBacklogFailureSymptom('');
-        setBacklogCommandsText('');
-        setBacklogFilePathsText('');
+        // The form those resets cleared lives on /coding-backlog now. Here the
+        // callers are the swarm review tab and the job detail panel, which
+        // create an item from something already on screen and have no form.
       },
       onError: (error: any) => {
         toast.error(error.message || 'Failed to create coding backlog item');
@@ -5870,7 +5850,7 @@ const AutonomousAgentsPage: React.FC = () => {
               actionMutation={actionMutation}
               createCodingBacklogMutation={createCodingBacklogMutation}
               onOpenJob={(job) => { setSelectedJob(job); setActiveTab('jobs'); }}
-              onGoToBacklog={() => setActiveTab('backlog')}
+              onGoToBacklog={() => navigate('/coding-backlog')}
             />
           </Suspense>
         )}
@@ -5884,7 +5864,7 @@ const AutonomousAgentsPage: React.FC = () => {
               navigate(buildAutonomousAgentsUrl(jobId));
               setActiveTab('jobs');
             }}
-            onOpenBacklog={() => setActiveTab('backlog')}
+            onOpenBacklog={() => navigate('/coding-backlog')}
           />
         )}
 
@@ -5927,49 +5907,6 @@ const AutonomousAgentsPage: React.FC = () => {
           </Suspense>
         )}
 
-        {activeTab === 'backlog' && (
-          <Suspense fallback={<div className="p-6 text-sm text-gray-500">Loading…</div>}>
-            <CodingBacklogTab
-              codingBacklogData={codingBacklogData}
-              codingBacklogLoading={codingBacklogLoading}
-              refetchCodingBacklog={refetchCodingBacklog}
-              setActiveTab={setActiveTab}
-              setSelectedJob={setSelectedJob}
-              swarmOutcomeBySwarmJobId={swarmOutcomeBySwarmJobId}
-              user={user}
-              backlogAssignmentFilter={backlogAssignmentFilter}
-              setBacklogAssignmentFilter={setBacklogAssignmentFilter}
-              backlogCloseReasonDrafts={backlogCloseReasonDrafts}
-              setBacklogCloseReasonDrafts={setBacklogCloseReasonDrafts}
-              backlogCommandsText={backlogCommandsText}
-              setBacklogCommandsText={setBacklogCommandsText}
-              backlogFailureSymptom={backlogFailureSymptom}
-              setBacklogFailureSymptom={setBacklogFailureSymptom}
-              backlogFilePathsText={backlogFilePathsText}
-              setBacklogFilePathsText={setBacklogFilePathsText}
-              backlogGoal={backlogGoal}
-              setBacklogGoal={setBacklogGoal}
-              backlogItems={backlogItems}
-              backlogNoteDrafts={backlogNoteDrafts}
-              setBacklogNoteDrafts={setBacklogNoteDrafts}
-              backlogQueueStateFilter={backlogQueueStateFilter}
-              setBacklogQueueStateFilter={setBacklogQueueStateFilter}
-              backlogSourceId={backlogSourceId}
-              setBacklogSourceId={setBacklogSourceId}
-              backlogTitle={backlogTitle}
-              setBacklogTitle={setBacklogTitle}
-              backlogVisibilityScope={backlogVisibilityScope}
-              setBacklogVisibilityScope={setBacklogVisibilityScope}
-              buildAutonomousAgentsUrl={buildAutonomousAgentsUrl}
-              codeSources={codeSources}
-              collaborationUsers={collaborationUsers}
-              createCodingBacklogMutation={createCodingBacklogMutation}
-              navigate={navigate}
-              queryClient={queryClient}
-              userLabelById={userLabelById}
-            />
-          </Suspense>
-        )}
 
         <div className={activeTab === 'jobs' ? 'flex gap-4 flex-1 min-h-0' : 'hidden'}>
             {/* Jobs list */}

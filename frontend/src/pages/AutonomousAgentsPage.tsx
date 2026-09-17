@@ -110,8 +110,6 @@ import {
 import Button from '../components/common/Button';
 import {
   buildResearchInboxUrl,
-  normalizeInboxHealthDrilldown,
-  normalizeInboxPolicyDrilldown,
   normalizeQueueHealthDrilldown,
 } from '../components/agent/drilldowns';
 import type {
@@ -726,10 +724,6 @@ const AutonomousAgentsPage: React.FC = () => {
   const [exportingJob, setExportingJob] = useState<AgentJob | null>(null);
   const landingTabInitializedRef = useRef(false);
 
-  const [inboxCustomerFilter, setInboxCustomerFilter] = useState<string>('');
-  const [inboxJobFilter, setInboxJobFilter] = useState<string>('');
-  const [inboxHealthDrilldown, setInboxHealthDrilldown] = useState<InboxHealthDrilldown>('');
-  const [inboxPolicyDrilldown, setInboxPolicyDrilldown] = useState<InboxPolicyDrilldown>('');
   const [queueItemTypeFilter, setQueueItemTypeFilter] = useState<string>('');
   const [queueStatusFilter, setQueueStatusFilter] = useState<string>('');
   const [queueCustomerFilter, setQueueCustomerFilter] = useState<string>('');
@@ -775,16 +769,6 @@ const AutonomousAgentsPage: React.FC = () => {
   const deepLinkedDomainTab = useMemo(() => String(new URLSearchParams(location.search).get('tab') || '').trim().toLowerCase() === 'domain', [location.search]);
   const deepLinkedFleetTab = useMemo(() => String(new URLSearchParams(location.search).get('tab') || '').trim().toLowerCase() === 'fleet', [location.search]);
   const deepLinkedInboxTab = useMemo(() => String(new URLSearchParams(location.search).get('tab') || '').trim().toLowerCase() === 'inbox', [location.search]);
-  const deepLinkedInboxJobId = useMemo(() => new URLSearchParams(location.search).get('inbox_job'), [location.search]);
-  const deepLinkedInboxCustomer = useMemo(() => new URLSearchParams(location.search).get('inbox_customer'), [location.search]);
-  const deepLinkedInboxHealthDrilldown = useMemo(
-    () => normalizeInboxHealthDrilldown(new URLSearchParams(location.search).get('inbox_health_drilldown')),
-    [location.search]
-  );
-  const deepLinkedInboxPolicyDrilldown = useMemo(
-    () => normalizeInboxPolicyDrilldown(new URLSearchParams(location.search).get('inbox_policy_drilldown')),
-    [location.search]
-  );
   const deepLinkedHealthCustomer = useMemo(() => new URLSearchParams(location.search).get('health_customer'), [location.search]);
   const deepLinkedHealthMonitor = useMemo(() => new URLSearchParams(location.search).get('health_monitor'), [location.search]);
   const deepLinkedHealthPolicyHistory = useMemo(() => new URLSearchParams(location.search).get('health_policy_history'), [location.search]);
@@ -1270,6 +1254,12 @@ const AutonomousAgentsPage: React.FC = () => {
 
   // Deep-link: /autonomous-agents?job=<id>
   useEffect(() => {
+    // This effect's whole job is interpreting *this page's* URL. Once a link
+    // here leaves for another page -- the inbox moved to /research/inbox -- the
+    // parameters it reads are someone else's, and acting on them made the page
+    // renavigate against a router that had already moved on. Measured as an
+    // unbounded render loop from a single "View Inbox" click.
+    if (!location.pathname.startsWith('/autonomous-agents')) return;
     if (!landingTabInitializedRef.current && !deepLinkedTraceTab && !deepLinkedHealthTab && !deepLinkedQueueTab && !deepLinkedDomainTab && !deepLinkedFleetTab && !deepLinkedInboxTab && !deepLinkedJobId) {
       landingTabInitializedRef.current = true;
       setActiveTab('jobs');
@@ -1308,28 +1298,14 @@ const AutonomousAgentsPage: React.FC = () => {
       }), { replace: true });
       return;
     }
-    const normalizedInboxJobId = String(deepLinkedInboxJobId || '').trim();
-    const normalizedInboxCustomer = String(deepLinkedInboxCustomer || '').trim();
     const normalizedQueueCustomer = String(deepLinkedQueueCustomer || '').trim();
     const normalizedQueueJobId = String(deepLinkedQueueJobId || '').trim();
     const normalizedHealthCustomer = String(deepLinkedHealthCustomer || '').trim();
-    if (normalizedInboxJobId !== inboxJobFilter) {
-      setInboxJobFilter(normalizedInboxJobId);
-    }
-    if (normalizedInboxCustomer !== inboxCustomerFilter) {
-      setInboxCustomerFilter(normalizedInboxCustomer);
-    }
     if (normalizedQueueCustomer !== queueCustomerFilter) {
       setQueueCustomerFilter(normalizedQueueCustomer);
     }
     if (normalizedQueueJobId !== queueJobFilter) {
       setQueueJobFilter(normalizedQueueJobId);
-    }
-    if (deepLinkedInboxHealthDrilldown !== inboxHealthDrilldown) {
-      setInboxHealthDrilldown(deepLinkedInboxHealthDrilldown);
-    }
-    if (deepLinkedInboxPolicyDrilldown !== inboxPolicyDrilldown) {
-      setInboxPolicyDrilldown(deepLinkedInboxPolicyDrilldown);
     }
     if (deepLinkedQueueHealthDrilldown !== queueHealthDrilldown) {
       setQueueHealthDrilldown(deepLinkedQueueHealthDrilldown);
@@ -1359,7 +1335,7 @@ const AutonomousAgentsPage: React.FC = () => {
       setSelectedJob(null);
       navigate(buildAutonomousAgentsUrl(), { replace: true });
     }
-  }, [deepLinkedTraceTab, deepLinkedHealthTab, deepLinkedJobId, deepLinkedJobData, deepLinkedJobError, deepLinkedQueueTab, deepLinkedQueueCustomer, deepLinkedQueueJobId, deepLinkedQueueHealthDrilldown, deepLinkedDomainTab, deepLinkedFleetTab, deepLinkedInboxTab, deepLinkedInboxJobId, deepLinkedInboxCustomer, deepLinkedInboxHealthDrilldown, deepLinkedInboxPolicyDrilldown, deepLinkedHealthCustomer, healthCustomerFilter, inboxCustomerFilter, inboxHealthDrilldown, inboxPolicyDrilldown, inboxJobFilter, queueCustomerFilter, queueHealthDrilldown, queueJobFilter, jobsData, navigate, buildAutonomousAgentsUrl, location.search]);
+  }, [deepLinkedTraceTab, deepLinkedHealthTab, deepLinkedJobId, deepLinkedJobData, deepLinkedJobError, deepLinkedQueueTab, deepLinkedQueueCustomer, deepLinkedQueueJobId, deepLinkedQueueHealthDrilldown, deepLinkedDomainTab, deepLinkedFleetTab, deepLinkedInboxTab, deepLinkedHealthCustomer, healthCustomerFilter, queueCustomerFilter, queueHealthDrilldown, queueJobFilter, jobsData, navigate, buildAutonomousAgentsUrl, location.search, location.pathname]);
 
   useEffect(() => {
     if (deepLinkedFleetId) {

@@ -734,7 +734,12 @@ class ApiClient {
   async getJobWorkspace(jobId: string, path = '.'): Promise<AgentJobWorkspace> {
     const response = await this.client.get(
       `/api/v1/agent-jobs/${jobId}/workspace`,
-      { params: { path } }
+      // Both non-2xx answers here are answers, not failures: 404 means this run
+      // never made a workspace (most runs do not), and 410 means its files were
+      // swept after the retention window. The panel renders each deliberately --
+      // nothing for the first, an explanation for the second -- so a toast on
+      // top of that shouts an error at someone opening an ordinary research job.
+      { params: { path }, suppressToast: true } as any
     );
     return response.data;
   }
@@ -746,7 +751,7 @@ class ApiClient {
   ): Promise<AgentJobWorkspaceFile> {
     const response = await this.client.get(
       `/api/v1/agent-jobs/${jobId}/workspace/file`,
-      { params: { path } }
+      { params: { path }, suppressToast: true } as any
     );
     return response.data;
   }

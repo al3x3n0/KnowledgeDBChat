@@ -20,6 +20,7 @@ from app.services.llm_service import LLMService
 
 class AgentRouter(CoreAgentRouter):
     """Core routing plus the queries that load what it routes over."""
+
     def __init__(self, llm_service: Optional[LLMService] = None):
         super().__init__(llm_service=llm_service or LLMService())
 

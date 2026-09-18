@@ -128,6 +128,7 @@ class CoreAgentRouter:
     called `AgentRouter` until one of them was read for the other and reported
     as having no capability routing at all, which is exactly what this one does.
     """
+
     """Routes user requests to the best matching agent."""
 
     def __init__(self, llm_service: Optional[Any] = None):

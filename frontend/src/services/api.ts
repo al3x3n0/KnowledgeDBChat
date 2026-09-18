@@ -282,6 +282,7 @@ import {
   PipelineStageInsertion,
   PipelineStageRestart,
   PipelineVocabulary,
+  ChainImportSurvey,
   SavedPipeline,
   DocumentFolderItemsResult,
   DocumentFolderRef,
@@ -657,6 +658,31 @@ class ApiClient {
   /** This user's saved pipelines, most recently touched first. */
   async listSavedPipelines(): Promise<SavedPipeline[]> {
     const response = await this.client.get('/api/v1/agent-pipelines');
+    return response.data;
+  }
+
+  /** Saved chains, and whether each can become a pipeline.
+   *
+   *  A survey rather than a conversion: a chain that converts still arrives
+   *  with empty contracts, and one that does not needs a decision. */
+  async surveyChainsForImport(): Promise<ChainImportSurvey> {
+    const response = await this.client.get('/api/v1/agent-pipelines/import/chains');
+    return response.data;
+  }
+
+  /** Save one chain as a pipeline. The chain is left where it is. */
+  async importChainAsPipeline(
+    chainId: string,
+    name?: string
+  ): Promise<SavedPipeline> {
+    const response = await this.client.post(
+      '/api/v1/agent-pipelines/import/chains',
+      { chain_id: chainId, name },
+      // A chain that cannot be expressed as a pipeline answers 422 with the
+      // blocking step. The panel shows that in place; a toast would be a
+      // second, worse telling of it.
+      { suppressToast: true } as any
+    );
     return response.data;
   }
 

@@ -5984,3 +5984,20 @@ export interface PipelineStageInsertion {
    *  changed and saying so is cheaper than letting someone discover it. */
   displaced: string[];
 }
+
+/** One saved chain, and whether it can become a pipeline. */
+export interface ChainImportCandidate {
+  chain_id: string;
+  name: string;
+  description?: string | null;
+  steps: number;
+  convertible: boolean;
+  /** Present only when convertible is false. */
+  blockers: Array<{ step: string; trigger: string; reason: string }>;
+  /** Stages that would need a contract written before the pipeline can run. */
+  contracts_to_write: number;
+}
+
+export interface ChainImportSurvey {
+  candidates: ChainImportCandidate[];
+}

@@ -281,6 +281,22 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   **refused** when longer than the `String(50)` column rather than truncated —
   shortening an identifier changes which node an edge names.
 - **Tool governance** — `tool_registry.py` + `tool_policy_engine.py` + `models/tool_audit.py`; per-user tool policies, approval gates for dangerous tools (`AGENT_REQUIRE_TOOL_APPROVAL`, `AGENT_DANGEROUS_TOOLS`), full execution audit log, user-defined custom tools (optionally Docker-executed). Tool dispatch lives in `agent_tool_dispatch.py`. Every tool is **declared once** in `app/agent_core/tool_specs/` (one module per domain): the schema a model reads, the governance classification, which job types may call it, and — for measurement tools — what evidence it produces. `agent_tools.AGENT_TOOLS`, the catalog, the job-type policy and the evidence map are all views of those specs, so adding a tool is a handler plus a `ToolSpec`, not four files kept in step by hand. `tests/test_tool_specs.py` enforces it.
+- **Chains are being retired as an authoring concept.** A chain and a pipeline
+  produce the same runtime -- chained jobs linked by `chain_config`, created by
+  `create_chained_job` -- and that runtime is staying; pipelines run on it. What
+  is going is `AgentJobChainDefinition` as a *second way to write work down*. A
+  chain says when the next step fires; a pipeline says what must be true when a
+  stage is done. `services/agent_chain_to_pipeline.py` converts one to the
+  other, surfaced in the Pipeline Studio, and the conversion **refuses rather
+  than approximates**: of six `trigger_condition` values only `on_complete` and
+  `on_approval` have a stage equivalent. `on_findings` in particular fires the
+  next step *while the parent is still running*, which is what lets a continuous
+  monitor raise alerts without ever finishing -- `depends_on` waits for an end
+  that never comes. Chains therefore survive for that case, and the model cannot
+  be dropped until either the last such chain is gone or a stage gains a way to
+  say "start while I keep going". A converted pipeline arrives with empty
+  contracts and so does not validate: that is the point, since `validate` then
+  names per stage the contract someone has to write.
 - **Pipelines** — a DAG of stages in `services/agent_pipeline_spec.py`, each stage a goal contract; tools are *derived* from the contract rather than named. A stage must declare a `job_type` its tools are allowed to run under: every coding tool is restricted to `analysis`/`coding` and the default is `research`, so a coding stage left at the default is planned with `clone_and_index_repo, apply_patch, run_repo_tests` and then cannot see one of them at runtime — measured, eight iterations of `search_documents` while the plan promised a repository fix. `validate()` now refuses that and names the job types that would work. Contract `validity.bounds` are checked on the **latest** finding of a *perishable* type, which is what makes "end with the tests passing" expressible: bounding every `test_result` at `failed == 0` is unsatisfiable, since the baseline run that finds the bug is red by definition, while requiring only that a `test_result` exists is satisfied by a red one. `"latest": false` restores the check-every-occurrence behaviour
 - **Workflows** — visual workflow builder (ReactFlow frontend, Zustand store), `workflow_engine.py` execution, workflow→synthesis conversion, LangGraph-based issue/PR graphs (`langgraph_issue_pr_service.py`).
 - **Campaigns** — a line of enquiry that outlives any one job

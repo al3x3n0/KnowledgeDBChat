@@ -50,7 +50,12 @@ import PipelineGraph from '../components/pipelines/PipelineGraph';
 import PipelineRunProgress from '../components/pipelines/PipelineRunProgress';
 import StageInspector from '../components/pipelines/StageInspector';
 import { apiClient } from '../services/api';
-import type { PipelineCheck, PipelineVocabulary, SavedPipeline } from '../types';
+import type {
+  ChainImportCandidate,
+  PipelineCheck,
+  PipelineVocabulary,
+  SavedPipeline,
+} from '../types';
 
 const STORAGE_KEY = 'pipeline_studio_draft_v1';
 
@@ -289,6 +294,25 @@ const PipelineStudioPage: React.FC = () => {
     [openId, saved]
   );
 
+  /** Saved chains that could become pipelines.
+   *
+   *  Chains are being retired as a way to author work: a chain says *when* the
+   *  next step fires, a pipeline says *what must be true* when a stage is done.
+   *  They produce the same runtime, so this is a rewrite of the description
+   *  rather than a migration of anything running. Empty for anyone with no
+   *  chains, which is why the panel hides itself rather than explaining. */
+  const [importable, setImportable] = useState<ChainImportCandidate[]>([]);
+  const [importing, setImporting] = useState<string | null>(null);
+
+  const refreshImportable = useCallback(async () => {
+    try {
+      const survey = await apiClient.surveyChainsForImport();
+      setImportable(survey.candidates || []);
+    } catch {
+      // Nothing to say: the studio works without the panel.
+    }
+  }, []);
+
   const refreshSaved = useCallback(async () => {
     try {
       setSaved(await apiClient.listSavedPipelines());
@@ -300,7 +324,36 @@ const PipelineStudioPage: React.FC = () => {
 
   useEffect(() => {
     refreshSaved();
-  }, [refreshSaved]);
+    refreshImportable();
+  }, [refreshSaved, refreshImportable]);
+
+  const handleImportChain = useCallback(
+    async (candidate: ChainImportCandidate) => {
+      setImporting(candidate.chain_id);
+      try {
+        const pipeline = await apiClient.importChainAsPipeline(candidate.chain_id);
+        toast.success(
+          `Imported ${pipeline.name}. ${candidate.contracts_to_write} stage${
+            candidate.contracts_to_write === 1 ? '' : 's'
+          } still need a contract.`
+        );
+        await refreshSaved();
+        await refreshImportable();
+        setOpenId(pipeline.id);
+        setSource(JSON.stringify(pipeline.spec, null, 2));
+      } catch (error: any) {
+        const detail = error?.response?.data?.detail;
+        toast.error(
+          typeof detail === 'object' && detail?.blockers?.length
+            ? `${candidate.name}: ${detail.blockers[0].step} cannot be a stage`
+            : `Could not import ${candidate.name}`
+        );
+      } finally {
+        setImporting(null);
+      }
+    },
+    [refreshSaved, refreshImportable]
+  );
 
   const handleSave = useCallback(async () => {
     if (!parsed.value) {
@@ -548,6 +601,67 @@ const PipelineStudioPage: React.FC = () => {
           Draft it
         </Button>
       </div>
+
+      {importable.length > 0 && (
+        <div
+          className="flex-none rounded-lg border border-amber-500/40 bg-amber-500/5 p-3"
+          aria-label="Job chains you can import"
+        >
+          <div className="text-xs font-medium text-gray-800 mb-1">
+            Job chains you can bring here
+          </div>
+          <p className="text-xs text-gray-600 mb-2.5 max-w-prose">
+            A chain says when the next step fires; a pipeline says what must be
+            true when a stage is done. Importing rewrites the description — it
+            copies, and leaves the chain running.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {importable.map((candidate) => (
+              <div
+                key={candidate.chain_id}
+                className={`flex items-center gap-2 pl-2.5 pr-1 py-1 rounded-full border text-xs ${
+                  candidate.convertible
+                    ? 'border-gray-300 bg-gray-50'
+                    : 'border-rose-300 bg-rose-50'
+                }`}
+                title={
+                  candidate.convertible
+                    ? `${candidate.steps} steps · ${candidate.contracts_to_write} contract${
+                        candidate.contracts_to_write === 1 ? '' : 's'
+                      } to write after importing`
+                    : candidate.blockers
+                        .map((b) => `${b.step} (${b.trigger}): ${b.reason}`)
+                        .join('; ')
+                }
+              >
+                <span className="font-medium text-gray-800">{candidate.name}</span>
+                {candidate.convertible ? (
+                  <>
+                    <span className="text-gray-500">
+                      {candidate.contracts_to_write} contract
+                      {candidate.contracts_to_write === 1 ? '' : 's'} to write
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={importing === candidate.chain_id}
+                      onClick={() => handleImportChain(candidate)}
+                    >
+                      {importing === candidate.chain_id ? 'Importing…' : 'Import'}
+                    </Button>
+                  </>
+                ) : (
+                  // Named rather than hidden: a chain that cannot be a pipeline
+                  // is a thing to decide about, not an error to suppress.
+                  <span className="text-rose-700">
+                    {candidate.blockers[0]?.step} needs {candidate.blockers[0]?.trigger}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {saved.length > 0 && (
         <div className="flex-none flex flex-wrap gap-2" aria-label="Saved pipelines">

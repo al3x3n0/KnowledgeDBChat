@@ -33,6 +33,10 @@ jest.mock('../../services/api', () => ({
     // silent catch — the tests pass while the page errors on every render,
     // which is worse than a failure because nothing says so.
     listSavedPipelines: jest.fn(),
+    // Same reason: the chain-import survey also loads on mount into a silent
+    // catch.
+    surveyChainsForImport: jest.fn(),
+    importChainAsPipeline: jest.fn(),
     saveSavedPipeline: jest.fn(),
     updateSavedPipeline: jest.fn(),
     deleteSavedPipeline: jest.fn(),
@@ -126,6 +130,7 @@ beforeEach(() => {
   // an empty answer.
   apiClient.getPipelineRun.mockRejectedValue({ response: { status: 404 } });
   apiClient.getPipelineVocabulary.mockResolvedValue(vocabulary);
+  apiClient.surveyChainsForImport.mockResolvedValue({ candidates: [] });
 });
 
 const typeSpec = (text: string) =>
@@ -440,6 +445,79 @@ describe('the starters', () => {
       );
       // And it loops: writing an algorithm from prose does not work first try.
       expect(implement.loop.max_iterations).toBeGreaterThan(1);
+    });
+  });
+});
+
+
+describe('importing a job chain', () => {
+  const convertible = {
+    chain_id: 'chain-1',
+    name: 'literature_review_pipeline',
+    steps: 4,
+    convertible: true,
+    blockers: [],
+    contracts_to_write: 4,
+  };
+  const blocked = {
+    chain_id: 'chain-2',
+    name: 'continuous_monitoring_with_alerts',
+    steps: 2,
+    convertible: false,
+    blockers: [
+      {
+        step: 'Topic Monitoring',
+        trigger: 'on_findings',
+        reason: 'fires while the parent is still running',
+      },
+    ],
+    contracts_to_write: 0,
+  };
+
+  it('says nothing at all when there are no chains to import', async () => {
+    render(<PipelineStudioPage />);
+    await waitFor(() => expect(apiClient.surveyChainsForImport).toHaveBeenCalled());
+    expect(screen.queryByLabelText('Job chains you can import')).not.toBeInTheDocument();
+  });
+
+  it('says how much work a convertible chain leaves behind', async () => {
+    apiClient.surveyChainsForImport.mockResolvedValue({ candidates: [convertible] });
+    render(<PipelineStudioPage />);
+
+    expect(await screen.findByText('literature_review_pipeline')).toBeInTheDocument();
+    // The number is the point: importing is faithful, not finished.
+    expect(screen.getByText('4 contracts to write')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Import' })).toBeInTheDocument();
+  });
+
+  it('names the blocking step instead of offering to import', async () => {
+    apiClient.surveyChainsForImport.mockResolvedValue({ candidates: [blocked] });
+    render(<PipelineStudioPage />);
+
+    expect(await screen.findByText(/Topic Monitoring needs on_findings/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Import' })).not.toBeInTheDocument();
+  });
+
+  it('opens the imported pipeline in the editor', async () => {
+    apiClient.surveyChainsForImport.mockResolvedValue({ candidates: [convertible] });
+    apiClient.importChainAsPipeline.mockResolvedValue({
+      id: 'pipeline-9',
+      name: 'literature_review_pipeline',
+      spec: { name: 'literature_review_pipeline', stages: [{ id: 'find', goal: 'Find' }] },
+      last_check_valid: 'invalid',
+    });
+    apiClient.listSavedPipelines.mockResolvedValue([]);
+    render(<PipelineStudioPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Import' }));
+
+    await waitFor(() =>
+      expect(apiClient.importChainAsPipeline).toHaveBeenCalledWith('chain-1')
+    );
+    // Straight into the editor, because the contracts are what happens next.
+    await waitFor(() => {
+      const editor = screen.getByLabelText('Pipeline specification') as HTMLTextAreaElement;
+      expect(editor.value).toContain('literature_review_pipeline');
     });
   });
 });

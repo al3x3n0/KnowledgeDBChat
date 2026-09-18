@@ -1,4 +1,10 @@
-"""Compatibility shim for the extracted router with DB loading helpers."""
+"""The router, with the database half attached.
+
+`CoreAgentRouter` decides *which* agent should answer -- intent, capabilities,
+priority -- and knows nothing about storage. This adds the part that needs a
+session: loading the active definitions, finding one by name, and falling back
+to the generalist. Use this one anywhere a `db` is in scope.
+"""
 
 from typing import Dict, Optional
 
@@ -13,6 +19,7 @@ from app.services.llm_service import LLMService
 
 
 class AgentRouter(CoreAgentRouter):
+    """Core routing plus the queries that load what it routes over."""
     def __init__(self, llm_service: Optional[LLMService] = None):
         super().__init__(llm_service=llm_service or LLMService())
 

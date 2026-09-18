@@ -11,7 +11,7 @@ from .contracts import (
     ToolExecutor,
 )
 from .planning import AgentExecutionPlanner, ExecutionPlan, PlanStep, Subgoal
-from .routing import CAPABILITY_KEYWORDS, AgentRouter
+from .routing import CAPABILITY_KEYWORDS, AgentRouter, CoreAgentRouter
 from .tool_catalog import ToolMetadata, get_tool_metadata, iter_builtin_tools
 from .types import AgentSpec, JobSpec, RunState, ToolCall, ToolResult
 
@@ -21,6 +21,7 @@ __all__ = [
     "AgentRouter",
     "AgentSpec",
     "CAPABILITY_KEYWORDS",
+    "CoreAgentRouter",
     "EventPublisher",
     "ExecutionPlan",
     "JobSpec",

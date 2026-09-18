@@ -116,7 +116,18 @@ CAPABILITY_KEYWORDS = {
 }
 
 
-class AgentRouter:
+class CoreAgentRouter:
+    """Routing decisions that need no database.
+
+    Intent analysis, capability matching and agent selection over an in-memory
+    cache of definitions. Deliberately free of SQLAlchemy so `agent_core` stays
+    importable without the models.
+
+    The database half -- loading definitions, looking one up by name -- is
+    `app.services.agent_router.AgentRouter`, which subclasses this. Both were
+    called `AgentRouter` until one of them was read for the other and reported
+    as having no capability routing at all, which is exactly what this one does.
+    """
     """Routes user requests to the best matching agent."""
 
     def __init__(self, llm_service: Optional[Any] = None):
@@ -310,3 +321,7 @@ Only include capabilities that are clearly needed. If unsure, include "general".
             if doc_agent and getattr(doc_agent, "is_active", True):
                 return doc_agent, "Detected document management intent"
         return None
+
+
+# The original name, kept so existing imports keep working.
+AgentRouter = CoreAgentRouter

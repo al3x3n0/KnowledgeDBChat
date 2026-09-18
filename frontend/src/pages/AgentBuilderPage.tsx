@@ -97,8 +97,13 @@ const AgentBuilderPage: React.FC = () => {
     { id: 'create', name: 'Create New', icon: Plus },
   ];
 
+  // Left-aligned, like every other page in the R&D door: Runs, Campaigns,
+  // Pipelines and Workflows all start at the same edge. `mx-auto` centred this
+  // one, so it alone sat inset with a gutter either side. The max width stays --
+  // these are forms, and a field stretched across a wide monitor is harder to
+  // read, not easier.
   return (
-    <div className="max-w-7xl mx-auto p-6">
+    <div className="max-w-7xl p-6">
       {/* Header */}
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">

@@ -37,6 +37,8 @@ from app.schemas.agent_pipeline import (
     ChainImportCandidate,
     ChainImportRequest,
     ChainImportSurveyResponse,
+    ContractSuggestionsRequest,
+    ContractSuggestionsResponse,
     PipelineBindResponse,
     PipelineCheckResponse,
     PipelineDraftRequest,
@@ -69,6 +71,7 @@ from app.services.agent_chain_to_pipeline import ChainNotConvertible
 from app.services.agent_chain_to_pipeline import convert as chain_to_pipeline_spec
 from app.services.agent_chain_to_pipeline import describe as chain_import_blockers
 from app.services.agent_chain_to_pipeline import placeholders as chain_placeholders
+from app.services.agent_contract_suggestions import suggest_for_spec
 from app.services.agent_job_creation_service import agent_job_creation_service
 from app.services.auth_service import get_current_user
 from app.tasks.agent_job_tasks import execute_agent_job_task
@@ -679,6 +682,32 @@ async def save_pipeline(
         ) from error
     await db.refresh(row)
     return SavedPipelineResponse.of(row)
+
+
+@router.post("/suggest-contracts", response_model=ContractSuggestionsResponse)
+async def suggest_contracts(
+    payload: ContractSuggestionsRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Evidence types each contract-less stage is probably asking for.
+
+    The hardest step in authoring a pipeline is naming the evidence a stage must
+    produce: it means knowing which of the evidence types exists, which tool
+    produces it, and whether that tool may run under the stage's job type. The
+    words in a goal and in a producing tool come from the same small domain, so
+    this proposes from that overlap.
+
+    It suggests and never applies, and every suggestion carries the tool behind
+    it and the words that matched -- a goal sharing only a generic word with the
+    vocabulary produces suggestions a person should dismiss, and they can only
+    do that if they can see why it was offered.
+
+    No model call: this runs while someone types and returns the same answer
+    twice. Drafting a whole pipeline is where a model earns its keep.
+    """
+    if not isinstance(payload.spec, dict):
+        raise HTTPException(status_code=400, detail="spec must be an object")
+    return ContractSuggestionsResponse(suggestions=suggest_for_spec(payload.spec))
 
 
 @router.get("/import/chains", response_model=ChainImportSurveyResponse)

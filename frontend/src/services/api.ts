@@ -282,6 +282,7 @@ import {
   PipelineStageInsertion,
   PipelineStageRestart,
   PipelineVocabulary,
+  ContractSuggestions,
   ChainImportSurvey,
   SavedPipeline,
   DocumentFolderItemsResult,
@@ -658,6 +659,22 @@ class ApiClient {
   /** This user's saved pipelines, most recently touched first. */
   async listSavedPipelines(): Promise<SavedPipeline[]> {
     const response = await this.client.get('/api/v1/agent-pipelines');
+    return response.data;
+  }
+
+  /** Evidence types each contract-less stage is probably asking for.
+   *
+   *  Suggestions only: each carries the tool behind it and the words that
+   *  matched, because a goal sharing one generic word with the vocabulary
+   *  produces suggestions worth dismissing. */
+  async suggestContracts(spec: unknown): Promise<ContractSuggestions> {
+    const response = await this.client.post(
+      '/api/v1/agent-pipelines/suggest-contracts',
+      { spec },
+      // A spec mid-edit is often not a pipeline yet; that is not worth a toast
+      // on every keystroke.
+      { suppressToast: true } as any
+    );
     return response.data;
   }
 

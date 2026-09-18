@@ -6006,3 +6006,19 @@ export interface ChainImportCandidate {
 export interface ChainImportSurvey {
   candidates: ChainImportCandidate[];
 }
+
+/** One evidence type a stage might require, and why it was offered. */
+export interface ContractSuggestion {
+  finding_type: string;
+  /** The tool that would produce it — what makes the suggestion checkable. */
+  produced_by: string;
+  /** Words shared by the goal and the evidence, so a weak match is visible. */
+  matched: string[];
+  typical_seconds: number;
+  perishable: boolean;
+}
+
+/** Keyed by stage id. A stage that already has a contract is absent. */
+export interface ContractSuggestions {
+  suggestions: Record<string, ContractSuggestion[]>;
+}

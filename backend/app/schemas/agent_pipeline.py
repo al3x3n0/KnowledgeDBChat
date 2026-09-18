@@ -156,6 +156,28 @@ class PipelineLaunchResponse(BaseModel):
     checkpoints: List[str] = Field(default_factory=list)
 
 
+class ContractSuggestion(BaseModel):
+    """One evidence type a stage might require, and why it was offered."""
+
+    finding_type: str
+    #: The tool that would produce it. What makes the suggestion checkable.
+    produced_by: str
+    #: Words shared by the goal and the evidence, so a weak match is visible.
+    matched: List[str] = Field(default_factory=list)
+    typical_seconds: int = 0
+    perishable: bool = False
+
+
+class ContractSuggestionsRequest(BaseModel):
+    spec: Dict[str, Any]
+
+
+class ContractSuggestionsResponse(BaseModel):
+    """Suggestions per stage id. Stages with a contract are absent, not empty."""
+
+    suggestions: Dict[str, List[ContractSuggestion]] = Field(default_factory=dict)
+
+
 class ChainImportCandidate(BaseModel):
     """One saved chain, and whether it can become a pipeline."""
 

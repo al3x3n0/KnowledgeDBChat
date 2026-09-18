@@ -36,6 +36,7 @@ jest.mock('../../services/api', () => ({
     // Same reason: the chain-import survey also loads on mount into a silent
     // catch.
     surveyChainsForImport: jest.fn(),
+    suggestContracts: jest.fn(),
     importChainAsPipeline: jest.fn(),
     saveSavedPipeline: jest.fn(),
     updateSavedPipeline: jest.fn(),
@@ -131,6 +132,8 @@ beforeEach(() => {
   apiClient.getPipelineRun.mockRejectedValue({ response: { status: 404 } });
   apiClient.getPipelineVocabulary.mockResolvedValue(vocabulary);
   apiClient.surveyChainsForImport.mockResolvedValue({ candidates: [] });
+  // Follows the editor on a debounce; unmocked it throws into a silent catch.
+  apiClient.suggestContracts.mockResolvedValue({ suggestions: {} });
 });
 
 const typeSpec = (text: string) =>
@@ -583,5 +586,62 @@ describe('importing a job chain', () => {
       const editor = screen.getByLabelText('Pipeline specification') as HTMLTextAreaElement;
       expect(editor.value).toContain('literature_review_pipeline');
     });
+  });
+});
+
+describe('suggesting what evidence a stage needs', () => {
+  const SPEC = JSON.stringify({
+    name: 'lit',
+    stages: [{ id: 'gaps', goal: 'Identify research gaps', job_type: 'analysis' }],
+  });
+
+  it('offers the evidence with the words that matched, so a weak one is visible', async () => {
+    apiClient.suggestContracts.mockResolvedValue({
+      suggestions: {
+        gaps: [
+          { finding_type: 'research_gap', produced_by: 'identify_research_gaps',
+            matched: ['research', 'gap'], typical_seconds: 60, perishable: false },
+          { finding_type: 'research_graph', produced_by: 'build_research_graph',
+            matched: ['research'], typical_seconds: 90, perishable: false },
+        ],
+      },
+    });
+    render(<PipelineStudioPage />);
+    typeSpec(SPEC);
+
+    expect(await screen.findByText('research_gap')).toBeInTheDocument();
+    // The one-word match is shown as such rather than looking equally good.
+    expect(screen.getByTitle(/matched research$/)).toBeInTheDocument();
+  });
+
+  it('writes the chosen evidence into that stage and leaves the rest alone', async () => {
+    apiClient.suggestContracts.mockResolvedValue({
+      suggestions: {
+        gaps: [
+          { finding_type: 'research_gap', produced_by: 'identify_research_gaps',
+            matched: ['gap'], typical_seconds: 60, perishable: false },
+        ],
+      },
+    });
+    render(<PipelineStudioPage />);
+    typeSpec(SPEC);
+
+    fireEvent.click(await screen.findByText('research_gap'));
+
+    const editor = screen.getByLabelText('Pipeline specification') as HTMLTextAreaElement;
+    const spec = JSON.parse(editor.value);
+    expect(spec.stages[0].contract.required_finding_types).toEqual(['research_gap']);
+    // Nothing else about the stage was rewritten.
+    expect(spec.stages[0].goal).toBe('Identify research gaps');
+    expect(spec.name).toBe('lit');
+  });
+
+  it('says nothing when every stage already has a contract', async () => {
+    apiClient.suggestContracts.mockResolvedValue({ suggestions: {} });
+    render(<PipelineStudioPage />);
+    typeSpec(SPEC);
+
+    await waitFor(() => expect(apiClient.suggestContracts).toHaveBeenCalled());
+    expect(screen.queryByText('Evidence these stages might need')).not.toBeInTheDocument();
   });
 });

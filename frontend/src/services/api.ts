@@ -673,11 +673,12 @@ class ApiClient {
   /** Save one chain as a pipeline. The chain is left where it is. */
   async importChainAsPipeline(
     chainId: string,
-    name?: string
+    name?: string,
+    variables?: Record<string, string>
   ): Promise<SavedPipeline> {
     const response = await this.client.post(
       '/api/v1/agent-pipelines/import/chains',
-      { chain_id: chainId, name },
+      { chain_id: chainId, name, variables },
       // A chain that cannot be expressed as a pipeline answers 422 with the
       // blocking step. The panel shows that in place; a toast would be a
       // second, worse telling of it.

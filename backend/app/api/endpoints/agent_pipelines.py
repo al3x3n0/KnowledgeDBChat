@@ -68,6 +68,7 @@ from app.services import (
 from app.services.agent_chain_to_pipeline import ChainNotConvertible
 from app.services.agent_chain_to_pipeline import convert as chain_to_pipeline_spec
 from app.services.agent_chain_to_pipeline import describe as chain_import_blockers
+from app.services.agent_chain_to_pipeline import placeholders as chain_placeholders
 from app.services.agent_job_creation_service import agent_job_creation_service
 from app.services.auth_service import get_current_user
 from app.tasks.agent_job_tasks import execute_agent_job_task
@@ -729,6 +730,7 @@ async def survey_chains_for_import(
                     for step, trigger, why in blockers
                 ],
                 contracts_to_write=contracts,
+                variables=chain_placeholders(steps),
             )
         )
     return ChainImportSurveyResponse(candidates=candidates)
@@ -757,11 +759,34 @@ async def import_chain_as_pipeline(
     if row is None:
         raise HTTPException(status_code=404, detail="No such chain")
 
+    # A chain is often a template. Importing one without its variables would
+    # produce a pipeline whose goal reads "Research {topic} comprehensively" --
+    # which looks converted and would run against those characters.
+    missing = [
+        name
+        for name in chain_placeholders(row.chain_steps)
+        if name not in (payload.variables or {})
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": (
+                    f"{row.name} is a template: supply "
+                    + ", ".join(sorted(missing))
+                    + " so the goals are not left with placeholders in them."
+                ),
+                "chain": row.name,
+                "missing_variables": sorted(missing),
+            },
+        )
+
     try:
         spec = chain_to_pipeline_spec(
             name=(payload.name or row.name).strip(),
             chain_steps=row.chain_steps,
             default_config=getattr(row, "default_config", None),
+            variables=payload.variables,
         )
     except ChainNotConvertible as error:
         # 422 rather than 400: the request is well formed, the chain is what

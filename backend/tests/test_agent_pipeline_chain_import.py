@@ -181,6 +181,48 @@ class TestImport:
         )
         assert saved == []
 
+    def test_a_template_chain_is_refused_until_its_variables_are_given(
+        self, client, auth_headers, db_session
+    ):
+        # A chain fills {topic} at launch; a pipeline goal is literal. Importing
+        # without the value would produce a goal reading "Research {topic}
+        # comprehensively", which looks converted and would run against those
+        # characters.
+        chain_id = _chain(
+            db_session,
+            name="templated",
+            steps=[{"step_name": "A", "goal_template": "Research {topic} deeply"}],
+        )
+
+        refused = client.post(
+            SURVEY, headers=auth_headers, json={"chain_id": str(chain_id)}
+        )
+        assert refused.status_code == 422
+        assert refused.json()["detail"]["missing_variables"] == ["topic"]
+
+        filled = client.post(
+            SURVEY,
+            headers=auth_headers,
+            json={"chain_id": str(chain_id), "variables": {"topic": "sparsity"}},
+        )
+        assert filled.status_code == 201
+        assert filled.json()["spec"]["stages"][0]["goal"] == "Research sparsity deeply"
+
+    def test_the_survey_names_the_variables_a_chain_expects(
+        self, client, auth_headers, db_session
+    ):
+        _chain(
+            db_session,
+            name="templated2",
+            steps=[{"step_name": "A", "goal_template": "Do {topic} for {who}"}],
+        )
+
+        response = client.get(SURVEY, headers=auth_headers)
+        candidate = next(
+            c for c in response.json()["candidates"] if c["name"] == "templated2"
+        )
+        assert candidate["variables"] == ["topic", "who"]
+
     def test_an_unknown_chain_is_a_404(self, client, auth_headers):
         response = client.post(
             SURVEY,

@@ -458,6 +458,7 @@ describe('importing a job chain', () => {
     convertible: true,
     blockers: [],
     contracts_to_write: 4,
+    variables: [],
   };
   const blocked = {
     chain_id: 'chain-2',
@@ -472,6 +473,7 @@ describe('importing a job chain', () => {
       },
     ],
     contracts_to_write: 0,
+    variables: [],
   };
 
   it('says nothing at all when there are no chains to import', async () => {
@@ -498,6 +500,48 @@ describe('importing a job chain', () => {
     expect(screen.queryByRole('button', { name: 'Import' })).not.toBeInTheDocument();
   });
 
+  it('will not import a templated chain until its variables are given', async () => {
+    // A chain fills {topic} at launch; a pipeline goal is literal. Importing
+    // without a value would leave the braces in the goal.
+    apiClient.surveyChainsForImport.mockResolvedValue({
+      candidates: [{ ...convertible, variables: ['topic'] }],
+    });
+    render(<PipelineStudioPage />);
+
+    const importButton = await screen.findByRole('button', { name: 'Import' });
+    expect(importButton).toBeDisabled();
+
+    fireEvent.change(
+      screen.getByLabelText('topic for literature_review_pipeline'),
+      { target: { value: 'attention sparsity' } }
+    );
+    expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled();
+  });
+
+  it('sends the variables it collected', async () => {
+    apiClient.surveyChainsForImport.mockResolvedValue({
+      candidates: [{ ...convertible, variables: ['topic'] }],
+    });
+    apiClient.importChainAsPipeline.mockResolvedValue({
+      id: 'p1', name: 'lit', spec: { name: 'lit', stages: [] }, last_check_valid: 'invalid',
+    });
+    render(<PipelineStudioPage />);
+
+    fireEvent.change(
+      await screen.findByLabelText('topic for literature_review_pipeline'),
+      { target: { value: 'attention sparsity' } }
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+
+    await waitFor(() =>
+      expect(apiClient.importChainAsPipeline).toHaveBeenCalledWith(
+        'chain-1',
+        undefined,
+        { topic: 'attention sparsity' }
+      )
+    );
+  });
+
   it('opens the imported pipeline in the editor', async () => {
     apiClient.surveyChainsForImport.mockResolvedValue({ candidates: [convertible] });
     apiClient.importChainAsPipeline.mockResolvedValue({
@@ -512,7 +556,11 @@ describe('importing a job chain', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Import' }));
 
     await waitFor(() =>
-      expect(apiClient.importChainAsPipeline).toHaveBeenCalledWith('chain-1')
+      expect(apiClient.importChainAsPipeline).toHaveBeenCalledWith(
+        'chain-1',
+        undefined,
+        undefined
+      )
     );
     // Straight into the editor, because the contracts are what happens next.
     await waitFor(() => {

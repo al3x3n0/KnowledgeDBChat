@@ -168,6 +168,10 @@ class ChainImportCandidate(BaseModel):
     blockers: List[Dict[str, str]] = Field(default_factory=list)
     #: How many stages would need a contract written before it could run.
     contracts_to_write: int = 0
+    #: Variable names the chain's goals expect ({topic}). A pipeline goal is
+    #: literal, so these must be supplied at import or they reach an agent as
+    #: the characters themselves.
+    variables: List[str] = Field(default_factory=list)
 
 
 class ChainImportSurveyResponse(BaseModel):
@@ -180,6 +184,9 @@ class ChainImportRequest(BaseModel):
     chain_id: UUID
     #: Defaults to the chain's name; a pipeline name must be unique per user.
     name: Optional[str] = None
+    #: Values for the chain's goal placeholders, as the chain launcher took
+    #: them. Missing ones are refused rather than left in the goal.
+    variables: Dict[str, Any] = Field(default_factory=dict)
 
 
 class SavedPipelineCreate(BaseModel):

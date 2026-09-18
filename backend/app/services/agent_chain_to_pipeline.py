@@ -33,6 +33,7 @@ that never comes is worse than no conversion at all.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 #: Trigger conditions a pipeline stage can express, and how.
@@ -58,6 +59,31 @@ NOT_CONVERTIBLE = {
         "'either way'"
     ),
 }
+
+
+#: ``{topic}`` in a chain's goal_template. Chains fill these at launch from the
+#: variables the launcher is given; a pipeline's goal is literal, so an
+#: unfilled placeholder would reach an agent as the characters "{topic}".
+_PLACEHOLDER = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
+
+
+def placeholders(chain_steps: Any) -> List[str]:
+    """The variable names a chain's goals expect, in the order first seen.
+
+    A chain is often a template: "Research {topic} comprehensively", filled at
+    launch. A pipeline has no such step -- its goal is the goal. So converting
+    one without saying what the variables were would produce a pipeline that
+    runs against the literal text, which reads as working and is not.
+    """
+    found: List[str] = []
+    for step in chain_steps if isinstance(chain_steps, list) else []:
+        if not isinstance(step, Mapping):
+            continue
+        for field in ("goal_template", "step_name"):
+            for name in _PLACEHOLDER.findall(str(step.get(field) or "")):
+                if name not in found:
+                    found.append(name)
+    return found
 
 
 class ChainNotConvertible(Exception):
@@ -110,11 +136,20 @@ def describe(chain_steps: Any) -> List[Tuple[str, str, str]]:
     return problems
 
 
+def _fill(text: str, variables: Optional[Mapping[str, Any]]) -> str:
+    """Substitute the way the chain launcher does, so the result is the same."""
+    out = text
+    for key, value in (variables or {}).items():
+        out = out.replace(f"{{{key}}}", str(value))
+    return out
+
+
 def convert(
     *,
     name: str,
     chain_steps: Any,
     default_config: Optional[Mapping[str, Any]] = None,
+    variables: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """The pipeline spec equivalent of a chain, or raise saying why not.
 
@@ -141,9 +176,12 @@ def convert(
 
         stage: Dict[str, Any] = {
             "id": stage_id,
-            "goal": str(
-                step.get("goal_template") or step.get("step_name") or ""
-            ).strip(),
+            # Filled here or not at all: a pipeline's goal is literal, so an
+            # unfilled {topic} would reach the agent as those characters.
+            "goal": _fill(
+                str(step.get("goal_template") or step.get("step_name") or "").strip(),
+                variables,
+            ),
             "job_type": str(step.get("job_type") or "research").strip(),
             "contract": {},
         }
@@ -184,6 +222,7 @@ def convert(
 
 __all__ = [
     "CONVERTIBLE",
+    "placeholders",
     "NOT_CONVERTIBLE",
     "ChainNotConvertible",
     "convert",

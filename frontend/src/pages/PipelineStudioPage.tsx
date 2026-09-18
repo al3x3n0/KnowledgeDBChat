@@ -303,6 +303,10 @@ const PipelineStudioPage: React.FC = () => {
    *  chains, which is why the panel hides itself rather than explaining. */
   const [importable, setImportable] = useState<ChainImportCandidate[]>([]);
   const [importing, setImporting] = useState<string | null>(null);
+  /** Values for a chain's {placeholders}, keyed chain id then variable name.
+   *  A chain is often a template and a pipeline goal is literal, so these have
+   *  to be supplied at import or the goal keeps the braces. */
+  const [chainVars, setChainVars] = useState<Record<string, Record<string, string>>>({});
 
   const refreshImportable = useCallback(async () => {
     try {
@@ -331,7 +335,11 @@ const PipelineStudioPage: React.FC = () => {
     async (candidate: ChainImportCandidate) => {
       setImporting(candidate.chain_id);
       try {
-        const pipeline = await apiClient.importChainAsPipeline(candidate.chain_id);
+        const pipeline = await apiClient.importChainAsPipeline(
+          candidate.chain_id,
+          undefined,
+          chainVars[candidate.chain_id]
+        );
         toast.success(
           `Imported ${pipeline.name}. ${candidate.contracts_to_write} stage${
             candidate.contracts_to_write === 1 ? '' : 's'
@@ -352,7 +360,7 @@ const PipelineStudioPage: React.FC = () => {
         setImporting(null);
       }
     },
-    [refreshSaved, refreshImportable]
+    [refreshSaved, refreshImportable, chainVars]
   );
 
   const handleSave = useCallback(async () => {
@@ -641,10 +649,35 @@ const PipelineStudioPage: React.FC = () => {
                       {candidate.contracts_to_write} contract
                       {candidate.contracts_to_write === 1 ? '' : 's'} to write
                     </span>
+                    {/* A chain is often a template. Its goals keep the braces
+                        unless the values are given here. */}
+                    {candidate.variables.map((variable) => (
+                      <input
+                        key={variable}
+                        className="w-28 px-1.5 py-0.5 rounded border border-gray-300 bg-white text-xs"
+                        placeholder={variable}
+                        aria-label={`${variable} for ${candidate.name}`}
+                        value={chainVars[candidate.chain_id]?.[variable] || ''}
+                        onChange={(e) =>
+                          setChainVars((prev) => ({
+                            ...prev,
+                            [candidate.chain_id]: {
+                              ...(prev[candidate.chain_id] || {}),
+                              [variable]: e.target.value,
+                            },
+                          }))
+                        }
+                      />
+                    ))}
                     <Button
                       size="sm"
                       variant="ghost"
-                      disabled={importing === candidate.chain_id}
+                      disabled={
+                        importing === candidate.chain_id ||
+                        candidate.variables.some(
+                          (v) => !(chainVars[candidate.chain_id]?.[v] || '').trim()
+                        )
+                      }
                       onClick={() => handleImportChain(candidate)}
                     >
                       {importing === candidate.chain_id ? 'Importing…' : 'Import'}

@@ -74,6 +74,25 @@ class LoopPolicy:
 
 
 @dataclass(frozen=True)
+class SpawnPolicy:
+    """When a stage's successors start *without waiting for it to finish*.
+
+    Every other dependency in a pipeline means "after": a stage runs, meets its
+    contract, and its successors begin. That cannot describe a stage which never
+    ends — a continuous monitor raising alerts is still monitoring, and a
+    successor waiting for it waits forever.
+
+    So a stage may say it releases its successors early, on evidence rather than
+    on completion. The two then run together. This is the one place a pipeline
+    edge does not mean "after", which is why it is a named policy rather than a
+    flag: reading the spec should make the exception obvious.
+    """
+
+    #: Findings of the stage's required types before successors are released.
+    findings: int
+
+
+@dataclass(frozen=True)
 class PipelineStage:
     """One stage: what must be true when it is done, and what it needs first."""
 
@@ -91,6 +110,9 @@ class PipelineStage:
     #: A deterministic runner, when the stage must not vary at all.
     runner: str = ""
     loop: Optional[LoopPolicy] = None
+    #: Set when successors start before this stage ends. See SpawnPolicy: the
+    #: one place a pipeline edge does not mean "after".
+    spawn_on: Optional[SpawnPolicy] = None
     #: Require a human decision before anything downstream starts. This is what
     #: makes a pipeline semi-autonomous rather than unattended.
     checkpoint: bool = False
@@ -176,6 +198,10 @@ def normalize(spec: Mapping[str, Any]) -> Pipeline:
                 until=str(loop_raw.get("until") or "contract_satisfied").strip(),
                 dry_rounds=_as_int(loop_raw.get("dry_rounds"), 2),
             )
+        spawn_raw = raw.get("spawn_on")
+        spawn = None
+        if isinstance(spawn_raw, Mapping):
+            spawn = SpawnPolicy(findings=_as_int(spawn_raw.get("findings"), 0))
         contract = raw.get("contract")
         stages.append(
             PipelineStage(
@@ -187,6 +213,7 @@ def normalize(spec: Mapping[str, Any]) -> Pipeline:
                 job_type=str(raw.get("job_type") or "research").strip(),
                 runner=str(raw.get("runner") or "").strip(),
                 loop=loop,
+                spawn_on=spawn,
                 checkpoint=bool(raw.get("checkpoint")),
                 may_revisit=_as_tuple(raw.get("may_revisit")),
             )
@@ -298,6 +325,35 @@ def _revisit_problems(pipeline: Pipeline) -> List[str]:
     """
     problems: List[str] = []
     known = {s.id for s in pipeline.stages}
+    for stage in pipeline.stages:
+        if stage.spawn_on is None:
+            continue
+        if stage.spawn_on.findings <= 0:
+            problems.append(
+                f"{stage.id}: spawn_on.findings must be a positive number of "
+                "findings; zero would release the successors immediately, which "
+                "is a dependency on nothing"
+            )
+        if stage.checkpoint:
+            problems.append(
+                f"{stage.id}: cannot both spawn_on and checkpoint. One releases "
+                "its successors without waiting at all; the other holds them "
+                "for a person. They cannot both be true of the same stage."
+            )
+        if not any(stage.id in other.depends_on for other in pipeline.stages):
+            problems.append(
+                f"{stage.id}: spawn_on says when to release successors, and "
+                "this stage has none. Either something should depend on it or "
+                "the policy says nothing."
+            )
+        required = stage.required_finding_types()
+        if not required:
+            problems.append(
+                f"{stage.id}: spawn_on counts findings of the types its "
+                "contract requires, and this contract requires none, so "
+                "nothing would ever be counted."
+            )
+
     for stage in pipeline.stages:
         for target in stage.may_revisit:
             if target not in known:

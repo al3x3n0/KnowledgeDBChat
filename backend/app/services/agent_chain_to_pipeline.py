@@ -9,19 +9,22 @@ authoring concept -- the runtime they share is not going anywhere.
 
 What does not convert
 ---------------------
-A chain step's ``trigger_condition`` has six values and a pipeline stage's
-``depends_on`` expresses one of them: "after the previous stage finished". Two
-map cleanly:
+A chain step's ``trigger_condition`` has six values. Three have a pipeline
+equivalent:
 
     on_complete   -> depends_on the step before it
     on_approval   -> the same, plus checkpoint=True
+    on_findings   -> the same, plus spawn_on={"findings": N} on the parent
 
-The other four do not, and the reason is not cosmetic. ``on_findings`` fires the
-next step *while the parent is still running* -- that is what makes a continuous
-monitor able to raise alerts without ever finishing. ``depends_on`` waits for
-the parent to finish, which such a monitor never does. ``on_fail`` and
-``on_any_end`` branch on an outcome a DAG edge cannot express, and
-``on_progress`` fires partway through.
+``on_findings`` was the interesting one. It fires the next step *while the
+parent is still running*, which is what makes a continuous monitor able to
+raise alerts without ever finishing, and no ordinary stage dependency can say
+that. Pipelines gained ``spawn_on`` for it -- the one place an edge does not
+mean "after".
+
+The remaining three still do not convert. ``on_fail`` and ``on_any_end`` branch
+on an outcome a DAG edge cannot express, and ``on_progress`` fires partway
+through work rather than on evidence.
 
 So this refuses them rather than approximating them. A conversion that looked
 successful and quietly turned a live monitor into a stage waiting for an end
@@ -36,15 +39,12 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 CONVERTIBLE = {
     "on_complete": "depends_on the preceding stage",
     "on_approval": "depends_on the preceding stage, held for review",
+    "on_findings": "spawn_on the preceding stage's findings threshold",
 }
 
 #: Why each of the rest has no stage equivalent. Shown to whoever is
 #: converting, because "cannot convert" without a reason is not actionable.
 NOT_CONVERTIBLE = {
-    "on_findings": (
-        "fires while the parent is still running, so the two run together; a "
-        "stage dependency waits for the parent to finish"
-    ),
     "on_progress": (
         "fires partway through the parent; a stage dependency has no notion of "
         "partway"
@@ -155,6 +155,17 @@ def convert(
             # The chain's way of saying "stop for a person"; the stage has a
             # word for it.
             stage["checkpoint"] = True
+        elif trigger == "on_findings":
+            # The successors start while this stage keeps running. The chain
+            # put the threshold in trigger_thresholds; the stage says it plainly.
+            thresholds = step.get("trigger_thresholds")
+            threshold = 1
+            if isinstance(thresholds, Mapping):
+                try:
+                    threshold = max(1, int(thresholds.get("findings_threshold") or 1))
+                except (TypeError, ValueError):
+                    threshold = 1
+            stage["spawn_on"] = {"findings": threshold}
 
         config = step.get("config")
         merged: Dict[str, Any] = {}

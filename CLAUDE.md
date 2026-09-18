@@ -287,16 +287,24 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   is going is `AgentJobChainDefinition` as a *second way to write work down*. A
   chain says when the next step fires; a pipeline says what must be true when a
   stage is done. `services/agent_chain_to_pipeline.py` converts one to the
-  other, surfaced in the Pipeline Studio, and the conversion **refuses rather
-  than approximates**: of six `trigger_condition` values only `on_complete` and
-  `on_approval` have a stage equivalent. `on_findings` in particular fires the
-  next step *while the parent is still running*, which is what lets a continuous
-  monitor raise alerts without ever finishing -- `depends_on` waits for an end
-  that never comes. Chains therefore survive for that case, and the model cannot
-  be dropped until either the last such chain is gone or a stage gains a way to
-  say "start while I keep going". A converted pipeline arrives with empty
-  contracts and so does not validate: that is the point, since `validate` then
-  names per stage the contract someone has to write.
+  other, surfaced in the Pipeline Studio, and **refuses rather than
+  approximates**: three of six `trigger_condition` values map (`on_complete` to
+  `depends_on`, `on_approval` to `checkpoint`, `on_findings` to `spawn_on`), and
+  `on_fail` / `on_any_end` / `on_progress` do not, because a DAG edge cannot
+  branch on an outcome or fire partway through. A converted pipeline arrives
+  with empty contracts and so does not validate: that is the point, since
+  `validate` then names per stage the contract someone has to write.
+- **`spawn_on` is the one place a pipeline edge does not mean "after".** Every
+  other dependency waits for a stage to finish, which cannot describe a stage
+  that never does -- a continuous monitor is still monitoring, and a successor
+  waiting on it waits forever. A stage may instead release its successors on
+  evidence: `spawn_on: {findings: N}`, which the binding emits as the
+  `on_findings` trigger the chain runtime already handles, so nothing in the
+  runtime changed. It is refused alongside `checkpoint` (one waits for a person,
+  the other does not wait at all), on a stage nothing depends on, and on a
+  contract requiring no finding types, since there would be nothing to count.
+  Known limitation: `agent_pipeline_restart` will not restart a stage whose
+  parent has not completed, which a spawning parent may never do.
 - **Pipelines** — a DAG of stages in `services/agent_pipeline_spec.py`, each stage a goal contract; tools are *derived* from the contract rather than named. A stage must declare a `job_type` its tools are allowed to run under: every coding tool is restricted to `analysis`/`coding` and the default is `research`, so a coding stage left at the default is planned with `clone_and_index_repo, apply_patch, run_repo_tests` and then cannot see one of them at runtime — measured, eight iterations of `search_documents` while the plan promised a repository fix. `validate()` now refuses that and names the job types that would work. Contract `validity.bounds` are checked on the **latest** finding of a *perishable* type, which is what makes "end with the tests passing" expressible: bounding every `test_result` at `failed == 0` is unsatisfiable, since the baseline run that finds the bug is red by definition, while requiring only that a `test_result` exists is satisfied by a red one. `"latest": false` restores the check-every-occurrence behaviour
 - **Workflows** — visual workflow builder (ReactFlow frontend, Zustand store), `workflow_engine.py` execution, workflow→synthesis conversion, LangGraph-based issue/PR graphs (`langgraph_issue_pr_service.py`).
 - **Campaigns** — a line of enquiry that outlives any one job

@@ -115,36 +115,62 @@ class TestRefuses:
 
     def test_the_refusal_names_the_step_the_trigger_and_the_reason(self):
         with pytest.raises(ChainNotConvertible) as caught:
-            convert(name="monitoring", chain_steps=_steps("on_complete", "on_findings"))
+            convert(name="branching", chain_steps=_steps("on_complete", "on_fail"))
         error = caught.value
-        assert error.chain_name == "monitoring"
+        assert error.chain_name == "branching"
         ((step, trigger, why),) = error.reasons
         assert step == "Step 2"
-        assert trigger == "on_findings"
-        assert "still running" in why
-
-    def test_a_live_monitor_is_exactly_the_case_this_protects(self):
-        # The real chain in this database: a monitor that raises an alert once
-        # it has five findings, while it keeps monitoring. As a stage
-        # dependency it would wait for the monitor to finish, which it never
-        # does -- a conversion that succeeded here would silently stop the
-        # alerts.
-        monitoring = [
-            {
-                "step_name": "Topic Monitoring",
-                "job_type": "monitor",
-                "trigger_condition": "on_findings",
-                "trigger_thresholds": {"findings_threshold": 5},
-            },
-            {"step_name": "Alert", "job_type": "research"},
-        ]
-        assert [t for _, t, _ in describe(monitoring)] == ["on_findings"]
-        with pytest.raises(ChainNotConvertible):
-            convert(name="continuous_monitoring_with_alerts", chain_steps=monitoring)
+        assert trigger == "on_fail"
+        assert "failing" in why
 
     def test_describe_reports_without_raising_so_callers_can_survey_first(self):
         problems = describe(_steps("on_complete", "on_fail", "on_progress"))
         assert [t for _, t, _ in problems] == ["on_fail", "on_progress"]
 
     def test_describe_is_empty_for_a_chain_that_converts(self):
-        assert describe(_steps("on_complete", "on_approval")) == []
+        assert describe(_steps("on_complete", "on_approval", "on_findings")) == []
+
+
+class TestTheMonitorCase:
+    """The chain that forced `spawn_on` to exist.
+
+    A monitor raises alerts once it has five findings, while it keeps
+    monitoring. Every ordinary stage dependency waits for the parent to finish,
+    which this parent never does -- so converting it used to be refused. The
+    stage vocabulary now has a word for it.
+    """
+
+    MONITORING = [
+        {
+            "step_name": "Topic Monitoring",
+            "job_type": "monitor",
+            "trigger_condition": "on_findings",
+            "trigger_thresholds": {"findings_threshold": 5},
+        },
+        {"step_name": "Alert", "job_type": "research"},
+    ]
+
+    def test_it_converts_now(self):
+        assert describe(self.MONITORING) == []
+        spec = convert(
+            name="continuous_monitoring_with_alerts", chain_steps=self.MONITORING
+        )
+        assert [s["id"] for s in spec["stages"]] == ["topic_monitoring", "alert"]
+
+    def test_the_threshold_survives_as_a_spawn_policy(self):
+        spec = convert(name="m", chain_steps=self.MONITORING)
+        assert spec["stages"][0]["spawn_on"] == {"findings": 5}
+        # And the successor still depends on it, so the order is unchanged.
+        assert spec["stages"][1]["depends_on"] == ["topic_monitoring"]
+
+    def test_a_missing_threshold_becomes_one_rather_than_zero(self):
+        # Zero findings would release the successor immediately, which the
+        # validator refuses; one is the smallest honest reading of "on findings".
+        spec = convert(
+            name="m",
+            chain_steps=[
+                {"step_name": "Watch", "trigger_condition": "on_findings"},
+                {"step_name": "Then"},
+            ],
+        )
+        assert spec["stages"][0]["spawn_on"] == {"findings": 1}

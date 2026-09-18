@@ -59,7 +59,7 @@ class TestSurvey:
         _chain(
             db_session,
             name="monitor",
-            steps=[_step("Watch", "on_findings"), _step("Alert")],
+            steps=[_step("Watch", "on_fail"), _step("Alert")],
         )
 
         response = client.get(SURVEY, headers=auth_headers)
@@ -89,7 +89,7 @@ class TestSurvey:
         _chain(
             db_session,
             name="blocked",
-            steps=[_step("Watch", "on_findings"), _step("Alert")],
+            steps=[_step("Watch", "on_fail"), _step("Alert")],
         )
 
         response = client.get(SURVEY, headers=auth_headers)
@@ -98,7 +98,7 @@ class TestSurvey:
         )
         (blocker,) = candidate["blockers"]
         assert blocker["step"] == "Watch"
-        assert blocker["trigger"] == "on_findings"
+        assert blocker["trigger"] == "on_fail"
         assert blocker["reason"]
         # A blocked chain has no contract count to report.
         assert candidate["contracts_to_write"] == 0
@@ -153,7 +153,7 @@ class TestImport:
         chain_id = _chain(
             db_session,
             name="monitor",
-            steps=[_step("Watch", "on_findings"), _step("Alert")],
+            steps=[_step("Watch", "on_fail"), _step("Alert")],
         )
 
         response = client.post(
@@ -165,13 +165,13 @@ class TestImport:
 
         detail = response.json()["detail"]
         assert detail["chain"] == "monitor"
-        assert detail["blockers"][0]["trigger"] == "on_findings"
+        assert detail["blockers"][0]["trigger"] == "on_fail"
 
     def test_nothing_is_saved_when_the_chain_is_refused(
         self, client, auth_headers, db_session
     ):
         chain_id = _chain(
-            db_session, name="monitor2", steps=[_step("Watch", "on_findings")]
+            db_session, name="monitor2", steps=[_step("Watch", "on_fail")]
         )
 
         client.post(SURVEY, headers=auth_headers, json={"chain_id": str(chain_id)})

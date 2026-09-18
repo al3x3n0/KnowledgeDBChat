@@ -596,3 +596,148 @@ def test_check_stalled_agent_jobs_requeues_a_job_that_lost_its_worker(
     assert job.completed_at is None
     assert queued and str(job.id) in queued[0]
     assert agent_job_tasks.count_orphan_recoveries(job) == 1
+
+
+def _pending_job(*, age_minutes: int, **kwargs) -> AgentJob:
+    """A job whose row exists but which no worker has ever claimed."""
+    job = _make_job(status=AgentJobStatus.PENDING.value, **kwargs)
+    job.created_at = datetime.utcnow() - timedelta(minutes=age_minutes)
+    job.celery_task_id = None
+    job.started_at = None
+    job.execution_lease_expires_at = None
+    job.results = {}
+    return job
+
+
+async def _noop_async_two_args(_db, _job):
+    return None
+
+
+async def _noop_async_kwargs(**_kwargs):
+    return None
+
+
+def _capture_dispatch(monkeypatch):
+    sent = []
+    monkeypatch.setattr(
+        agent_job_tasks.execute_agent_job_task,
+        "delay",
+        lambda *args, **kwargs: sent.append(args),
+    )
+    return sent
+
+
+class TestAJobThatNeverStarted:
+    """The sweep used to look only at RUNNING jobs.
+
+    A job whose row is committed but whose Celery task never arrives — a broker
+    restart, a purged queue, an enqueue that failed after the commit — sits in
+    PENDING with no worker and no task id. Nothing looked at those, so they
+    stayed pending for ever; two were found in a live database 14 and 3 days
+    old.
+    """
+
+    def test_it_is_queued_again(self, db_session, monkeypatch):
+        _patch_celery_session_factory(monkeypatch)
+        sent = _capture_dispatch(monkeypatch)
+        job = _pending_job(age_minutes=90)
+        _run(_seed_job(db_session, job))
+
+        agent_job_tasks.check_stalled_agent_jobs(undispatched_minutes=60)
+        _run(db_session.refresh(job))
+
+        assert sent, "the job was never queued again"
+        assert str(job.id) in sent[0]
+        assert job.status == AgentJobStatus.PENDING.value
+
+    def test_the_attempt_is_recorded_so_it_cannot_retry_for_ever(
+        self, db_session, monkeypatch
+    ):
+        _patch_celery_session_factory(monkeypatch)
+        _capture_dispatch(monkeypatch)
+        job = _pending_job(age_minutes=90)
+        _run(_seed_job(db_session, job))
+
+        agent_job_tasks.check_stalled_agent_jobs(undispatched_minutes=60)
+        _run(db_session.refresh(job))
+
+        assert agent_job_tasks.count_undispatched_requeues(job) == 1
+
+    def test_it_is_failed_once_the_attempts_run_out(self, db_session, monkeypatch):
+        _patch_celery_session_factory(monkeypatch)
+        sent = _capture_dispatch(monkeypatch)
+        job = _pending_job(age_minutes=90)
+        job.execution_log = [
+            {"phase": agent_job_tasks.UNDISPATCHED_REQUEUE_PHASE, "attempt": n + 1}
+            for n in range(agent_job_tasks.MAX_UNDISPATCHED_REQUEUES)
+        ]
+        _run(_seed_job(db_session, job))
+
+        monkeypatch.setattr(
+            agent_job_tasks,
+            "sync_follow_up_outcome_for_job",
+            _noop_async_two_args,
+        )
+        monkeypatch.setattr(
+            agent_job_tasks, "_publish_job_progress", _noop_async_kwargs
+        )
+
+        agent_job_tasks.check_stalled_agent_jobs(undispatched_minutes=60)
+        _run(db_session.refresh(job))
+
+        assert not sent
+        assert job.status == AgentJobStatus.FAILED.value
+        assert "never started" in (job.error or "")
+
+
+class TestWhatTheSweepMustNotTouch:
+    """Each of these would be a wrong run rather than a recovery."""
+
+    def test_a_job_queued_only_moments_ago(self, db_session, monkeypatch):
+        _patch_celery_session_factory(monkeypatch)
+        sent = _capture_dispatch(monkeypatch)
+        _run(_seed_job(db_session, _pending_job(age_minutes=2)))
+
+        agent_job_tasks.check_stalled_agent_jobs(undispatched_minutes=60)
+
+        assert sent == []
+
+    def test_a_job_a_worker_is_already_holding(self, db_session, monkeypatch):
+        # A live lease means somebody has it; queueing again would be a second
+        # run of the same job.
+        _patch_celery_session_factory(monkeypatch)
+        sent = _capture_dispatch(monkeypatch)
+        job = _pending_job(age_minutes=90)
+        job.execution_lease_owner = "worker-1"
+        job.execution_lease_expires_at = datetime.utcnow() + timedelta(minutes=5)
+        _run(_seed_job(db_session, job))
+
+        agent_job_tasks.check_stalled_agent_jobs(undispatched_minutes=60)
+
+        assert sent == []
+
+    def test_a_job_already_claimed_by_a_worker(self, db_session, monkeypatch):
+        _patch_celery_session_factory(monkeypatch)
+        sent = _capture_dispatch(monkeypatch)
+        job = _pending_job(age_minutes=90)
+        job.celery_task_id = "task-123"
+        _run(_seed_job(db_session, job))
+
+        agent_job_tasks.check_stalled_agent_jobs(undispatched_minutes=60)
+
+        assert sent == []
+
+    def test_a_recurring_job_waiting_for_its_next_fire(self, db_session, monkeypatch):
+        # Firing one of these early is not a recovery, it is a run nobody asked
+        # for — and it spends the model budget of a real job.
+        _patch_celery_session_factory(monkeypatch)
+        sent = _capture_dispatch(monkeypatch)
+        _run(
+            _seed_job(
+                db_session, _pending_job(age_minutes=90, schedule_type="continuous")
+            )
+        )
+
+        agent_job_tasks.check_stalled_agent_jobs(undispatched_minutes=60)
+
+        assert sent == []

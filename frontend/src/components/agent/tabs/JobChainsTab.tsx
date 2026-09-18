@@ -14,6 +14,8 @@
 import { GitBranch, Play } from 'lucide-react';
 import React from 'react';
 
+import { Link } from 'react-router-dom';
+
 import type { AgentJobChainDefinition } from '../../../types';
 import Button from '../../common/Button';
 
@@ -43,6 +45,24 @@ export const JobChainsTab: React.FC<JobChainsTabProps> = ({
       Job chains allow you to create multi-step workflows where jobs
       automatically trigger subsequent jobs on completion
     </p>
+    {/* A chain says when the next step fires; a pipeline says what must be
+        true when a stage is done. The chains here keep working — this points
+        at the replacement rather than removing the thing that runs. */}
+    <div className="mb-4 rounded-lg border border-gray-300 p-3 text-sm">
+      <p className="text-gray-700">
+        Chains are no longer the way to write new work down. A chain says
+        <em> when </em> the next step fires; a pipeline says
+        <em> what must be true </em> when a stage is done, and checks it.
+      </p>
+      <p className="text-gray-500 mt-1">
+        Existing chains still run. To move one over, open{' '}
+        <Link to="/pipelines" className="underline">
+          Pipeline Studio
+        </Link>{' '}
+        and import it — the chain is copied, not moved, so nothing you rely on
+        stops working.
+      </p>
+    </div>
     {chains.length === 0 ? (
       <div className="flex flex-col items-center justify-center py-12 text-gray-500">
         <GitBranch className="w-12 h-12 mb-3 text-gray-400" />

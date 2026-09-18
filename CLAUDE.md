@@ -301,7 +301,13 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   **refused** when longer than the `String(50)` column rather than truncated —
   shortening an identifier changes which node an edge names.
 - **Tool governance** — `tool_registry.py` + `tool_policy_engine.py` + `models/tool_audit.py`; per-user tool policies, approval gates for dangerous tools (`AGENT_REQUIRE_TOOL_APPROVAL`, `AGENT_DANGEROUS_TOOLS`), full execution audit log, user-defined custom tools (optionally Docker-executed). Tool dispatch lives in `agent_tool_dispatch.py`. Every tool is **declared once** in `app/agent_core/tool_specs/` (one module per domain): the schema a model reads, the governance classification, which job types may call it, and — for measurement tools — what evidence it produces. `agent_tools.AGENT_TOOLS`, the catalog, the job-type policy and the evidence map are all views of those specs, so adding a tool is a handler plus a `ToolSpec`, not four files kept in step by hand. `tests/test_tool_specs.py` enforces it.
-- **Chains are being retired as an authoring concept.** A chain and a pipeline
+- **Chains are retired as an authoring concept.** `POST`/`PATCH
+  /agent-jobs/chains` are marked `deprecated` in the OpenAPI schema and the
+  Chains tab points at Pipeline Studio's import, but both still serve and every
+  saved chain still runs: this is deprecated as a way to *write work down*, not
+  as a runtime, and removing it before someone has a working pipeline in its
+  place would take away the thing that works. The three shipped chains were
+  converted and saved as pipelines that validate. A chain and a pipeline
   produce the same runtime -- chained jobs linked by `chain_config`, created by
   `create_chained_job` -- and that runtime is staying; pipelines run on it. What
   is going is `AgentJobChainDefinition` as a *second way to write work down*. A

@@ -5996,8 +5996,11 @@ export interface ChainImportCandidate {
   blockers: Array<{ step: string; trigger: string; reason: string }>;
   /** Stages that would need a contract written before the pipeline can run. */
   contracts_to_write: number;
-  /** Variable names the chain's goals expect ({topic}), which must be supplied. */
-  variables: string[];
+  /** Variable names the chain's goals expect ({topic}), which must be supplied.
+   *  Optional because a server from before this field existed simply omits it,
+   *  and a page that crashes on version skew is worse than one that offers no
+   *  inputs. */
+  variables?: string[];
 }
 
 export interface ChainImportSurvey {

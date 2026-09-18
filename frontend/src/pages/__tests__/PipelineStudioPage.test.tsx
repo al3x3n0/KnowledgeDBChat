@@ -500,6 +500,22 @@ describe('importing a job chain', () => {
     expect(screen.queryByRole('button', { name: 'Import' })).not.toBeInTheDocument();
   });
 
+  it('survives a server that does not send variables at all', async () => {
+    // The field was added after this endpoint shipped, and a running server can
+    // be older than the page. TypeScript's `variables: string[]` is erased at
+    // runtime, so the absent case has to be tested, not declared. This crashed
+    // the whole studio with "undefined is not an object" until it was guarded.
+    const { variables, ...withoutVariables } = { ...convertible };
+    apiClient.surveyChainsForImport.mockResolvedValue({
+      candidates: [withoutVariables],
+    });
+    render(<PipelineStudioPage />);
+
+    expect(await screen.findByText('literature_review_pipeline')).toBeInTheDocument();
+    // Nothing to ask for, so it imports directly.
+    expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled();
+  });
+
   it('will not import a templated chain until its variables are given', async () => {
     // A chain fills {topic} at launch; a pipeline goal is literal. Importing
     // without a value would leave the braces in the goal.

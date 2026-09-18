@@ -624,7 +624,11 @@ const PipelineStudioPage: React.FC = () => {
             copies, and leaves the chain running.
           </p>
           <div className="flex flex-wrap gap-2">
-            {importable.map((candidate) => (
+            {importable.map((candidate) => {
+              // A server predating this field omits it; the page still works,
+              // it just has no values to ask for.
+              const variables = candidate.variables || [];
+              return (
               <div
                 key={candidate.chain_id}
                 className={`flex items-center gap-2 pl-2.5 pr-1 py-1 rounded-full border text-xs ${
@@ -651,7 +655,7 @@ const PipelineStudioPage: React.FC = () => {
                     </span>
                     {/* A chain is often a template. Its goals keep the braces
                         unless the values are given here. */}
-                    {candidate.variables.map((variable) => (
+                    {variables.map((variable) => (
                       <input
                         key={variable}
                         className="w-28 px-1.5 py-0.5 rounded border border-gray-300 bg-white text-xs"
@@ -674,7 +678,7 @@ const PipelineStudioPage: React.FC = () => {
                       variant="ghost"
                       disabled={
                         importing === candidate.chain_id ||
-                        candidate.variables.some(
+                        variables.some(
                           (v) => !(chainVars[candidate.chain_id]?.[v] || '').trim()
                         )
                       }
@@ -691,7 +695,8 @@ const PipelineStudioPage: React.FC = () => {
                   </span>
                 )}
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}

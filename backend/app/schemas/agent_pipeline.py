@@ -156,6 +156,32 @@ class PipelineLaunchResponse(BaseModel):
     checkpoints: List[str] = Field(default_factory=list)
 
 
+class ChainImportCandidate(BaseModel):
+    """One saved chain, and whether it can become a pipeline."""
+
+    chain_id: UUID
+    name: str
+    description: Optional[str] = None
+    steps: int
+    convertible: bool
+    #: Populated only when convertible is False: (step, trigger, why).
+    blockers: List[Dict[str, str]] = Field(default_factory=list)
+    #: How many stages would need a contract written before it could run.
+    contracts_to_write: int = 0
+
+
+class ChainImportSurveyResponse(BaseModel):
+    """Every saved chain, sorted into what will convert and what will not."""
+
+    candidates: List[ChainImportCandidate] = Field(default_factory=list)
+
+
+class ChainImportRequest(BaseModel):
+    chain_id: UUID
+    #: Defaults to the chain's name; a pipeline name must be unique per user.
+    name: Optional[str] = None
+
+
 class SavedPipelineCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     spec: Dict[str, Any]

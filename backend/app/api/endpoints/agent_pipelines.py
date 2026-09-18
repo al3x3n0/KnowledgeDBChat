@@ -29,11 +29,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.models.agent_job import AgentJobStatus
+from app.models.agent_job import AgentJobChainDefinition, AgentJobStatus
 from app.models.agent_pipeline import AgentPipeline
 from app.models.user import User
 from app.schemas.agent_job import AgentJobCreate
 from app.schemas.agent_pipeline import (
+    ChainImportCandidate,
+    ChainImportRequest,
+    ChainImportSurveyResponse,
     PipelineBindResponse,
     PipelineCheckResponse,
     PipelineDraftRequest,
@@ -62,6 +65,9 @@ from app.services import (
     agent_pipeline_spec,
     agent_pipeline_vocabulary,
 )
+from app.services.agent_chain_to_pipeline import ChainNotConvertible
+from app.services.agent_chain_to_pipeline import convert as chain_to_pipeline_spec
+from app.services.agent_chain_to_pipeline import describe as chain_import_blockers
 from app.services.agent_job_creation_service import agent_job_creation_service
 from app.services.auth_service import get_current_user
 from app.tasks.agent_job_tasks import execute_agent_job_task
@@ -672,6 +678,128 @@ async def save_pipeline(
         ) from error
     await db.refresh(row)
     return SavedPipelineResponse.of(row)
+
+
+@router.get("/import/chains", response_model=ChainImportSurveyResponse)
+async def survey_chains_for_import(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Every saved chain, and whether it can become a pipeline.
+
+    A survey rather than a conversion, because two of the answers need a person.
+    A chain that converts still arrives with empty contracts — the chain never
+    said what a step had to achieve — so someone has to write them before it
+    runs. A chain that does not convert needs a decision about what to do
+    instead, and this says which step blocks it and why.
+    """
+    rows = (
+        (
+            await db.execute(
+                select(AgentJobChainDefinition).order_by(AgentJobChainDefinition.name)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    candidates: list[ChainImportCandidate] = []
+    for row in rows:
+        steps = row.chain_steps if isinstance(row.chain_steps, list) else []
+        blockers = chain_import_blockers(steps)
+        contracts = 0
+        if not blockers:
+            spec = chain_to_pipeline_spec(
+                name=row.name,
+                chain_steps=steps,
+                default_config=getattr(row, "default_config", None),
+            )
+            # Every converted stage needs one; saying how many is more useful
+            # than saying that some do.
+            contracts = len(spec.get("stages", []))
+        candidates.append(
+            ChainImportCandidate(
+                chain_id=row.id,
+                name=row.name,
+                description=getattr(row, "description", None),
+                steps=len(steps),
+                convertible=not blockers,
+                blockers=[
+                    {"step": step, "trigger": trigger, "reason": why}
+                    for step, trigger, why in blockers
+                ],
+                contracts_to_write=contracts,
+            )
+        )
+    return ChainImportSurveyResponse(candidates=candidates)
+
+
+@router.post("/import/chains", response_model=SavedPipelineResponse, status_code=201)
+async def import_chain_as_pipeline(
+    payload: ChainImportRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save one chain as a pipeline. The chain is left alone.
+
+    Copying rather than moving is deliberate: the converted pipeline cannot run
+    until its contracts are written, so deleting the chain here would take away
+    the working thing before the replacement works. Removing the chain is a
+    separate decision, made once its pipeline is ready.
+    """
+    row = (
+        await db.execute(
+            select(AgentJobChainDefinition).where(
+                AgentJobChainDefinition.id == payload.chain_id
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="No such chain")
+
+    try:
+        spec = chain_to_pipeline_spec(
+            name=(payload.name or row.name).strip(),
+            chain_steps=row.chain_steps,
+            default_config=getattr(row, "default_config", None),
+        )
+    except ChainNotConvertible as error:
+        # 422 rather than 400: the request is well formed, the chain is what
+        # cannot be expressed. The body names which step and why.
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": str(error),
+                "chain": error.chain_name,
+                "blockers": [
+                    {"step": step, "trigger": trigger, "reason": why}
+                    for step, trigger, why in error.reasons
+                ],
+            },
+        ) from error
+
+    verdict, estimate = _verdict_for(spec)
+    pipeline = AgentPipeline(
+        user_id=current_user.id,
+        name=spec["name"],
+        description=(
+            getattr(row, "description", None)
+            or f"Imported from the job chain '{row.name}'."
+        ),
+        spec=spec,
+        last_check_valid=verdict,
+        last_estimated_seconds=estimate,
+    )
+    db.add(pipeline)
+    try:
+        await db.commit()
+    except IntegrityError as error:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409, detail="You already have a pipeline with that name"
+        ) from error
+    await db.refresh(pipeline)
+    return SavedPipelineResponse.of(pipeline)
 
 
 @router.get("/{pipeline_id}", response_model=SavedPipelineResponse)

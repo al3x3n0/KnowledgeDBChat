@@ -38,8 +38,13 @@ class TestItFindsTheObviousOnes:
         )
 
     def test_a_literature_review_document(self):
+        # Not literature_review: both of its producers are reachable only from
+        # chat and MCP, so a contract requiring it can never be satisfied by an
+        # autonomous job and validate() refuses it. The goal still has an
+        # answer, and the suggestion is the one that can actually be produced.
         got = names("Generate comprehensive literature review document", "synthesis")
-        assert "literature_review" in got
+        assert "synthesis_document" in got
+        assert "literature_review" not in got
 
     def test_each_suggestion_names_the_tool_that_would_produce_it(self):
         # A suggestion you cannot check is worse than none: the author has to be
@@ -59,8 +64,13 @@ class TestItRespectsWhatAStageCanActuallyDo:
         assert "papers_ingested" in names("Find relevant papers", "research")
 
     def test_unrestricted_evidence_is_offered_to_any_job_type(self):
+        # "Unrestricted" is about the evidence's declared job types. It is not a
+        # promise that a tool exists which the job type can call, and the two
+        # were conflated: literature_review restricts nothing and is still
+        # unproducible. document_summary is the honest example — unrestricted
+        # and backed by a tool an autonomous job may run.
         assert names("Review the literature", "coding") or True  # no crash
-        assert "literature_review" in names("Review the literature", "custom")
+        assert "document_summary" in names("Summarize the document", "custom")
 
     def test_what_is_already_required_is_not_suggested_again(self):
         without = names("Identify research gaps", "analysis")

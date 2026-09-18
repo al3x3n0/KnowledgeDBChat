@@ -7797,7 +7797,12 @@ what THIS run establishes.
             required_types.append("prediction_settled")
         if validity_spec.get("records_method"):
             required_types.append("method_recorded")
-        chain_lines = agent_evidence_map.describe_chain(required_types)
+        # Filtered by what this job type may call: naming a tool the
+        # runtime will refuse is worse than naming none, because the run
+        # plans around it.
+        chain_lines = agent_evidence_map.describe_chain(
+            required_types, job_type=str(job.job_type or "")
+        )
         if chain_lines:
             base_prompt += (
                 "HOW THIS RUN'S REQUIRED EVIDENCE IS PRODUCED (in an order "

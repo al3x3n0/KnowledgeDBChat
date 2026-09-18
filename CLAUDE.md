@@ -331,6 +331,28 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   contract requiring no finding types, since there would be nothing to count.
   Known limitation: `agent_pipeline_restart` will not restart a stage whose
   parent has not completed, which a spawning parent may never do.
+- **A contract may only require evidence some callable tool produces.** A tool
+  spec's `job_types` distinguishes `None` (every job type) from `()` (**no**
+  autonomous job type — 58 tools are reachable only from chat or MCP), and
+  reading the empty tuple as "unrestricted" let a stage validate, plan and start
+  with a contract nothing it could call would satisfy. `validate()` now refuses
+  a required evidence type when *every* producer is out of reach for the
+  stage's job type — per evidence, not per tool, because several types have
+  alternatives and one barred producer proves nothing (`papers_ingested` names
+  `ingest_arxiv_papers`, which no job may call, and `ingest_paper_by_id`, which
+  research may). `literature_review` is the one type no job type can produce;
+  `tests/test_contract_producers_are_reachable.py` pins that list, so a tool
+  withdrawn from autonomous jobs surfaces there rather than in a stuck run.
+  `agent_contract_suggestions` filters the same way — a suggestion that cannot
+  be satisfied is worse than none, because it looks like an answer.
+  The same rule governs the *prompt*: `agent_evidence_map.describe_chain` takes
+  the job type and names only tools the run may call, leading with one it can.
+  A `papers_ingested` stage was told "ingest_arxiv_papers (or
+  ingest_paper_by_id) yields papers_ingested" when it could call only the
+  second; it searched, found 18 papers and spent its remaining rounds on web
+  search and progress reports without ingesting one. Naming a tool the runtime
+  will refuse is worse than naming none, because the run plans around it.
+
 - **Pipelines** — a DAG of stages in `services/agent_pipeline_spec.py`, each stage a goal contract; tools are *derived* from the contract rather than named. A stage must declare a `job_type` its tools are allowed to run under: every coding tool is restricted to `analysis`/`coding` and the default is `research`, so a coding stage left at the default is planned with `clone_and_index_repo, apply_patch, run_repo_tests` and then cannot see one of them at runtime — measured, eight iterations of `search_documents` while the plan promised a repository fix. `validate()` now refuses that and names the job types that would work. Contract `validity.bounds` are checked on the **latest** finding of a *perishable* type, which is what makes "end with the tests passing" expressible: bounding every `test_result` at `failed == 0` is unsatisfiable, since the baseline run that finds the bug is red by definition, while requiring only that a `test_result` exists is satisfied by a red one. `"latest": false` restores the check-every-occurrence behaviour
 - **Workflows** — visual workflow builder (ReactFlow frontend, Zustand store), `workflow_engine.py` execution, workflow→synthesis conversion, LangGraph-based issue/PR graphs (`langgraph_issue_pr_service.py`).
 - **Campaigns** — a line of enquiry that outlives any one job

@@ -99,11 +99,24 @@ def _candidates_for_job_type(job_type: str) -> List[Any]:
     author accepts it, and the checker then refuses the stage for a reason
     that looks unrelated to what they just clicked.
     """
+    from app.agent_core import tool_specs
+
     wanted = str(job_type or "").strip()
+    runnable_here = set(tool_specs.STATIC_CATALOG.tools_for_job_type(wanted))
     out = []
     for evidence in vocabulary.evidence_types():
         allowed = tuple(evidence.job_types or ())
         if allowed and wanted and wanted not in allowed:
+            continue
+        # The evidence saying a job type may produce it is not the same as a
+        # tool existing that this job type can call. ``literature_review``
+        # declares no restriction and yet both its producers are reachable only
+        # from chat or MCP, so suggesting it hands the author a contract that
+        # can never be satisfied -- which is worse than suggesting nothing,
+        # because it looks like an answer.
+        if evidence.producers and not any(
+            producer in runnable_here for producer in evidence.producers
+        ):
             continue
         out.append(evidence)
     return out

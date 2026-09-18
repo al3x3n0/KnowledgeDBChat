@@ -234,6 +234,51 @@ def _as_int(value: Any, default: int) -> int:
         return default
 
 
+def _evidence_no_producer_can_make(stage: PipelineStage) -> List[Tuple[str, str]]:
+    """Required evidence that *no* tool this stage may call can produce.
+
+    Distinct from :func:`_tools_the_job_type_cannot_call`, which flags one
+    barred tool in a chain. Several evidence types have alternative producers,
+    so a single barred tool proves nothing -- ``papers_ingested`` names both
+    ``ingest_arxiv_papers`` (which no autonomous job may call) and
+    ``ingest_paper_by_id`` (which research may), and is perfectly satisfiable.
+    What makes a contract impossible is *every* producer being out of reach.
+
+    The distinction that matters is ``job_types is None`` (no restriction)
+    against ``job_types == ()`` (no autonomous job type at all, which is a real
+    case: 58 tools are reachable only from chat or MCP). Reading the empty tuple
+    as "unrestricted" is what let ``literature_review`` validate on a saved
+    pipeline whose stage could never have completed: both of its producers are
+    chat-only, so nothing the run could call would ever satisfy it.
+
+    Returns (evidence, job types that would work) so the message can say what to
+    change rather than only that something is wrong.
+    """
+    from app.agent_core import tool_specs
+    from app.services import agent_pipeline_vocabulary as vocabulary
+
+    catalog = tool_specs.STATIC_CATALOG
+    by_evidence = {item.name: item for item in vocabulary.evidence_types()}
+    impossible: List[Tuple[str, str]] = []
+    for name in _required_types(stage.contract):
+        item = by_evidence.get(name)
+        if item is None or not item.producers:
+            continue
+        runnable_here = set(catalog.tools_for_job_type(stage.job_type))
+        if any(producer in runnable_here for producer in item.producers):
+            continue
+        elsewhere = [
+            job_type
+            for job_type in vocabulary.job_types()
+            if any(
+                producer in set(catalog.tools_for_job_type(job_type))
+                for producer in item.producers
+            )
+        ]
+        impossible.append((name, ", ".join(elsewhere)))
+    return impossible
+
+
 def _tools_the_job_type_cannot_call(stage: PipelineStage) -> List[Tuple[str, str]]:
     """Planned tools this stage's job type is not allowed to use.
 
@@ -405,6 +450,18 @@ def _stage_problems(stage: PipelineStage, pipeline: Pipeline) -> List[str]:
         problems.append(
             f"{stage.id}: needs {tool}, which job_type {stage.job_type!r} may "
             f"not call (allowed: {allowed}). Set the stage's job_type."
+        )
+
+    for name, elsewhere in _evidence_no_producer_can_make(stage):
+        problems.append(
+            f"{stage.id}: requires {name}, which no tool job_type "
+            f"{stage.job_type!r} may call can produce"
+            + (
+                f". Job types that could: {elsewhere}"
+                if elsewhere
+                else ", and no job type can -- its producers are reachable only "
+                "from chat or MCP"
+            )
         )
 
     required = stage.required_finding_types()

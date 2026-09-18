@@ -160,31 +160,66 @@ def chain_for(required: Iterable[str]) -> List[str]:
     return ordered
 
 
-def describe_chain(required: Sequence[str]) -> List[str]:
-    """Lines telling a run how to obtain the evidence its contract demands."""
+def _callable_by(job_type: Optional[str]) -> Optional[set]:
+    """Tools this job type may actually run, or None when unfiltered."""
+    if not job_type:
+        return None
+    from app.agent_core import tool_specs
+
+    return set(tool_specs.STATIC_CATALOG.tools_for_job_type(job_type))
+
+
+def describe_chain(
+    required: Sequence[str], *, job_type: Optional[str] = None
+) -> List[str]:
+    """Lines telling a run how to obtain the evidence its contract demands.
+
+    Filtered by what the job type may call, because this text is advice the run
+    follows. A stage requiring ``papers_ingested`` was told "ingest_arxiv_papers
+    (or ingest_paper_by_id) yields papers_ingested" while its own job type could
+    call only the second: the recommended tool, named first, would have been
+    refused. That run searched, found 18 papers, and spent its remaining rounds
+    on web search and progress reports without ever ingesting one. Naming a tool
+    the runtime will refuse is worse than naming none, because the run plans
+    around it.
+    """
     chain = chain_for(required)
     if not chain:
         return []
+    runnable = _callable_by(job_type)
     lines: List[str] = []
     for tool in chain:
         entry = _BY_TOOL[tool]
-        produced = ", ".join(entry.produces)
-        after = f" after {', '.join(entry.requires)}" if entry.requires else ""
-        detail = f" Takes {entry.consumes}" if entry.consumes else ""
-        # Name the alternatives, so a run whose situation does not suit the
-        # planned tool knows another exists rather than forcing the one it was
-        # given. Without this the second route to a fact is unreachable in
-        # practice: nothing in the prompt ever mentions it.
         alternatives = [
             other
             for produced_type in entry.produces
             for other in producers_of(produced_type)
             if other != tool
         ]
-        instead = (
-            f" (or {', '.join(dict.fromkeys(alternatives))})" if alternatives else ""
+        candidates = [tool, *dict.fromkeys(alternatives)]
+        if runnable is not None:
+            candidates = [name for name in candidates if name in runnable]
+            if not candidates:
+                # Nothing here can produce it. validate() refuses such a
+                # contract, so this is the belt to that braces -- and silence
+                # beats advertising a door that does not open.
+                continue
+        lead, rest = candidates[0], candidates[1:]
+        # Describe the tool actually being recommended: its inputs and
+        # prerequisites are what the run has to satisfy, and they are not
+        # always the planned tool's.
+        lead_entry = _BY_TOOL.get(lead, entry)
+        produced = ", ".join(lead_entry.produces or entry.produces)
+        after = (
+            f" after {', '.join(lead_entry.requires)}" if lead_entry.requires else ""
         )
-        lines.append(f"{tool}{instead} yields {produced}{after}.{detail}")
+        detail = f" Takes {lead_entry.consumes}" if lead_entry.consumes else ""
+        # Name the alternatives, so a run whose situation does not suit the
+        # planned tool knows another exists rather than forcing the one it was
+        # given. Without this the second route to a fact is unreachable in
+        # practice: nothing in the prompt ever mentions it.
+        instead = f" (or {', '.join(rest)})" if rest else ""
+        lines.append(f"{lead}{instead} yields {produced}{after}.{detail}")
     return lines
 
 

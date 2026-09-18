@@ -21,6 +21,7 @@ import type {
   AgentJobCreate,
   AgentJobFromChainCreate,
 } from '../../../types';
+import QueueItemFactsRow, { factsFromCheckpointQueueItem } from '../QueueItemFacts';
 import Button from '../../../components/common/Button';
 import LoadingSpinner from '../../../components/common/LoadingSpinner';
 import { apiClient } from '../../../services/api';
@@ -792,56 +793,7 @@ export const OperatorQueueTab: React.FC<OperatorQueueTabProps> = ({
                 </div>
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 mb-2">
-                    <span className={`text-xs px-2 py-1 rounded ${
-                      item.item_type === 'approval_checkpoint'
-                        ? 'bg-amber-100 text-amber-800'
-                        : item.item_type === 'job_recovery'
-                          ? 'bg-red-100 text-red-800'
-                          : item.item_type === 'policy_review'
-                            ? 'bg-rose-100 text-rose-800'
-                            : item.item_type === 'budget_review'
-                              ? 'bg-amber-100 text-amber-800'
-                            : 'bg-blue-100 text-blue-800'
-                    }`}>
-                      {item.item_type.replace(/_/g, ' ')}
-                    </span>
-                    {item.status ? (
-                      <span className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded">
-                        {item.status}
-                      </span>
-                    ) : null}
-                    {item.reason_label ? (
-                      <span className="text-xs bg-gray-200 text-gray-700 px-2 py-1 rounded">
-                        {item.reason_label}
-                      </span>
-                    ) : null}
-                    {item.sla_bucket ? (
-                      <span className={`text-xs px-2 py-1 rounded ${
-                        item.sla_bucket === 'overdue'
-                          ? 'bg-rose-100 text-rose-800'
-                          : item.sla_bucket === 'at_risk'
-                            ? 'bg-amber-100 text-amber-800'
-                            : 'bg-emerald-100 text-emerald-800'
-                      }`}>
-                        {item.sla_bucket.replace(/_/g, ' ')}
-                      </span>
-                    ) : null}
-                    {item.escalation_level ? (
-                      <span className={`text-xs px-2 py-1 rounded ${
-                        item.escalation_level === 'high'
-                          ? 'bg-rose-50 text-rose-700 border border-rose-200'
-                          : item.escalation_level === 'medium'
-                            ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                            : 'bg-gray-100 text-gray-600 border border-gray-200'
-                      }`}>
-                        {item.escalation_level}
-                      </span>
-                    ) : null}
-                    {item.created_at ? (
-                      <span className="text-xs text-gray-500">
-                        {new Date(item.created_at).toLocaleString()}
-                      </span>
-                    ) : null}
+                    <QueueItemFactsRow facts={factsFromCheckpointQueueItem(item)} />
                   </div>
                   <div className="font-medium text-gray-900">{item.title}</div>
                   {item.summary ? (

@@ -1,3 +1,4 @@
+import QueueItemFactsRow, { factsFromControlReview } from '../components/agent/QueueItemFacts';
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from 'react-query';
@@ -1981,17 +1982,11 @@ const AgentControlPlanePage: React.FC = () => {
                             {review.run_status ? <span> • {review.run_status}</span> : null}
                           </div>
                         ) : null}
-                        {(review.age_minutes !== undefined && review.age_minutes !== null) || review.priority_score !== undefined || review.sla_bucket || review.escalation_level ? (
-                          <div className="mt-2 text-xs text-gray-500">
-                            {review.age_minutes !== undefined && review.age_minutes !== null ? <span>Age: {review.age_minutes}m</span> : null}
-                            {review.age_minutes !== undefined && review.age_minutes !== null && review.priority_score !== undefined && review.priority_score !== null ? <span> • </span> : null}
-                            {review.priority_score !== undefined && review.priority_score !== null ? <span>Urgency: {review.priority_score}</span> : null}
-                            {((review.age_minutes !== undefined && review.age_minutes !== null) || (review.priority_score !== undefined && review.priority_score !== null)) && review.sla_bucket ? <span> • </span> : null}
-                            {review.sla_bucket ? <span>SLA: {review.sla_bucket.replace(/_/g, ' ')}</span> : null}
-                            {(((review.age_minutes !== undefined && review.age_minutes !== null) || (review.priority_score !== undefined && review.priority_score !== null) || review.sla_bucket) && review.escalation_level) ? <span> • </span> : null}
-                            {review.escalation_level ? <span>Escalation: {review.escalation_level}</span> : null}
-                          </div>
-                        ) : null}
+                        <QueueItemFactsRow
+                          facts={factsFromControlReview(review)}
+                          showItemType={false}
+                          className="mt-2"
+                        />
                         {review.item_type === 'approval_checkpoint' && review.checkpoint?.action?.tool ? (
                           <div className="mt-2 text-xs text-gray-500">
                             Pending tool: <span className="font-mono">{String(review.checkpoint.action.tool)}</span>

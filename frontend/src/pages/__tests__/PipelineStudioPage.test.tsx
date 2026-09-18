@@ -164,7 +164,12 @@ it('reports a checkpoint before the run stops at it, not when it does', async ()
 
 it('separates unparseable text from an invalid pipeline', async () => {
   render(<PipelineStudioPage />);
-  await screen.findByText('profile_c_workload');
+  // findAll, like every other wait on this text in this file: the tool appears
+  // once per stage that lists it, so the singular form asserts a render order
+  // rather than that the page rendered. It passed only while this file happened
+  // to run early enough to catch a single stage, and any edit that perturbed
+  // jest's file ordering broke it.
+  await screen.findAllByText('profile_c_workload');
 
   typeSpec('{ not json');
 

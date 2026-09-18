@@ -967,6 +967,13 @@ export const OperatorQueueTab: React.FC<OperatorQueueTabProps> = ({
                       </div>
                     );
                   })()}
+                  {item.item_type === 'blocked_run' && Array.isArray(item.checkpoint?.missing) && item.checkpoint.missing.length > 0 ? (
+                    /* What the run lacked, named, so the row can be answered
+                       without opening the job. */
+                    <p className="text-xs text-gray-500 mt-2">
+                      Waiting on: {(item.checkpoint.missing as string[]).slice(0, 4).join(', ')}
+                    </p>
+                  ) : null}
                   {item.item_type === 'approval_checkpoint' && (() => {
                     const draft = getQueueDraftValue(item);
                     return (

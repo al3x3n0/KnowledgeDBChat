@@ -49,6 +49,7 @@ def queue_reason_label(reason_code: str) -> str:
     code = str(reason_code or "").strip().lower()
     labels = {
         "approval_required": "Approval required",
+        "needs_input": "Waiting on an answer",
         "execution_failure": "Execution failure",
         "stalled_run": "Stalled run",
         "scheduled_recovery": "Scheduled recovery",

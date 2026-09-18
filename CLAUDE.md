@@ -343,6 +343,19 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   beside it. The detail endpoint returns the campaign's items, the list does
   not — loading every question of every campaign to render rows that show none
   of them is a query per campaign for nothing.
+- **The operator queue shows two different things.** An `approval_checkpoint`
+  is a proposal awaiting sign-off; a `blocked_run` is a run that stopped
+  because it needs a person and has nothing to propose
+  (`current_phase='blocked_needs_input'`, set by `agent_runtime_finalizer` when
+  a loop ends with its contract unmet). Only the first had a projector, and the
+  recovery branch beside it requires `schedule_type` to be recurring, so a
+  one-shot blocked run appeared in no queue at all — six were found waiting 8 to
+  11 days, one of them a pipeline stage, which is the whole DAG behind it
+  stopped with nobody told. The row carries the sentence the run recorded about
+  why it gave up and the `missing` list it could not satisfy, because that is
+  what the person answering it needs; Resume is offered only when the run
+  recorded `resumable`, since an action that would fail is worse than none.
+
 - **Synthesis & reporting** — multi-document synthesis jobs, repo analysis reports and presentations, retrieval traces for RAG observability.
 
 ## Key Architectural Patterns

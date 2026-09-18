@@ -25,6 +25,26 @@ class JobCheckpointQueueDependencies:
     extract_launch_mode: Callable[..., Any]
 
 
+#: The phase the runtime sets when a run stops because it needs a person
+#: (``agent_runtime_finalizer``). It is not an approval: nothing is proposed,
+#: something is missing.
+BLOCKED_PHASE = "blocked_needs_input"
+
+
+def _is_blocked_on_a_person(job: AgentJob) -> bool:
+    return (
+        str(job.status or "").strip().lower() == AgentJobStatus.PAUSED.value
+        and str(job.current_phase or "").strip() == BLOCKED_PHASE
+    )
+
+
+def _blocked_payload(job: AgentJob) -> dict[str, Any]:
+    """What the run recorded about why it gave up, if anything."""
+    results = job.results if isinstance(job.results, dict) else {}
+    blocked = results.get("blocked")
+    return blocked if isinstance(blocked, dict) else {}
+
+
 def build_job_checkpoint_queue_items(
     jobs: list[AgentJob],
     *,
@@ -101,6 +121,90 @@ def build_job_checkpoint_queue_items(
                     job_id=job.id,
                     job=job_response,
                     checkpoint=checkpoint,
+                    scheduler_state=scheduler_state,
+                    actions=action_rows,
+                )
+            )
+            continue
+
+        # A run that stopped because it needs a person is not an approval:
+        # nothing is proposed for sign-off, something is missing. It carries no
+        # approval checkpoint, and the recurring branch below skips it because
+        # it is a one-shot job, so before this it appeared in no queue at all --
+        # six were found waiting 8 to 11 days, one of them a pipeline stage,
+        # which is the whole DAG behind it stopped with nobody told.
+        if _is_blocked_on_a_person(job):
+            blocked = _blocked_payload(job)
+            created_at = (
+                job.last_activity_at
+                or job.completed_at
+                or job.started_at
+                or job.created_at
+            )
+            urgency = deps.queue_priority_fields(
+                item_type="blocked_run",
+                reason_code="needs_input",
+                created_at=created_at,
+                next_run_at=job.next_run_at,
+                backoff_until=None,
+                stale=False,
+                now=now,
+            )
+            # Resume is offered only when the run said it could be resumed;
+            # the rest is a decision a person has to make with the job open.
+            action_rows = (
+                [
+                    AgentCheckpointQueueActionResponse(
+                        kind="job_action",
+                        label="Resume",
+                        action="resume",
+                        recommended=True,
+                    )
+                ]
+                if blocked.get("resumable")
+                else []
+            )
+            missing = [str(m) for m in (blocked.get("missing") or []) if str(m).strip()]
+            items.append(
+                AgentCheckpointQueueItemResponse(
+                    queue_key=f"blocked:{job.id}",
+                    item_type="blocked_run",
+                    priority=100,
+                    title=job.name,
+                    # The run usually knows why it gave up. That sentence is the
+                    # single most useful thing in this row.
+                    summary=str(
+                        blocked.get("reason") or job.phase_details or job.goal or ""
+                    ).strip()[:320]
+                    or None,
+                    evidence_summary=deps.queue_evidence_summary_for_job(job),
+                    status=job.status,
+                    customer=customer,
+                    job_name=job.name,
+                    job_type=str(job.job_type or "").strip() or None,
+                    reason_code="needs_input",
+                    reason_label=deps.queue_reason_label("needs_input"),
+                    recommended_action="resume" if action_rows else None,
+                    priority_score=urgency["priority_score"],
+                    age_minutes=urgency["age_minutes"],
+                    sla_bucket=urgency["sla_bucket"],
+                    escalation_level=urgency["escalation_level"],
+                    is_overdue=urgency["is_overdue"],
+                    is_stale=urgency["is_stale"],
+                    next_run_at=job.next_run_at,
+                    backoff_until=None,
+                    action_count=len(action_rows),
+                    created_at=created_at,
+                    job_id=job.id,
+                    job=job_response,
+                    # What it lacks, named, so the row can be acted on without
+                    # opening the run.
+                    checkpoint={
+                        "kind": "blocked",
+                        "reason": blocked.get("reason"),
+                        "missing": missing,
+                        "resumable": bool(blocked.get("resumable")),
+                    },
                     scheduler_state=scheduler_state,
                     actions=action_rows,
                 )

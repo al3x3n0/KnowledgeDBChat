@@ -47,10 +47,15 @@ import { useMutation } from 'react-query';
 
 import Button from '../../common/Button';
 import { DiscoveryWhy } from '../DiscoveryWhy';
+import { RejectWithReason } from '../RejectWithReason';
 import LoadingSpinner from '../../common/LoadingSpinner';
 import { apiClient } from '../../../services/api';
 import { invalidateAgentRunQueries } from '../../../utils/agentRunQueries';
-import type { ResearchInboxItem, ResearchInboxItemStatus } from '../../../types';
+import type {
+  ResearchInboxItem,
+  ResearchInboxItemStatus,
+  ResearchInboxItemUpdateRequest,
+} from '../../../types';
 import {
   formatInboxHealthDrilldownLabel,
   formatInboxPolicyDrilldownLabel,
@@ -167,7 +172,7 @@ export const ResearchInboxTab: React.FC<ResearchInboxTabProps> = ({
   const deepLinkedInboxId = useMemo(() => new URLSearchParams(location.search).get('inbox'), [location.search]);
 
   const updateInboxItemMutation = useMutation(
-    ({ itemId, data }: { itemId: string; data: { status?: ResearchInboxItemStatus; feedback?: string; metadata_patch?: Record<string, any> } }) =>
+    ({ itemId, data }: { itemId: string; data: ResearchInboxItemUpdateRequest }) =>
       apiClient.updateResearchInboxItem(itemId, data),
     {
       onSuccess: (_res, vars) => {
@@ -190,7 +195,7 @@ export const ResearchInboxTab: React.FC<ResearchInboxTabProps> = ({
   );
 
   const bulkUpdateInboxMutation = useMutation(
-    ({ itemIds, data }: { itemIds: string[]; data: { status?: ResearchInboxItemStatus; feedback?: string } }) =>
+    ({ itemIds, data }: { itemIds: string[]; data: ResearchInboxItemUpdateRequest }) =>
       apiClient.bulkUpdateResearchInboxItems({ item_ids: itemIds, ...data }),
     {
       onSuccess: (res) => {
@@ -993,21 +998,21 @@ export const ResearchInboxTab: React.FC<ResearchInboxTabProps> = ({
                 <ThumbsUp className="w-4 h-4 mr-1" />
                 Accept Selected
               </Button>
-            <Button
-              size="sm"
-              variant="secondary"
+            <RejectWithReason
+              label="Reject Selected"
               disabled={selectedIds.length === 0 || bulkUpdateInboxMutation.isLoading}
-              onClick={() => {
-                  bulkUpdateInboxMutation.mutate({
-                    itemIds: selectedIds,
-                    data: { status: 'rejected', feedback: inboxBulkRejectReason.trim() || undefined },
-                  });
-                  setInboxBulkRejectReason('');
-                }}
-            >
-              <ThumbsDown className="w-4 h-4 mr-1" />
-              Reject Selected
-            </Button>
+              onReject={(rejectionReason) => {
+                bulkUpdateInboxMutation.mutate({
+                  itemIds: selectedIds,
+                  data: {
+                    status: 'rejected',
+                    feedback: inboxBulkRejectReason.trim() || undefined,
+                    rejection_reason: rejectionReason,
+                  },
+                });
+                setInboxBulkRejectReason('');
+              }}
+            />
           </div>
           <textarea
             className="mt-3 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
@@ -1296,20 +1301,19 @@ export const ResearchInboxTab: React.FC<ResearchInboxTabProps> = ({
                     <ThumbsUp className="w-4 h-4 mr-1" />
                     Accept
                   </Button>
-                  <Button
-                    size="sm"
-                    variant="secondary"
+                  <RejectWithReason
                     disabled={item.status === 'rejected' || updateInboxItemMutation.isLoading}
-                    onClick={() => {
+                    onReject={(rejectionReason) => {
                       updateInboxItemMutation.mutate({
                         itemId: item.id,
-                        data: { status: 'rejected', feedback: inboxRejectReasonDrafts[item.id]?.trim() || undefined },
+                        data: {
+                          status: 'rejected',
+                          feedback: inboxRejectReasonDrafts[item.id]?.trim() || undefined,
+                          rejection_reason: rejectionReason,
+                        },
                       });
                     }}
-                  >
-                    <ThumbsDown className="w-4 h-4 mr-1" />
-                    Reject
-                  </Button>
+                  />
                   <div className="grid gap-2">
                     <input
                       className="border border-gray-300 rounded-lg px-3 py-2 text-sm"

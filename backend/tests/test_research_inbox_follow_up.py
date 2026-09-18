@@ -1468,6 +1468,10 @@ async def test_recompute_profile_rewards_completed_follow_up_outcomes():
                         "accepted",
                         "Latency regression note",
                         "API latency regression found",
+                        # rejection_reason: an accepted item has none. The query
+                        # selects it so the learner can tell a rejection about
+                        # the subject from one about the work.
+                        None,
                     )
                 ]
             ),

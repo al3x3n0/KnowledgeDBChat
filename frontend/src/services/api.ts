@@ -189,6 +189,7 @@ import {
   ResearchInboxBulkFollowUpRelaunchResponse,
   ResearchInboxListResponse,
   ResearchInboxItemUpdateRequest,
+  ResearchInboxRejectionReason,
   ResearchInboxStats,
   ResearchMonitorAnalyticsResponse,
   ResearchMonitorCustomerBudgetUpdateRequest,
@@ -4367,6 +4368,11 @@ class ApiClient {
     data: ResearchInboxItemUpdateRequest
   ): Promise<ResearchInboxItem> {
     const response = await this.client.patch(`/api/v1/research/inbox/${itemId}`, data);
+    return response.data;
+  }
+
+  async getResearchInboxRejectionReasons(): Promise<{ reasons: ResearchInboxRejectionReason[] }> {
+    const response = await this.client.get(`/api/v1/research/inbox/rejection-reasons`);
     return response.data;
   }
 

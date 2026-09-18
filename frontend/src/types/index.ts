@@ -4093,6 +4093,7 @@ export interface ResearchInboxItem {
   discovered_at: string;
   status: ResearchInboxItemStatus;
   feedback?: string;
+  rejection_reason?: string;
   metadata?: Record<string, any>;
   follow_up_decision?: string;
   follow_up_policy_mode?: string;
@@ -4133,7 +4134,19 @@ export interface ResearchInboxListResponse {
 export interface ResearchInboxItemUpdateRequest {
   status?: ResearchInboxItemStatus;
   feedback?: string;
+  /** Why the item was rejected; decides what the monitor profile learns from it. */
+  rejection_reason?: string;
   metadata_patch?: Record<string, any>;
+}
+
+/** One rejection choice, and what the learner will do with it. Served by the
+ *  backend rather than restated here, so the effect shown beside a choice is
+ *  the effect actually applied. */
+export interface ResearchInboxRejectionReason {
+  key: string;
+  label: string;
+  teaches_topic: boolean;
+  effect: string;
 }
 
 export interface ResearchInboxBulkFollowUpRelaunchRequest {

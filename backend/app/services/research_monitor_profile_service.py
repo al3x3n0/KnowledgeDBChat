@@ -22,6 +22,7 @@ from app.models.agent_job import AgentJob
 from app.models.notification import Notification, NotificationType
 from app.models.research_inbox import ResearchInboxItem
 from app.models.research_monitor_profile import ResearchMonitorProfile
+from app.services import research_rejection_reasons as rejection_reasons
 from app.services.autonomy_service import (
     build_monitor_follow_up_autonomy_compat,
     build_monitor_policy_compat_fields,
@@ -3247,6 +3248,7 @@ class ResearchMonitorProfileService:
                 ResearchInboxItem.status,
                 ResearchInboxItem.title,
                 ResearchInboxItem.summary,
+                ResearchInboxItem.rejection_reason,
             )
             .where(
                 ResearchInboxItem.user_id == user_id,
@@ -3270,7 +3272,7 @@ class ResearchMonitorProfileService:
         recommendation_scores = Counter()
         source_type_scores = Counter()
         outcome_counters = Counter()
-        for status, title, summary in rows:
+        for status, title, summary, rejection_reason in rows:
             text = f"{title or ''} {summary or ''}"
             toks = self.tokenize(text)
             phrases = self.extract_phrases(text)
@@ -3280,8 +3282,12 @@ class ResearchMonitorProfileService:
                 pos.update(toks)
                 pos_phrases.update(phrases)
             elif str(status) == "rejected":
-                neg.update(toks)
-                neg_phrases.update(phrases)
+                # Only a rejection that was *about the subject* is evidence
+                # about the words. Rejecting a weak paper on your own topic
+                # used to teach the profile to hide that topic.
+                if rejection_reasons.teaches_topic(rejection_reason):
+                    neg.update(toks)
+                    neg_phrases.update(phrases)
 
         outcome_stmt = (
             select(

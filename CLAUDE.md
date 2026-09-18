@@ -178,6 +178,26 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
 - **Autonomous agents & control plane** — observe→think→act→evaluate loop in `services/autonomous_agent_executor.py` (the largest service), decomposed into runtime services (`agent_observation_service`, `agent_thinking_service`, `agent_action_service`, `agent_progress_evaluation_service`, `agent_checkpoint_service`, `agent_runtime_*`). Job chaining/swarm orchestration in `agent_chain_orchestration_service.py`; autonomy policies and decision events (`models/autonomy_decision_event.py`, `agent_tool_prior.py`) surface in the control-plane UI. Specialized deterministic runners: coding, research, experiment, LaTeX, scientific validation (`agent_*_runner_service.py`, registered in `agent_deterministic_runner_registry.py`).
 - **Coding swarm** — backlog items, swarm profiles, code patch proposals, and PRs (`coding_backlog`, `coding_swarm_profiles`, `code_patches`, `patch_prs`); git operations via `git_service.py`, workspaces via `coding_workspace_manager.py`, symbol indexing via `repo_symbol_index_service.py`. KB patch application is gated by `AGENT_KB_PATCH_APPLY_ENABLED`.
 - **Research suite** — papers (arXiv ingestion, enrichment, extraction, KG building: `paper_*_service.py`), research notes, portfolios, inbox with follow-up automation, monitor profiles, domain research profiles, reading lists. The research runner (`agent_research_runner_service.py`) orchestrates end-to-end workflows.
+
+  **The inbox is a loop, and both halves of it are legible.** The monitor
+  profile learns from triage and the runner scores candidates against it;
+  `services/research_discovery_signals.py` keeps the terms that produced a
+  score so an item can say *matches "sparse attention", a phrase from items you
+  kept* instead of the old `token_bias`. Its tokenizer is asserted equal to
+  `ResearchMonitorProfileService`'s rather than copied — drift there names a
+  term that was never scored. The weight is a signed net over **occurrences**
+  (`Counter.update(tokens)`), not a count of items, so the wording never says
+  "you accepted this N times"; the number goes to a tooltip.
+  Going the other way, a rejection carries a reason
+  (`services/research_rejection_reasons.py`) and the reason decides what may be
+  learned: only `off_topic` moves the token and phrase counters. Rejecting a
+  weak paper on your own subject used to teach the profile to hide that
+  subject, most strongly for the topics you see most. `low_quality` teaches
+  **nothing** on purpose — the honest lesson is about a venue or a group, which
+  this profile does not model, and downweighting every arXiv paper would be a
+  worse error than silence; the UI says so beside the choice. A NULL reason
+  keeps the old behaviour, because rows triaged before the column existed were
+  learned from under those rules.
 - **Document generation** — LaTeX projects with server-side compilation (dedicated `celery_latex` worker, disabled/admin-only by default via `LATEX_COMPILER_*`), DOCX editor, PPTX/presentation generation, PDF export, artifact drafts staged for review before publishing.
 - **Training / AI Hub** — datasets, fine-tuning jobs (`services/trainers/`, backends: local/modal/runpod), model registry, eval templates and benchmark harness. Gated by `TRAINING_ENABLED`.
 - **Experiments & scientific validation** — experiment plans/runs, Docker-sandboxed validation with image allowlists and resource caps (`SCIENTIFIC_VALIDATION_*`, `UNSAFE_CODE_EXEC_*` settings).

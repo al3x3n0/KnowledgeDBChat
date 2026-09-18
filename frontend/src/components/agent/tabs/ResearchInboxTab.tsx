@@ -46,6 +46,7 @@ import toast from 'react-hot-toast';
 import { useMutation } from 'react-query';
 
 import Button from '../../common/Button';
+import { DiscoveryWhy } from '../DiscoveryWhy';
 import LoadingSpinner from '../../common/LoadingSpinner';
 import { apiClient } from '../../../services/api';
 import { invalidateAgentRunQueries } from '../../../utils/agentRunQueries';
@@ -1174,11 +1175,7 @@ export const ResearchInboxTab: React.FC<ResearchInboxTabProps> = ({
                       {item.follow_up_customer_budget_reason ? ` — ${item.follow_up_customer_budget_reason}` : ''}
                     </p>
                   ) : null}
-                  {Array.isArray((item.metadata as any)?.discovery_reasons) && (item.metadata as any).discovery_reasons.length > 0 ? (
-                    <p className="text-xs text-gray-500 mt-2">
-                      Discovery why: {((item.metadata as any).discovery_reasons as string[]).slice(0, 3).join(', ')}
-                    </p>
-                  ) : null}
+                  <DiscoveryWhy metadata={item.metadata} />
                   {item.follow_up_operator_decision ? (
                     <p className="text-xs text-gray-500 mt-2">
                       Operator: {item.follow_up_operator_decision.replace(/_/g, ' ')}

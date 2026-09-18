@@ -21,6 +21,7 @@ from app.models.agent_job import AgentJob, AgentJobStatus
 from app.models.user import User
 from app.services import agent_domain_research_scoring as domain_research_scoring
 from app.services import llm_json, llm_structured
+from app.services import research_discovery_signals as discovery_signals
 from app.services.agent_artifact_paths import insert_before_end_document
 
 # Bound to the private names the orchestrators already call them by. Aliasing
@@ -1201,55 +1202,6 @@ class AgentResearchRunnerService:
             debug["negative_tokens"] = list(sorted(list(negative2)))[:10]
             return (positive2, negative2, muted_patterns, debug)
 
-        def _score_discovery_candidate(
-            *, item_type: str, title: str, summary: str, bias: dict | None
-        ) -> tuple[int, list[str]]:
-            if not isinstance(bias, dict):
-                return 0, []
-            token_scores = (
-                bias.get("token_scores")
-                if isinstance(bias.get("token_scores"), dict)
-                else {}
-            )
-            phrase_scores = (
-                bias.get("phrase_scores")
-                if isinstance(bias.get("phrase_scores"), dict)
-                else {}
-            )
-            source_type_scores = (
-                bias.get("source_type_scores")
-                if isinstance(bias.get("source_type_scores"), dict)
-                else {}
-            )
-            text = f"{title or ''} {summary or ''}".strip()
-            tokens = _tokens(text)
-            phrases = [
-                f"{tokens[idx]} {tokens[idx + 1]}" for idx in range(len(tokens) - 1)
-            ]
-            score = 0
-            reasons: list[str] = []
-            if item_type and item_type in source_type_scores:
-                delta = int(source_type_scores.get(item_type) or 0)
-                score += delta * 6
-                reasons.append(f"source_type:{item_type}:{delta}")
-            token_delta = (
-                sum(int(token_scores.get(token) or 0) for token in tokens[:10])
-                if isinstance(token_scores, dict)
-                else 0
-            )
-            if token_delta:
-                score += token_delta
-                reasons.append("token_bias")
-            phrase_delta = (
-                sum(int(phrase_scores.get(phrase) or 0) for phrase in phrases[:6])
-                if isinstance(phrase_scores, dict)
-                else 0
-            )
-            if phrase_delta:
-                score += phrase_delta * 2
-                reasons.append("phrase_bias")
-            return int(score), reasons[:4]
-
         async def _create_inbox_item(
             *,
             item_type: str,
@@ -1437,7 +1389,7 @@ class AgentResearchRunnerService:
                         continue
                     title_text = _safe_text(d.get("title")).strip()
                     summary_text = _safe_text(d.get("snippet")).strip()
-                    discovery_score, discovery_reasons = _score_discovery_candidate(
+                    discovery = discovery_signals.explain(
                         item_type="document",
                         title=title_text,
                         summary=summary_text,
@@ -1445,7 +1397,7 @@ class AgentResearchRunnerService:
                     )
                     if (
                         _is_muted(f"{title_text} {summary_text}")
-                        or discovery_score <= -6
+                        or discovery.score <= -6
                     ):
                         skipped += 1
                         continue
@@ -1463,9 +1415,7 @@ class AgentResearchRunnerService:
                             "source": d.get("source"),
                             "source_type": d.get("source_type"),
                             "relevance_score": d.get("relevance_score"),
-                            "discovery_score": discovery_score,
-                            "discovery_reasons": discovery_reasons,
-                            "score_explained": bool(discovery_reasons),
+                            **discovery.as_metadata(),
                             "bias": bias_debug or None,
                         },
                     )
@@ -1516,7 +1466,7 @@ class AgentResearchRunnerService:
                         continue
                     title_text = _safe_text(it.get("title")).strip()
                     summary_text = _safe_text(it.get("summary")).strip()
-                    discovery_score, discovery_reasons = _score_discovery_candidate(
+                    discovery = discovery_signals.explain(
                         item_type="arxiv",
                         title=title_text,
                         summary=summary_text,
@@ -1524,7 +1474,7 @@ class AgentResearchRunnerService:
                     )
                     if (
                         _is_muted(f"{title_text} {summary_text}")
-                        or discovery_score <= -6
+                        or discovery.score <= -6
                     ):
                         skipped += 1
                         continue
@@ -1550,9 +1500,7 @@ class AgentResearchRunnerService:
                             "updated": it.get("updated"),
                             "doi": it.get("doi"),
                             "comments": it.get("comments"),
-                            "discovery_score": discovery_score,
-                            "discovery_reasons": discovery_reasons,
-                            "score_explained": bool(discovery_reasons),
+                            **discovery.as_metadata(),
                             "bias": bias_debug or None,
                         },
                     )

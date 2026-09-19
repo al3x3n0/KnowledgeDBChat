@@ -107,7 +107,15 @@ SPECS: tuple[ToolSpec, ...] = (
         },
         effects="write",
         network="egress",
-        job_types=(),
+        # The same allowance as ingest_paper_by_id, which has the same
+        # effects. The difference is the input: this one takes a *query*,
+        # so a discovery stage can start from its topic, while the by-id
+        # tool needs an id the stage does not have and nothing in the
+        # evidence chain says how to get one. Measured: three discovery
+        # stages contracted for papers_ingested ran 28 iterations between
+        # them and called write_progress_report 15 times without a single
+        # ingest; the one run that succeeded had a person name the tool.
+        job_types=("research", "monitor", "knowledge_expansion"),
     ),
     ToolSpec(
         name="literature_review_arxiv",

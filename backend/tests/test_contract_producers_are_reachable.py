@@ -125,23 +125,32 @@ class TestTheRunIsOnlyToldAboutToolsItCanCall:
     """
 
     def test_it_leads_with_a_tool_the_job_type_may_call(self):
+        # The property, not the name: which producer leads changes when access
+        # changes, and pinning the name makes the test fail for a grant rather
+        # than for the defect. What must hold is that the run is sent to a tool
+        # it can actually call.
+        from app.agent_core import tool_specs
         from app.services import agent_evidence_map
 
         (line,) = agent_evidence_map.describe_chain(
             ["papers_ingested"], job_type="research"
         )
-        assert line.startswith("ingest_paper_by_id")
-        assert "ingest_arxiv_papers" not in line
+        lead = line.split()[0]
+        assert lead in set(tool_specs.STATIC_CATALOG.tools_for_job_type("research"))
 
     def test_it_describes_the_tool_it_actually_recommends(self):
-        # The inputs differ: one takes a query or a list, the other one id. The
-        # run has to satisfy the inputs of the tool it is being sent to.
+        # The inputs differ between producers -- one takes a query, the other a
+        # single id -- and the run has to satisfy the inputs of the tool it is
+        # being sent to, not of the one that happens to be declared first.
+        from app.agent_core import tool_specs
         from app.services import agent_evidence_map
 
         (line,) = agent_evidence_map.describe_chain(
             ["papers_ingested"], job_type="research"
         )
-        assert "One arXiv id" in line
+        lead = line.split()[0]
+        consumes = tool_specs.STATIC_CATALOG.spec_for(lead).consumes
+        assert consumes and consumes.split(";")[0].strip() in line
 
     def test_it_says_nothing_when_nothing_can_produce_it(self):
         # validate() refuses such a contract, so this is the belt to that
@@ -184,11 +193,13 @@ class TestThePlanIsPricedAgainstTheToolThatWillRun:
     }
 
     def test_the_chain_names_a_tool_the_stage_may_call(self):
+        from app.agent_core import tool_specs
         from app.services import agent_evidence_map
 
+        callable_here = set(tool_specs.STATIC_CATALOG.tools_for_job_type("research"))
         chain = agent_evidence_map.chain_for(["papers_ingested"], job_type="research")
-        assert "ingest_paper_by_id" in chain
-        assert "ingest_arxiv_papers" not in chain
+        assert chain, "a satisfiable contract must derive some tool"
+        assert set(chain) <= callable_here
 
     def test_without_a_job_type_the_first_producer_still_wins(self):
         # Callers with no job in hand keep the old behaviour.
@@ -199,10 +210,13 @@ class TestThePlanIsPricedAgainstTheToolThatWillRun:
         )
 
     def test_the_stage_plan_names_the_callable_tool(self):
+        from app.agent_core import tool_specs
+
         plan = spec_module.plan(spec_module.normalize(self.SPEC))
         (stage_plan,) = plan.stages
-        assert "ingest_paper_by_id" in stage_plan.tools
-        assert "ingest_arxiv_papers" not in stage_plan.tools
+        callable_here = set(tool_specs.STATIC_CATALOG.tools_for_job_type("research"))
+        assert stage_plan.tools, "a priced stage must plan some tool"
+        assert set(stage_plan.tools) <= callable_here
 
     def test_the_prompt_and_the_plan_agree_on_which_tool(self):
         # They derived "which tool" separately, which is how one came to name a

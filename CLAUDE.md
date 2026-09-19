@@ -340,11 +340,28 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   stage's job type — per evidence, not per tool, because several types have
   alternatives and one barred producer proves nothing (`papers_ingested` names
   `ingest_arxiv_papers`, which no job may call, and `ingest_paper_by_id`, which
-  research may). `literature_review` is the one type no job type can produce;
-  `tests/test_contract_producers_are_reachable.py` pins that list, so a tool
-  withdrawn from autonomous jobs surfaces there rather than in a stuck run.
+  research may). `tests/test_contract_producers_are_reachable.py` pins the stranded
+  list at empty, so a tool withdrawn from autonomous jobs surfaces there rather
+  than in a stuck run. `literature_review` was the last stranded type and was
+  fixed both ways: `literature_review_arxiv` gained the job types its
+  same-shaped neighbour `ingest_paper_by_id` has (it searches arXiv and
+  ingests), while `generate_literature_review_for_source` **stopped declaring
+  `produces`** — it queues a Celery task and returns, so the review is written
+  after the run that asked for it has moved on, and `produces` feeds machinery
+  that is strictly in-run. It is still callable; it just no longer advertises
+  evidence a caller cannot observe.
   `agent_contract_suggestions` filters the same way — a suggestion that cannot
   be satisfied is worse than none, because it looks like an answer.
+  A third way a contract can be unsatisfiable is invisible to both checks: the
+  tool is reachable and the guidance names it correctly, but its handler records
+  the evidence on the wrong channel. Contracts count **findings**;
+  `create_synthesis_document` emitted `synthesis_document` only under
+  `artifacts`, so the one tool meant to satisfy that contract never could — a
+  pipeline's writeup stage called it, succeeded, and still ended
+  `completed_contract_unmet`, and in 364 jobs no finding of that type had ever
+  been recorded. A tool declaring `produces=(...)` must return a `findings`
+  entry carrying that type.
+
   The same rule governs the *prompt*: `agent_evidence_map.describe_chain` takes
   the job type and names only tools the run may call, leading with one it can.
   A `papers_ingested` stage was told "ingest_arxiv_papers (or

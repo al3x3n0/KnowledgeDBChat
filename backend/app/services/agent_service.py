@@ -1217,6 +1217,20 @@ Your response (JSON array only):"""
             "query": q,
             "papers": papers,
             "ingest": ingest_result,
+            # A goal contract counts finding types, not return keys. The spec
+            # declares produces=("literature_review",), and without this the
+            # evidence never arrives under the name the contract counts --
+            # the same defect that made create_synthesis_document unable to
+            # satisfy the contract it was the only producer of.
+            "findings": [
+                {
+                    "type": "literature_review",
+                    "topic": topic,
+                    "query": q,
+                    "paper_count": len(papers),
+                    "paper_ids": paper_ids[:25],
+                }
+            ],
             "next_steps": [
                 "Open the imported documents in Documents once ingestion completes.",
                 "Ask the agent to summarize and compare the imported papers.",

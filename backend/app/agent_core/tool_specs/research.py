@@ -157,7 +157,9 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["topic"],
         },
         network="egress",
-        job_types=(),
+        # Searches arXiv and optionally ingests: the same shape as
+        # ingest_paper_by_id, so the same job types.
+        job_types=("research", "monitor", "knowledge_expansion"),
     ),
     ToolSpec(
         name="enrich_arxiv_metadata_for_source",
@@ -183,7 +185,11 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="generate_literature_review_for_source",
-        produces=("literature_review",),
+        # No `produces`: this queues a Celery task and returns immediately, so
+        # the review is written after the run that asked for it has moved on.
+        # Declaring evidence a caller cannot observe would let a contract
+        # depend on something that never arrives inside the run.
+        produces=(),
         typical_seconds=240,
         consumes="A document source already ingested.",
         description="Generate a literature review document for an arXiv import source (uses available summaries and extracted paper insights).",
@@ -199,7 +205,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["source_id"],
         },
         effects="write",
-        job_types=(),
+        job_types=("research", "synthesis", "knowledge_expansion"),
     ),
     ToolSpec(
         name="add_to_reading_list",

@@ -34,21 +34,25 @@ def _problems(finding_type: str, job_type: str = "synthesis"):
     return spec_module.validate(spec_module.normalize(_stage(finding_type, job_type)))
 
 
-class TestAContractNothingCanSatisfy:
-    def test_it_is_refused(self):
-        assert _problems(
-            "literature_review"
-        ), "a stage requiring evidence no callable tool produces must not validate"
+class TestEvidenceOutOfReachForThisStage:
+    """literature_review is producible now, but only where its tool may run.
 
-    def test_the_message_names_the_evidence(self):
-        (problem,) = _problems("literature_review")
-        assert "literature_review" in problem
+    Its producer searches arXiv and ingests, so it is allowed under research,
+    monitor and knowledge_expansion -- the job types ingest_paper_by_id has,
+    being the same shape. A synthesis stage still cannot produce it, and that
+    is a wrong job_type rather than an impossible contract, so the message has
+    to say which job types would work.
+    """
 
-    def test_the_message_says_no_job_type_would_help(self):
-        # The author's next move differs entirely: a wrong job_type is a one
-        # word fix, while evidence nothing can produce needs a new contract.
-        (problem,) = _problems("literature_review")
-        assert "no job type can" in problem
+    def test_a_stage_that_cannot_call_the_producer_is_refused(self):
+        assert _problems("literature_review", "synthesis")
+
+    def test_the_message_names_the_job_types_that_would_work(self):
+        problems = _problems("literature_review", "synthesis")
+        assert any("research" in problem for problem in problems)
+
+    def test_a_stage_that_can_call_it_validates(self):
+        assert _problems("literature_review", "research") == []
 
 
 class TestWhatItMustNotRefuse:
@@ -68,10 +72,12 @@ class TestTheEmptyTupleIsNotNoRestriction:
 
     def test_the_catalog_distinguishes_them(self):
         catalog = tool_specs.STATIC_CATALOG
-        chat_only = catalog.spec_for("literature_review_arxiv")
+        # web_scrape is one of 56 tools reachable from chat and MCP and from no
+        # autonomous job. The distinction is the point: () is not None.
+        chat_only = catalog.spec_for("web_scrape")
         assert chat_only.job_types == ()
         for job_type in vocabulary.job_types():
-            assert "literature_review_arxiv" not in catalog.tools_for_job_type(job_type)
+            assert "web_scrape" not in catalog.tools_for_job_type(job_type)
 
 
 class TestEveryEvidenceTypeIsProducibleBySomething:
@@ -98,16 +104,13 @@ class TestEveryEvidenceTypeIsProducibleBySomething:
             ):
                 stranded.append((evidence.name, list(evidence.producers)))
 
-        assert stranded == [
-            (
-                "literature_review",
-                ["literature_review_arxiv", "generate_literature_review_for_source"],
-            )
-        ], (
+        assert stranded == [], (
             "A contract requiring these can never be satisfied by an autonomous "
             "job. Either give a producer a job_types allowance, or stop "
-            "advertising the evidence. literature_review is the known case and "
-            "is refused by validate(); anything else here is new."
+            "advertising the evidence -- literature_review was the last such "
+            "case, fixed both ways: its synchronous producer gained an "
+            "allowance, and its asynchronous one stopped claiming evidence it "
+            "only queues."
         )
 
 

@@ -1745,6 +1745,25 @@ cannot say why their number differs."""
                     "content": synthesis_content,
                 }
             ],
+            # The same thing again as a *finding*, because a goal contract
+            # counts finding types and not artifact types. This tool's spec
+            # declares produces=("synthesis_document",) and it emitted the name
+            # only as an artifact, so a contract requiring synthesis_document
+            # could not be satisfied by the one tool meant to satisfy it:
+            # measured on a live pipeline whose writeup stage called this once,
+            # succeeded, and still ended `completed_contract_unmet` on
+            # finding_type:synthesis_document -- and in 364 jobs no finding of
+            # that type had ever been recorded. Recorded here rather than in
+            # the persist branch below, because the synthesis exists whether or
+            # not it was also saved as a document.
+            "findings": [
+                {
+                    "type": "synthesis_document",
+                    "title": title,
+                    "topic": topic,
+                    "findings_included": len(findings),
+                }
+            ],
         }
 
         if persist and title and synthesis_content.strip():
@@ -1794,6 +1813,9 @@ cannot say why their number differs."""
                 result["artifacts"].append(
                     {"type": "document", "id": str(doc.id), "title": doc.title}
                 )
+                # Point the evidence at the saved document, so a later stage
+                # can read what this one wrote.
+                result["findings"][0]["document_id"] = str(doc.id)
             except Exception:
                 pass
 

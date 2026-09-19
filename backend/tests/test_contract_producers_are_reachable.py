@@ -159,3 +159,58 @@ class TestTheRunIsOnlyToldAboutToolsItCanCall:
 
         (line,) = agent_evidence_map.describe_chain(["papers_ingested"])
         assert "ingest_arxiv_papers" in line and "ingest_paper_by_id" in line
+
+
+class TestThePlanIsPricedAgainstTheToolThatWillRun:
+    """The estimate a person acknowledges has to be the work that happens.
+
+    `plan()` derived its chain from the first declared producer, so a research
+    stage requiring papers_ingested was costed against ingest_arxiv_papers --
+    which no autonomous job may call -- while the run would use
+    ingest_paper_by_id, a different tool with a different cost. Two saved
+    pipelines were priced that way; one was out by a factor of four.
+    """
+
+    SPEC = {
+        "name": "lit",
+        "stages": [
+            {
+                "id": "discover",
+                "goal": "Find and ingest papers",
+                "job_type": "research",
+                "contract": {"required_finding_type_counts": {"papers_ingested": 1}},
+            }
+        ],
+    }
+
+    def test_the_chain_names_a_tool_the_stage_may_call(self):
+        from app.services import agent_evidence_map
+
+        chain = agent_evidence_map.chain_for(["papers_ingested"], job_type="research")
+        assert "ingest_paper_by_id" in chain
+        assert "ingest_arxiv_papers" not in chain
+
+    def test_without_a_job_type_the_first_producer_still_wins(self):
+        # Callers with no job in hand keep the old behaviour.
+        from app.services import agent_evidence_map
+
+        assert "ingest_arxiv_papers" in agent_evidence_map.chain_for(
+            ["papers_ingested"]
+        )
+
+    def test_the_stage_plan_names_the_callable_tool(self):
+        plan = spec_module.plan(spec_module.normalize(self.SPEC))
+        (stage_plan,) = plan.stages
+        assert "ingest_paper_by_id" in stage_plan.tools
+        assert "ingest_arxiv_papers" not in stage_plan.tools
+
+    def test_the_prompt_and_the_plan_agree_on_which_tool(self):
+        # They derived "which tool" separately, which is how one came to name a
+        # tool the other had ruled out.
+        from app.services import agent_evidence_map
+
+        planned = spec_module.plan(spec_module.normalize(self.SPEC)).stages[0].tools
+        (told,) = agent_evidence_map.describe_chain(
+            ["papers_ingested"], job_type="research"
+        )
+        assert told.split()[0] in planned

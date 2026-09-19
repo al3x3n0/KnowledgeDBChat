@@ -588,7 +588,9 @@ def topological_order(pipeline: Pipeline) -> List[str]:
 
 
 def _incremental_chain(
-    required: Sequence[str], inherited: Iterable[str]
+    required: Sequence[str],
+    inherited: Iterable[str],
+    job_type: Optional[str] = None,
 ) -> Tuple[str, ...]:
     """The tools this stage still has to run, given what precedes it.
 
@@ -605,7 +607,9 @@ def _incremental_chain(
     """
     have = {str(x) for x in inherited}
     kept: List[str] = []
-    for tool in evidence.chain_for(required):
+    # With the stage's job type, so the chain is priced against the tool the
+    # run will actually call rather than the first producer declared.
+    for tool in evidence.chain_for(required, job_type=job_type):
         entry = evidence.entry_for(tool)
         produces = set(entry.produces) if entry else set()
         # Keep a tool unless everything it makes is already in hand. A tool
@@ -707,7 +711,7 @@ def plan(pipeline: Pipeline) -> PipelinePlan:
         required = stage.required_finding_types()
         iterations = stage.iterations()
         inherited = _upstream_finding_types(stage, pipeline)
-        tools = _incremental_chain(required, inherited)
+        tools = _incremental_chain(required, inherited, stage.job_type)
         seconds = _chain_seconds(tools) * iterations
         cost[stage_id] = seconds
         upstream_finish = max(

@@ -135,13 +135,23 @@ def is_perishable(finding_type: str) -> bool:
     return bool(entry and entry.perishable)
 
 
-def chain_for(required: Iterable[str]) -> List[str]:
+def chain_for(required: Iterable[str], *, job_type: Optional[str] = None) -> List[str]:
     """An order of tools that produces every finding type asked for.
 
     Derived from the requirements rather than recited: a contract that wants a
     settled prediction gets record_prediction before record_measurement because
     one needs the other, not because a list said so.
+
+    With a ``job_type`` the producer chosen for each finding type is one that
+    job type may actually call. Without it the first declared producer wins,
+    which is right for a caller that has no job in hand and wrong for everyone
+    else: a research stage requiring ``papers_ingested`` was planned, priced and
+    described against ``ingest_arxiv_papers``, which no autonomous job may call,
+    while the run would have used ``ingest_paper_by_id`` -- a different tool
+    with a different cost. The estimate a person acknowledges before launching
+    has to be the estimate of the work that will happen.
     """
+    runnable = _callable_by(job_type)
     ordered: List[str] = []
 
     def add(tool: str) -> None:
@@ -154,7 +164,13 @@ def chain_for(required: Iterable[str]) -> List[str]:
             ordered.append(tool)
 
     for finding_type in required:
-        producer = producer_of(finding_type)
+        if runnable is None:
+            producer = producer_of(finding_type)
+        else:
+            producer = next(
+                (name for name in producers_of(finding_type) if name in runnable),
+                "",
+            )
         if producer:
             add(producer)
     return ordered
@@ -183,7 +199,7 @@ def describe_chain(
     the runtime will refuse is worse than naming none, because the run plans
     around it.
     """
-    chain = chain_for(required)
+    chain = chain_for(required, job_type=job_type)
     if not chain:
         return []
     runnable = _callable_by(job_type)

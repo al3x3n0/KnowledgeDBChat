@@ -362,8 +362,13 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   been recorded. A tool declaring `produces=(...)` must return a `findings`
   entry carrying that type.
 
-  The same rule governs the *prompt*: `agent_evidence_map.describe_chain` takes
-  the job type and names only tools the run may call, leading with one it can.
+  The same rule governs the *prompt* and the *price*:
+  `agent_evidence_map.chain_for` takes the job type and picks a producer that
+  job type may call, so `describe_chain` (the prompt) and `plan()` (the estimate
+  a person acknowledges before launching) derive the same tool instead of
+  deriving it separately and disagreeing. Two saved pipelines were priced
+  against `ingest_arxiv_papers`, which no job may call, while the run would have
+  used `ingest_paper_by_id` — one estimate was out by a factor of four.
   A `papers_ingested` stage was told "ingest_arxiv_papers (or
   ingest_paper_by_id) yields papers_ingested" when it could call only the
   second; it searched, found 18 papers and spent its remaining rounds on web

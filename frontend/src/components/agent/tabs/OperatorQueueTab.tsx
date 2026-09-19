@@ -967,6 +967,13 @@ export const OperatorQueueTab: React.FC<OperatorQueueTabProps> = ({
                       </div>
                     );
                   })()}
+                  {item.item_type === 'contract_unmet' && Array.isArray(item.checkpoint?.missing) && item.checkpoint.missing.length > 0 ? (
+                    /* The run reported success. This is what it did not
+                       deliver, so the row can be judged without opening it. */
+                    <p className="text-xs text-amber-700 mt-2">
+                      Contract not met: {(item.checkpoint.missing as string[]).slice(0, 4).join(', ')}
+                    </p>
+                  ) : null}
                   {item.item_type === 'blocked_run' && Array.isArray(item.checkpoint?.missing) && item.checkpoint.missing.length > 0 ? (
                     /* What the run lacked, named, so the row can be answered
                        without opening the job. */

@@ -50,6 +50,7 @@ def queue_reason_label(reason_code: str) -> str:
     labels = {
         "approval_required": "Approval required",
         "needs_input": "Waiting on an answer",
+        "contract_unmet": "Finished without meeting its contract",
         "execution_failure": "Execution failure",
         "stalled_run": "Stalled run",
         "scheduled_recovery": "Scheduled recovery",

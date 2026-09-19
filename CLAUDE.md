@@ -388,7 +388,7 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   beside it. The detail endpoint returns the campaign's items, the list does
   not — loading every question of every campaign to render rows that show none
   of them is a query per campaign for nothing.
-- **The operator queue shows two different things.** An `approval_checkpoint`
+- **The operator queue shows three different things.** An `approval_checkpoint`
   is a proposal awaiting sign-off; a `blocked_run` is a run that stopped
   because it needs a person and has nothing to propose
   (`current_phase='blocked_needs_input'`, set by `agent_runtime_finalizer` when
@@ -400,6 +400,17 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   why it gave up and the `missing` list it could not satisfy, because that is
   what the person answering it needs; Resume is offered only when the run
   recorded `resumable`, since an action that would fail is worse than none.
+
+  A `contract_unmet` row is the third: a run that **completed** without
+  satisfying its contract. A run that gives up early pauses and is visible; one
+  that exhausts its iteration budget with the contract unmet is marked
+  `completed`, so the worse outcome carried the better-looking status and
+  nothing surfaced it — 28 such runs in a fortnight, each reporting success
+  while delivering nothing the contract asked for. It ranks below the other two
+  (`priority` 60) because nobody is waiting on it: it is a quality signal about
+  work already reported as done. It offers `restart` (which resets `iteration`
+  and `progress`, so the run gets its budget back instead of re-hitting the cap
+  it just hit) and `relaunch`.
 
 - **Synthesis & reporting** — multi-document synthesis jobs, repo analysis reports and presentations, retrieval traces for RAG observability.
 

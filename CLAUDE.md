@@ -375,6 +375,22 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   search and progress reports without ingesting one. Naming a tool the runtime
   will refuse is worse than naming none, because the run plans around it.
 
+- **A contract is read under every spelling it is written in.** A contract may
+  name its evidence as `required_finding_types` (a list, or a mapping of
+  counts) or as the normalised `required_finding_type_counts` — which is the
+  key `agent_pipeline_spec._required_types()` reads *first* and the one the
+  pipeline authoring path emits. The runtime normaliser
+  (`_get_goal_contract_config`) read only the former, so a contract written the
+  other way survived validation, reached the job config intact, and was then
+  normalised to **nothing required while still `enabled`**. An enabled contract
+  that requires nothing is satisfied on the spot: the stage autocompleted at
+  progress 100 having produced none of its evidence, and the log said
+  "deterministic goal contract satisfied". Measured on a live stage contracted
+  for three `fusion_candidate` findings that completed with zero. The evaluator
+  was right throughout — it was asked the wrong question, which is why
+  `tests/test_goal_contract_key_spellings.py` pins the normaliser rather than
+  the evaluator.
+
 - **Pipelines** — a DAG of stages in `services/agent_pipeline_spec.py`, each stage a goal contract; tools are *derived* from the contract rather than named. A stage must declare a `job_type` its tools are allowed to run under: every coding tool is restricted to `analysis`/`coding` and the default is `research`, so a coding stage left at the default is planned with `clone_and_index_repo, apply_patch, run_repo_tests` and then cannot see one of them at runtime — measured, eight iterations of `search_documents` while the plan promised a repository fix. `validate()` now refuses that and names the job types that would work. Contract `validity.bounds` are checked on the **latest** finding of a *perishable* type, which is what makes "end with the tests passing" expressible: bounding every `test_result` at `failed == 0` is unsatisfiable, since the baseline run that finds the bug is red by definition, while requiring only that a `test_result` exists is satisfied by a red one. `"latest": false` restores the check-every-occurrence behaviour
 - **Workflows** — visual workflow builder (ReactFlow frontend, Zustand store), `workflow_engine.py` execution, workflow→synthesis conversion, LangGraph-based issue/PR graphs (`langgraph_issue_pr_service.py`).
 - **Campaigns** — a line of enquiry that outlives any one job

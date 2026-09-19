@@ -8420,14 +8420,26 @@ RESPONSE FORMAT:
             raw.get("enabled", cfg.get("goal_contract_enabled", enabled_default)),
             default=enabled_default,
         )
+        # Both spellings, because both are written. A contract may name its
+        # evidence as `required_finding_types` (a list, or a mapping of counts)
+        # or as the normalised `required_finding_type_counts` -- which is the
+        # key `agent_pipeline_spec` reads *first* and the one the pipeline
+        # authoring path emits. Reading only the former made every such
+        # contract vacuous but still `enabled`: nothing was required, so it was
+        # satisfied on the spot, autocompleted, and the stage reported progress
+        # 100 having produced none of the evidence it named. Measured on a live
+        # pipeline stage whose contract asked for three fusion candidates and
+        # completed with zero.
         required_finding_type_counts = _as_type_counts(
-            raw.get(
+            raw.get("required_finding_type_counts")
+            or raw.get(
                 "required_finding_types",
                 cfg.get("goal_contract_required_finding_types", []),
             )
         )
         required_artifact_type_counts = _as_type_counts(
-            raw.get(
+            raw.get("required_artifact_type_counts")
+            or raw.get(
                 "required_artifact_types",
                 cfg.get("goal_contract_required_artifact_types", []),
             )

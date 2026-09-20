@@ -208,6 +208,48 @@ mod tests {
     }
 
     #[test]
+    fn a_widening_add_can_be_costed() {
+        // Measured: a run profiled a shift-add/multiply-add kernel, mined six
+        // fusion candidates, and could cost none of them because the widening
+        // add in the hot block had no form. The tool refused rather than
+        // guessing, which was right, and left the contract unsatisfiable.
+        assert!(run(&argv(&["--pattern", "uaddw add"])).is_ok());
+    }
+
+    #[test]
+    fn a_widening_add_reads_its_two_sources_at_different_widths() {
+        // `uaddw v1.8h, v2.8h, v3.8b`: wide plus narrow. Emitting one
+        // arrangement for both is an assembler error, which is why guessing an
+        // arity is worse than refusing.
+        let out = run(&argv(&["--pattern", "uaddw"])).unwrap();
+
+        assert!(out.contains("8h"), "{out}");
+        assert!(out.contains("8b"), "{out}");
+    }
+
+    #[test]
+    fn a_shift_by_constant_can_be_costed() {
+        // The pattern a real kernel actually produced: shl feeding a widening
+        // add. Before this the run mined six candidates and could cost none.
+        assert!(run(&argv(&["--pattern", "shl uaddw | 0>1"])).is_ok());
+    }
+
+    #[test]
+    fn a_shift_takes_an_immediate_rather_than_a_third_register() {
+        // `shl` has no register form; clang rejects `lsl v1.2s, v2.2s, v3.2s`
+        // with "invalid operand for instruction". Emitting a register here
+        // would cost an instruction that cannot be assembled.
+        let out = run(&argv(&["--pattern", "shl"])).unwrap();
+
+        let line = out
+            .lines()
+            .find(|l| l.trim_start().starts_with("shl"))
+            .expect("the shift should be rendered");
+        assert!(line.contains("#"), "{line}");
+        assert_eq!(line.matches('v').count(), 2, "one source, not two: {line}");
+    }
+
+    #[test]
     fn an_edge_off_the_end_is_refused() {
         let problem = run(&argv(&["--pattern", "fmul fadd | 0>7"])).unwrap_err();
 

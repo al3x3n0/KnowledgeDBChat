@@ -90,6 +90,40 @@ pub fn vector_form(mnemonic: &str) -> Option<VectorForm> {
             accumulates: true,
         },
         "addv" | "saddlv" => VectorForm { dest: "4s", sources: &["4s"], accumulates: false },
+        // Widening add: a wide operand plus narrow lanes, result wide --
+        // `uaddw v1.8h, v2.8h, v3.8b`. The two sources use DIFFERENT
+        // arrangements, which is the case `sources` being a list exists for,
+        // and the reason guessing an arity would emit assembly the assembler
+        // rejects. Mined from a live profile of a shift-add/multiply-add
+        // kernel: the run found six fusion candidates and could cost none of
+        // them, because the widening add in the hot block had no form here.
+        // Shift by a constant: one register source, the amount supplied by
+        // `immediate_suffix`. Mined from a real kernel as `shl.2s uaddw.2d`,
+        // which could not be costed at all before this.
+        "shl" | "sshr" | "ushr" | "srshr" | "urshr" => VectorForm {
+            dest: "4s",
+            sources: &["4s"],
+            accumulates: false,
+        },
+        // Shift and insert keeps the lanes the shift did not overwrite, so it
+        // reads its destination as well as writing it.
+        "sli" | "sri" => VectorForm {
+            dest: "4s",
+            sources: &["4s"],
+            accumulates: true,
+        },
+        "saddw" | "uaddw" => VectorForm {
+            dest: "8h",
+            sources: &["8h", "8b"],
+            accumulates: false,
+        },
+        // The `2` variants read the upper half of the narrow source, so it is
+        // a full 16-byte register rather than the low 8.
+        "saddw2" | "uaddw2" => VectorForm {
+            dest: "8h",
+            sources: &["8h", "16b"],
+            accumulates: false,
+        },
         // Compare producing a lane mask, then a bitwise select on that mask:
         // how min, max and clamp are expressed without a branch. Mined from
         // Godot's AABB and Vector3 at 98,280 occurrences apiece, so a costing
@@ -139,6 +173,25 @@ impl Bank {
 pub fn condition_suffix(mnemonic: &str) -> Option<&'static str> {
     match mnemonic {
         "fcsel" | "csel" | "csinc" | "cset" => Some("mi"),
+        _ => None,
+    }
+}
+
+/// The immediate a shift-by-constant ends with, since it is not a register.
+///
+/// `shl v1.2s, v2.2s, #3` has no register form at all -- the register-shift
+/// NEON instructions are `ushl` and `sshl` -- so handing it a third register
+/// emits something the assembler refuses. Measured: clang rejects
+/// `lsl v1.2s, v2.2s, v3.2s` with "invalid operand for instruction", which is
+/// exactly what a run substituting the scalar mnemonic would have produced,
+/// and llvm-mca would then have costed an instruction that does not exist.
+///
+/// The amount is 1 because any encodable shift costs the same and 1 is valid
+/// for every element size and direction; stating it here beats leaving it to
+/// whoever writes the pattern.
+pub fn immediate_suffix(mnemonic: &str) -> Option<&'static str> {
+    match mnemonic {
+        "shl" | "sshr" | "ushr" | "srshr" | "urshr" | "sli" | "sri" => Some("#1"),
         _ => None,
     }
 }
@@ -283,8 +336,14 @@ impl Pattern {
             // describes the whole instruction. A widening op reads one shape
             // and writes another -- sxtl takes bytes and gives halfwords -- so
             // a single arrangement cannot describe it and the table wins.
+            // ANY source differing from the destination makes it widening,
+            // not just the first. `uaddw v1.8h, v2.8h, v3.8b` is wide in its
+            // first source and narrow in its second, so testing sources[0]
+            // alone let an observed width overwrite all three operands and
+            // emit `uaddw v1.2d, v0.2d, v22.2d`, which clang rejects with
+            // "invalid operand for instruction".
             let widening = form
-                .map(|f| !f.sources.is_empty() && f.dest != f.sources[0])
+                .map(|f| f.sources.iter().any(|s| *s != f.dest))
                 .unwrap_or(false);
             // A width observed in real code is enough on its own: `fsub.2s`
             // is a vector subtract whether or not this table happens to list
@@ -348,6 +407,10 @@ impl Pattern {
             if let Some(condition) = condition_suffix(mnemonic) {
                 text.push_str(", ");
                 text.push_str(condition);
+            }
+            if let Some(immediate) = immediate_suffix(mnemonic) {
+                text.push_str(", ");
+                text.push_str(immediate);
             }
             lines.push(text);
         }

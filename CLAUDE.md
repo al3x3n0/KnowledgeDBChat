@@ -40,6 +40,18 @@ make sandbox-check      # which exist locally, plus the compiler image's toolcha
 make sandbox-gem5       # arm64 only; --platform is not optional
 make sandbox-axis AXIS_PATH=/path/to/axis   # context is the AXIS repo, not this one
 ```
+**The agent resolves images by their registry-qualified name**
+(`SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES` lists
+`ghcr.io/al3x3n0/kdbc-*:latest`), so `docker build -t kdbc-compiler-research .`
+produces an image the runtime never uses — `docker.io/library/...` is a
+different image with the same Dockerfile. Build through `make sandbox-*`, which
+tags `$(SANDBOX_REGISTRY)/...`, or `docker tag` afterwards. The symptom is a
+fix that is demonstrably present when you run the image by hand and demonstrably
+absent in the run: a tool kept reporting `unknown mnemonic 'uaddw'` two rebuilds
+after that mnemonic was added. When the Makefile path is blocked (it rebuilds
+`sandbox-base`, which needs apt), retagging the already-built image is
+equivalent and needs no network.
+
 **Without `docker-compose.docker-tools.yml` in the stack, none of these
 images are reachable and every sandbox-backed tool fails** — gem5, compiler,
 profiling and microarch alike — with `Cannot connect to the Docker daemon`,

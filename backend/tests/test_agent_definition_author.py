@@ -69,9 +69,7 @@ class TestTheSilentFailures:
         assert "code_analysis" in complaint
 
     def test_a_whitelist_naming_something_that_is_not_a_tool(self):
-        _, complaints = author.check(
-            dict(GOOD, tool_whitelist=["make_me_a_sandwich"])
-        )
+        _, complaints = author.check(dict(GOOD, tool_whitelist=["make_me_a_sandwich"]))
         (complaint,) = complaints
         assert "fewer tools than intended" in complaint
 
@@ -109,3 +107,50 @@ class TestDraftingItself:
     def test_a_reply_wrapped_in_a_data_key_is_still_read(self):
         # Providers differ in how they return structured output.
         assert author._payload({"data": GOOD})["name"] == "ise_scout"
+
+
+class TestRefiningWhatIsAlreadyThere:
+    """A second pass revises the form, it does not start over.
+
+    The form is the source of truth rather than the model's own last answer: a
+    person may have edited a field by hand between drafts, and refining from
+    what the model said would silently discard that edit.
+    """
+
+    def test_the_revision_shows_the_model_what_it_is_changing(self):
+        message = author._revision_message(
+            "restrict it to the coding tools", dict(GOOD)
+        )
+        assert "ise_scout" in message and "code_analysis" in message
+
+    def test_it_says_to_leave_untouched_things_alone(self):
+        # Otherwise "make it narrower" comes back as a different agent.
+        message = author._revision_message("narrow it", dict(GOOD))
+        assert "Keep everything the change does not touch" in message
+
+    def test_empty_fields_are_not_shown_as_if_they_were_set(self):
+        # An empty whitelist and an absent one mean opposite things; showing
+        # `[]` as the current state would invite the model to preserve it.
+        message = author._revision_message(
+            "add a tool", dict(GOOD, tool_whitelist=[], description="")
+        )
+        assert '"tool_whitelist"' not in message
+        assert '"description"' not in message
+
+    @pytest.mark.asyncio
+    async def test_an_empty_instruction_says_so_in_the_right_words(self):
+        out = await author.draft_definition("  ", current=dict(GOOD))
+        assert out["notes"] == ["No change was described."]
+
+    @pytest.mark.asyncio
+    async def test_a_first_draft_still_says_no_description(self):
+        out = await author.draft_definition("  ")
+        assert out["notes"] == ["No description was given."]
+
+
+class TestRefinementIsNotAnExcuse:
+    def test_a_revision_is_checked_exactly_as_a_first_draft_is(self):
+        # "Make it narrower" is no reason to accept an agent nothing can route
+        # to; check() is the same function either way.
+        _, complaints = author.check(dict(GOOD, capabilities=["narrower_thing"]))
+        assert any("never be routed to" in c for c in complaints)

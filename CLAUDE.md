@@ -239,6 +239,17 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   refused separately from an absent one: `null` means every tool and `[]` means
   none, and the difference is total. Drafting **creates nothing**; `notes` says
   what had to be repaired, which is the part worth reading.
+  Passing `current` makes it a **revision** — "restrict it to the coding
+  tools" applied to what the author has, rather than a fresh invention. Three
+  choices there are deliberate: the revision reads from **the form**, not from
+  the model's own last answer, because a hand edit between passes would
+  otherwise be discarded silently; a revision goes through the same `check()`
+  as a first draft, since "make it narrower" is no reason to accept an agent
+  nothing can route to; and empty fields are not shown as current state,
+  because offering `tool_whitelist: []` invites the model to preserve "no tools
+  at all" when an absent whitelist means the opposite. A revision keeping its
+  own name skips the collision check — colliding with yourself is not a
+  collision.
 
 - **Plugins** — a plugin is one installable unit that contributes tools (and, in
   later slices, flows and UI). `models/plugin.py` holds the manifest;

@@ -8,7 +8,7 @@ Supports both REST and WebSocket interfaces.
 import asyncio
 import json
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from fastapi import (
@@ -1011,6 +1011,15 @@ class AgentDraftRequest(BaseModel):
     """Describe an agent in words; get a definition back for review."""
 
     description: str = Field(..., min_length=3, max_length=4000)
+    current: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "The definition being edited. When given, `description` is read as "
+            "a change to apply to it rather than a fresh request. Send what is "
+            "on the form, not the last draft: a person may have edited a field "
+            "by hand, and refining from the model's own answer would discard it."
+        ),
+    )
 
 
 @router.post("/agents/draft")
@@ -1035,7 +1044,10 @@ async def draft_agent(
     from app.services import agent_definition_author_service
 
     return await agent_definition_author_service.draft_definition(
-        request.description, user_id=current_user.id, db=db
+        request.description,
+        current=request.current,
+        user_id=current_user.id,
+        db=db,
     )
 
 

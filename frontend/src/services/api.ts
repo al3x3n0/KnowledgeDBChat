@@ -1429,9 +1429,15 @@ class ApiClient {
   /** Draft an agent definition from a description. Creates nothing: the reply
    *  is for review, and `notes` says what had to be repaired. */
   async draftAgentDefinition(
-    description: string
+    description: string,
+    current?: Partial<AgentDefinitionCreate> | null
   ): Promise<{ definition: AgentDefinitionCreate | null; notes: string[] }> {
-    const response = await this.client.post('/api/v1/agent/agents/draft', { description });
+    const response = await this.client.post('/api/v1/agent/agents/draft', {
+      description,
+      // What is on the form, not the last draft: a hand edit between passes
+      // would otherwise be discarded.
+      ...(current ? { current } : {}),
+    });
     return response.data;
   }
 

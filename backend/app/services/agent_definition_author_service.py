@@ -179,13 +179,53 @@ async def _name_taken(name: str, db: Any) -> bool:
     return result.scalar_one_or_none() is not None
 
 
+def _revision_message(text: str, current: Mapping[str, Any]) -> str:
+    """Ask for a revision of what the author has, not a fresh invention.
+
+    ``current`` is whatever is on the form, which is not necessarily the last
+    thing the model produced: a person may have edited a field by hand between
+    drafts, and refining from the model's own last answer would silently throw
+    that away. So the form is the source of truth and the instruction is
+    applied to it.
+    """
+    shown = {
+        key: current.get(key)
+        for key in (
+            "name",
+            "display_name",
+            "description",
+            "system_prompt",
+            "capabilities",
+            "tool_whitelist",
+            "priority",
+        )
+        if current.get(key) not in (None, "", [])
+    }
+    return (
+        "Revise this agent definition:\n\n"
+        + json.dumps(shown, indent=2)
+        + f"\n\nApply exactly this change:\n\n{text}\n\n"
+        "Keep everything the change does not touch as it is, including the "
+        "name unless the change asks for a different one. Return the whole "
+        "definition."
+    )
+
+
 async def draft_definition(
     description: str,
     *,
+    current: Optional[Mapping[str, Any]] = None,
     user_id: Any = None,
     db: Any = None,
 ) -> Dict[str, Any]:
     """Draft an agent definition, repairing it against the real checks.
+
+    With ``current``, this is a revision rather than a fresh draft: the
+    description is read as an instruction to apply to what the author already
+    has. The same checks apply either way -- a refinement that introduces a
+    capability the router does not know is refused exactly as a first draft
+    would be, because "make it narrower" is no reason to accept an agent
+    nothing can route to.
 
     Never creates anything: the caller reviews what comes back. ``notes`` says
     what had to be repaired, which is the part worth reading -- a draft that
@@ -196,11 +236,20 @@ async def draft_definition(
 
     text = str(description or "").strip()
     if not text:
-        return {"definition": None, "notes": ["No description was given."]}
+        return {
+            "definition": None,
+            "notes": [
+                "No change was described." if current else "No description was given."
+            ],
+        }
 
     llm = LLMService()
     system = _system_prompt()
-    message = f"Write an agent definition for this request:\n\n{text}"
+    message = (
+        _revision_message(text, current)
+        if isinstance(current, Mapping) and current
+        else f"Write an agent definition for this request:\n\n{text}"
+    )
     notes: List[str] = []
     definition: Optional[Dict[str, Any]] = None
 
@@ -238,7 +287,17 @@ async def draft_definition(
             )
             continue
 
-        if db is not None and candidate and await _name_taken(candidate["name"], db):
+        keeping_its_own_name = bool(
+            isinstance(current, Mapping)
+            and candidate
+            and candidate["name"] == str(current.get("name") or "")
+        )
+        if (
+            db is not None
+            and candidate
+            and not keeping_its_own_name
+            and await _name_taken(candidate["name"], db)
+        ):
             # Caught here rather than at create: `name` is unique, and a draft
             # that collides is refused at the end of the work rather than the
             # start of it.

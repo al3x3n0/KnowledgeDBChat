@@ -2249,12 +2249,32 @@ const CreateAgentTab: React.FC<{
   // Drafting fills the form and stops. It never creates: a definition that
   // validates is not the same as one that does what was meant, and the notes
   // below say what had to be repaired on the way.
+  // Whether there is anything on the form worth refining rather than replacing.
+  const hasDraft = Boolean(name.trim() || systemPrompt.trim());
+
   const draftMutation = useMutation<
     { definition: AgentDefinitionCreate | null; notes: string[] },
     unknown,
     string
   >(
-    (description: string) => apiClient.draftAgentDefinition(description),
+    // Named `instruction`, not `description`: the form has a `description`
+    // state of its own, and shadowing it here sent the refinement text as the
+    // agent's description.
+    (instruction: string) =>
+      apiClient.draftAgentDefinition(
+        instruction,
+        hasDraft
+          ? {
+              name,
+              display_name: displayName,
+              description,
+              system_prompt: systemPrompt,
+              capabilities: selectedCapabilities,
+              tool_whitelist: useAllTools ? null : selectedTools,
+              priority,
+            }
+          : null
+      ),
     {
       onSuccess: ({ definition, notes }) => {
         setDraftNotes(Array.isArray(notes) ? notes : []);
@@ -2357,16 +2377,21 @@ const CreateAgentTab: React.FC<{
 
         <div className="border border-gray-300 rounded-lg p-4 mb-6">
           <label className="block text-sm font-medium text-gray-700 mb-1">
-            Describe the agent
+            {hasDraft ? 'Change the agent' : 'Describe the agent'}
           </label>
           <p className="text-xs text-gray-500 mb-2">
-            One or two sentences on what it should do. The draft fills the form
-            below for you to review — nothing is created until you press Create.
+            {hasDraft
+              ? 'Say what to change — "restrict it to the coding tools". The change is applied to what is on the form, including anything you edited by hand.'
+              : 'One or two sentences on what it should do. The draft fills the form below for you to review — nothing is created until you press Create.'}
           </p>
           <textarea
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
             rows={2}
-            placeholder="Finds instruction fusion candidates in a profile and costs the promising ones."
+            placeholder={
+              hasDraft
+                ? 'Restrict it to the coding tools and raise its priority.'
+                : 'Finds instruction fusion candidates in a profile and costs the promising ones.'
+            }
             value={draftDescription}
             onChange={(e) => setDraftDescription(e.target.value)}
           />
@@ -2376,7 +2401,13 @@ const CreateAgentTab: React.FC<{
               disabled={draftDescription.trim().length < 3 || draftMutation.isLoading}
               onClick={() => draftMutation.mutate(draftDescription.trim())}
             >
-              {draftMutation.isLoading ? 'Drafting…' : 'Draft'}
+              {draftMutation.isLoading
+                ? hasDraft
+                  ? 'Revising…'
+                  : 'Drafting…'
+                : hasDraft
+                  ? 'Refine'
+                  : 'Draft'}
             </Button>
           </div>
           {draftNotes.length > 0 ? (

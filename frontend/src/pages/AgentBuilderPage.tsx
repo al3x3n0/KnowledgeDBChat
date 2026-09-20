@@ -2243,6 +2243,42 @@ const CreateAgentTab: React.FC<{
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
   const [priority, setPriority] = useState(50);
   const [useAllTools, setUseAllTools] = useState(true);
+  const [draftDescription, setDraftDescription] = useState('');
+  const [draftNotes, setDraftNotes] = useState<string[]>([]);
+
+  // Drafting fills the form and stops. It never creates: a definition that
+  // validates is not the same as one that does what was meant, and the notes
+  // below say what had to be repaired on the way.
+  const draftMutation = useMutation<
+    { definition: AgentDefinitionCreate | null; notes: string[] },
+    unknown,
+    string
+  >(
+    (description: string) => apiClient.draftAgentDefinition(description),
+    {
+      onSuccess: ({ definition, notes }) => {
+        setDraftNotes(Array.isArray(notes) ? notes : []);
+        if (!definition) {
+          toast.error('No usable definition was produced');
+          return;
+        }
+        setName(definition.name || '');
+        setDisplayName(definition.display_name || '');
+        setDescription(definition.description || '');
+        setSystemPrompt(definition.system_prompt || '');
+        setSelectedCapabilities(definition.capabilities || []);
+        // null means every tool, which is a different thing from none.
+        const whitelist = definition.tool_whitelist;
+        setUseAllTools(whitelist === null || whitelist === undefined);
+        setSelectedTools(whitelist || []);
+        if (typeof definition.priority === 'number') setPriority(definition.priority);
+        toast.success('Draft ready — review it before creating');
+      },
+      onError: () => {
+        toast.error('Could not draft an agent');
+      },
+    }
+  );
 
   const createMutation = useMutation(
     (data: AgentDefinitionCreate) => apiClient.createAgentDefinition(data),
@@ -2318,6 +2354,42 @@ const CreateAgentTab: React.FC<{
     <div className="max-w-3xl mx-auto">
       <div className="bg-white rounded-lg shadow p-6">
         <h2 className="text-lg font-semibold text-gray-900 mb-6">Create New Agent</h2>
+
+        <div className="border border-gray-300 rounded-lg p-4 mb-6">
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Describe the agent
+          </label>
+          <p className="text-xs text-gray-500 mb-2">
+            One or two sentences on what it should do. The draft fills the form
+            below for you to review — nothing is created until you press Create.
+          </p>
+          <textarea
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
+            rows={2}
+            placeholder="Finds instruction fusion candidates in a profile and costs the promising ones."
+            value={draftDescription}
+            onChange={(e) => setDraftDescription(e.target.value)}
+          />
+          <div className="flex items-center gap-2 mt-2">
+            <Button
+              size="sm"
+              disabled={draftDescription.trim().length < 3 || draftMutation.isLoading}
+              onClick={() => draftMutation.mutate(draftDescription.trim())}
+            >
+              {draftMutation.isLoading ? 'Drafting…' : 'Draft'}
+            </Button>
+          </div>
+          {draftNotes.length > 0 ? (
+            /* What had to be repaired. A draft that took two attempts to name a
+               capability the router recognises is worth a second look, even
+               though what arrived validates either way. */
+            <ul className="mt-3 text-xs text-amber-700 list-disc pl-4 space-y-1">
+              {draftNotes.slice(0, 5).map((note, i) => (
+                <li key={i}>{note}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
 
         <div className="space-y-6">
           {/* Basic Info */}

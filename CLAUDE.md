@@ -224,6 +224,22 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   "never customized", which is deliberately distinct from `{}`. Per-panel
   collapse toggles stay in `localStorage`: those are per-device conveniences,
   while hiding a destination is a decision about your work.
+- **An agent definition can be written from a description**
+  (`services/agent_definition_author_service.py`, `POST /agent/agents/draft`,
+  the Draft box in Agent Builder). The prose is the easy part; the two closed
+  sets either side of it are not, and both fail **silently**. A capability
+  outside `CAPABILITY_KEYWORDS` is never matched, so the router never reaches
+  the agent; a `tool_whitelist` naming something that is not a tool is a filter
+  matching nothing, so the agent ends up with fewer tools than its author
+  believes. Neither raises and neither logs. So the drafter checks against the
+  real things: `AgentDefinitionCreate` (the schema the create endpoint uses),
+  the router's own capability vocabulary, and the tool catalog — none of them
+  restated — and hands a refusal back verbatim, because a refusal that names
+  what is wrong is what the next attempt needs. An empty `tool_whitelist` is
+  refused separately from an absent one: `null` means every tool and `[]` means
+  none, and the difference is total. Drafting **creates nothing**; `notes` says
+  what had to be repaired, which is the part worth reading.
+
 - **Plugins** — a plugin is one installable unit that contributes tools (and, in
   later slices, flows and UI). `models/plugin.py` holds the manifest;
   `PluginInstallation` holds one user's decision to run it, so a builtin bundle

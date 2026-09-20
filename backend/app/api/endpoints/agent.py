@@ -20,6 +20,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from loguru import logger
+from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1003,6 +1004,38 @@ async def preview_agent_routing(
         tier_resolution=tier_resolution,
         attempts=attempts,
         notes=notes,
+    )
+
+
+class AgentDraftRequest(BaseModel):
+    """Describe an agent in words; get a definition back for review."""
+
+    description: str = Field(..., min_length=3, max_length=4000)
+
+
+@router.post("/agents/draft")
+async def draft_agent(
+    request: AgentDraftRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Draft an agent definition from a description. **Creates nothing.**
+
+    Admin-only, like creating one: this spends a model call and reads the tool
+    catalogue, and the thing it produces is meant to be reviewed and then
+    created through the endpoint below.
+
+    The reply carries `notes` as well as `definition`, and the notes are the
+    part worth reading. They say what had to be repaired -- a draft that took
+    two attempts to name a capability the router recognises is a draft worth a
+    second look, even though what comes back validates either way.
+    """
+    require_admin(current_user)
+
+    from app.services import agent_definition_author_service
+
+    return await agent_definition_author_service.draft_definition(
+        request.description, user_id=current_user.id, db=db
     )
 
 

@@ -92,29 +92,42 @@ def _system_prompt() -> str:
 
 
 def _payload(completion: Any) -> Dict[str, Any]:
-    """The JSON object a completion carries, in whichever shape it arrives."""
+    """The object out of a completion, whichever way the provider returned it.
+
+    ``generate_structured`` hands back an ``LLMCompletion``, not a dict:
+    providers with native schema output fill ``.structured``, the rest leave
+    JSON in ``.text``, sometimes inside a fence. Treating the completion itself
+    as a mapping is the quiet failure -- every field reads as missing, so the
+    draft looks like a model that cannot follow instructions. Measured: the
+    first live run of this drafter reported "the reply was not JSON" three
+    times against a model that had answered correctly each time.
+    """
+    structured = getattr(completion, "structured", None)
+    if isinstance(structured, Mapping) and structured:
+        return dict(structured)
     if isinstance(completion, Mapping):
-        for key in ("data", "parsed", "content", "text"):
-            inner = completion.get(key)
-            if isinstance(inner, Mapping):
-                return dict(inner)
-            if isinstance(inner, str):
-                try:
-                    loaded = json.loads(inner)
-                except (TypeError, ValueError):
-                    continue
-                if isinstance(loaded, Mapping):
-                    return dict(loaded)
-        if "name" in completion:
-            return dict(completion)
-    if isinstance(completion, str):
-        try:
-            loaded = json.loads(completion)
-        except (TypeError, ValueError):
+        return dict(completion)
+
+    text = str(getattr(completion, "text", "") or completion or "").strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text[:4].lower() == "json":
+            text = text[4:]
+    text = text.strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        # A model that wrapped the object in a sentence still answered.
+        start_brace, end_brace = text.find("{"), text.rfind("}")
+        if start_brace < 0 or end_brace <= start_brace:
             return {}
-        if isinstance(loaded, Mapping):
-            return dict(loaded)
-    return {}
+        try:
+            parsed = json.loads(text[start_brace : end_brace + 1])
+        except json.JSONDecodeError:
+            return {}
+    return dict(parsed) if isinstance(parsed, dict) else {}
 
 
 def check(payload: Mapping[str, Any]) -> Tuple[Optional[Dict[str, Any]], List[str]]:

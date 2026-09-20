@@ -11,6 +11,9 @@ than fixtures -- the whole value is whether a draft would survive the create
 endpoint and then actually work.
 """
 
+import json
+from types import SimpleNamespace
+
 import pytest
 
 from app.agent_core import tool_specs
@@ -104,9 +107,29 @@ class TestDraftingItself:
     def test_a_reply_that_is_not_json_yields_nothing(self):
         assert author._payload("not json at all") == {}
 
-    def test_a_reply_wrapped_in_a_data_key_is_still_read(self):
-        # Providers differ in how they return structured output.
-        assert author._payload({"data": GOOD})["name"] == "ise_scout"
+    def test_a_completion_with_native_structured_output_is_read(self):
+        # generate_structured returns an LLMCompletion, not a dict. Reading it
+        # as a mapping is the quiet failure: every field looks missing, so a
+        # model that answered correctly is reported as not returning JSON --
+        # which is exactly what the first live run of this drafter did, three
+        # times in a row.
+        completion = SimpleNamespace(structured=dict(GOOD), text="")
+        assert author._payload(completion)["name"] == "ise_scout"
+
+    def test_a_completion_that_left_json_in_text_is_read(self):
+        completion = SimpleNamespace(structured=None, text=json.dumps(GOOD))
+        assert author._payload(completion)["name"] == "ise_scout"
+
+    def test_a_fenced_reply_is_read(self):
+        fenced = "```json\n" + json.dumps(GOOD) + "\n```"
+        completion = SimpleNamespace(structured=None, text=fenced)
+        assert author._payload(completion)["name"] == "ise_scout"
+
+    def test_an_object_wrapped_in_prose_is_still_read(self):
+        completion = SimpleNamespace(
+            structured=None, text="Sure! " + json.dumps(GOOD) + " Hope that helps."
+        )
+        assert author._payload(completion)["name"] == "ise_scout"
 
 
 class TestRefiningWhatIsAlreadyThere:

@@ -543,3 +543,34 @@ class TestWhenTheProbeItselfFails:
 
         assert "catalog.py 2>/dev/null" not in source
         assert "catalog.py" in source
+
+
+class TestTheCatalogIsEvidenceNotJustAnAnswer:
+    """`describe_gem5_mechanisms` declares produces=("mechanism_catalog",).
+
+    It returned the classes under "mechanisms" and recorded no finding, so a
+    contract requiring mechanism_catalog could not be satisfied by its only
+    producer -- the defect create_synthesis_document had, and the reason this
+    evidence type had never once been recorded in a corpus holding 114
+    mechanism_comparison findings.
+    """
+
+    def test_the_function_records_a_finding_of_the_declared_type(self):
+        import inspect
+
+        source = inspect.getsource(mech.describe_gem5_mechanisms)
+        assert '"type": "mechanism_catalog"' in source
+
+    def test_the_spec_and_the_handler_agree(self):
+        from app.agent_core import tool_specs
+
+        spec = tool_specs.STATIC_CATALOG.spec_for("describe_gem5_mechanisms")
+        assert "mechanism_catalog" in (spec.produces or ())
+
+    def test_the_answer_itself_is_still_returned(self):
+        # The finding is what a contract counts; "mechanisms" is what a person
+        # reads. Adding the first must not cost the second.
+        import inspect
+
+        source = inspect.getsource(mech.describe_gem5_mechanisms)
+        assert '"mechanisms":' in source and '"how_to_use":' in source

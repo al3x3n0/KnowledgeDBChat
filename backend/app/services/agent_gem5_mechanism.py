@@ -1325,4 +1325,21 @@ async def describe_gem5_mechanisms(
             "prefetcher no capacity to issue into, and it measures as no "
             "mechanism at all."
         ),
+        # The same answer as a finding, because goal contracts count finding
+        # types and this tool's spec declares it produces mechanism_catalog.
+        # Returning it only under "mechanisms" made that contract unsatisfiable
+        # by its only producer -- the defect create_synthesis_document had, and
+        # the reason mechanism_catalog had never once been recorded here.
+        "findings": [
+            {
+                "type": "mechanism_catalog",
+                "categories": sorted(catalog),
+                "classes": {
+                    category: sorted(options)
+                    for category, options in (
+                        {wanted: catalog[wanted]} if wanted else catalog
+                    ).items()
+                },
+            }
+        ],
     }

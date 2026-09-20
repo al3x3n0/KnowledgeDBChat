@@ -40,6 +40,25 @@ make sandbox-check      # which exist locally, plus the compiler image's toolcha
 make sandbox-gem5       # arm64 only; --platform is not optional
 make sandbox-axis AXIS_PATH=/path/to/axis   # context is the AXIS repo, not this one
 ```
+**Without `docker-compose.docker-tools.yml` in the stack, none of these
+images are reachable and every sandbox-backed tool fails** — gem5, compiler,
+profiling and microarch alike — with `Cannot connect to the Docker daemon`,
+because the backend and celery containers have no socket. `.env` can say
+`UNSAFE_CODE_EXEC_BACKEND=docker` and be simultaneously true and useless. Bring
+it up with:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.override.yml \
+  -f docker-compose.docker-tools.yml up -d backend celery
+```
+
+Add `--build` only if `docker` is absent from the image (`WITH_DOCKER_CLI`);
+where the CLI is already present, `--no-build` avoids needing the package
+mirrors, which this network intercepts. The socket grants the container
+root-equivalent control of the host, so this is for a development machine or an
+isolated runner. The symptom of forgetting it is silence in the evidence: a
+capability reads as 0 findings, indistinguishable from one nobody has used.
+
 The images agent tools run submitted code in (`deploy/sandbox-images/`). They
 are coupled to the code: Rust support and the pinned crate set only work
 against a compiler-research image built after they were added, and an older one

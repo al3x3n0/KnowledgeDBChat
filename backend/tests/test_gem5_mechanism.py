@@ -671,3 +671,51 @@ class TestReadingAMangledFrame:
     def test_a_symbol_that_is_not_a_nested_name_is_left_alone(self):
         for plain in ("main", "_start", ""):
             assert mech._demangle_nested(plain) == ""
+
+
+class TestAMechanismThatNeverEngaged:
+    """Counters from the real runs that prompted this.
+
+    IrregularStreamBufferPrefetcher on L2 reported zero identified candidates
+    and a cycle count equal to the no-prefetcher run to the cycle;
+    StridePrefetcher on the same kernel issued 63,127 with 4,171 useful.
+    """
+
+    CFG = {"caches": {"l2": {"prefetcher": "IrregularStreamBufferPrefetcher"}}}
+
+    def test_a_prefetcher_that_identified_nothing_is_inert(self):
+        inert = mech.inert_prefetchers(
+            self.CFG,
+            {
+                "system.l2cache.prefetcher.pfIdentified": 0.0,
+                "system.l2cache.prefetcher.pfIssued": 0.0,
+            },
+        )
+        assert inert == ["IrregularStreamBufferPrefetcher on l2"]
+
+    def test_a_working_prefetcher_is_not(self):
+        assert not mech.inert_prefetchers(
+            self.CFG,
+            {
+                "system.l2cache.prefetcher.pfIdentified": 63127.0,
+                "system.l2cache.prefetcher.pfIssued": 63127.0,
+            },
+        )
+
+    def test_a_build_that_reports_no_counters_is_not_accused(self):
+        """Silence from the build is not evidence the mechanism was idle."""
+        assert not mech.inert_prefetchers(self.CFG, {})
+
+    def test_the_level_is_read_from_the_config_not_assumed(self):
+        """gem5 names stats by object: an L1d prefetcher is under `dcache`."""
+        inert = mech.inert_prefetchers(
+            {"caches": {"l1d": {"prefetcher": "StridePrefetcher"}}},
+            {
+                "system.cpu.dcache.prefetcher.pfIdentified": 0.0,
+                "system.cpu.dcache.prefetcher.pfIssued": 0.0,
+            },
+        )
+        assert inert == ["StridePrefetcher on l1d"]
+
+    def test_a_level_with_no_mechanism_is_not_reported(self):
+        assert not mech.inert_prefetchers({"caches": {"l2": {"size": "2MiB"}}}, {})

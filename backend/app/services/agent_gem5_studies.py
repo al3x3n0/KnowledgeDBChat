@@ -25,7 +25,7 @@ every number being compared.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from app.services import gem5_bottleneck
 from app.services.agent_gem5_mechanism import (
@@ -609,7 +609,11 @@ async def evaluate_across_kernels(
     timeout_seconds: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Measure one mechanism on several kernels and report the distribution."""
-    from app.services.agent_gem5_mechanism import MECHANISM_KEYS, find_confounds
+    from app.services.agent_gem5_mechanism import (
+        MECHANISM_KEYS,
+        find_confounds,
+        inert_prefetchers,
+    )
 
     listed = [k for k in (kernels or []) if isinstance(k, dict) and k.get("code")]
     if len(listed) < 2:
@@ -648,7 +652,8 @@ async def evaluate_across_kernels(
             "confounds": confounds,
         }
 
-    per_kernel = []
+    per_kernel: List[Dict[str, Any]] = []
+    inert_on: List[str] = []
     for index, kernel in enumerate(listed):
         name = str(kernel.get("name") or f"kernel{index}")
         try:
@@ -667,6 +672,9 @@ async def evaluate_across_kernels(
             continue
         base_cycles = _cycles(runs["baseline"])
         var_cycles = _cycles(runs["variant"])
+        inert = inert_prefetchers(variant, runs["variant"]["stats"])
+        if inert:
+            inert_on.append(name)
         per_kernel.append(
             {
                 "kernel": name,
@@ -676,6 +684,7 @@ async def evaluate_across_kernels(
                 "identical_stats": stats_identical(
                     runs["baseline"]["stats"], runs["variant"]["stats"]
                 ),
+                "inert_mechanisms": inert,
             }
         )
 
@@ -685,6 +694,32 @@ async def evaluate_across_kernels(
             "success": False,
             "error": "No kernel produced a usable comparison.",
             "per_kernel": per_kernel,
+        }
+
+    # A mechanism that engaged on no kernel was not measured on any of them.
+    # Measured: an IrregularStreamBufferPrefetcher on L2 identified zero
+    # candidates on all four kernels and matched the no-prefetcher run to the
+    # cycle, and this reported `geomean 1.0000x` -- a clean-looking number
+    # that a contract accepted and a study built a conclusion on. Against a
+    # baseline that *does* prefetch it reads worse still: the result is the
+    # baseline's own gain, inverted, attributed to a mechanism that never ran.
+    if inert_on and len(inert_on) == len(measured):
+        names = sorted(
+            {m for k in per_kernel for m in (k.get("inert_mechanisms") or [])}
+        )
+        return {
+            "success": False,
+            "error": (
+                f"{' and '.join(names)} issued no prefetches on any of the "
+                f"{len(measured)} kernels, so this comparison measures the "
+                "baseline and not the mechanism. Check that the mechanism is "
+                "configured where it can see the accesses it needs -- a "
+                "prefetcher at L2 trains on L1 misses, which some kernels and "
+                "some prefetchers never generate in a usable form. "
+                "describe_gem5_mechanisms lists what this build carries."
+            ),
+            "per_kernel": per_kernel,
+            "inert_on": inert_on,
         }
 
     speedups = [k["speedup"] for k in measured]

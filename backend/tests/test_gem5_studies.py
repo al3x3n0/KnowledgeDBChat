@@ -293,3 +293,61 @@ class TestTheOnePairingThatCrashesGem5:
         )
         assert result["success"] is False
         assert "crashes gem5" in result["error"]
+
+
+class TestAnEvaluationOfAMechanismThatNeverRan:
+    """`geomean 1.0000x` was recorded as a finding and accepted by a contract.
+
+    An IrregularStreamBufferPrefetcher on L2 identified zero candidates on all
+    four kernels and matched the no-prefetcher run to the cycle. Against a
+    baseline that does prefetch, the same null reads as the baseline's own
+    gain inverted -- 1/2.1028 = 0.4756 -- and was reported as the mechanism
+    being twice as slow.
+    """
+
+    ZERO = {
+        "system.l2cache.prefetcher.pfIdentified": 0.0,
+        "system.l2cache.prefetcher.pfIssued": 0.0,
+    }
+    BUSY = {
+        "system.l2cache.prefetcher.pfIdentified": 63127.0,
+        "system.l2cache.prefetcher.pfIssued": 63127.0,
+    }
+    VARIANT = {"caches": {"l2": {"prefetcher": "IrregularStreamBufferPrefetcher"}}}
+
+    def _kernels(self):
+        return [
+            {"name": "a", "code": "int main(void){return 0;}"},
+            {"name": "b", "code": "int main(void){return 1;}"},
+        ]
+
+    async def _evaluate(self, monkeypatch, variant_stats):
+        async def fake_run_configs(*, code, configs, **kwargs):
+            cycles = 1000.0 if code.strip().endswith("0;}") else 2000.0
+            return {
+                "baseline": {"stats": {}, "cycles": cycles},
+                "variant": {"stats": dict(variant_stats), "cycles": cycles},
+            }
+
+        monkeypatch.setattr(st, "run_configs", fake_run_configs)
+        monkeypatch.setattr(st, "_cycles", lambda run: run["cycles"])
+        monkeypatch.setattr(st, "stats_identical", lambda a, b: False)
+        return await st.evaluate_across_kernels(
+            kernels=self._kernels(), variant=self.VARIANT, label="null"
+        )
+
+    async def test_a_mechanism_inert_everywhere_is_refused(self, monkeypatch):
+        result = await self._evaluate(monkeypatch, self.ZERO)
+        assert result["success"] is False
+        assert "issued no prefetches" in result["error"]
+        assert "IrregularStreamBufferPrefetcher" in result["error"]
+
+    async def test_the_refusal_says_which_kernels(self, monkeypatch):
+        result = await self._evaluate(monkeypatch, self.ZERO)
+        assert result["inert_on"] == ["a", "b"]
+
+    async def test_a_mechanism_that_engaged_is_measured_normally(self, monkeypatch):
+        """Equal cycles are only damning when the mechanism reported nothing."""
+        result = await self._evaluate(monkeypatch, self.BUSY)
+        assert result["success"] is True
+        assert result["geomean_speedup"] == 1.0

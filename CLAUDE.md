@@ -537,6 +537,28 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   editing anything, and read the ledger's error, which is what makes an outage
   distinguishable from an agent with nothing to say.
 
+- **A mechanism that never engaged is not a measurement of that mechanism.**
+  `evaluate_across_kernels` reported `geomean 1.0000x over 4 kernels` and
+  recorded it as a `mechanism_evaluation` finding a contract accepted. The
+  cause: an `IrregularStreamBufferPrefetcher` on L2 reports
+  `pfIdentified = 0, pfIssued = 0` -- it is instantiated, it has counters, and
+  it prefetches nothing -- so its arm matched the no-prefetcher run *to the
+  cycle* on every kernel. A `StridePrefetcher` on the same kernel issues
+  63,127 with 4,171 useful.
+
+  The dangerous form is not the 1.0000. Run the same inert mechanism against a
+  baseline that *does* prefetch and the null becomes the baseline's own gain,
+  inverted and attributed to the mechanism: a study concluded "ISB is a worse
+  general-purpose accelerator, geomean 0.78x, worst 0.50x" when 1/2.1028 =
+  0.4756 is simply Stride's measured 2.1x seen from the other side. Every
+  number was real and the conclusion was about a mechanism that never ran.
+
+  `inert_prefetchers()` reads the mechanism's **own counters**, not the
+  cycles: two arms can coincide honestly, but a prefetcher reporting zero
+  identified candidates has said itself that it never engaged. A mechanism
+  inert on every kernel is refused rather than reported. A build that does not
+  publish the counters accuses nobody -- silence is not evidence of idleness.
+
 - **A contract is read under every spelling it is written in.** A contract may
   name its evidence as `required_finding_types` (a list, or a mapping of
   counts) or as the normalised `required_finding_type_counts` — which is the

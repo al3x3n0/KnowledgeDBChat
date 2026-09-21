@@ -397,11 +397,7 @@ def mechanism_activity(
     candidates came back with an empty activation column because the extractor
     only looked under `dcache`.
     """
-    level_paths = {
-        "l1i": "system.cpu.icache",
-        "l1d": "system.cpu.dcache",
-        "l2": "system.l2cache",
-    }
+    level_paths = CACHE_STAT_PORTS
     activity: Dict[str, Dict[str, float]] = {}
     for level, described in (manifest.get("caches") or {}).items():
         if described.get("prefetcher", "none") == "none":
@@ -464,6 +460,48 @@ def _spec_for(base: Dict[str, Any], binary: str, args: Sequence[str]) -> Dict[st
 def _read(workdir: str, name: str) -> str:
     path = Path(workdir, name)
     return path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+
+
+#: Where each cache level's statistics live. gem5 names them by the object,
+#: not the level, so a hardcoded prefix reports a mechanism as inactive
+#: precisely when it is working.
+CACHE_STAT_PORTS = {
+    "l1i": "system.cpu.icache",
+    "l1d": "system.cpu.dcache",
+    "l2": "system.l2cache",
+}
+
+
+def inert_prefetchers(config: Dict[str, Any], stats: Dict[str, float]) -> List[str]:
+    """Cache levels whose configured prefetcher issued nothing at all.
+
+    A prefetcher that identifies zero candidates is present in the simulated
+    machine and absent from its behaviour, so a comparison against it measures
+    the *other* arm and nothing else. Measured: an
+    IrregularStreamBufferPrefetcher on L2 produced `pfIdentified = 0,
+    pfIssued = 0` and a cycle count equal to the no-prefetcher run to the
+    cycle, while a StridePrefetcher on the same kernel issued 63,127. The
+    study built on it read as "the mechanism is 2x worse" when what it had
+    measured was the mechanism doing nothing.
+
+    Counters, not cycles: two arms can coincide for honest reasons, but a
+    prefetcher reporting zero identified candidates has said itself that it
+    never engaged.
+    """
+    out: List[str] = []
+    for level, spec in ((config or {}).get("caches") or {}).items():
+        if not isinstance(spec, dict) or not spec.get("prefetcher"):
+            continue
+        port = CACHE_STAT_PORTS.get(level)
+        if not port:
+            continue
+        identified = stats.get(f"{port}.prefetcher.pfIdentified")
+        issued = stats.get(f"{port}.prefetcher.pfIssued")
+        if identified is None and issued is None:
+            continue  # this build does not report them; say nothing
+        if (identified or 0) == 0 and (issued or 0) == 0:
+            out.append(f"{spec['prefetcher']} on {level}")
+    return out
 
 
 def stats_identical(left: Dict[str, float], right: Dict[str, float]) -> bool:

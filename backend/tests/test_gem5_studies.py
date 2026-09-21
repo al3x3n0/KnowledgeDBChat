@@ -245,3 +245,51 @@ class TestTheFindingKeepsThePerKernelNumbers:
         title = result["findings"][0]["title"]
         assert "strided 0.50x" in title
         assert "dense_reuse 0.99x" in title
+
+
+class TestTheOnePairingThatCrashesGem5:
+    """Idealised l1d above a prefetching L2 dies inside gem5's cache code.
+
+    Each case below was measured one factor at a time on the kernel that first
+    hit it, which is what makes the rule this narrow: the crash needs both a
+    16MiB L1d and a prefetcher on L2, and every other pairing is real work
+    somebody should be allowed to do.
+    """
+
+    PF = {"caches": {"l2": {"prefetcher": "StridePrefetcher"}}}
+
+    def test_the_measured_crash_is_refused(self):
+        refusal = st._l1d_prefetcher_conflict(["l1d_capacity"], self.PF)
+        assert refusal
+        assert "StridePrefetcher" in refusal
+
+    def test_the_refusal_names_alternatives_that_were_measured(self):
+        refusal = st._l1d_prefetcher_conflict(["l1d_capacity"], self.PF)
+        for alternative in ("l1i_capacity", "l2_capacity", "caches.l1d.prefetcher"):
+            assert alternative in refusal, alternative
+
+    def test_idealising_l1d_without_a_mechanism_is_allowed(self):
+        assert not st._l1d_prefetcher_conflict(["l1d_capacity"], {})
+
+    def test_the_same_prefetcher_one_level_up_is_allowed(self):
+        assert not st._l1d_prefetcher_conflict(
+            ["l1d_capacity"],
+            {"caches": {"l1d": {"prefetcher": "StridePrefetcher"}}},
+        )
+
+    def test_the_other_cache_idealisations_are_allowed(self):
+        for target in ("l1i_capacity", "l2_capacity"):
+            assert not st._l1d_prefetcher_conflict([target], self.PF), target
+
+    def test_a_non_cache_idealisation_is_allowed(self):
+        assert not st._l1d_prefetcher_conflict(["issue_queue"], self.PF)
+
+    async def test_it_refuses_before_simulating_anything(self):
+        """The baseline arm runs first, so a doomed run must not start."""
+        result = await st.measure_headroom(
+            code="int main(void){return 0;}",
+            targets=["l1d_capacity"],
+            config=self.PF,
+        )
+        assert result["success"] is False
+        assert "crashes gem5" in result["error"]

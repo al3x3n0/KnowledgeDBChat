@@ -251,6 +251,32 @@ async def explain_bottleneck(
 # ---------------------------------------------------------------------------
 # How much is there to win.
 # ---------------------------------------------------------------------------
+def _l1d_prefetcher_conflict(targets: Sequence[str], config: Dict[str, Any]) -> str:
+    """The one idealisation/mechanism pairing that crashes gem5, or "".
+
+    Phrased as what the tool accepts, because the run reading it has to choose
+    a different call, and every alternative named here was measured rather
+    than assumed.
+    """
+    if "l1d_capacity" not in set(targets):
+        return ""
+    l2 = ((config or {}).get("caches") or {}).get("l2") or {}
+    prefetcher = l2.get("prefetcher") if isinstance(l2, dict) else None
+    if not prefetcher:
+        return ""
+    return (
+        f"Idealising l1d_capacity with {prefetcher} on L2 crashes gem5 "
+        "(inside BaseCache::CacheReqPacketQueue::sendDeferredPacket, with no "
+        "diagnostic), so it is refused rather than run. Measured "
+        "alternatives that work: idealise l1d_capacity with no mechanism "
+        "config, to bound what the cache is costing this machine; move the "
+        f"prefetcher to l1d (`caches.l1d.prefetcher: {prefetcher}`); or keep "
+        f"{prefetcher} on L2 and idealise l1i_capacity or l2_capacity "
+        "instead. A mechanism's own effect is measured by simulate_mechanism, "
+        "which is unaffected."
+    )
+
+
 async def measure_headroom(
     *,
     code: str,
@@ -294,6 +320,24 @@ async def measure_headroom(
         }
 
     base = config or {}
+
+    # One combination crashes gem5 itself, so it is refused rather than run:
+    # a 16MiB L1d with a prefetcher on L2 dies inside
+    # `BaseCache::CacheReqPacketQueue::sendDeferredPacket`, printing a libc
+    # backtrace and no diagnostic. Refused up front because the baseline arm
+    # runs first and the crash comes after it -- a run that will not produce a
+    # number should not spend a full simulation discovering that.
+    #
+    # Measured, one factor at a time, on the kernel that first hit it:
+    # idealised l1d + L2 prefetcher crashes; default l1d + L2 prefetcher is
+    # fine; idealised l1d + the same prefetcher on l1d is fine; idealised l1d
+    # alone is fine (73.77% headroom); idealised l1i or l2 + L2 prefetcher are
+    # fine. So the rule names l1d and an L2 prefetcher and nothing wider --
+    # every other pairing is work somebody should be allowed to do.
+    refusal = _l1d_prefetcher_conflict(wanted, base)
+    if refusal:
+        return {"success": False, "error": refusal}
+
     configs = {"baseline": base}
     for target in wanted:
         configs[f"ideal_{target}"] = _merge(base, IDEALISATIONS[target]["config"])

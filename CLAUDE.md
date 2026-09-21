@@ -489,15 +489,30 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   search and progress reports without ingesting one. Naming a tool the runtime
   will refuse is worse than naming none, because the run plans around it.
 
-- **`measure_headroom` crashes gem5 when a mechanism config is attached.**
-  Idealising `l1d_capacity` with no config works on the same kernel; adding
-  `{"caches": {"l2": {"prefetcher": "StridePrefetcher"}}}` aborts the arm.
-  Reproduced four times — three inside a run, once by hand. This is the
-  combination the natural research progression leads to (measure a mechanism,
-  attribute what now limits it, bound the remaining headroom *of that same
-  machine*), so it is worth knowing before designing the study. Until it is
-  fixed, bound the headroom of the baseline machine and treat the mechanism's
-  effect as separately measured.
+- **One idealisation/mechanism pairing crashes gem5: `l1d_capacity` with a
+  prefetcher on L2.** It dies inside
+  `BaseCache::CacheReqPacketQueue::sendDeferredPacket`, printing a libc
+  backtrace and *no* diagnostic — no `panic:`, no `fatal:`, nothing — which is
+  why it was first recorded as the unreadable "A simulation failed." and
+  diagnosed far too broadly, as idealisation being incompatible with mechanism
+  configs generally. `measure_headroom` now refuses this one pairing up front,
+  since the baseline arm runs first and a doomed run should not spend a full
+  simulation to discover it.
+
+  Measured one factor at a time, and the rule is exactly this narrow:
+  idealised l1d + L2 prefetcher **crashes**; default l1d + L2 prefetcher is
+  fine; idealised l1d with the same prefetcher on **l1d** is fine; idealised
+  l1d alone is fine (73.77% headroom on the kernel that first hit it);
+  idealised **l1i** or **l2** with an L2 prefetcher are fine. So the natural
+  progression — measure a mechanism, attribute what now limits it, bound the
+  remaining headroom of that same machine — is available; it is one square of
+  the grid that is not. An earlier hypothesis that the cause was the inverted
+  hierarchy (a 16MiB L1 above a 2MiB L2) was tested and refuted: widening L2
+  to 64MiB still crashes, so the prefetcher is the necessary ingredient.
+
+  A crash with no diagnostic is also why `_gem5_failure_line` falls back to
+  the top gem5 stack frame, demangled: when gem5 dies without a word, where it
+  died is the only account of what happened that exists.
 
 - **A failed tool call records why it failed.** `compact_action_ledger` keeps
   raw tool output out of `results.actions` deliberately, but it was dropping

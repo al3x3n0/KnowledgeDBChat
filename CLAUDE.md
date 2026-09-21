@@ -507,11 +507,20 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   406** for this host (while `arxiv.org` itself serves normally and egress is
   fine), and three discovery stages spent forty-odd iterations able to report
   only "no new findings". The distinction is visible in the ledger now, and it
-  is sharper than "arXiv is down": `search_arxiv` succeeds while
-  `ingest_arxiv_papers` and `literature_review_arxiv` fail. A pipeline whose
-  discovery stage requires `papers_ingested` therefore cannot pass while that
-  lasts — ISE fusion's research stage works because it draws on the corpus
+  is sharper than "arXiv is down": `search_arxiv` succeeded while
+  `ingest_arxiv_papers` and `literature_review_arxiv` failed, so a pipeline
+  whose discovery stage required `papers_ingested` could not pass, while ISE
+  fusion's research stage kept working because it draws on the corpus
   (`related_paper_set`) rather than the API.
+
+  **That outage cleared on 2026-09-21** — `export.arxiv.org/api/query` answers
+  200 again, with any User-Agent or none, and `literature_review_arxiv` returns
+  papers and creates its document source through the real tool path. It was
+  never a request the code could fix: the same binary that got 406 for days now
+  gets 200 unchanged. Worth remembering when the next discovery stage reports
+  nothing, because the shape recurs — check the upstream by hand before
+  editing anything, and read the ledger's error, which is what makes an outage
+  distinguishable from an agent with nothing to say.
 
 - **A contract is read under every spelling it is written in.** A contract may
   name its evidence as `required_finding_types` (a list, or a mapping of

@@ -518,6 +518,21 @@ def _is_monotonic(curve: Sequence[Dict[str, Any]]) -> bool:
     return all(b >= a for a, b in zip(speedups, speedups[1:]))
 
 
+def _with_magnitudes(measured: list, kernels: list) -> str:
+    """Name each regressed kernel with how far it fell, worst first.
+
+    A list of bare names renders a halving and a 1% blip identically, which is
+    how a control kernel behaving exactly as a control should came to be
+    reported beside a 2x collapse in the same breath.
+    """
+    named = set(kernels)
+    ordered = sorted(
+        (k for k in measured if k["kernel"] in named),
+        key=lambda k: k["speedup"],
+    )
+    return ", ".join(f"{k['kernel']} {k['speedup']:.2f}x" for k in ordered)
+
+
 def _saturation_point(
     curve: Sequence[Dict[str, Any]], epsilon: float = 0.01
 ) -> Optional[Any]:
@@ -657,7 +672,7 @@ async def evaluate_across_kernels(
                     f"{len(measured)} kernels, worst {worst['speedup']:.4f}x "
                     f"on {worst['kernel']}"
                     + (
-                        f", regressed on {', '.join(regressions)}"
+                        f", regressed on {_with_magnitudes(measured, regressions)}"
                         if regressions
                         else ""
                     )
@@ -667,6 +682,12 @@ async def evaluate_across_kernels(
                 "worst_kernel": worst["kernel"],
                 "best_speedup": best["speedup"],
                 "regressions": regressions,
+                # The distribution is what a multi-kernel evaluation is for.
+                # Aggregates alone cannot tell a mechanism that fails on one
+                # kernel from one that is mediocre everywhere.
+                "per_kernel": [
+                    {"kernel": k["kernel"], "speedup": k["speedup"]} for k in measured
+                ],
                 "kernels_measured": len(measured),
                 "measurement_source": "gem5 multi-kernel evaluation",
             }

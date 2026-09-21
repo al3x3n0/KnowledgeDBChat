@@ -171,3 +171,77 @@ class TestNamingAStructure:
         catalogue rather than silently idealising something else."""
         assert st.resolve_target("l2_cache") == "l2_cache"
         assert "l2_cache" not in st.IDEALISATIONS
+
+
+class TestTheEvaluationCarriesItsDistribution:
+    """Measured from job de85bc66: ISB vs stride across four kernels.
+
+    Every kernel was slower, but by amounts spanning a halving and a blip on
+    the control -- which is the case a bare list of names cannot express.
+    """
+
+    MEASURED = [
+        {"kernel": "strided", "speedup": 0.5007},
+        {"kernel": "pointer_chase", "speedup": 0.9012},
+        {"kernel": "indirect_gather", "speedup": 0.8318},
+        {"kernel": "dense_reuse", "speedup": 0.9856},
+    ]
+
+    def test_a_regression_is_named_with_how_far_it_fell(self):
+        line = st._with_magnitudes(self.MEASURED, [k["kernel"] for k in self.MEASURED])
+        assert "strided 0.50x" in line
+        assert "dense_reuse 0.99x" in line
+
+    def test_the_worst_is_named_first(self):
+        line = st._with_magnitudes(self.MEASURED, [k["kernel"] for k in self.MEASURED])
+        assert line.index("strided") < line.index("dense_reuse")
+
+    def test_only_the_named_kernels_appear(self):
+        line = st._with_magnitudes(self.MEASURED, ["indirect_gather"])
+        assert line == "indirect_gather 0.83x"
+
+
+class TestTheFindingKeepsThePerKernelNumbers:
+    """A multi-kernel evaluation exists to produce a distribution.
+
+    The first real one recorded geomean, best and worst on the finding and
+    dropped `per_kernel`, so the four numbers it was run to produce survived
+    only in a checkpoint that happened to be written.
+    """
+
+    CYCLES = {
+        "strided": (806490.0, 1610867.0),
+        "dense_reuse": (880662.0, 893565.0),
+    }
+
+    async def _evaluate(self, monkeypatch):
+        async def fake_run_configs(*, code, configs, **kwargs):
+            name = code.strip()
+            base, var = self.CYCLES[name]
+            return {
+                "baseline": {"stats": {"simTicks": base}, "cycles": base},
+                "variant": {"stats": {"simTicks": var}, "cycles": var},
+            }
+
+        monkeypatch.setattr(st, "run_configs", fake_run_configs)
+        monkeypatch.setattr(st, "_cycles", lambda run: run["cycles"])
+        monkeypatch.setattr(st, "stats_identical", lambda a, b: False)
+        return await st.evaluate_across_kernels(
+            kernels=[{"name": n, "code": n} for n in self.CYCLES],
+            variant={
+                "caches": {"l2": {"prefetcher": "IrregularStreamBufferPrefetcher"}}
+            },
+            baseline={"caches": {"l2": {"prefetcher": "StridePrefetcher"}}},
+            label="isb_vs_stride",
+        )
+
+    async def test_the_finding_carries_every_kernel(self, monkeypatch):
+        result = await self._evaluate(monkeypatch)
+        finding = result["findings"][0]
+        assert {k["kernel"] for k in finding["per_kernel"]} == set(self.CYCLES)
+
+    async def test_the_title_distinguishes_a_halving_from_a_blip(self, monkeypatch):
+        result = await self._evaluate(monkeypatch)
+        title = result["findings"][0]["title"]
+        assert "strided 0.50x" in title
+        assert "dense_reuse 0.99x" in title

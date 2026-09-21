@@ -622,3 +622,52 @@ class TestASimulationFailureSaysWhy:
         # And when gem5 says nothing, the message says where to look rather
         # than pretending to a reason.
         assert "its output is in `stderr`" in source
+
+
+class TestACrashThatExplainsNothing:
+    """gem5 dying without a diagnostic is the case with the least to go on.
+
+    Verbatim stderr from the L1d-idealisation crash: an ARM_FAILED marker, a
+    libc backtrace, and no `panic:`, `fatal:` or `error:` line anywhere. The
+    only account of what happened is the top gem5 frame, and it is mangled.
+    """
+
+    REAL = (
+        "ARM_FAILED ideal_l1d_capacity\n"
+        "/opt/gem5/build/ARM/gem5.opt(_ZN4gem59BaseCache19CacheReqPacketQueue"
+        "18sendDeferredPacketEv+0xb0)[0xaaaae64d46d0]\n"
+        "/opt/gem5/build/ARM/gem5.opt(_ZN4gem510EventQueue10serviceOneEv+0xb4)"
+        "[0xaaaae46330c8]\n"
+        "--- END LIBC BACKTRACE ---\n"
+        "Aborted"
+    )
+
+    def test_it_names_both_the_arm_and_where_gem5_died(self):
+        line = mech._gem5_failure_line(self.REAL)
+        assert "ideal_l1d_capacity" in line
+        assert "BaseCache::CacheReqPacketQueue::sendDeferredPacket" in line
+
+    def test_a_real_diagnostic_is_preferred_over_the_frame(self):
+        """A panic is gem5 explaining itself; a frame is a last resort."""
+        line = mech._gem5_failure_line(
+            "ARM_FAILED ideal_x\npanic: Invalid cache size\n"
+            "/opt/gem5/build/ARM/gem5.opt(_ZN4gem59BaseCache4funcEv)[0x1]\nAborted"
+        )
+        assert "panic: Invalid cache size" in line
+        assert "BaseCache" not in line
+
+
+class TestReadingAMangledFrame:
+    def test_a_nested_name_becomes_readable(self):
+        assert (
+            mech._demangle_nested("_ZN4gem510EventQueue10serviceOneEv")
+            == "gem5::EventQueue::serviceOne"
+        )
+
+    def test_a_length_that_runs_past_the_end_is_refused(self):
+        """Backtraces get truncated; half a symbol is not a name."""
+        assert mech._demangle_nested("_ZN9truncated99") == ""
+
+    def test_a_symbol_that_is_not_a_nested_name_is_left_alone(self):
+        for plain in ("main", "_start", ""):
+            assert mech._demangle_nested(plain) == ""

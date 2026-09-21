@@ -1248,6 +1248,50 @@ def explain_probe_failure(stderr: str) -> str:
     )
 
 
+#: A gem5 frame in a libc backtrace: `/opt/gem5/build/ARM/gem5.opt(_ZN4gem5...)`.
+_GEM5_FRAME = re.compile(r"gem5[^(]*\((_ZN[A-Za-z0-9_]+)")
+
+
+def _demangle_nested(symbol: str) -> str:
+    """The qualified name inside an Itanium `_ZN...E` symbol, or "".
+
+    Only the nested-name case, which is every frame gem5 prints. Written out
+    rather than shelled to `c++filt`, which the API image does not carry.
+    """
+    if not symbol.startswith("_ZN"):
+        return ""
+    body, parts = symbol[3:], []
+    while body and body[0].isdigit():
+        match = re.match(r"\d+", body)
+        length, start = int(match.group()), match.end()
+        segment = body[start : start + length]
+        if len(segment) < length:  # truncated in the captured output
+            return ""
+        parts.append(segment)
+        body = body[start + length :]
+    return "::".join(parts)
+
+
+def _crash_site(lines: Sequence[str]) -> str:
+    """Where gem5 was when it died, for a crash that printed no diagnostic.
+
+    A `panic:` or `fatal:` is gem5 explaining itself; a bare libc backtrace is
+    gem5 dying without a word, and then the top frame is the only account of
+    what happened that exists. Measured on the L1d-idealisation crash: no
+    diagnostic line anywhere in stderr, and the useful fact -- that it died in
+    the cache's deferred-packet queue -- was legible only from a mangled
+    symbol nobody was reading.
+    """
+    for line in lines:
+        match = _GEM5_FRAME.search(line)
+        if not match:
+            continue
+        name = _demangle_nested(match.group(1))
+        if name:
+            return name
+    return ""
+
+
 def _gem5_failure_line(stderr: str) -> str:
     """The line of gem5 output that explains a non-zero exit, if there is one.
 
@@ -1264,14 +1308,38 @@ def _gem5_failure_line(stderr: str) -> str:
     # headroom run printed `ARM_FAILED ideal_l1d_capacity` and then a libc
     # backtrace, and reporting the shell's "Aborted" instead said nothing
     # about which idealisation was at fault.
+    arm = ""
     for line in lines:
         if line.startswith("ARM_FAILED"):
             arm = line.split(None, 1)[1] if " " in line else ""
-            return f"the {arm} arm did not run" if arm else line[:300]
-    for marker in ("fatal:", "panic:", "error:"):
+            break
+
+    reason = ""
+    for marker in ("panic:", "fatal:", "error:"):
         for line in lines:
             if marker in line.lower():
-                return line[:300]
+                reason = line
+                break
+        if reason:
+            break
+
+    # Both halves or neither. Returning on the marker alone left the caller
+    # holding "the ideal_l1d_capacity arm did not run" -- which names the arm
+    # and discards gem5's own account of why, the half nobody can reconstruct.
+    # Measured on the L1d-idealisation crash: the panic naming the structure
+    # gem5 could not build was in `stderr` throughout and reached no one.
+    if not reason:
+        # No diagnostic at all: gem5 aborted rather than explaining itself.
+        site = _crash_site(lines)
+        if site:
+            reason = f"gem5 aborted in {site} without printing a diagnostic"
+
+    if arm and reason:
+        return f"the {arm} arm did not run: {reason}"[:400]
+    if arm:
+        return f"the {arm} arm did not run"
+    if reason:
+        return reason[:300]
     return lines[-1][:300]
 
 

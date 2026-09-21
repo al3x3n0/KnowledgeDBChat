@@ -72,6 +72,52 @@ _BLAMES_THE_SOURCE = re.compile(
 )
 
 
+#: A failure that happened *before* the tool could judge the input at all: a
+#: daemon that is not listening, an upstream answering with a status, a binary
+#: that is not in the image. Deliberately narrow. "not found" on its own is far
+#: too broad -- an unknown mnemonic is also a `not_found` error, and there the
+#: tool ran and refused the input, which is a different situation with a
+#: different remedy.
+_COULD_NOT_RUN = re.compile(
+    r"cannot connect to|could not connect|connection refused|connection reset|"
+    r"is the docker daemon running|docker\.sock|"
+    r"HTTP (?:Error )?[45]\d\d|"
+    # A bare status with its standard phrase, which is how a fetch tool or an
+    # apt mirror reports one: "503 Service Unavailable". Anchored to the phrase
+    # so a run reporting "503 cycles" is not mistaken for an outage.
+    r"\b[45]\d\d\s+(?:service unavailable|not acceptable|bad gateway|"
+    r"gateway time-?out|forbidden|unauthorized|too many requests|"
+    r"internal server error)|"
+    r"(?:clang|rustc|python3?|gem5|cargo|llvm-mca)\s*:?\s*(?:command )?not found|"
+    r"executable (?:file )?not found|"
+    r"name or service not known|temporary failure in name resolution|"
+    r"network is unreachable|no route to host",
+    re.I,
+)
+
+
+def could_not_run(error: Any) -> bool:
+    """True when the tool never got as far as judging the input.
+
+    The distinction the long stalls of one session all turned on: a run whose
+    tool cannot reach its daemon, its upstream or its binary will rewrite its
+    arguments for as many iterations as it is given, because every message it
+    gets back looks like something it might have caused. Measured: a discovery
+    stage spent 19 iterations rewriting calls while arXiv answered 406 to every
+    one of them, and a gem5 tool reported "Cannot connect to the Docker daemon"
+    eight times before anyone looked.
+
+    A compiler pointing at a line in the submitted source is never this, even
+    when the words overlap.
+    """
+    message = str(error or "")
+    if not message.strip():
+        return False
+    if blames_the_submitted_code(message):
+        return False
+    return bool(_COULD_NOT_RUN.search(message))
+
+
 def blames_the_submitted_code(error: Any) -> bool:
     """True when a failure is the run's own code being wrong.
 
@@ -221,6 +267,27 @@ def analyze(
 
     by_class = class_signature(tool, error)
     class_attempt = prior_failures(state, by_class, by_class=True) + 1
+
+    # An unavailable tool is worth saying so on the FIRST failure. The usual
+    # silence at attempt 1 is right when the tool ran and refused the input --
+    # its own message is the remedy -- and wrong here, where no edit to the
+    # call can help and the run will otherwise spend its iterations proving
+    # that one at a time.
+    if could_not_run(error):
+        return {
+            "signature": target,
+            "attempt": attempt,
+            "error_class": classify_error(error),
+            "unavailable": True,
+            "guidance": (
+                f"{tool} could not run: this failure happened before it looked "
+                "at your input, so editing the call and retrying will produce "
+                "the same message. Confirm with a trivial control, then use "
+                "another route to the same evidence or report the tool as "
+                "unavailable rather than continuing to vary the arguments."
+            ),
+            "protocol": diagnostic_protocol(tool),
+        }
 
     if attempt < CALL_OUT_AFTER:
         # The arguments changed, so this is not a verbatim retry -- but a run

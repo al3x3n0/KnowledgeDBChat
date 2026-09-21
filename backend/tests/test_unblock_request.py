@@ -87,3 +87,52 @@ class TestSilence:
         # Dressing "it stopped finding things" up as a question would waste the
         # reader's attention on something nobody can answer.
         assert unblock.describe({"actions_taken": []}) is None
+
+
+class TestOnlyAJudgedInputBecomesAQuestionForAPerson:
+    """Every tool failure wears the same shape in the ledger.
+
+    Measured by replaying ten real blocked runs: seven produced a question and
+    five of those asked an operator "what does X accept" about a failure where
+    nothing they could type would help -- an upstream that errored, a
+    simulation that aborted, an ingestion that never landed. Those reach a
+    person through the backlog instead, and the queue row still shows the stall
+    either way; what is refused here is dressing a platform problem up as a
+    question about arguments.
+    """
+
+    # Verbatim from the runs that motivated the rule.
+    OUTAGE = (
+        "Failed to summarize findings: LLM service error: Failed to generate response"
+    )
+    CRASH = "A simulation failed."
+    ASYNC_GAP = "Ingestion of 2605.20868v1 was started (source bce256eb) but no document appeared"
+    SEQUENCING = (
+        "No hot blocks to mine. Run profile_c_workload first and this tool "
+        "will pick up its blocks."
+    )
+    JUDGED = (
+        "get_document_details was called with invalid parameters: field "
+        "document_id should be a UUID"
+    )
+
+    def test_a_tool_that_judged_the_arguments_is_asked_about(self):
+        need = unblock.describe(_state(("get_document_details", self.JUDGED)))
+        assert need is not None
+        assert need["kind"] == unblock.TOOL_REFUSES_INPUT
+        assert need["answerable_by"] == "operator"
+
+    def test_a_failure_that_never_judged_the_arguments_asks_nothing(self):
+        for error in (self.OUTAGE, self.CRASH, self.ASYNC_GAP, self.SEQUENCING):
+            assert unblock.describe(_state(("some_tool", error))) is None, error
+
+    def test_a_judged_refusal_is_still_found_behind_unjudged_noise(self):
+        """The run's last failure is usually not the informative one."""
+        need = unblock.describe(
+            _state(
+                ("get_document_details", self.JUDGED),
+                ("summarize_findings", self.OUTAGE),
+            )
+        )
+        assert need is not None
+        assert need["tool"] == "get_document_details"

@@ -149,6 +149,37 @@ def blames_the_submitted_code(error: Any) -> bool:
     return bool(_BLAMES_THE_SOURCE.search(message))
 
 
+#: A message in which the tool describes the INPUT it was given: it names a
+#: field, the keys it takes, or the values it accepts. Deliberately about what
+#: the message talks about rather than its severity, because that is the thing
+#: that decides whether a person could answer it. An upstream that errored, a
+#: simulation that aborted and an ingestion that never landed all fail without
+#: ever judging the arguments, and they wear the same shape in the ledger as a
+#: refusal that does.
+_DESCRIBES_THE_INPUT = re.compile(
+    r"\bit takes\b|\bnot part of\b|\bshould be one of\b|\bexpected one of\b|"
+    r"\bmust be one of\b|\bfield \w+|\bparameter[s]?\b|\bargument[s]?\b|"
+    r"\baccepts?\b|\bis named inside\b",
+    re.I,
+)
+
+
+def describes_the_input(text: Any) -> bool:
+    """Did the tool judge the arguments it was handed?
+
+    True when the message talks about the input -- a named field, the keys it
+    takes, the values it accepts -- or when it classifies as an argument
+    problem outright. False for a failure that happened without the input ever
+    being read, which is not a question any operator can answer.
+    """
+    message = str(text or "").strip()
+    if not message:
+        return False
+    if classify_error(message) == "invalid_argument":
+        return True
+    return bool(_DESCRIBES_THE_INPUT.search(message))
+
+
 def classify_error(text: Any) -> str:
     """Bucket an error message by what kind of problem it describes.
 

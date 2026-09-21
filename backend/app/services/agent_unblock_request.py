@@ -106,6 +106,18 @@ def describe(
     for failure in reversed(failures):
         if diagnosis.blames_the_submitted_code(failure["error"]):
             continue
+        # "What does this tool accept?" is only a question somebody can answer
+        # when the tool actually judged the arguments. Every other failure --
+        # an upstream that errored, a simulation that aborted, an async
+        # ingestion that never landed -- wears the same shape in the ledger,
+        # and asking an operator to describe the accepted input of a tool that
+        # crashed sends a platform problem to a person as though it were a
+        # typo. Measured on ten real stalls: five of seven questions were of
+        # that kind. The predicate lives beside the other failure-shape
+        # predicates rather than here, so the question "did the tool read the
+        # arguments" has one answer wherever it is asked.
+        if not diagnosis.describes_the_input(failure["error"]):
+            continue
         return {
             "kind": TOOL_REFUSES_INPUT,
             "tool": failure["tool"],

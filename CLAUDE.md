@@ -433,6 +433,16 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   search and progress reports without ingesting one. Naming a tool the runtime
   will refuse is worse than naming none, because the run plans around it.
 
+- **`measure_headroom` crashes gem5 when a mechanism config is attached.**
+  Idealising `l1d_capacity` with no config works on the same kernel; adding
+  `{"caches": {"l2": {"prefetcher": "StridePrefetcher"}}}` aborts the arm.
+  Reproduced four times — three inside a run, once by hand. This is the
+  combination the natural research progression leads to (measure a mechanism,
+  attribute what now limits it, bound the remaining headroom *of that same
+  machine*), so it is worth knowing before designing the study. Until it is
+  fixed, bound the headroom of the baseline machine and treat the mechanism's
+  effect as separately measured.
+
 - **A failed tool call records why it failed.** `compact_action_ledger` keeps
   raw tool output out of `results.actions` deliberately, but it was dropping
   the error *message* too, so a failed call was indistinguishable from one that

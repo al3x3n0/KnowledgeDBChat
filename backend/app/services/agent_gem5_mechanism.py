@@ -942,10 +942,25 @@ async def run_configs(
                 {"success": False, "error": line.replace("SPEC_ERROR ", "", 1)}
             )
         if returncode != 0:
+            # Say what failed, not only that something did. The branches above
+            # explain a compiler failure and extract a SPEC_ERROR line; this
+            # one captured gem5's own reason in `stderr` and then reported
+            # "A simulation failed." The action ledger records `error` alone,
+            # so the reason never reached the run: measured, three
+            # measure_headroom calls in one job, each reporting exactly that
+            # sentence, with nothing anywhere to act on.
+            detail = _gem5_failure_line(stderr)
             raise SandboxRunFailed(
                 {
                     "success": False,
-                    "error": "A simulation failed.",
+                    "error": (
+                        f"A simulation failed: {detail}"
+                        if detail
+                        else (
+                            "A simulation failed and gem5 printed nothing to "
+                            "explain it; its output is in `stderr`."
+                        )
+                    ),
                     "stderr": stderr[-MAX_OUTPUT_CHARS:],
                 }
             )
@@ -1231,6 +1246,33 @@ def explain_probe_failure(stderr: str) -> str:
         "gem5 did not report its mechanism classes. Its own output is in "
         "`stderr` and is the place to look."
     )
+
+
+def _gem5_failure_line(stderr: str) -> str:
+    """The line of gem5 output that explains a non-zero exit, if there is one.
+
+    gem5 announces what went wrong on a line of its own -- `fatal:`, `panic:`
+    or `error:` -- and then keeps printing, so the last line is usually not the
+    useful one. Preferring the announcement and falling back to the final line
+    beats quoting either blindly.
+    """
+    lines = [ln.strip() for ln in (stderr or "").splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    # The harness's own marker first: it names which arm died, which is the
+    # one thing the caller cannot work out from anything else. Measured: a
+    # headroom run printed `ARM_FAILED ideal_l1d_capacity` and then a libc
+    # backtrace, and reporting the shell's "Aborted" instead said nothing
+    # about which idealisation was at fault.
+    for line in lines:
+        if line.startswith("ARM_FAILED"):
+            arm = line.split(None, 1)[1] if " " in line else ""
+            return f"the {arm} arm did not run" if arm else line[:300]
+    for marker in ("fatal:", "panic:", "error:"):
+        for line in lines:
+            if marker in line.lower():
+                return line[:300]
+    return lines[-1][:300]
 
 
 async def describe_gem5_mechanisms(

@@ -574,3 +574,51 @@ class TestTheCatalogIsEvidenceNotJustAnAnswer:
 
         source = inspect.getsource(mech.describe_gem5_mechanisms)
         assert '"mechanisms":' in source and '"how_to_use":' in source
+
+
+class TestASimulationFailureSaysWhy:
+    """gem5's reason was captured and then not reported.
+
+    The compiler branch explains a compiler failure and the SPEC_ERROR branch
+    extracts the offending line; the generic non-zero-exit branch put gem5's
+    output in `stderr` and set the error to "A simulation failed." The action
+    ledger records `error` alone, so the reason never reached the run --
+    measured as three measure_headroom calls in one job, each reporting that
+    sentence and nothing else.
+    """
+
+    def test_the_harness_marker_names_the_arm_that_died(self):
+        # Measured: a headroom run printed `ARM_FAILED ideal_l1d_capacity`
+        # followed by a libc backtrace, and the shell's "Aborted" was reported
+        # instead -- true, and useless, since it says nothing about which
+        # idealisation was at fault.
+        stderr = "ARM_FAILED ideal_l1d_capacity\nFor more info visit ...\nAborted"
+        assert (
+            mech._gem5_failure_line(stderr) == "the ideal_l1d_capacity arm did not run"
+        )
+
+    def test_the_announcement_beats_the_last_line(self):
+        # gem5 keeps printing after it fails, so the final line is usually
+        # cleanup rather than the cause.
+        stderr = "building system\nfatal: Can not find template 'L1D'\nexiting\ncleanup"
+        assert mech._gem5_failure_line(stderr) == "fatal: Can not find template 'L1D'"
+
+    def test_a_panic_is_found_too(self):
+        assert "panic:" in mech._gem5_failure_line(
+            "warn: x\npanic: assert failed\nnoise"
+        )
+
+    def test_the_last_line_is_the_fallback(self):
+        assert mech._gem5_failure_line("warn: x\nsomething odd") == "something odd"
+
+    def test_silence_stays_silent_rather_than_inventing_a_cause(self):
+        assert mech._gem5_failure_line("  \n \n") == ""
+
+    def test_the_failure_path_quotes_it(self):
+        import inspect
+
+        source = inspect.getsource(mech)
+        assert "A simulation failed: {detail}" in source
+        # And when gem5 says nothing, the message says where to look rather
+        # than pretending to a reason.
+        assert "its output is in `stderr`" in source

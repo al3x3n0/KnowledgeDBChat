@@ -352,6 +352,18 @@ class Settings(BaseSettings):
     ARXIV_FULL_TEXT_MAX_CHARS: int = 400_000
     ARXIV_FULL_TEXT_TIMEOUT_SECONDS: int = 90
 
+    # A run blocked by a tool that cannot do what it was asked files a coding
+    # backlog item (see services/agent_blocked_to_backlog.py). With this on,
+    # that item is also picked up immediately by the backlog orchestrator, so
+    # a platform gap becomes a proposed patch without a person in the middle.
+    #
+    # Off by default, and the filing happens either way. What this flag buys is
+    # the run *starting*, which spends model budget per blocked job; what it
+    # does not buy is anything landing unattended, because auto-filed items
+    # carry auto_apply_enabled=False and the runner resolves those to
+    # proposal_only.
+    AGENT_BLOCKER_AUTO_CODING_ENABLED: bool = False
+
     SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES: str = (
         "ghcr.io/al3x3n0/kdbc-compiler-research:latest,"
         "ghcr.io/al3x3n0/kdbc-polyglot-slim:latest,"

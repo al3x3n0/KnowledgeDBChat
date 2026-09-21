@@ -207,6 +207,24 @@ database that already has a revision recorded.
 Beyond RAG chat, these are the main functional areas. When touching one, its endpoint module, model(s), and service(s) usually share a name prefix.
 
 - **Autonomous agents & control plane** — observe→think→act→evaluate loop in `services/autonomous_agent_executor.py` (the largest service), decomposed into runtime services (`agent_observation_service`, `agent_thinking_service`, `agent_action_service`, `agent_progress_evaluation_service`, `agent_checkpoint_service`, `agent_runtime_*`). Job chaining/swarm orchestration in `agent_chain_orchestration_service.py`; autonomy policies and decision events (`models/autonomy_decision_event.py`, `agent_tool_prior.py`) surface in the control-plane UI. Specialized deterministic runners: coding, research, experiment, LaTeX, scientific validation (`agent_*_runner_service.py`, registered in `agent_deterministic_runner_registry.py`).
+- **A run blocked by the platform files the platform's problem.** A run that
+  blocks on its own bad input is the development loop; a run that blocks
+  because a *tool* cannot do what it was asked is different in kind, and every
+  later run meets the same wall until someone edits the platform. Those
+  blockers arrive fully specified — `unknown mnemonic 'uaddw': add it to
+  operand_arity` — so `services/agent_blocked_to_backlog.py` files them as
+  coding backlog items with the tool's own words in `failure_symptom` and
+  `error_output`. The discriminator is
+  `agent_failure_diagnosis.blames_the_submitted_code`, reused rather than
+  restated so the two cannot disagree about whose fault a failure is; a failure
+  must repeat before it is filed (once is a flake, twice is a wall) and one
+  item stays open per `(tool, error class)`. Filing is unconditional because
+  recording a blocker costs nothing; **starting** work on it spends model
+  budget, so that is what `AGENT_BLOCKER_AUTO_CODING_ENABLED` gates (default
+  off). Nothing lands unattended either way: auto-filed items carry
+  `auto_apply_enabled=False`, which the coding runner resolves to
+  `proposal_only`.
+
 - **Coding swarm** — backlog items, swarm profiles, code patch proposals, and PRs (`coding_backlog`, `coding_swarm_profiles`, `code_patches`, `patch_prs`); git operations via `git_service.py`, workspaces via `coding_workspace_manager.py`, symbol indexing via `repo_symbol_index_service.py`. KB patch application is gated by `AGENT_KB_PATCH_APPLY_ENABLED`.
 - **Research suite** — papers (arXiv ingestion, enrichment, extraction, KG building: `paper_*_service.py`), research notes, portfolios, inbox with follow-up automation, monitor profiles, domain research profiles, reading lists. The research runner (`agent_research_runner_service.py`) orchestrates end-to-end workflows.
 

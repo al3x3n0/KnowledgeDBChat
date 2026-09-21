@@ -434,6 +434,25 @@ async def finalize_job(
                 "missing": missing,
                 "resumable": True,
             }
+            # A run blocked by a *tool* that cannot do what it was asked is a
+            # coding task with its symptom and evidence already written down,
+            # and it used to sit in a paused job until a person read the logs.
+            # File it. Never fatal: a run that stopped for one reason should
+            # not also fail for a bookkeeping error on the way out.
+            try:
+                from app.services import agent_blocked_to_backlog
+
+                filed = await agent_blocked_to_backlog.file_blocker(job, state, db)
+                if filed is not None:
+                    blocked_payload["filed_backlog_item"] = True
+                    job.add_log_entry(
+                        {
+                            "phase": "blocker_filed_as_coding_work",
+                            "tool": filed.title,
+                        }
+                    )
+            except Exception as exc:  # pragma: no cover - never fatal
+                logger.warning(f"Could not file blocker for job {job.id}: {exc}")
         else:
             job.status = AgentJobStatus.COMPLETED.value
             job.add_log_entry(

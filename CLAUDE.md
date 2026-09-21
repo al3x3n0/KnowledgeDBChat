@@ -207,6 +207,44 @@ database that already has a revision recorded.
 Beyond RAG chat, these are the main functional areas. When touching one, its endpoint module, model(s), and service(s) usually share a name prefix.
 
 - **Autonomous agents & control plane** — observe→think→act→evaluate loop in `services/autonomous_agent_executor.py` (the largest service), decomposed into runtime services (`agent_observation_service`, `agent_thinking_service`, `agent_action_service`, `agent_progress_evaluation_service`, `agent_checkpoint_service`, `agent_runtime_*`). Job chaining/swarm orchestration in `agent_chain_orchestration_service.py`; autonomy policies and decision events (`models/autonomy_decision_event.py`, `agent_tool_prior.py`) surface in the control-plane UI. Specialized deterministic runners: coding, research, experiment, LaTeX, scientific validation (`agent_*_runner_service.py`, registered in `agent_deterministic_runner_registry.py`).
+- **A tool that could not run says so on the first failure.** The usual
+  silence at attempt 1 is right when a tool ran and refused the input — its own
+  message is the remedy — and wrong when the tool never got that far, because
+  no edit to the call can help. `agent_failure_diagnosis.could_not_run`
+  recognises a daemon that is not listening, an upstream answering with a
+  status, or a binary missing from the image, and escalates immediately with
+  the control-run protocol. Measured: 19 iterations rewriting arXiv calls
+  against a 406, 8 against an unmounted Docker socket. The predicate is narrow
+  on purpose — `unknown mnemonic 'uaddw'` is also a `not_found` error, and
+  there the tool ran and judged the input, which is a different situation with
+  a different remedy — and a bare status only counts with its standard phrase,
+  so a run reporting "503 cycles" is not mistaken for an outage.
+- **A blocked run names what would end the stall.** "3 consecutive rounds
+  produced no new findings" is honest and unanswerable: it describes the stall,
+  not the thing a person could supply. `services/agent_unblock_request.py`
+  derives a typed `needs` from the run's own history — a tool that never ran
+  ("Is X available? It reported…", answerable only by a platform change), a
+  tool that refused the call ("What does X accept here? It refused with…",
+  answerable by an operator), or required evidence no tool this job type may
+  call can produce. Derived rather than asked of the model, because a run that
+  could reliably phrase its own blocker would not be stuck. A tool that never
+  ran outranks a refusal seen earlier, since it has nothing to say about what
+  it accepts; the run's own broken code raises no question at all; and a stall
+  with no nameable blocker returns `None` rather than dressing itself up as a
+  question. The `blocked_run` queue row shows it, and says when typing an
+  answer would not help.
+
+- **What a run learns about *calling* a tool is kept.** 415 methods existed and
+  none was about tool usage, so one gem5 study was refused for passing a
+  mechanism at the top level of a config, corrected itself, finished — and the
+  next study made the identical mistake and spent five iterations on it.
+  `services/agent_tool_usage_methods.py` records a method when a tool refuses a
+  call and a later call to that same tool succeeds: the refusal was the lesson
+  and the run has proved the correction works. Not recorded: the arguments that
+  worked, since they routinely contain whole programs and the reusable part is
+  the shape the tool described; and a refusal never recovered from, since an
+  undemonstrated correction is a guess.
+
 - **A run blocked by the platform files the platform's problem.** A run that
   blocks on its own bad input is the development loop; a run that blocks
   because a *tool* cannot do what it was asked is different in kind, and every

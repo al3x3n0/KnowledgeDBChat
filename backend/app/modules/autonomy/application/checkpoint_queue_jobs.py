@@ -227,6 +227,12 @@ def build_job_checkpoint_queue_items(
                         "reason": blocked.get("reason"),
                         "missing": missing,
                         "resumable": bool(blocked.get("resumable")),
+                        # The question, when the run could name one. A queue
+                        # that shows every stall as "resume?" throws away the
+                        # difference between a tool that is down and a call
+                        # that was refused -- different answers, different
+                        # answerers.
+                        "needs": blocked.get("needs") or None,
                     },
                     scheduler_state=scheduler_state,
                     actions=action_rows,

@@ -974,6 +974,18 @@ export const OperatorQueueTab: React.FC<OperatorQueueTabProps> = ({
                       Contract not met: {(item.checkpoint.missing as string[]).slice(0, 4).join(', ')}
                     </p>
                   ) : null}
+                  {item.item_type === 'blocked_run' && item.checkpoint?.needs?.question ? (
+                    /* The question the run could name, rather than the shape of
+                       its stall. `answerable_by` says whether typing an answer
+                       here would help or whether the platform has to change. */
+                    <p className="text-xs text-gray-700 mt-2">
+                      <span className="font-medium">Needs: </span>
+                      {String(item.checkpoint.needs.question).slice(0, 240)}
+                      {item.checkpoint.needs.answerable_by === 'platform_change' ? (
+                        <span className="text-gray-500"> (needs a platform change, not an answer)</span>
+                      ) : null}
+                    </p>
+                  ) : null}
                   {item.item_type === 'blocked_run' && Array.isArray(item.checkpoint?.missing) && item.checkpoint.missing.length > 0 ? (
                     /* What the run lacked, named, so the row can be answered
                        without opening the job. */

@@ -330,10 +330,25 @@ async def _send_the_work_back(
     return True
 
 
+async def _record_tool_usage_lessons(job: AgentJob, state: Dict[str, Any], db) -> None:
+    """Keep what this run learned about calling its tools.
+
+    Separate from the blocked path on purpose: the runs worth learning from are
+    usually the ones that recovered and finished, and those never block.
+    """
+    try:
+        from app.services import agent_tool_usage_methods
+
+        await agent_tool_usage_methods.record_corrections(job, state, db)
+    except Exception as exc:  # pragma: no cover - never fatal
+        logger.warning(f"Could not record tool-usage methods for {job.id}: {exc}")
+
+
 async def finalize_job(
     executor: Any, job: AgentJob, state: Dict[str, Any], db: AsyncSession
 ) -> Dict[str, Any]:
     """Finalize a runtime job and build the terminal result payload."""
+    await _record_tool_usage_lessons(job, state, db)
     # Determine final status
     limited, limit_reason = job.is_resource_limited()
 
@@ -434,6 +449,19 @@ async def finalize_job(
                 "missing": missing,
                 "resumable": True,
             }
+            # The stall's shape is honest but not answerable. Say what would
+            # end it, when the run's own history names something: an available
+            # tool, an accepted call shape, a reachable piece of evidence.
+            try:
+                from app.services import agent_unblock_request
+
+                need = agent_unblock_request.describe(
+                    state, missing=missing, job_type=str(job.job_type or "research")
+                )
+                if need:
+                    blocked_payload["needs"] = need
+            except Exception as exc:  # pragma: no cover - never fatal
+                logger.warning(f"Could not describe the blocker for {job.id}: {exc}")
             # A run blocked by a *tool* that cannot do what it was asked is a
             # coding task with its symptom and evidence already written down,
             # and it used to sit in a paused job until a person read the logs.

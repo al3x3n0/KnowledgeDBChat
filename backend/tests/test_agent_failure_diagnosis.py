@@ -267,3 +267,30 @@ def test_varied_failures_of_different_kinds_do_not_accumulate():
     )
 
     assert result is None
+
+
+def test_a_tool_refusing_its_arguments_is_classified_however_it_is_worded():
+    """The condition is one thing; the wording is whatever the author chose.
+
+    A refusal that lands in "unknown" is one the diagnosis cannot describe
+    back to the model, so the bucket has to survive the synonym the tool
+    happened to use.
+    """
+    for wording in (
+        "At least two kernels are needed",
+        "kernels must be a list of two or more",
+        "field 'variant' is required",
+        "invalid kernel specification",
+    ):
+        assert diagnosis.classify_error(wording) == "invalid_argument", wording
+
+
+def test_a_specific_failure_outranks_the_generic_argument_bucket():
+    """Both patterns match; the one that says more about the cause wins."""
+    assert diagnosis.classify_error("no space left on device, at least 1GB needed") == (
+        "resource"
+    )
+    assert diagnosis.classify_error("admin permission required") == "permission"
+    assert diagnosis.classify_error("image not found, a tag must be given") == (
+        "not_found"
+    )

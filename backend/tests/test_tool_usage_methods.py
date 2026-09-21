@@ -125,3 +125,35 @@ def agent_method_render(record):
     from app.services import agent_method_record
 
     return agent_method_record.render(record)
+
+
+class TestNamingTheFailureClass:
+    """The class is written into the lesson, so it has to read as English.
+
+    A classified refusal is worth naming; an unclassified one is not, because
+    "refused for its shape (unknown)" tells a later run less than stopping at
+    "shape" does.
+    """
+
+    def _prevents(self, error_class):
+        record = usage.build(
+            {
+                "tool": "evaluate_across_kernels",
+                "refusal": "At least two kernels are needed.",
+                "error_class": error_class,
+                "produced": ["mechanism_evaluation"],
+            },
+            available_finding_types=["mechanism_evaluation"],
+        )
+        assert record is not None
+        return record["prevents"]
+
+    def test_a_classified_refusal_names_its_class(self):
+        assert "(invalid_argument)" in self._prevents("invalid_argument")
+
+    def test_an_unclassified_refusal_says_nothing_rather_than_unknown(self):
+        for missing in ("unknown", "", None):
+            prevents = self._prevents(missing)
+            assert "unknown" not in prevents, missing
+            assert "()" not in prevents, missing
+            assert "for its shape," in prevents, missing

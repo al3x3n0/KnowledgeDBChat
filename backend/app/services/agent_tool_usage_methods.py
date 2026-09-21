@@ -98,6 +98,19 @@ def corrections(state: Mapping[str, Any]) -> List[Dict[str, Any]]:
     return list(learned.values())
 
 
+def _classified(correction: Mapping[str, Any]) -> str:
+    """Name the failure class, or say nothing when it was not classified.
+
+    ``classify_error`` returns ``"unknown"`` for a refusal whose wording no
+    bucket matches, and a sentence reading "refused for its shape (unknown)"
+    tells the reader less than one that stops at "shape".
+    """
+    error_class = str(correction.get("error_class") or "").strip()
+    if not error_class or error_class == "unknown":
+        return ""
+    return f" ({error_class})"
+
+
 def build(
     correction: Mapping[str, Any], available_finding_types: Sequence[str]
 ) -> Optional[Dict[str, Any]]:
@@ -125,8 +138,8 @@ def build(
                 "that run succeeded.",
             ],
             prevents=(
-                f"Spending iterations re-editing a {tool} call that is refused "
-                f"for its shape ({correction.get('error_class')}), when the "
+                f"Spending iterations re-editing a call to {tool} that is "
+                f"refused for its shape{_classified(correction)}, when the "
                 "tool has already said what it accepts."
             ),
             derived_from=derived_from,

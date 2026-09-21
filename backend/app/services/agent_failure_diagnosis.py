@@ -53,12 +53,22 @@ _ERROR_CLASSES = (
     ("timeout", re.compile(r"timed out|timeout|deadline exceeded", re.I)),
     ("compilation", re.compile(r"compil|assembler|undefined reference|linker", re.I)),
     ("not_found", re.compile(r"not found|no such|does not exist|unknown \w+", re.I)),
-    (
-        "invalid_argument",
-        re.compile(r"invalid|unsupported|not of the form|required", re.I),
-    ),
     ("permission", re.compile(r"permission|denied|not allowlisted|disabled", re.I)),
     ("resource", re.compile(r"out of memory|oom|killed|no space|exceeds", re.I)),
+    (
+        # Checked last, because it is the broad one. A tool refusing the
+        # arguments it was handed says so in whatever words its author chose --
+        # "required", "needed", "must be", "at least two" -- and a refusal
+        # landing in "unknown" is one the diagnosis cannot describe back to the
+        # model. Ordering it after the narrow buckets keeps "at least 1GB
+        # needed" a resource problem rather than an argument one.
+        "invalid_argument",
+        re.compile(
+            r"invalid|unsupported|not of the form|required|needed|"
+            r"must be|at least \w+ ",
+            re.I,
+        ),
+    ),
 )
 
 

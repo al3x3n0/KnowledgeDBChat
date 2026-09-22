@@ -351,3 +351,56 @@ class TestAnEvaluationOfAMechanismThatNeverRan:
         result = await self._evaluate(monkeypatch, self.BUSY)
         assert result["success"] is True
         assert result["geomean_speedup"] == 1.0
+
+
+class TestASweepWhoseCurveNeverMoves:
+    """Five points at 427,572 cycles were recorded as "saturating at 1".
+
+    The path swept was `caches.l2.prefetcher.degree`, which puts the value
+    beside `class` where nothing reads it, so every point ran the same
+    machine. Swept properly the setting is worth 1.44x from degree 1 to 16, so
+    the recorded advice -- that tuning it is pointless -- was backwards.
+    """
+
+    POINTS = [1, 2, 4, 8, 16]
+
+    async def _sweep(self, monkeypatch, cycles_for):
+        async def fake_run_configs(*, code, configs, **kwargs):
+            return {name: {"stats": {}, "cycles": cycles_for(name)} for name in configs}
+
+        monkeypatch.setattr(st, "run_configs", fake_run_configs)
+        monkeypatch.setattr(st, "_cycles", lambda run: run["cycles"])
+        return await st.sweep_mechanism(
+            code="int main(void){return 0;}",
+            variant={"caches": {"l2": {"prefetcher": "StridePrefetcher"}}},
+            vary="caches.l2.prefetcher.degree",
+            values=self.POINTS,
+            label="degree",
+        )
+
+    async def test_a_flat_curve_is_refused(self, monkeypatch):
+        result = await self._sweep(
+            monkeypatch, lambda name: 1000.0 if name == "baseline" else 427572.0
+        )
+        assert result["success"] is False
+        assert "did not reach the simulated machine" in result["error"]
+
+    async def test_the_refusal_shows_where_the_parameter_belongs(self, monkeypatch):
+        result = await self._sweep(
+            monkeypatch, lambda name: 1000.0 if name == "baseline" else 427572.0
+        )
+        assert "params" in result["error"]
+
+    async def test_a_curve_that_moves_is_measured(self, monkeypatch):
+        """Real degrees: 1 -> 1,110,061 and 16 -> 768,974 cycles."""
+        order = {}
+
+        def cycles_for(name):
+            if name == "baseline":
+                return 1610867.0
+            order.setdefault(name, 1110061.0 - 20000.0 * len(order))
+            return order[name]
+
+        result = await self._sweep(monkeypatch, cycles_for)
+        assert result["success"] is True
+        assert len({p["cycles"] for p in result["curve"]}) > 1

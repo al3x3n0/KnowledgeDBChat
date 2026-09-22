@@ -508,6 +508,34 @@ async def sweep_mechanism(
             }
         )
 
+    # A curve that never moves is not a curve. Every point ran the same
+    # machine, so the honest reading is that the setting did not reach the
+    # simulator -- and the misleading reading, which is what got recorded, is
+    # that it saturates at the very first value.
+    #
+    # Measured: a degree sweep over `caches.l2.prefetcher.degree` (the path
+    # without `params`, so the value landed beside `class` where nothing reads
+    # it) returned 427,572 cycles at degrees 1, 2, 4, 8 and 16 and was written
+    # down as "best 1.4480x at 1, saturating at 1" -- advice not to bother
+    # tuning it. Swept properly, degree 16 is 1.44x faster than degree 1
+    # (1,110,061 -> 768,974 cycles, with pfIssued rising 16,167 -> 227,799).
+    distinct_cycles = {p["cycles"] for p in curve if p["cycles"]}
+    if len(curve) > 1 and len(distinct_cycles) == 1:
+        return {
+            "success": False,
+            "error": (
+                f"Every point in this sweep produced the same cycle count "
+                f"({next(iter(distinct_cycles)):.0f}), so {vary} did not "
+                "reach the simulated machine and the sweep measured one "
+                "configuration five times. A mechanism parameter belongs "
+                "under `params`, as in "
+                "`caches.l2.prefetcher.params.degree` -- written beside "
+                "`class` it sits where nothing reads it."
+            ),
+            "varied": vary,
+            "curve": curve,
+        }
+
     best = max(curve, key=lambda p: p["speedup"] or 0.0)
     saturation = _saturation_point(curve)
     monotonic = _is_monotonic(curve)

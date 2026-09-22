@@ -266,3 +266,42 @@ class TestEvidenceIsTheCompletionCriterion:
         )
         assert result["satisfied"] is False
         assert any("progress" in m for m in result["missing"])
+
+
+class TestAContractRequirementTheRunCanSee:
+    """A run must be able to see every requirement it is judged on.
+
+    `set_output_schema` stages its answer in `state["output_schema"]`; the
+    finalizer copies it to `job.results["structured_output"]` afterwards.
+    Checking only `job.results` mid-run therefore reports the key missing no
+    matter what the run has done, which is why the in-run check skipped result
+    keys entirely -- and why a live run stopped at iteration 5 of 20 with three
+    finding types in hand and was then marked contract-unmet for a key nothing
+    had told it to write.
+    """
+
+    def _present(self, results, state, key="structured_output"):
+        from app.services.agent_goal_contract_service import _result_key_present
+
+        return _result_key_present(key, results, state)
+
+    def test_a_finalized_key_counts(self):
+        assert self._present({"structured_output": {"answer": 1}}, {})
+
+    def test_a_key_still_staged_in_state_counts(self):
+        assert self._present({}, {"output_schema": {"answer": 1}})
+
+    def test_an_empty_schema_does_not_count(self):
+        """Calling the tool with nothing in it is not an answer."""
+        assert not self._present({}, {"output_schema": {}})
+
+    def test_an_absent_key_does_not_count(self):
+        assert not self._present({}, {})
+
+    def test_a_key_with_no_staging_slot_is_not_invented(self):
+        """Only keys something actually writes can be satisfied from state."""
+        assert not self._present({}, {"fraction_removed": 0.179}, key="fraction_removed")
+
+    def test_formatted_outputs_is_staged_too(self):
+        assert self._present({}, {"formatted_outputs": [{"table": "x"}]},
+                             key="formatted_outputs")

@@ -343,3 +343,36 @@ def format_execution_graph(runtime: Any) -> str:
         for item in recommendations[:4]:
             lines.append(f"  - {str(item)[:220]}")
     return "\n".join(lines)
+
+
+def format_unmet_contract(state: dict[str, Any]) -> str:
+    """What the contract still owes, for the run that has to satisfy it.
+
+    The executor evaluates the contract every iteration to decide whether the
+    run may stop, and that answer reached the finalizer and a tool the model
+    had to think of calling -- but never the model itself. Measured on a live
+    run: it produced every piece of evidence its contract named, then spent
+    eight of eighteen actions writing progress reports and re-reading its own
+    findings, because nothing told it the one remaining requirement was a call
+    to `set_output_schema`.
+
+    Names the remedy, not only the gap: a requirement a run cannot act on is
+    the same as one it cannot see.
+    """
+    contract = state.get("goal_contract_last")
+    if not isinstance(contract, dict) or not contract.get("enabled"):
+        return ""
+    if contract.get("satisfied"):
+        return ""
+    missing = contract.get("missing")
+    if not isinstance(missing, list) or not missing:
+        return ""
+    rendered = ", ".join(str(item) for item in missing[:8])
+    return (
+        "CONTRACT NOT YET SATISFIED -- this run cannot complete until these "
+        f"are produced: {rendered}. A `result_key:<name>` entry means the run "
+        "must still write that result: `structured_output` comes from calling "
+        "set_output_schema with your answer in it. A `finding_type:<name>` "
+        "entry means a tool that produces that evidence has not run yet. "
+        "Address these before reporting progress again."
+    )

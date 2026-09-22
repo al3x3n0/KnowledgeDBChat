@@ -234,6 +234,60 @@ def _as_int(value: Any, default: int) -> int:
         return default
 
 
+#: Result keys a run can actually end up with, and what puts them there.
+#: Everything else in ``job.results`` is written unconditionally by the
+#: finalizer, so requiring one of those is vacuous rather than impossible.
+#: A key outside both sets can never appear, because no tool writes arbitrary
+#: top-level result keys -- the finalizer builds them from a fixed vocabulary.
+PRODUCIBLE_RESULT_KEYS = {
+    "structured_output": "set_output_schema",
+    "formatted_outputs": "format_as_table or format_as_report",
+}
+
+ALWAYS_WRITTEN_RESULT_KEYS = frozenset(
+    {
+        "summary",
+        "findings",
+        "actions",
+        "iterations",
+        "actions_count",
+        "findings_count",
+        "goal_contract",
+        "goal_progress",
+        "source_scope_id",
+        "execution_strategy",
+        "research",
+        "research_bundle",
+        "project_profile",
+    }
+)
+
+
+def _result_keys_nothing_can_write(stage: "PipelineStage") -> List[str]:
+    """Required result keys no tool can put in ``job.results``.
+
+    The same failure as requiring evidence with no producer, on the other
+    half of the contract: nothing writes arbitrary top-level result keys, so
+    a contract asking for ``fraction_removed`` can never be satisfied however
+    well the run performs. It exhausts its iteration budget and finishes
+    `completed` with the contract unmet, which reads as a run that underperformed
+    rather than one that was asked the impossible.
+    """
+    contract = stage.contract if isinstance(stage.contract, dict) else {}
+    wanted = contract.get("required_result_keys")
+    if not isinstance(wanted, list):
+        return []
+    out: List[str] = []
+    for raw in wanted:
+        key = str(raw).strip()
+        if not key:
+            continue
+        if key in PRODUCIBLE_RESULT_KEYS or key in ALWAYS_WRITTEN_RESULT_KEYS:
+            continue
+        out.append(key)
+    return out
+
+
 def _evidence_no_producer_can_make(stage: PipelineStage) -> List[Tuple[str, str]]:
     """Required evidence that *no* tool this stage may call can produce.
 
@@ -450,6 +504,17 @@ def _stage_problems(stage: PipelineStage, pipeline: Pipeline) -> List[str]:
         problems.append(
             f"{stage.id}: needs {tool}, which job_type {stage.job_type!r} may "
             f"not call (allowed: {allowed}). Set the stage's job_type."
+        )
+
+    for key in _result_keys_nothing_can_write(stage):
+        producible = ", ".join(sorted(PRODUCIBLE_RESULT_KEYS))
+        problems.append(
+            f"{stage.id}: requires result_key {key!r}, which nothing writes. "
+            f"No tool sets arbitrary keys in job.results; the ones a run can "
+            f"produce are {producible} (via "
+            f"{PRODUCIBLE_RESULT_KEYS['structured_output']} and "
+            f"{PRODUCIBLE_RESULT_KEYS['formatted_outputs']}). Put the number "
+            f"inside structured_output rather than beside it."
         )
 
     for name, elsewhere in _evidence_no_producer_can_make(stage):

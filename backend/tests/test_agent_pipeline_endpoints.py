@@ -706,3 +706,50 @@ class TestCodingWorkIsExpressible:
         tools = {s["stage_id"]: s["tools"] for s in body["plan"]["stages"]}
         assert "retrieve_repo_symbols" in tools["tests"]
         assert "find_tests_for_symbol" in tools["tests"]
+
+
+class TestAContractRequiringAResultNothingWrites:
+    """The other half of "evidence no producer can make".
+
+    Nothing writes arbitrary top-level result keys -- the finalizer builds
+    `job.results` from a fixed vocabulary -- so a contract asking for
+    `fraction_removed` can never be satisfied however well the run performs.
+    It exhausts its budget and finishes `completed` with the contract unmet,
+    which reads as underperformance rather than an impossible question.
+    """
+
+    def _stage(self, keys):
+        from app.services import agent_pipeline_spec as spec
+
+        return spec.PipelineStage(
+            id="s1",
+            goal="measure something",
+            job_type="research",
+            contract={"required_result_keys": keys},
+        )
+
+    def test_a_key_nothing_writes_is_refused(self):
+        from app.services import agent_pipeline_spec as spec
+
+        assert spec._result_keys_nothing_can_write(
+            self._stage(["fraction_removed"])
+        ) == ["fraction_removed"]
+
+    def test_a_key_a_tool_produces_is_allowed(self):
+        from app.services import agent_pipeline_spec as spec
+
+        assert not spec._result_keys_nothing_can_write(
+            self._stage(["structured_output", "formatted_outputs"])
+        )
+
+    def test_a_key_the_finalizer_always_writes_is_allowed(self):
+        """Vacuous, but not impossible -- a different complaint."""
+        from app.services import agent_pipeline_spec as spec
+
+        assert not spec._result_keys_nothing_can_write(self._stage(["summary"]))
+
+    def test_no_requirement_is_not_a_problem(self):
+        from app.services import agent_pipeline_spec as spec
+
+        assert not spec._result_keys_nothing_can_write(self._stage([]))
+        assert not spec._result_keys_nothing_can_write(self._stage(None))

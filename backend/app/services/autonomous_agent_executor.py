@@ -481,9 +481,12 @@ class _AutonomousRuntimeAdapter:
         if decision.get("goal_achieved"):
             await self._close_instrument_bracket()
 
-        contract_before = self.executor._evaluate_goal_contract(
-            self.job, self.state, include_result_keys=False
-        )
+        # The run has to be able to see every requirement it is judged on.
+        # Result keys are staged in state until the finalizer copies them, so
+        # the evaluator reads both -- skipping them here let a run stop at
+        # "three finding types exist" and be marked contract-unmet afterwards
+        # for a key nothing had told it to write.
+        contract_before = self.executor._evaluate_goal_contract(self.job, self.state)
         self.state["goal_contract_last"] = contract_before
 
         if decision.get("goal_achieved"):
@@ -1200,9 +1203,7 @@ class _AutonomousRuntimeAdapter:
             iteration=int(self.job.iteration or 0),
         )
 
-        contract_after = self.executor._evaluate_goal_contract(
-            self.job, self.state, include_result_keys=False
-        )
+        contract_after = self.executor._evaluate_goal_contract(self.job, self.state)
         self.state["goal_contract_last"] = contract_after
         if bool(contract_after.get("enabled")) and bool(
             contract_after.get("satisfied")
@@ -8120,6 +8121,13 @@ RESPONSE FORMAT:
                     "conclusions, and say in your reasoning what it changes:\n"
                     + "\n".join(rendered)
                 )
+
+        # What the contract still owes, every iteration -- the executor
+        # already computes this to decide whether the run may stop, and it
+        # used to reach the finalizer but never the model.
+        contract_text = agent_prompt_sections.format_unmet_contract(state)
+        if contract_text:
+            parts.append(contract_text)
 
         compressed_history = state.get("compressed_history", "")
         if compressed_history:

@@ -358,8 +358,9 @@ class TestASweepWhoseCurveNeverMoves:
 
     The path swept was `caches.l2.prefetcher.degree`, which puts the value
     beside `class` where nothing reads it, so every point ran the same
-    machine. Swept properly the setting is worth 1.44x from degree 1 to 16, so
-    the recorded advice -- that tuning it is pointless -- was backwards.
+    machine. Swept properly the setting is worth 2.01x from degree 1 to 16
+    and has not saturated there, so the recorded advice -- that tuning it is
+    pointless -- was backwards.
     """
 
     POINTS = [1, 2, 4, 8, 16]
@@ -392,7 +393,7 @@ class TestASweepWhoseCurveNeverMoves:
         assert "params" in result["error"]
 
     async def test_a_curve_that_moves_is_measured(self, monkeypatch):
-        """Real degrees: 1 -> 1,110,061 and 16 -> 768,974 cycles."""
+        """Real degrees: 1 -> 1,029,650 and 16 -> 511,980 cycles per iteration."""
         order = {}
 
         def cycles_for(name):

@@ -517,8 +517,11 @@ async def sweep_mechanism(
     # without `params`, so the value landed beside `class` where nothing reads
     # it) returned 427,572 cycles at degrees 1, 2, 4, 8 and 16 and was written
     # down as "best 1.4480x at 1, saturating at 1" -- advice not to bother
-    # tuning it. Swept properly, degree 16 is 1.44x faster than degree 1
-    # (1,110,061 -> 768,974 cycles, with pfIssued rising 16,167 -> 227,799).
+    # tuning it. Swept properly, on a working set that exceeds the cache and
+    # measured as marginal cycles per iteration so the setup cost cancels,
+    # degree 16 is 2.01x faster than degree 1 (1,029,650 -> 511,980 cycles per
+    # iteration) and the curve has not saturated there. gem5's default of 4
+    # yields 2.14x against no prefetcher where 16 yields 3.10x.
     distinct_cycles = {p["cycles"] for p in curve if p["cycles"]}
     if len(curve) > 1 and len(distinct_cycles) == 1:
         return {

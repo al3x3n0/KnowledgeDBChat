@@ -746,6 +746,31 @@ async def describe_model_parameters(
     }
 
 
+#: The nested configuration shape `simulate_mechanism`, `run_configs` and
+#: `measure_headroom` take: `caches.l2.prefetcher`, `cpu_params.numROBEntries`.
+#: This tool takes flat gem5 overrides instead, and a run that has been working
+#: with the mechanism tools reaches for the shape it already knows. Measured: a
+#: study wrote `caches.l2.prefetcher=None` here twice, was told the required
+#: form both times, and never learned that another tool accepts exactly what it
+#: wrote.
+_MECHANISM_SHAPE = re.compile(
+    r"^\s*(caches|cpu_params|branch_pred|cpu_type|clock|mem_size|" r"cache_line_size)\b"
+)
+
+
+def _wrong_tool_hint(override: str) -> str:
+    """Name the tool that accepts this override, when one does."""
+    if not _MECHANISM_SHAPE.match(str(override or "")):
+        return ""
+    return (
+        " That is the shape simulate_mechanism, run_configs and "
+        "measure_headroom take, as a nested object rather than a string -- "
+        '`{"caches": {"l2": {"prefetcher": "StridePrefetcher"}}}`. '
+        "Use one of those to vary a mechanism; this tool overrides raw gem5 "
+        "parameters."
+    )
+
+
 async def simulate_c_workload(
     *,
     code: str,
@@ -788,7 +813,7 @@ async def simulate_c_workload(
                     f"parameter override {override!r} is not of the form "
                     "system.<path>=<value>. The path must start at `system`, "
                     "index vector members as FUList[3].opList[4], and contain "
-                    "no shell metacharacters."
+                    "no shell metacharacters." + _wrong_tool_hint(override)
                 ),
             }
     safe_flags = (flags or DEFAULT_FLAGS).strip()
@@ -1166,7 +1191,7 @@ async def sample_counters(
                 "success": False,
                 "error": (
                     f"parameter override {override!r} is not of the form "
-                    "system.<path>=<value>."
+                    "system.<path>=<value>." + _wrong_tool_hint(override)
                 ),
             }
 

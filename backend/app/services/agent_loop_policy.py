@@ -62,22 +62,23 @@ def distinct_findings(findings: Any) -> int:
     """
     if not isinstance(findings, list):
         return 0
-    seen = set()
-    for finding in findings:
-        if not isinstance(finding, dict):
-            continue
-        seen.add(
-            (
-                str(finding.get("type") or ""),
-                str(
-                    finding.get("title")
-                    or finding.get("subject")
-                    or finding.get("id")
-                    or ""
-                ),
-            )
-        )
-    return len(seen)
+    return len({finding_identity(f) for f in findings if isinstance(f, dict)})
+
+
+def finding_identity(finding: Any) -> tuple:
+    """What makes two findings the same claim.
+
+    Factored out so everything asking "is this new?" asks it the same way.
+    Deliberately coarse: two findings of one type with the same title are the
+    same claim however their bodies differ, and a run that genuinely
+    re-measures something gives its finding a different title or subject.
+    """
+    if not isinstance(finding, dict):
+        return ("", "")
+    return (
+        str(finding.get("type") or ""),
+        str(finding.get("title") or finding.get("subject") or finding.get("id") or ""),
+    )
 
 
 def record_round(state: Dict[str, Any], finding_count: int) -> None:

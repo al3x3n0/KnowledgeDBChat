@@ -47,6 +47,7 @@ from app.services import (
     agent_plan_normalization,
     agent_prompt_sections,
     agent_repeated_success,
+    agent_unproductive_cycle,
     agent_tool_scoring,
 )
 from app.services.agent_action_service import AgentActionService
@@ -904,6 +905,28 @@ class _AutonomousRuntimeAdapter:
                         "phase": "repeated_tool_success",
                         "tool": str(action.get("tool") or ""),
                         "attempt": repetition["attempt"],
+                    }
+                )
+
+            # A cycle of DIFFERENT calls that all succeed defeats the check
+            # above, which keys on identical arguments. Measured: three
+            # progress reports carrying three different texts, alternating
+            # with recalls that returned the same ten findings each time --
+            # the recalls were flagged and ignored, the reports were never
+            # flagged at all. What they share is that neither tool declares
+            # evidence, so no number of them could satisfy the contract.
+            cycle = agent_unproductive_cycle.analyze(
+                self.state,
+                missing=(self.state.get("goal_contract_last") or {}).get("missing")
+                or (),
+            )
+            if cycle:
+                action_result = {**action_result, "unproductive_cycle": cycle}
+                self.job.add_log_entry(
+                    {
+                        "phase": "unproductive_cycle",
+                        "streak": cycle["streak"],
+                        "tools": cycle["tools"],
                     }
                 )
 

@@ -203,42 +203,63 @@ def _apply_cpu_params(cpu, params):
     an unknown parameter is refused rather than absorbed.
     """
     for path, value in params.items():
-        name, _, member = path.partition("[")
-        if member:
-            index = member.rstrip("]")
-            vector = getattr(cpu, name, None)
-            if vector is None:
-                raise SpecError("%s has no %r to index" % (type(cpu).__name__, name))
-            index, _, field = index.partition("].")
-            if not field:
-                raise SpecError(
-                    "%s names a vector member but no parameter on it; write "
-                    "%s[*].numEntries" % (path, name)
-                )
-            members = list(vector) if index == "*" else [vector[int(index)]]
-            if not members:
-                raise SpecError("%s has no members to set" % name)
-            for target in members:
-                if field not in type(target)._params:
-                    raise SpecError(
-                        "%s has no parameter %r. It declares: %s"
-                        % (type(target).__name__, field,
-                           ", ".join(sorted(type(target)._params)))
-                    )
-                setattr(target, field, value)
-            MANIFEST["applied"].append("cpu.%s=%s (%d members)"
-                                       % (path, value, len(members)))
-            continue
+        # A path is a dotted walk with optional [i] or [*] at any level, so a
+        # functional unit is reachable: fuPool.FUList[3].opList[0].opLat is
+        # three levels deep, and a walker that handled one level could name
+        # the issue queue and nothing about the units that do the work.
+        segments = path.split(".")
+        field = segments[-1]
+        walk = segments[:-1]
 
-        if name not in type(cpu)._params:
+        if "[" in field:
+            raise SpecError(
+                "%s ends at a vector member and names no parameter on it; "
+                "write %s.<parameter>" % (path, path))
+
+        if not walk and field not in type(cpu)._params:
             raise SpecError(
                 "%s has no parameter %r. Structure sizes that moved in gem5 "
                 "25.1 live on sub-objects: the issue queue is "
-                "instQueues[*].numEntries, not numIQEntries." % (
-                    type(cpu).__name__, name)
-            )
-        setattr(cpu, name, value)
-        MANIFEST["applied"].append("cpu.%s=%s" % (name, value))
+                "instQueues[*].numEntries, not numIQEntries. Functional unit "
+                "timing is fuPool.FUList[i].opList[j].opLat." % (
+                    type(cpu).__name__, field))
+
+        targets = [cpu]
+        for segment in walk:
+            seg_name, _, seg_index = segment.partition("[")
+            stepped = []
+            for target in targets:
+                attr = getattr(target, seg_name, None)
+                if attr is None:
+                    raise SpecError(
+                        "%s has no %r to walk through in %s"
+                        % (type(target).__name__, seg_name, path))
+                if seg_index:
+                    key = seg_index.rstrip("]")
+                    if key == "*":
+                        stepped.extend(list(attr))
+                        continue
+                    try:
+                        stepped.append(attr[int(key)])
+                    except (IndexError, ValueError, TypeError):
+                        raise SpecError(
+                            "%s[%s] is out of range in %s; it has %d members"
+                            % (seg_name, key, path, len(list(attr))))
+                else:
+                    stepped.append(attr)
+            targets = stepped
+            if not targets:
+                raise SpecError("%s names nothing to set in %s" % (segment, path))
+
+        for target in targets:
+            if field not in type(target)._params:
+                raise SpecError(
+                    "%s has no parameter %r. It declares: %s"
+                    % (type(target).__name__, field,
+                       ", ".join(sorted(type(target)._params))))
+            setattr(target, field, value)
+        MANIFEST["applied"].append(
+            "cpu.%s=%s (%d members)" % (path, value, len(targets)))
     MANIFEST["cpu"]["params"] = dict(params)
 
 

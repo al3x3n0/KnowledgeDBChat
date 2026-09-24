@@ -125,16 +125,23 @@ def _searchable_text(finding: Dict[str, Any]) -> str:
     return " ".join(parts).lower()
 
 
-def _provenance(job: Any, finding: Dict[str, Any]) -> Dict[str, Any]:
+def _provenance(job: Any, finding: Dict[str, Any], index: int = -1) -> Dict[str, Any]:
     """The finding as the recalling run will see it.
 
     `recalled` is what keeps this out of the contract count, and the job it
     came from is what lets a reader tell a number this run measured from one
     it looked up. Both belong on the record rather than in a log line.
+
+    `ref` addresses the finding itself. A run that discovers a recalled number
+    is wrong can say so only if it can name it, and a job id alone names a job
+    -- the position in its findings list is the rest of the address. Without
+    this a retraction tool would need an identifier nothing hands out.
     """
     recalled = dict(finding)
     recalled["recalled"] = True
     recalled["recalled_from_job"] = str(getattr(job, "id", "") or "")
+    if index >= 0:
+        recalled["ref"] = f"{getattr(job, 'id', '')}#{index}"
     goal = str(getattr(job, "goal", "") or "")
     recalled["recalled_from_goal"] = goal[:200]
     completed = getattr(job, "completed_at", None) or getattr(job, "created_at", None)
@@ -215,7 +222,7 @@ async def recall(
             if f"{job.id}#{index}" in withdrawn:
                 skipped_retracted += 1
                 continue
-            matched.append(_provenance(job, finding))
+            matched.append(_provenance(job, finding, index))
             ftype = str(finding.get("type") or "").strip()
             seen_types[ftype] = seen_types.get(ftype, 0) + 1
             if len(matched) >= limit:

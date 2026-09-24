@@ -5448,6 +5448,49 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             label=str(params.get("label") or ""),
         )
 
+    async def _retract_finding(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.models.agent_retraction import RetractionKind
+        from app.services import agent_retract_tool, agent_retraction_service
+
+        ref = str(params.get("ref") or "").strip()
+        reason = str(params.get("reason") or "").strip()
+        cited = params.get("contradicted_by")
+        if isinstance(cited, str):
+            try:
+                cited = json.loads(cited)
+            except json.JSONDecodeError:
+                cited = [c.strip() for c in cited.split(",") if c.strip()]
+        cited = [str(c) for c in (cited or [])]
+
+        problem = agent_retract_tool.check(ref, reason, cited, ctx.state)
+        if problem:
+            return {"error": problem}
+
+        row = await agent_retraction_service.retract(
+            ctx.db,
+            user_id=ctx.user_id,
+            kind=RetractionKind.FINDING,
+            ref=ref,
+            reason=reason,
+            source="; ".join(cited)[:200],
+            source_job_id=getattr(ctx, "job_id", None),
+        )
+        return {
+            "success": True,
+            "data": {
+                "retracted": ref,
+                "retraction_id": str(getattr(row, "id", "")),
+                "contradicted_by": cited,
+            },
+            "note": (
+                "That finding will no longer be recalled by later runs. It is "
+                "withdrawn, not deleted: the record keeps the reason so a "
+                "reader can tell why."
+            ),
+        }
+
     async def _measure_marginal(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -6258,6 +6301,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "simulate_mechanism": _simulate_mechanism,
             "explain_bottleneck": _explain_bottleneck,
             "measure_headroom": _measure_headroom,
+            "retract_finding": _retract_finding,
             "measure_marginal": _measure_marginal,
             "sweep_mechanism": _sweep_mechanism,
             "evaluate_across_kernels": _evaluate_across_kernels,

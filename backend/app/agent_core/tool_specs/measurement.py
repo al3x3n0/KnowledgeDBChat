@@ -771,6 +771,44 @@ SPECS: tuple[ToolSpec, ...] = (
         consumes="a program and a list of structures; bounds each one's payoff.",
     ),
     ToolSpec(
+        name="retract_finding",
+        description=(
+            "Withdraw a finding from an earlier run that this run has shown to be "
+            "wrong, so later runs stop recalling it. Requires the evidence that "
+            "overturns it, named among the findings THIS run produced -- a "
+            "retraction that cites nothing is an opinion with the power to delete "
+            "evidence. The finding is withdrawn, not deleted, and the reason is "
+            "kept so a reader can tell a number withdrawn for a harness defect "
+            "from one withdrawn because the question changed."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": (
+                        "The finding to withdraw, as the `ref` field that "
+                        "recall_prior_findings reports on every finding it returns "
+                        "(`<job_id>#<index>`)."
+                    ),
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "What is wrong with it, specifically enough to act on.",
+                },
+                "contradicted_by": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Findings this run produced that overturn the claim, by type "
+                        "or title."
+                    ),
+                },
+            },
+            "required": ["ref", "reason", "contradicted_by"],
+        },
+    ),
+    ToolSpec(
         name="measure_marginal",
         description=(
             "Cycles attributable to the measured loop, with setup cancelled. A "

@@ -771,6 +771,54 @@ SPECS: tuple[ToolSpec, ...] = (
         consumes="a program and a list of structures; bounds each one's payoff.",
     ),
     ToolSpec(
+        name="measure_marginal",
+        description=(
+            "Cycles attributable to the measured loop, with setup cancelled. A "
+            "kernel initialises an array and then reads it, and gem5 times both -- "
+            "so a single run reports the initialisation as though it were the work. "
+            "Runs the same source at two repetition counts and differences them, "
+            "which cancels the fixed cost exactly instead of assuming it small. "
+            "Refuses a kernel whose measured loop does not miss L2, because a "
+            "working set that fits in cache compares nothing about memory. Use this "
+            "rather than simulate_c_workload whenever the number is meant to "
+            "describe a loop instead of a program."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": (
+                        "Self-contained C program whose outer loop bound is the bare "
+                        "token REPS, e.g. `for(int r=0;r<REPS;r++)`. It is substituted "
+                        "with each repetition count."
+                    ),
+                },
+                "configs": {
+                    "type": "object",
+                    "description": (
+                        "Named machine configurations to compare, each the nested "
+                        'shape e.g. {"stride": {"caches": {"l2": '
+                        '{"prefetcher": "StridePrefetcher"}}}}. An empty object '
+                        "is the unmodified machine."
+                    ),
+                },
+                "reps": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": (
+                        "Exactly two different repetition counts; their difference is "
+                        "the measurement. Defaults to [2, 8]."
+                    ),
+                },
+                "flags": {"type": "string", "description": "Compiler flags."},
+                "label": {"type": "string", "description": "Names the comparison."},
+            },
+            "required": ["code", "configs"],
+        },
+        produces=("simulated_measurement",),
+    ),
+    ToolSpec(
         name="sweep_mechanism",
         description="Measure a mechanism at several settings and return the curve, not two "
         "points. Says where a setting stops paying and whether it ever "

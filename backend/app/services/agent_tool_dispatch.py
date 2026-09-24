@@ -5448,6 +5448,33 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             label=str(params.get("label") or ""),
         )
 
+    async def _measure_marginal(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_gem5_studies
+
+        reps = params.get("reps")
+        if isinstance(reps, str):
+            # A model asked for a small array sends it as text; parsing it
+            # costs nothing and refusing it costs an iteration.
+            try:
+                reps = json.loads(reps)
+            except json.JSONDecodeError:
+                reps = [r.strip() for r in reps.split(",") if r.strip()]
+        try:
+            reps = [int(r) for r in (reps or [])]
+        except (TypeError, ValueError):
+            reps = []
+
+        return await agent_gem5_studies.measure_marginal(
+            code=str(params.get("code") or ""),
+            configs=_study_config(params, "configs") or {},
+            reps=reps or (2, 8),
+            flags=str(params.get("flags") or agent_gem5_studies.DEFAULT_FLAGS),
+            run_args=str(params.get("run_args") or ""),
+            label=str(params.get("label") or ""),
+        )
+
     async def _sweep_mechanism(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -6231,6 +6258,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "simulate_mechanism": _simulate_mechanism,
             "explain_bottleneck": _explain_bottleneck,
             "measure_headroom": _measure_headroom,
+            "measure_marginal": _measure_marginal,
             "sweep_mechanism": _sweep_mechanism,
             "evaluate_across_kernels": _evaluate_across_kernels,
             "find_fusion_candidates": _find_fusion_candidates,

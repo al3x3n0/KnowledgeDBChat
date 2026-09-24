@@ -173,6 +173,14 @@ def _set_path(config: Dict[str, Any], path: str, value: Any) -> Dict[str, Any]:
     return out
 
 
+def _stat(run: Dict[str, Any], key: str) -> Optional[float]:
+    """One statistic from a run, or None when the build does not report it."""
+    value = (run or {}).get("stats", {}).get(key)
+    if value is None or value != value:  # None or NaN
+        return None
+    return float(value)
+
+
 def _cycles(run: Dict[str, Any]) -> float:
     return float(run["stats"].get("system.cpu.numCycles") or 0.0)
 
@@ -800,6 +808,192 @@ async def evaluate_across_kernels(
                 ],
                 "kernels_measured": len(measured),
                 "measurement_source": "gem5 multi-kernel evaluation",
+            }
+        ],
+    }
+
+
+#: A kernel measured once reports its setup as if it were the work. The token
+#: a caller puts in the loop bound so the same source can be run at two
+#: repetition counts.
+REPS_TOKEN = "REPS"
+
+#: Below this share of L2 misses per repetition, the measured loop is not
+#: reaching memory: whatever it is comparing, it is not the memory system.
+RESIDENT_MISS_FLOOR = 1000
+
+#: Above this share of the short run, setup dominates and a single-run
+#: measurement is mostly initialisation.
+FIXED_COST_WARN = 0.5
+
+
+async def measure_marginal(
+    *,
+    code: str,
+    configs: Dict[str, Any],
+    reps: Sequence[int] = (2, 8),
+    flags: str = DEFAULT_FLAGS,
+    run_args: str = "",
+    label: str = "",
+    image: str = DEFAULT_IMAGE,
+    timeout_seconds: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Cycles attributable to the measured loop, with setup cancelled.
+
+    A kernel initialises an array and then reads it. gem5 times both, and the
+    initialisation is itself a large, highly prefetchable stream -- so a single
+    run reports the setup as though it were the work. Measured: a prefetcher
+    study whose kernels were 90% initialisation reported 2.19x for a mechanism
+    worth 1.0001x on the loop it claimed to measure, and every conclusion drawn
+    from it had to be withdrawn.
+
+    Running the same source at two repetition counts and taking the difference
+    cancels the fixed cost exactly, rather than assuming it is small. That is
+    the whole tool: it exists because knowing to do this is not the same as
+    remembering to, and the runs that forgot looked exactly like the runs that
+    did not.
+
+    Reports two conditions that invalidate a comparison rather than merely
+    weaken it:
+
+    - `measured_loop_is_resident` -- the loop barely misses L2 per repetition,
+      so the working set fits in cache and nothing about the memory system is
+      being compared. This is the error above.
+    - `fixed_cost_dominates` -- setup is most of the short run, so a
+      single-run measurement of this kernel would have been mostly setup.
+      Reported even though this tool has already corrected for it, because it
+      tells the caller their kernel is shaped wrong for anyone else's tool.
+    """
+    if REPS_TOKEN not in (code or ""):
+        return {
+            "success": False,
+            "error": (
+                f"code must contain the bare token {REPS_TOKEN} as its outer "
+                f"loop bound, e.g. `for(int r=0;r<{REPS_TOKEN};r++)`, so the "
+                "same source can be run at two repetition counts. Substituting "
+                "it is what cancels the initialisation cost."
+            ),
+        }
+    counts = sorted({int(r) for r in (reps or ()) if int(r) > 0})
+    if len(counts) != 2:
+        return {
+            "success": False,
+            "error": (
+                "reps must name exactly two different positive counts; the "
+                "difference between them is the measurement."
+            ),
+        }
+    low, high = counts
+    if not isinstance(configs, dict) or not configs:
+        return {"success": False, "error": "configs is required."}
+
+    runs_by_rep: Dict[int, Any] = {}
+    for count in (low, high):
+        try:
+            runs_by_rep[count] = await run_configs(
+                code=code.replace(REPS_TOKEN, str(count)),
+                configs=configs,
+                flags=flags,
+                run_args=run_args,
+                image=image,
+                timeout_seconds=timeout_seconds,
+            )
+        except SandboxRunFailed as failure:
+            return failure.detail
+
+    span = high - low
+    out: Dict[str, Any] = {}
+    problems: List[str] = []
+    for name in configs:
+        lo_run = runs_by_rep[low][name]
+        hi_run = runs_by_rep[high][name]
+        lo_cycles, hi_cycles = _cycles(lo_run), _cycles(hi_run)
+        marginal = (hi_cycles - lo_cycles) / span
+        if marginal <= 0:
+            problems.append(
+                f"{name}: more repetitions did not cost more cycles "
+                f"({lo_cycles:.0f} at {low}, {hi_cycles:.0f} at {high}). The "
+                "loop is being optimised away or the counts are not reaching "
+                "the program."
+            )
+            continue
+        fixed = lo_cycles - marginal * low
+        misses_lo = _stat(lo_run, "system.l2cache.overallMisses::total")
+        misses_hi = _stat(hi_run, "system.l2cache.overallMisses::total")
+        marginal_misses = (
+            (misses_hi - misses_lo) / span
+            if misses_lo is not None and misses_hi is not None
+            else None
+        )
+        out[name] = {
+            "cycles_per_repetition": round(marginal, 1),
+            "fixed_cost_cycles": round(max(fixed, 0.0), 1),
+            "fixed_cost_share_of_short_run": (
+                round(max(fixed, 0.0) / lo_cycles, 3) if lo_cycles else None
+            ),
+            "l2_misses_per_repetition": (
+                round(marginal_misses, 1) if marginal_misses is not None else None
+            ),
+            "measured_loop_is_resident": (
+                marginal_misses is not None and marginal_misses < RESIDENT_MISS_FLOOR
+            ),
+            "fixed_cost_dominates": (
+                bool(lo_cycles) and (max(fixed, 0.0) / lo_cycles) > FIXED_COST_WARN
+            ),
+        }
+
+    if not out:
+        return {"success": False, "error": "; ".join(problems[:3])}
+
+    resident = [n for n, v in out.items() if v["measured_loop_is_resident"]]
+    if resident:
+        return {
+            "success": False,
+            "error": (
+                f"The measured loop barely misses L2 in {', '.join(sorted(resident))}"
+                f" (< {RESIDENT_MISS_FLOOR} misses per repetition), so its "
+                "working set is resident in cache and this comparison is not "
+                "about the memory system. Enlarge the working set past the "
+                "cache being studied."
+            ),
+            "per_config": out,
+        }
+
+    subject = (label or "").strip() or "marginal measurement"
+    heavy = sorted(n for n, v in out.items() if v["fixed_cost_dominates"])
+    return {
+        "success": True,
+        "label": subject,
+        "repetitions": [low, high],
+        "per_config": out,
+        "problems": problems[:3],
+        "setup_dominated_configs": heavy,
+        "interpretation": (
+            "Cycles here are per repetition of the measured loop, with setup "
+            "cancelled by differencing two repetition counts. "
+            + (
+                "Setup is most of the short run in "
+                + ", ".join(heavy)
+                + ", so a single-run measurement of this kernel would have "
+                "been mostly initialisation."
+                if heavy
+                else "Setup is a minority of the short run."
+            )
+        ),
+        "findings": [
+            {
+                "type": "simulated_measurement",
+                "subject": subject,
+                "title": (
+                    f"{subject}: "
+                    + ", ".join(
+                        f"{n} {v['cycles_per_repetition']:.0f} cycles/rep"
+                        for n, v in sorted(out.items())
+                    )
+                    + " (setup cancelled)"
+                ),
+                "per_config": {n: v["cycles_per_repetition"] for n, v in out.items()},
+                "measurement_source": "gem5 differential measurement",
             }
         ],
     }

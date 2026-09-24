@@ -405,3 +405,95 @@ class TestASweepWhoseCurveNeverMoves:
         result = await self._sweep(monkeypatch, cycles_for)
         assert result["success"] is True
         assert len({p["cycles"] for p in result["curve"]}) > 1
+
+
+class TestMeasuringTheLoopAndNotItsSetup:
+    """A kernel measured once reports its setup as if it were the work.
+
+    Every case here is a shape that invalidated a real study: a working set
+    that fits in cache (the error that withdrew a whole prefetcher survey), and
+    an initialisation loop larger than the loop it sets up (90% of the runtime
+    in the kernel that reported 2.19x for a mechanism worth 1.0001x).
+    """
+
+    CODE = "int main(void){for(int r=0;r<REPS;r++){} return 0;}"
+
+    async def _measure(self, monkeypatch, *, cycles, misses, code=None, **kw):
+        async def fake_run_configs(*, code, configs, **kwargs):
+            reps = int(code.split("r<")[1].split(";")[0])
+            return {
+                n: {
+                    "stats": {
+                        "system.cpu.numCycles": cycles(n, reps),
+                        "system.l2cache.overallMisses::total": misses(n, reps),
+                    }
+                }
+                for n in configs
+            }
+
+        monkeypatch.setattr(st, "run_configs", fake_run_configs)
+        monkeypatch.setattr(
+            st, "_cycles", lambda run: run["stats"]["system.cpu.numCycles"]
+        )
+        return await st.measure_marginal(
+            code=code or self.CODE, configs={"a": {}}, **kw
+        )
+
+    async def test_setup_is_cancelled(self, monkeypatch):
+        """1,000,000 fixed + 50,000 per repetition, whatever the counts."""
+        out = await self._measure(
+            monkeypatch,
+            cycles=lambda n, r: 1_000_000 + 50_000 * r,
+            misses=lambda n, r: 5_000 * r,
+        )
+        assert out["success"] is True
+        a = out["per_config"]["a"]
+        assert a["cycles_per_repetition"] == 50_000.0
+        assert a["fixed_cost_cycles"] == 1_000_000.0
+
+    async def test_a_resident_working_set_is_refused(self, monkeypatch):
+        """The error that withdrew a prefetcher survey: the measured loop
+        never reaches memory, so the comparison is not about the cache."""
+        out = await self._measure(
+            monkeypatch,
+            cycles=lambda n, r: 100_000 + 5_000 * r,
+            misses=lambda n, r: 10 * r,
+        )
+        assert out["success"] is False
+        assert "resident" in out["error"]
+        assert out["per_config"]["a"]["measured_loop_is_resident"] is True
+
+    async def test_setup_domination_is_reported_not_refused(self, monkeypatch):
+        """This tool has already corrected for it -- but the caller's kernel is
+        shaped wrong for anyone else's tool, and should hear so."""
+        out = await self._measure(
+            monkeypatch,
+            cycles=lambda n, r: 9_000_000 + 100_000 * r,
+            misses=lambda n, r: 50_000 * r,
+        )
+        assert out["success"] is True
+        assert out["setup_dominated_configs"] == ["a"]
+        assert out["per_config"]["a"]["fixed_cost_dominates"] is True
+
+    async def test_a_loop_that_costs_nothing_extra_is_refused(self, monkeypatch):
+        """More repetitions costing no more cycles means the loop was
+        optimised away, or the count never reached the program."""
+        out = await self._measure(
+            monkeypatch,
+            cycles=lambda n, r: 1_000_000,
+            misses=lambda n, r: 50_000 * r,
+        )
+        assert out["success"] is False
+        assert "did not cost more" in out["error"]
+
+    async def test_code_without_the_token_is_refused_with_the_shape(self):
+        out = await st.measure_marginal(
+            code="int main(void){return 0;}", configs={"a": {}}
+        )
+        assert out["success"] is False
+        assert "REPS" in out["error"]
+
+    async def test_two_distinct_counts_are_required(self):
+        out = await st.measure_marginal(code=self.CODE, configs={"a": {}}, reps=(4, 4))
+        assert out["success"] is False
+        assert "two different" in out["error"]

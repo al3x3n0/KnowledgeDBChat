@@ -172,6 +172,18 @@ services:
     # after editing backend code. That is what was already happening, six times,
     # unplanned. Celery has never hot-reloaded and always needed exactly this.
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 30
+    # The only app service that had neither a ceiling nor a restart policy,
+    # and the only one that has been OOM-killed here: twice in a day, once
+    # staying dead for eleven hours while every other container stayed up.
+    # A study launched through the API simply fails in that window, and a
+    # stopped container looks nothing like the cause.
+    #
+    # The ceiling is for attribution rather than thrift -- uncapped, the
+    # kernel picks a victim and the death is unexplained; capped, this
+    # container dies with a reason. Sized for `pytest --cov` over ~93k
+    # statements, which is the heaviest thing that runs in here.
+    restart: unless-stopped
+    mem_limit: 4g
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s

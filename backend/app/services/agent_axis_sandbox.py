@@ -33,6 +33,10 @@ DEFAULT_TIMEOUT_SECONDS = 180
 # architecture description may contain.
 MAX_SOURCE_CHARS = 4_000_000
 MAX_OUTPUT_CHARS = 60_000
+#: How much of the obligation travels on the finding. Long enough for the
+#: asserts that carry the claim, short enough not to turn a corpus of proofs
+#: into a corpus of SMT.
+MAX_OBLIGATION_CHARS = 2_000
 
 # Emit targets the tool exposes. Restricted to a known set because the target
 # is interpolated into a shell command, and named explicitly so the catalog
@@ -334,6 +338,14 @@ async def prove_equivalence(
                     if proved
                     else f"Equivalence not proved (solver said {verdict})"
                 ),
+                # The obligation IS the claim. "Equivalence proved for all
+                # inputs" names no equivalence, so a reader of the corpus
+                # cannot tell a real result from a tautology, and the executed
+                # arguments are not recoverable from anywhere else: the action
+                # ledger drops tool input by design and the audit log does not
+                # cover this dispatch path. A verdict without its question is
+                # not evidence.
+                "obligation": (obligation or "").strip()[:MAX_OBLIGATION_CHARS],
                 "settled": verdict in ("unsat", "sat"),
                 "verdict": verdict,
                 "proved": proved,

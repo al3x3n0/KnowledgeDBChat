@@ -142,6 +142,48 @@ async def test_the_evidence_a_tool_emits_is_the_evidence_it_declares(
     assert emitted == declared, f"{tool}: emits {emitted}, declares {declared}"
 
 
+@pytest.mark.asyncio
+async def test_a_proof_carries_the_question_it_answered(enabled, monkeypatch):
+    """ "Equivalence proved for all inputs" names no equivalence.
+
+    A live run recorded exactly that, with verdict unsat, and the obligation was
+    recoverable from nowhere: the action ledger drops tool input by design, the
+    audit log does not cover the autonomous dispatch path, and the LLM snapshots
+    hold the plan rather than the executed arguments. A reader of the corpus
+    could not tell a real result from a tautology, which makes the finding
+    unusable as evidence however true it is.
+    """
+
+    async def fake_run(script, workdir, **kwargs):
+        return 0, "unsat", ""
+
+    monkeypatch.setattr(axis.agent_sandbox_runtime, "run_in_sandbox", fake_run)
+    obligation = "(assert (not (= (axis_instr_a x) (axis_instr_b x))))\n(check-sat)"
+
+    result = await axis.prove_equivalence(
+        source="(defextension foo)", obligation=obligation
+    )
+
+    finding = result["findings"][0]
+    assert finding["obligation"] == obligation
+    assert finding["proved"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_enormous_obligation_is_clipped_not_carried_whole(
+    enabled, monkeypatch
+):
+    async def fake_run(script, workdir, **kwargs):
+        return 0, "unsat", ""
+
+    monkeypatch.setattr(axis.agent_sandbox_runtime, "run_in_sandbox", fake_run)
+    huge = "(assert true)\n" * 5000 + "(check-sat)"
+
+    result = await axis.prove_equivalence(source="(defextension foo)", obligation=huge)
+
+    assert len(result["findings"][0]["obligation"]) <= axis.MAX_OBLIGATION_CHARS
+
+
 def test_every_emit_target_maps_to_a_real_axis_command():
     for target, command in axis.EMIT_TARGETS.items():
         assert command.startswith("emit-"), target

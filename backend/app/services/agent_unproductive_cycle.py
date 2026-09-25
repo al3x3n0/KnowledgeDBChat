@@ -135,12 +135,20 @@ def analyze(
     state: Optional[Mapping[str, Any]],
     *,
     missing: Sequence[str] = (),
+    producers: Sequence[str] = (),
 ) -> Optional[Dict[str, Any]]:
     """A note for a run that has stopped advancing without anything failing.
 
     `missing` is what the contract still wants, so the note can say what to do
     instead of only what to stop doing -- a run told it is looping and not told
     the way out has been given the same information twice.
+
+    `producers` names the tools that yield it. "Call one that produces what is
+    outstanding" is advice the run cannot act on if it does not know which tool
+    that is, and the evidence map knows: a run contracted for an SMT proof
+    looped on read_document_content and write_progress_report for thirteen
+    iterations while axis_prove sat unused in a menu of 125 tools. Naming the
+    tool is the difference between a diagnosis and an instruction.
     """
     tools = streak(state)
     if len(tools) < NOTE_AT:
@@ -158,15 +166,31 @@ def analyze(
     if wanted:
         note += " Outstanding: " + ", ".join(wanted[:6]) + "."
 
+    named = [str(p).strip() for p in (producers or []) if str(p).strip()]
+    if named:
+        note += (
+            " The tool"
+            + ("s that produce" if len(named) > 1 else " that produces")
+            + " it: "
+            + ", ".join(named[:4])
+            + "."
+        )
+
     if len(tools) >= DIRECTIVE_AT:
         note += (
-            " Stop reporting and reading. The next call must be one that "
-            "produces what is outstanding, or the run is spending its "
-            "remaining iterations the way it spent these."
+            " Stop reporting and reading. The next call must be "
+            + (f"{named[0]}" if named else "one that produces what is outstanding")
+            + ", or the run is spending its remaining iterations the way it "
+            "spent these."
         )
     else:
         note += (
             " Use what is already in this run's history and make the next "
             "call one that produces something."
         )
-    return {"streak": len(tools), "tools": unique, "note": note}
+    return {
+        "streak": len(tools),
+        "tools": unique,
+        "producers": named,
+        "note": note,
+    }

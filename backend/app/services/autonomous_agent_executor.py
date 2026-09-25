@@ -915,10 +915,23 @@ class _AutonomousRuntimeAdapter:
             # the recalls were flagged and ignored, the reports were never
             # flagged at all. What they share is that neither tool declares
             # evidence, so no number of them could satisfy the contract.
+            outstanding = (self.state.get("goal_contract_last") or {}).get(
+                "missing"
+            ) or ()
             cycle = agent_unproductive_cycle.analyze(
                 self.state,
-                missing=(self.state.get("goal_contract_last") or {}).get("missing")
-                or (),
+                missing=outstanding,
+                # Which tool yields it, picked for this job type -- the same
+                # derivation the thinking prompt uses, so the loop's way out
+                # and the plan's chain cannot name different tools.
+                producers=agent_evidence_map.chain_for(
+                    [
+                        str(m).split(":", 1)[-1]
+                        for m in outstanding
+                        if str(m).startswith("finding_type:")
+                    ],
+                    job_type=getattr(self.job, "job_type", None),
+                ),
             )
             if cycle:
                 action_result = {**action_result, "unproductive_cycle": cycle}

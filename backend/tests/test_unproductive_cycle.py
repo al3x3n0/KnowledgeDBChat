@@ -10,8 +10,6 @@ claims did not (101 findings, 24 distinct).
 
 from __future__ import annotations
 
-import pytest
-
 from app.services import agent_unproductive_cycle as cycle
 
 
@@ -94,9 +92,9 @@ class TestWhatCountsAsGoingNowhere:
 
 
 class TestWhatItTellsTheRun:
-    def _note(self, n, missing=()):
+    def _note(self, n, missing=(), producers=()):
         state = {"actions_taken": [_act("write_progress_report") for _ in range(n)]}
-        return cycle.analyze(state, missing=missing)
+        return cycle.analyze(state, missing=missing, producers=producers)
 
     def test_below_the_threshold_it_says_nothing(self):
         assert self._note(cycle.NOTE_AT - 1) is None
@@ -117,6 +115,36 @@ class TestWhatItTellsTheRun:
     def test_it_turns_imperative_when_the_loop_persists(self):
         assert "Stop reporting" in self._note(cycle.DIRECTIVE_AT)["note"]
         assert "Stop reporting" not in self._note(cycle.NOTE_AT)["note"]
+
+    def test_it_names_the_tool_that_would_end_the_loop(self):
+        """ "Call one that produces what is outstanding" is unactionable if the
+        run does not know which tool that is -- and the evidence map does.
+
+        Measured: a run contracted for an SMT proof spent thirteen iterations on
+        read_document_content and write_progress_report while axis_prove sat
+        unused in a menu of 125 tools. It was told it was looping, and told to
+        produce the outstanding evidence, and never told what to call.
+        """
+        out = self._note(
+            cycle.NOTE_AT,
+            missing=["finding_type:axis_equivalence_proof"],
+            producers=["axis_check", "axis_prove"],
+        )
+        assert "axis_prove" in out["note"]
+        assert out["producers"] == ["axis_check", "axis_prove"]
+
+    def test_the_imperative_names_the_call_rather_than_describing_it(self):
+        note = self._note(cycle.DIRECTIVE_AT, producers=["axis_check", "axis_prove"])[
+            "note"
+        ]
+        assert "The next call must be axis_check" in note
+
+    def test_it_still_works_when_no_producer_is_known(self):
+        """An unknown producer must not turn the directive into a dangling
+        sentence: the generic wording is the fallback, not a bug."""
+        note = self._note(cycle.DIRECTIVE_AT)["note"]
+        assert "one that produces what is outstanding" in note
+        assert self._note(cycle.DIRECTIVE_AT)["producers"] == []
 
     def test_malformed_state_is_tolerated(self):
         for bad in (None, {}, {"actions_taken": "nope"}, {"actions_taken": [None]}):

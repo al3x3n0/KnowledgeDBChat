@@ -816,10 +816,12 @@ SPECS: tuple[ToolSpec, ...] = (
             "so a single run reports the initialisation as though it were the work. "
             "Runs the same source at two repetition counts and differences them, "
             "which cancels the fixed cost exactly instead of assuming it small. "
-            "Refuses a kernel whose measured loop does not miss L2, because a "
-            "working set that fits in cache compares nothing about memory. Use this "
-            "rather than simulate_c_workload whenever the number is meant to "
-            "describe a loop instead of a program."
+            "Refuses a kernel whose measured loop does not miss L2 unless "
+            "memory_bound is false, because a resident working set compares "
+            "nothing about memory. A refused measurement returns no cycle "
+            "counts, only what was wrong with it. Use this rather than "
+            "simulate_c_workload whenever the number is meant to describe a "
+            "loop instead of a program."
         ),
         parameters={
             "type": "object",
@@ -847,6 +849,17 @@ SPECS: tuple[ToolSpec, ...] = (
                     "description": (
                         "Exactly two different repetition counts; their difference is "
                         "the measurement. Defaults to [2, 8]."
+                    ),
+                },
+                "memory_bound": {
+                    "type": "boolean",
+                    "description": (
+                        "Whether this study is about the memory system (default true). "
+                        "When true, a kernel whose measured loop never misses L2 is "
+                        "refused, because a resident working set compares nothing about "
+                        "memory. Pass false when the kernel is resident on purpose "
+                        "because the study is about compute -- a kernel measuring an "
+                        "adder should be resident, or it measures memory instead."
                     ),
                 },
                 "flags": {"type": "string", "description": "Compiler flags."},

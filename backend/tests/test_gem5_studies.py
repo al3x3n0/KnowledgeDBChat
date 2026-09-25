@@ -7,6 +7,8 @@ stride-64B scan where idealising the L1 recovered 84.5% and the issue queue
 reason these tools exist.
 """
 
+import json
+
 import pytest
 
 from app.services import agent_gem5_studies as st
@@ -461,7 +463,11 @@ class TestMeasuringTheLoopAndNotItsSetup:
         )
         assert out["success"] is False
         assert "resident" in out["error"]
-        assert out["per_config"]["a"]["measured_loop_is_resident"] is True
+        # No cycle counts come back from a refused measurement -- the earlier
+        # version returned them as diagnostics and a live run built a study on
+        # them. What comes back is what was wrong.
+        assert "per_config" not in out
+        assert out["misses_per_repetition"]["a"] == 10.0
 
     async def test_setup_domination_is_reported_not_refused(self, monkeypatch):
         """This tool has already corrected for it -- but the caller's kernel is
@@ -497,3 +503,60 @@ class TestMeasuringTheLoopAndNotItsSetup:
         out = await st.measure_marginal(code=self.CODE, configs={"a": {}}, reps=(4, 4))
         assert out["success"] is False
         assert "two different" in out["error"]
+
+
+class TestARefusalThatHandsBackItsNumbers:
+    """A live run took the per-config block out of two refused measurements and
+    built a study on it -- prediction, verdict, structured output, contract
+    satisfied. The numbers were diagnostics; they read as results.
+
+    And the refusal itself was wrong for that study. A kernel measuring an
+    adder SHOULD be cache-resident, or it measures the memory system instead.
+    Only the caller knows which study it is.
+    """
+
+    CODE = "int main(void){for(int r=0;r<REPS;r++){} return 0;}"
+
+    async def _run(self, monkeypatch, *, memory_bound=True):
+        async def fake_run_configs(*, code, configs, **kwargs):
+            reps = int(code.split("r<")[1].split(";")[0])
+            return {
+                n: {
+                    "stats": {
+                        "system.cpu.numCycles": 100_000 + 5_000 * reps,
+                        "system.l2cache.overallMisses::total": 3 * reps,  # resident
+                    }
+                }
+                for n in configs
+            }
+
+        monkeypatch.setattr(st, "run_configs", fake_run_configs)
+        monkeypatch.setattr(
+            st, "_cycles", lambda run: run["stats"]["system.cpu.numCycles"]
+        )
+        return await st.measure_marginal(
+            code=self.CODE, configs={"a": {}}, memory_bound=memory_bound
+        )
+
+    async def test_a_refusal_carries_no_cycle_counts(self, monkeypatch):
+        out = await self._run(monkeypatch)
+        assert out["success"] is False
+        assert "per_config" not in out
+        blob = json.dumps(out)
+        assert "cycles_per_repetition" not in blob
+
+    async def test_a_refusal_still_says_how_wrong_it_is(self, monkeypatch):
+        """Refusing without evidence would just be a wall."""
+        out = await self._run(monkeypatch)
+        assert out["misses_per_repetition"]["a"] == 3.0
+
+    async def test_a_refusal_names_the_way_out(self, monkeypatch):
+        out = await self._run(monkeypatch)
+        assert "memory_bound=false" in out["error"]
+
+    async def test_a_compute_study_may_be_resident_on_purpose(self, monkeypatch):
+        out = await self._run(monkeypatch, memory_bound=False)
+        assert out["success"] is True
+        assert out["per_config"]["a"]["cycles_per_repetition"] == 5_000.0
+        assert out["resident_configs"] == ["a"]
+        assert out["memory_bound"] is False

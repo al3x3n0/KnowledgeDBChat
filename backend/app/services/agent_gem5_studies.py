@@ -832,6 +832,7 @@ async def measure_marginal(
     code: str,
     configs: Dict[str, Any],
     reps: Sequence[int] = (2, 8),
+    memory_bound: bool = True,
     flags: str = DEFAULT_FLAGS,
     run_args: str = "",
     label: str = "",
@@ -857,8 +858,11 @@ async def measure_marginal(
     weaken it:
 
     - `measured_loop_is_resident` -- the loop barely misses L2 per repetition,
-      so the working set fits in cache and nothing about the memory system is
-      being compared. This is the error above.
+      so the working set fits in cache. Fatal for a memory study and correct
+      for a compute one: a kernel measuring an adder SHOULD be resident, or it
+      measures the memory system instead. Only the caller knows which study
+      this is, so `memory_bound` says, and the check is enforced against that
+      declaration rather than assumed.
     - `fixed_cost_dominates` -- setup is most of the short run, so a
       single-run measurement of this kernel would have been mostly setup.
       Reported even though this tool has already corrected for it, because it
@@ -946,17 +950,28 @@ async def measure_marginal(
         return {"success": False, "error": "; ".join(problems[:3])}
 
     resident = [n for n, v in out.items() if v["measured_loop_is_resident"]]
-    if resident:
+    if resident and memory_bound:
+        # Deliberately WITHOUT the cycle counts. A refusal that hands back its
+        # numbers invites them to be used: a live run took the per-config block
+        # out of two refused calls and built a study on it, complete with a
+        # prediction and a verdict, and the contract was satisfied. The caller
+        # needs to know what is wrong and by how much, not what the cycles
+        # were.
         return {
             "success": False,
             "error": (
                 f"The measured loop barely misses L2 in {', '.join(sorted(resident))}"
                 f" (< {RESIDENT_MISS_FLOOR} misses per repetition), so its "
                 "working set is resident in cache and this comparison is not "
-                "about the memory system. Enlarge the working set past the "
-                "cache being studied."
+                "about the memory system. Either enlarge the working set past "
+                "the cache being studied, or pass memory_bound=false if the "
+                "kernel is resident on purpose because the study is about "
+                "compute. No cycle counts are returned from a refused "
+                "measurement."
             ),
-            "per_config": out,
+            "misses_per_repetition": {
+                n: out[n]["l2_misses_per_repetition"] for n in sorted(resident)
+            },
         }
 
     subject = (label or "").strip() or "marginal measurement"
@@ -968,6 +983,8 @@ async def measure_marginal(
         "per_config": out,
         "problems": problems[:3],
         "setup_dominated_configs": heavy,
+        "memory_bound": bool(memory_bound),
+        "resident_configs": sorted(resident),
         "interpretation": (
             "Cycles here are per repetition of the measured loop, with setup "
             "cancelled by differencing two repetition counts. "

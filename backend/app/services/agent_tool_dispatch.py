@@ -5513,6 +5513,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             code=str(params.get("code") or ""),
             configs=_study_config(params, "configs") or {},
             reps=reps or (2, 8),
+            memory_bound=params.get("memory_bound", True) is not False,
             flags=str(params.get("flags") or agent_gem5_studies.DEFAULT_FLAGS),
             run_args=str(params.get("run_args") or ""),
             label=str(params.get("label") or ""),

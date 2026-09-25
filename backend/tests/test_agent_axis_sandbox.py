@@ -78,6 +78,24 @@ def test_unknown_is_not_treated_as_proved():
     assert axis.parse_solver_verdict("unknown") != "unsat"
 
 
+def test_a_solver_timeout_is_a_verdict_and_not_a_broken_obligation():
+    """z3 prints `timeout` when -T: expires, and it says nothing about the query.
+
+    Reading it as unparseable output produced "the obligation probably does not
+    typecheck against the emitted semantics" -- for an obligation structurally
+    identical to one the same solver had just discharged as unsat. The caller is
+    then sent to rewrite something correct, which is the worst available advice
+    because the real remedy is more time or a narrower query.
+    """
+    assert axis.parse_solver_verdict("timeout\n") == "timeout"
+    assert axis.parse_solver_verdict("timeout") != "error"
+
+
+def test_a_timeout_is_not_treated_as_proved():
+    """Not settled is not proved, however the solver failed to settle it."""
+    assert axis.parse_solver_verdict("timeout") != "unsat"
+
+
 def test_every_emit_target_maps_to_a_real_axis_command():
     for target, command in axis.EMIT_TARGETS.items():
         assert command.startswith("emit-"), target

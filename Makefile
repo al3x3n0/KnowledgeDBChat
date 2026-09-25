@@ -135,7 +135,35 @@ validate-env: ## Validate backend environment variables
 check-health: ## Run local health checks (Docker + services)
 	bash scripts/check_health.sh
 
-doctor: validate-env check-health ## Validate env + health checks
+doctor: validate-env check-health stale-code ## Validate env + health checks
+
+stale-code: ## Warn when a container is running code older than the source tree
+	@# Python imports a module once, at process start. The backend reloads under
+	@# uvicorn; the celery worker does not, so editing a service the worker
+	@# executes changes nothing until it is recreated -- and the run that follows
+	@# fails against the old code while the file on disk shows the fix. That has
+	@# cost real debugging here: a job was told "no tool here produces
+	@# axis_equivalence_proof" by a worker holding a spec table from the previous
+	@# day, and the conclusion drawn was about the model rather than the worker.
+	@newest=$$(find backend/app -name '*.py' -print0 2>/dev/null \
+	  | xargs -0 stat -f '%m' 2>/dev/null | sort -rn | head -1); \
+	test -n "$$newest" || newest=0; \
+	for service in backend celery celery_beat; do \
+	  container=$$(docker compose ps -q $$service 2>/dev/null); \
+	  if [ -z "$$container" ]; then \
+	    printf '  %-14s %s\n' "$$service" "not running"; continue; \
+	  fi; \
+	  started=$$(docker inspect -f '{{.State.StartedAt}}' $$container 2>/dev/null); \
+	  started_epoch=$$(date -j -u -f '%Y-%m-%dT%H:%M:%S' "$$(echo $$started | cut -c1-19)" '+%s' 2>/dev/null \
+	    || date -u -d "$$started" '+%s' 2>/dev/null || echo 0); \
+	  if [ "$$started_epoch" -le 0 ]; then \
+	    printf '  %-14s %s\n' "$$service" "unknown (could not read the start time)"; \
+	  elif [ "$$newest" -gt "$$started_epoch" ]; then \
+	    printf '  %-14s %s\n' "$$service" "STALE -- started before the newest backend/app change; recreate it"; \
+	  else \
+	    printf '  %-14s %s\n' "$$service" "current"; \
+	  fi; \
+	done
 
 fmt-backend: ## Format backend code (isort + black)
 	$(DC) exec backend isort .

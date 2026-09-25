@@ -298,6 +298,7 @@ sandbox-axis: ## Build the axis-research image (needs AXIS_PATH=/path/to/axis)
 	  echo "build context. e.g. make sandbox-axis AXIS_PATH=/path/to/KevinAI/axis"; \
 	  exit 1; }
 	docker build -f deploy/sandbox-images/axis-research/Dockerfile \
+	  --build-arg AXIS_GIT_REV="$$(git -C $(AXIS_PATH) describe --always --dirty 2>/dev/null || echo unknown)" \
 	  -t $(SANDBOX_REGISTRY)/kdbc-axis-research:latest $(AXIS_PATH)
 
 sandbox-images: sandbox-compiler sandbox-polyglot sandbox-profiling sandbox-microarch ## Build every sandbox image this repo can build
@@ -335,3 +336,32 @@ sandbox-check: ## Report which sandbox images exist locally and what they carry
 	done
 	@docker image inspect $(SANDBOX_REGISTRY)/kdbc-compiler-research:latest >/dev/null 2>&1 \
 	  || echo "  (compiler-research image not built: run make sandbox-compiler)"
+	@echo ""
+	@echo "What built each image, where it says so. A binary that cannot report"
+	@echo "its own source is one a stale-image failure cannot be attributed to."
+	@for image in kdbc-axis-research; do \
+	  rev=$$(docker image inspect --format \
+	    '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+	    $(SANDBOX_REGISTRY)/$$image:latest 2>/dev/null); \
+	  test -n "$$rev" || rev="(no revision label: rebuilt via make sandbox-axis to record one)"; \
+	  printf '  %-28s %s\n' "$$image" "$$rev"; \
+	done
+	@echo ""
+	@echo "Whether the app can reach any of this. Everything above is asked of the"
+	@echo "host; the runtime asks from inside backend and celery, and the two"
+	@echo "differ. A stack brought up without docker-compose.docker-tools.yml has"
+	@echo "no socket, and then every sandbox-backed tool fails in the one way that"
+	@echo "reads as nobody having called it."
+	@for service in backend celery; do \
+	  if ! docker compose ps --status running --services 2>/dev/null | grep -qx "$$service"; then \
+	    printf '  %-28s %s\n' "$$service" "not running"; \
+	  elif docker compose exec -T $$service sh -c 'docker ps >/dev/null 2>&1' 2>/dev/null; then \
+	    printf '  %-28s %s\n' "$$service" "socket OK"; \
+	  else \
+	    printf '  %-28s %s\n' "$$service" "NO SOCKET -- every sandbox tool will fail"; \
+	  fi; \
+	done
+	@docker compose ps --status running --services 2>/dev/null | grep -qx backend && \
+	  docker compose exec -T backend sh -c 'docker ps >/dev/null 2>&1' 2>/dev/null || \
+	  echo "  remedy: docker compose -f docker-compose.yml -f docker-compose.override.yml \
+-f docker-compose.docker-tools.yml up -d --no-build backend celery"

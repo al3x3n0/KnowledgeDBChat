@@ -525,6 +525,74 @@ def inert_prefetchers(config: Dict[str, Any], stats: Dict[str, float]) -> List[s
     return out
 
 
+#: SIMD op classes gem5's default FUPool prices at `opLat=1, pipelined=True`
+#: across four units, which is a placeholder rather than a model. For SIMD
+#: integer and add/multiply work that is defensible. For divide and square
+#: root it is not: the scalar counterparts in the same pool are FloatDiv
+#: opLat=12 and FloatSqrt opLat=24, both *unpipelined*, on two units.
+MISPRICED_SIMD_OPS = ("SimdFloatDiv", "SimdFloatSqrt", "SimdDiv", "SimdSqrt")
+
+#: Below this share of issued instructions, the mispriced ops are present but
+#: are not what the cycle count is made of, so the warning would be noise.
+MISPRICED_SHARE_FLOOR = 0.01
+
+
+def mispriced_simd_ops(stats: Dict[str, float]) -> Dict[str, Any]:
+    """Vector divides and square roots this run issued, which the model cannot price.
+
+    gem5's default FUPool gives every SIMD op `opLat=1, pipelined=True` on four
+    units while the scalar FloatDiv is opLat=12 unpipelined on two. A two-lane
+    divide therefore costs a fraction of the scalar divide that does half its
+    work. Measured on one kernel of independent double divides: 21.132
+    cycles/element scalar against 2.573 vectorised, an 8.2x per-element speedup
+    from two lanes -- and 2.573 is *below* the scalar divider's own throughput
+    floor of one divide per six cycles, so the vector divides are not reaching
+    that unit at all.
+
+    The consequence is narrow and total: any comparison whose winning arm wins
+    by vectorising divide or square root has measured the placeholder. Two
+    headline figures were withdrawn to this -- `-fno-math-errno` at 91.6% and
+    `-ffast-math` at 87.3% on a normalise kernel, both of which win by removing
+    a libm call that blocks gcc's vectoriser. The arms that stayed scalar were
+    unaffected, which is why this reports rather than refuses: the run may be
+    about SIMD integer work, or the ops may be incidental.
+
+    Counters, not cycles, for the same reason `inert_prefetchers` reads
+    counters: the cycle count cannot say whether it was built from mispriced
+    ops, and the issue counts can. A build that does not publish
+    `issuedInstType_0` accuses nobody.
+    """
+    total = stats.get("system.cpu.issuedInstType_0::total")
+    if not total:
+        return {}
+    issued = {}
+    for op in MISPRICED_SIMD_OPS:
+        count = stats.get(f"system.cpu.issuedInstType_0::{op}")
+        if count:
+            issued[op] = float(count)
+    if not issued:
+        return {}
+    share = sum(issued.values()) / float(total)
+    if share < MISPRICED_SHARE_FLOOR:
+        return {}
+    return {
+        "ops": issued,
+        "share_of_issued": round(share, 4),
+        "warning": (
+            "This run issued "
+            + ", ".join(f"{int(v)} {k}" for k, v in sorted(issued.items()))
+            + f" ({share:.1%} of issued instructions). gem5's default FUPool "
+            "prices every SIMD op at opLat=1 pipelined on four units, while the "
+            "scalar FloatDiv it replaces is opLat=12 unpipelined on two, so a "
+            "vector divide costs far less than the scalar divide doing half its "
+            "work. A cycle count that depends on these is not a measurement of "
+            "the machine. No argument to this tool makes it valid: either keep "
+            "the inner loop scalar, or price the SIMD unit before believing the "
+            "number."
+        ),
+    }
+
+
 def stats_identical(left: Dict[str, float], right: Dict[str, float]) -> bool:
     """Whether two runs produced the same statistics, NaN included.
 

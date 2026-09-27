@@ -32,6 +32,7 @@ from app.services.agent_gem5_mechanism import (
     DEFAULT_FLAGS,
     DEFAULT_IMAGE,
     SandboxRunFailed,
+    mispriced_simd_ops,
     run_configs,
     stats_identical,
 )
@@ -974,6 +975,15 @@ async def measure_marginal(
             },
         }
 
+    # Whether the model could price what this kernel actually issued. Read from
+    # the longer run, which is the one the marginal cost is mostly made of.
+    mispriced: Dict[str, Any] = {}
+    for name in out:
+        verdict = mispriced_simd_ops(runs_by_rep[high][name].get("stats") or {})
+        if verdict:
+            mispriced[name] = verdict
+            out[name]["mispriced_simd"] = verdict["ops"]
+
     subject = (label or "").strip() or "marginal measurement"
     heavy = sorted(n for n, v in out.items() if v["fixed_cost_dominates"])
     return {
@@ -985,6 +995,11 @@ async def measure_marginal(
         "setup_dominated_configs": heavy,
         "memory_bound": bool(memory_bound),
         "resident_configs": sorted(resident),
+        "mispriced_simd_configs": sorted(mispriced),
+        "model_warning": (
+            " ".join(f"[{n}] {v['warning']}" for n, v in sorted(mispriced.items()))
+            or None
+        ),
         "interpretation": (
             "Cycles here are per repetition of the measured loop, with setup "
             "cancelled by differencing two repetition counts. "
@@ -1011,6 +1026,17 @@ async def measure_marginal(
                 ),
                 "per_config": {n: v["cycles_per_repetition"] for n, v in out.items()},
                 "measurement_source": "gem5 differential measurement",
+                **(
+                    {
+                        "model_warning": " ".join(
+                            f"[{n}] {v['warning']}"
+                            for n, v in sorted(mispriced.items())
+                        ),
+                        "mispriced_simd_configs": sorted(mispriced),
+                    }
+                    if mispriced
+                    else {}
+                ),
             }
         ],
     }

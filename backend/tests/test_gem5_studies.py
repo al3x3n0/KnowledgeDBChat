@@ -560,3 +560,47 @@ class TestARefusalThatHandsBackItsNumbers:
         assert out["per_config"]["a"]["cycles_per_repetition"] == 5_000.0
         assert out["resident_configs"] == ["a"]
         assert out["memory_bound"] is False
+
+
+class TestAWarningThatTravelsWithTheNumber:
+    """The cycle count and the reason not to trust it must arrive together.
+
+    `compact_action_ledger` keeps raw tool output out of results.actions, so a
+    warning that lives only in the result dict is gone by the time anyone reads
+    the run back. The finding is what survives, so the finding carries it.
+    """
+
+    CODE = "int main(void){for(int r=0;r<REPS;r++){} return 0;}"
+
+    async def _run(self, monkeypatch, *, simd_divides):
+        async def fake_run_configs(*, code, configs, **kwargs):
+            reps = int(code.split("r<")[1].split(";")[0])
+            return {
+                n: {
+                    "stats": {
+                        "system.cpu.numCycles": 100_000 + 5_000 * reps,
+                        "system.l2cache.overallMisses::total": 4_000 * reps,
+                        "system.cpu.issuedInstType_0::total": 100_000.0,
+                        "system.cpu.issuedInstType_0::SimdFloatDiv": float(
+                            simd_divides
+                        ),
+                    }
+                }
+                for n in configs
+            }
+
+        monkeypatch.setattr(st, "run_configs", fake_run_configs)
+        return await st.measure_marginal(code=self.CODE, configs={"a": {}})
+
+    async def test_the_finding_carries_the_warning(self, monkeypatch):
+        out = await self._run(monkeypatch, simd_divides=8192)
+        assert out["success"] is True
+        assert out["mispriced_simd_configs"] == ["a"]
+        assert "opLat=1" in out["findings"][0]["model_warning"]
+
+    async def test_a_scalar_run_says_nothing(self, monkeypatch):
+        """A warning on every run is one nobody reads."""
+        out = await self._run(monkeypatch, simd_divides=0)
+        assert out["mispriced_simd_configs"] == []
+        assert out["model_warning"] is None
+        assert "model_warning" not in out["findings"][0]

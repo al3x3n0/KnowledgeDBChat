@@ -719,3 +719,54 @@ class TestAMechanismThatNeverEngaged:
 
     def test_a_level_with_no_mechanism_is_not_reported(self):
         assert not mech.inert_prefetchers({"caches": {"l2": {"size": "2MiB"}}}, {})
+
+
+class TestOpsTheModelCannotPrice:
+    """gem5's default FUPool gives every SIMD op opLat=1 pipelined on four
+    units. For SIMD integer work that is defensible; for divide and square root
+    it is not, because the scalar counterparts in the same pool are FloatDiv
+    opLat=12 and FloatSqrt opLat=24, both unpipelined, on two units.
+
+    Measured on independent double divides: 21.132 cycles/element scalar
+    against 2.573 vectorised. Two lanes cannot buy 8.2x, and 2.573 is below the
+    scalar divider's own throughput floor of one per six cycles -- the vector
+    divides are not reaching that unit. Two headline figures were withdrawn to
+    this before the check existed.
+    """
+
+    def _stats(self, **ops):
+        base = {
+            "system.cpu.issuedInstType_0::total": 100_000.0,
+            "system.cpu.issuedInstType_0::IntAlu": 50_000.0,
+        }
+        base.update({f"system.cpu.issuedInstType_0::{k}": v for k, v in ops.items()})
+        return base
+
+    def test_a_vectorised_divide_is_reported(self):
+        out = mech.mispriced_simd_ops(self._stats(SimdFloatDiv=8192.0))
+        assert out["ops"] == {"SimdFloatDiv": 8192.0}
+        assert "opLat=1" in out["warning"]
+
+    def test_the_share_is_reported_so_a_reader_can_judge_it(self):
+        out = mech.mispriced_simd_ops(self._stats(SimdFloatDiv=8192.0))
+        assert out["share_of_issued"] == 0.0819
+
+    def test_a_handful_of_them_is_not_worth_a_warning(self):
+        """Present is not the same as load-bearing; below the floor it is noise."""
+        assert mech.mispriced_simd_ops(self._stats(SimdFloatDiv=12.0)) == {}
+
+    def test_scalar_work_is_never_accused(self):
+        assert mech.mispriced_simd_ops(self._stats(FloatDiv=8192.0)) == {}
+
+    def test_simd_integer_work_is_never_accused(self):
+        """Only divide and square root are mispriced at opLat=1; add and
+        multiply at that latency are approximately right."""
+        assert mech.mispriced_simd_ops(self._stats(SimdFloatAdd=50_000.0)) == {}
+
+    def test_a_build_that_does_not_publish_the_counters_accuses_nobody(self):
+        assert mech.mispriced_simd_ops({}) == {}
+        assert mech.mispriced_simd_ops({"system.cpu.numCycles": 5.0}) == {}
+
+    def test_square_root_counts_too(self):
+        out = mech.mispriced_simd_ops(self._stats(SimdFloatSqrt=9000.0))
+        assert "SimdFloatSqrt" in out["ops"]

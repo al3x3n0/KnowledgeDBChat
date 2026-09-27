@@ -604,3 +604,48 @@ class TestAWarningThatTravelsWithTheNumber:
         assert out["mispriced_simd_configs"] == []
         assert out["model_warning"] is None
         assert "model_warning" not in out["findings"][0]
+
+
+class TestEveryStudySaysWhenTheModelCannotPriceIt:
+    """A guard on one of five entry points leaves four silently wrong.
+
+    `mispriced_simd_ops` first shipped inside measure_marginal. The other four
+    study functions turn the same gem5 stats into the same kind of conclusion
+    and said nothing, which is the gap this module keeps finding in other
+    people's code. This reads the source rather than the behaviour, because the
+    failure it prevents is someone adding a sixth study and not knowing the
+    rule exists -- and a test that only exercises today's five would pass.
+    """
+
+    GUARDS = ("model_warnings(", "mispriced_simd_ops(")
+
+    def _bodies(self):
+        import inspect
+        import re
+
+        src = inspect.getsource(st).split("\n")
+        starts = [
+            (i, re.match(r"async def ([a-z_]+)\(", line).group(1))
+            for i, line in enumerate(src)
+            if re.match(r"async def [a-z_]+\(", line)
+        ]
+        out = {}
+        for k, (i, name) in enumerate(starts):
+            end = starts[k + 1][0] if k + 1 < len(starts) else len(src)
+            out[name] = "\n".join(src[i:end])
+        return out
+
+    def test_there_are_studies_to_check(self):
+        """A source-reading test that finds nothing passes for the wrong reason."""
+        assert len(self._bodies()) >= 5
+
+    def test_every_study_that_runs_configs_carries_the_guard(self):
+        unguarded = [
+            name
+            for name, body in self._bodies().items()
+            if "run_configs(" in body and not any(g in body for g in self.GUARDS)
+        ]
+        assert unguarded == [], (
+            "these study functions turn gem5 stats into a conclusion without "
+            f"saying whether the model could price it: {unguarded}"
+        )

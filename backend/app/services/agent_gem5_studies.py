@@ -203,6 +203,31 @@ def _geomean(values: Sequence[float]) -> Optional[float]:
 # ---------------------------------------------------------------------------
 # What is limiting this kernel.
 # ---------------------------------------------------------------------------
+def model_warnings(runs: Any) -> Dict[str, Any]:
+    """The configs in this run set whose cycles the model cannot price.
+
+    Five study functions here turn gem5 stats into a conclusion. The first
+    version of this check lived inside one of them, which left the other four
+    reporting the same unpriceable numbers in silence -- the shape of gap this
+    module keeps finding elsewhere. `run_configs` attaches the verdict to each
+    run, and this turns a set of them into the two fields a result carries, so
+    wiring a study in is one spread rather than a rule to remember.
+    """
+    flagged = {
+        name: run["mispriced_simd"]
+        for name, run in sorted((runs or {}).items())
+        if isinstance(run, dict) and run.get("mispriced_simd")
+    }
+    if not flagged:
+        return {"mispriced_simd_configs": [], "model_warning": None}
+    return {
+        "mispriced_simd_configs": sorted(flagged),
+        "model_warning": " ".join(
+            f"[{name}] {v['warning']}" for name, v in flagged.items()
+        ),
+    }
+
+
 async def explain_bottleneck(
     *,
     code: str,
@@ -234,6 +259,7 @@ async def explain_bottleneck(
     top = (attribution["signals"] or [{}])[0]
     return {
         "success": True,
+        **model_warnings(runs),
         "label": subject,
         "configuration": runs["run"]["manifest"],
         **attribution,
@@ -396,6 +422,7 @@ async def measure_headroom(
     best = results[0]
     return {
         "success": True,
+        **model_warnings(runs),
         "label": subject,
         "baseline_cycles": baseline_cycles,
         "baseline_limit": gem5_bottleneck.backpressure(runs["baseline"]["stats"]).get(
@@ -554,6 +581,7 @@ async def sweep_mechanism(
     subject = (label or "").strip() or vary
     return {
         "success": True,
+        **model_warnings(runs),
         "label": subject,
         "varied": vary,
         "baseline_cycles": baseline_cycles,
@@ -769,6 +797,7 @@ async def evaluate_across_kernels(
     subject = (label or "").strip() or "mechanism"
     return {
         "success": True,
+        **model_warnings(runs),
         "label": subject,
         "per_kernel": per_kernel,
         "geomean_speedup": _geomean(speedups),

@@ -1107,7 +1107,15 @@ async def run_configs(
                 manifest = json.loads(_read(workdir, f"{name}.manifest.json") or "{}")
             except json.JSONDecodeError:
                 manifest = {}
-            runs[name] = {"stats": stats, "manifest": manifest}
+            # Attached here rather than left to each caller: five study
+            # functions consume these runs and only one remembered to ask.
+            # A run that cannot be priced should not be separable from the
+            # fact that it cannot be priced.
+            runs[name] = {
+                "stats": stats,
+                "manifest": manifest,
+                "mispriced_simd": mispriced_simd_ops(stats) or None,
+            }
         return runs
 
 

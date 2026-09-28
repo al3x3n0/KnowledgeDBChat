@@ -32,6 +32,70 @@ _LANGUAGES = list(SUPPORTED)
 
 SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
+        name="build_llvm_pass",
+        description=(
+            "Compile an LLVM pass plugin, run it on test code, and report what "
+            "it changed. Separates the four ways a pass fails, because they "
+            "look alike and need different fixes: it did not compile (the "
+            "compiler's errors come back verbatim); it compiled but `opt` does "
+            "not know the pass name, so the registration and the name disagree; "
+            "it compiled, registered and left the IR IDENTICAL, which is the "
+            "one worth reading twice, since a pass that loads and silently does "
+            "nothing looks exactly like one that works; or it fired, and the "
+            "opcode and call-target deltas say what it did. Says nothing about "
+            "whether the transformation is CORRECT or WORTH anything -- those "
+            "need differential execution and a cycle count."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string",
+                    "description": (
+                        "C++ of an LLVM 14 pass plugin: a PassInfoMixin struct "
+                        "and an llvmGetPassPluginInfo that registers it. "
+                        "Register a pipeline extension point too (e.g. "
+                        "registerVectorizerStartEPCallback) if it is meant to "
+                        "be usable through clang -fpass-plugin, or the flag "
+                        "will load the plugin and run nothing."
+                    ),
+                },
+                "pass_name": {
+                    "type": "string",
+                    "description": (
+                        "The lowercase name the plugin registers, exactly as "
+                        "`opt -passes=` will be asked for it."
+                    ),
+                },
+                "test_code": {
+                    "type": "string",
+                    "description": (
+                        "C source to run the pass over. Required: a pass that "
+                        "builds is not a pass that works, and without an input "
+                        "there is no way to tell whether it fired. Include a "
+                        "case it should DECLINE as well as one it should "
+                        "transform."
+                    ),
+                },
+                "flags": {
+                    "type": "string",
+                    "description": "Flags for compiling test_code to IR (default '-O1').",
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Names the pass in the finding.",
+                },
+            },
+            "required": ["source", "pass_name", "test_code"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("pass_built",),
+        typical_seconds=60,
+        consumes="C++ of a pass plugin and C to try it on; returns whether it built, registered and fired.",
+    ),
+    ToolSpec(
         name="scan_for_optimizations",
         description=(
             "Scan C sources for places a known optimisation applies, and for "

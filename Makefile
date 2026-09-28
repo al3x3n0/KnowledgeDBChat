@@ -320,6 +320,10 @@ sandbox-gem5: ## Build the gem5-research image (arm64 only -- see deploy/sandbox
 	  -t $(SANDBOX_REGISTRY)/kdbc-gem5-research:latest \
 	  deploy/sandbox-images/gem5-research
 
+sandbox-pass-dev: sandbox-base ## Build the pass-dev image (LLVM headers, for building plugins)
+	docker build -f deploy/sandbox-images/pass-dev/Dockerfile \
+	  -t $(SANDBOX_REGISTRY)/kdbc-pass-dev:latest .
+
 sandbox-axis: ## Build the axis-research image (needs AXIS_PATH=/path/to/axis)
 	@test -n "$(AXIS_PATH)" || { \
 	  echo "AXIS_PATH is required: AXIS lives in its own repository and is the"; \
@@ -329,7 +333,7 @@ sandbox-axis: ## Build the axis-research image (needs AXIS_PATH=/path/to/axis)
 	  --build-arg AXIS_GIT_REV="$$(git -C $(AXIS_PATH) describe --always --dirty 2>/dev/null || echo unknown)" \
 	  -t $(SANDBOX_REGISTRY)/kdbc-axis-research:latest $(AXIS_PATH)
 
-sandbox-images: sandbox-compiler sandbox-polyglot sandbox-profiling sandbox-microarch ## Build every sandbox image this repo can build
+sandbox-images: sandbox-compiler sandbox-polyglot sandbox-profiling sandbox-microarch sandbox-pass-dev ## Build every sandbox image this repo can build
 	@echo "Built from this repository. gem5 (make sandbox-gem5, arm64) and"
 	@echo "axis (make sandbox-axis AXIS_PATH=...) are separate: see"
 	@echo "deploy/sandbox-images/README.md for why."
@@ -337,7 +341,8 @@ sandbox-images: sandbox-compiler sandbox-polyglot sandbox-profiling sandbox-micr
 sandbox-check: ## Report which sandbox images exist locally and what they carry
 	@for image in kdbc-sandbox-base kdbc-compiler-research kdbc-polyglot-slim \
 	              kdbc-profiling-research \
-	              kdbc-microarch-research kdbc-gem5-research kdbc-axis-research; do \
+	              kdbc-microarch-research kdbc-gem5-research kdbc-axis-research \
+	              kdbc-pass-dev; do \
 	  if docker image inspect $(SANDBOX_REGISTRY)/$$image:latest >/dev/null 2>&1; then \
 	    printf '  %-28s %s\n' "$$image" \
 	      "$$(docker image ls --format '{{.Size}}' \

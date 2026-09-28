@@ -4978,6 +4978,19 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             label=str(params.get("label") or ""),
         )
 
+    async def _build_llvm_pass(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_pass_builder
+
+        return await agent_pass_builder.build_llvm_pass(
+            source=str(params.get("source") or ""),
+            pass_name=str(params.get("pass_name") or ""),
+            test_code=str(params.get("test_code") or ""),
+            flags=str(params.get("flags") or "-O1"),
+            label=str(params.get("label") or ""),
+        )
+
     async def _scan_for_optimizations(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -6317,6 +6330,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "list_custom_tools": _list_custom_tools_autonomous,
             "compile_c_snippet": _compile_c_snippet,
             "scan_for_optimizations": _scan_for_optimizations,
+            "build_llvm_pass": _build_llvm_pass,
             "analyze_snippet_cycles": _analyze_snippet_cycles,
             "profile_c_workload": _profile_c_workload,
             "simulate_c_workload": _simulate_c_workload,

@@ -103,6 +103,14 @@ extern "C" ::llvm::PassPluginLibraryInfo LLVM_ATTRIBUTE_WEAK
 llvmGetPassPluginInfo() {
   return {LLVM_PLUGIN_API_VERSION, "CommonDivisorReciprocal", "0.1",
           [](PassBuilder &PB) {
+            // Late in the scalar pipeline, after the divisions this looks for
+            // have settled into their final shape. Without an extension point
+            // `clang -fpass-plugin=...` loads the plugin and never runs it.
+            PB.registerScalarOptimizerLateEPCallback(
+                [](FunctionPassManager &FPM, OptimizationLevel Level) {
+                  if (Level != OptimizationLevel::O0)
+                    FPM.addPass(CommonDivisorReciprocal());
+                });
             PB.registerPipelineParsingCallback(
                 [](StringRef Name, FunctionPassManager &FPM,
                    ArrayRef<PassBuilder::PipelineElement>) {

@@ -135,6 +135,17 @@ extern "C" ::llvm::PassPluginLibraryInfo LLVM_ATTRIBUTE_WEAK
 llvmGetPassPluginInfo() {
   return {LLVM_PLUGIN_API_VERSION, "SqrtErrnoElision", "0.1",
           [](PassBuilder &PB) {
+            // Run just before the vectoriser, which is the whole point: the
+            // libm call is what stops the loop vectorising, so removing it
+            // afterwards would buy nothing. Registering only the -passes=
+            // parser below made `clang -fpass-plugin=...` load the plugin and
+            // silently never run it -- the flag was accepted and did nothing,
+            // which is worse than being rejected.
+            PB.registerVectorizerStartEPCallback(
+                [](FunctionPassManager &FPM, OptimizationLevel Level) {
+                  if (Level != OptimizationLevel::O0)
+                    FPM.addPass(SqrtErrnoElision());
+                });
             PB.registerPipelineParsingCallback(
                 [](StringRef Name, FunctionPassManager &FPM,
                    ArrayRef<PassBuilder::PipelineElement>) {

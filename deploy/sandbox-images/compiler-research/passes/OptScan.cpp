@@ -30,6 +30,7 @@
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Passes/PassBuilder.h"
@@ -103,7 +104,9 @@ static std::string shapeOf(const Value *V) {
 }
 
 struct OptScan : PassInfoMixin<OptScan> {
-  PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &MAM) {
+    auto &FAM =
+        MAM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
     errs() << "OPTSCAN\tmeta\tcounts_are_static\t"
               "how often a pattern is written, not how often it runs\n";
 
@@ -117,6 +120,12 @@ struct OptScan : PassInfoMixin<OptScan> {
       DenseMap<unsigned, unsigned> DivGroupSizes; // size -> how many groups
       // SHAPE: what feeds each expensive operation.
       StringMap<unsigned> DivNumerator, SqrtArg;
+      // A division inside a loop whose denominator does not change across
+      // iterations: one hoisted reciprocal could replace all of them. The
+      // block-local grouping above cannot see these, so this is the measure
+      // that decides whether a loop-invariant-divisor pass is worth writing.
+      unsigned HoistableDiv = 0, LoopDiv = 0;
+      LoopInfo &LI = FAM.getResult<LoopAnalysis>(F);
 
       for (BasicBlock &BB : F) {
         DenseMap<const Value *, unsigned> ByDenominator;
@@ -134,6 +143,12 @@ struct OptScan : PassInfoMixin<OptScan> {
           DivNumerator[shapeOf(BO->getOperand(0))]++;
           if (!isa<Constant>(BO->getOperand(1)))
             ByDenominator[BO->getOperand(1)]++;
+          if (const Loop *L = LI.getLoopFor(&BB)) {
+            ++LoopDiv;
+            if (L->isLoopInvariant(BO->getOperand(1)) &&
+                !L->isLoopInvariant(BO->getOperand(0)))
+              ++HoistableDiv;
+          }
         }
         for (auto &E : ByDenominator)
           if (E.second >= 2)
@@ -149,6 +164,10 @@ struct OptScan : PassInfoMixin<OptScan> {
       for (auto &E : DivGroupSizes)
         errs() << "OPTSCAN\tknown\tcommon-divisor-reciprocal\t" << F.getName()
                << "\t" << E.second << "\tgroup_size=" << E.first << "\n";
+      if (LoopDiv)
+        errs() << "OPTSCAN\tcandidate\tloop-invariant-divisor\t" << F.getName()
+               << "\t" << HoistableDiv << "\tof_loop_divisions=" << LoopDiv
+               << "\n";
       for (auto &E : DivNumerator)
         errs() << "OPTSCAN\tshape\tfdiv.numerator\t" << E.first() << "\t"
                << E.second << "\n";

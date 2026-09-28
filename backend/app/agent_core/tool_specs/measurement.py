@@ -7,13 +7,22 @@ registration went wrong most often, which is why they moved first.
 from __future__ import annotations
 
 from app.agent_core.tool_specs.spec import ToolSpec
-from app.services.agent_toolchains import SUPPORTED, describe_rust_crates
+from app.services.agent_toolchains import (
+    SUPPORTED,
+    describe_llvm_passes,
+    describe_rust_crates,
+)
 
 #: Named once and used in both tool descriptions, so the crate set a model is
 #: told about cannot differ between the tool that checks code and the tool that
 #: times it -- and so neither can drift from the image, which derives its
 #: manifest from the same list.
 _RUST_CRATES_HINT = describe_rust_crates()
+
+#: Read from the same table, for the same reason. A pass that exists in the
+#: image and is named in no tool description is reachable and undiscoverable,
+#: which for a model is the same as absent.
+_LLVM_PASSES_HINT = describe_llvm_passes()
 
 #: Read from the toolchain table, never restated. A language the table can
 #: build but the schema does not offer is unreachable -- the model is refused
@@ -40,7 +49,9 @@ SPECS: tuple[ToolSpec, ...] = (
                     "description": (
                         "Compiler flags, e.g. '-O2' or '-O3 -ffast-math'. The "
                         "sandbox targets aarch64: use '-mcpu=native' to tune "
-                        "for the host, as clang there rejects '-march=native'."
+                        "for the host, as clang there rejects '-march=native'. "
+                        "Research LLVM passes built into the image, added with "
+                        "the flag shown: " + _LLVM_PASSES_HINT
                     ),
                 },
                 "emit": {
@@ -301,7 +312,10 @@ SPECS: tuple[ToolSpec, ...] = (
                 },
                 "flags": {
                     "type": "string",
-                    "description": "Compiler flags used when code is given (default -O3)",
+                    "description": (
+                        "Compiler flags used when code is given (default -O3). "
+                        "Research LLVM passes in this image: " + _LLVM_PASSES_HINT
+                    ),
                 },
                 "target": {
                     "type": "string",
@@ -383,6 +397,7 @@ SPECS: tuple[ToolSpec, ...] = (
                         "'-O2' -- use '-O' or '-C opt-level=3', and note that "
                         "its default build is unoptimised, which times the "
                         "debug binary rather than the algorithm."
+                        "C only, and only in this image: " + _LLVM_PASSES_HINT
                     ),
                 },
                 "repeat": {

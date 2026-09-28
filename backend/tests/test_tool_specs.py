@@ -8,6 +8,8 @@ quieter. These tests assert the registries now derive from the spec rather
 than agree with it by hand.
 """
 
+from pathlib import Path
+
 import pytest
 
 from app.agent_core import tool_specs
@@ -397,3 +399,69 @@ class TestDeclaredEvidenceIsActuallyProduced:
                     f"{sorted(emitted)}"
                 )
         assert not problems, "\n".join(problems)
+
+
+class TestThePassesAModelIsToldAboutExist:
+    """A pass in the image that no tool description names is reachable and
+    undiscoverable, which for a model is the same as absent.
+
+    Worse happened first: both plugins shipped registering only a `-passes=`
+    parser, so `clang -fpass-plugin=...` accepted the flag, compiled fine, and
+    silently changed nothing. The flag sanitiser permits the path, so nothing
+    announced it. These assert the two halves that were wrong -- the image has
+    what the description promises, and the description is on the tools that can
+    actually load it.
+    """
+
+    PASS_SRC = (
+        Path(__file__).resolve().parents[2]
+        / "deploy"
+        / "sandbox-images"
+        / "compiler-research"
+        / "passes"
+    )
+    #: Tools running in kdbc-compiler-research, which is where the plugins are.
+    CAN_LOAD = ("compile_c_snippet", "benchmark_c_snippet", "analyze_snippet_cycles")
+    #: A different image with neither the plugins nor clang's plugin flag.
+    CANNOT_LOAD = ("profile_c_workload",)
+
+    def test_every_declared_pass_has_a_source_file_that_builds_it(self):
+        """Skipped in the test container, which mounts backend/ as /app and so
+        cannot see deploy/. Said out loud rather than silently passing: a check
+        that cannot reach its subject must not report success."""
+        from app.services.agent_toolchains import LLVM_PASSES
+
+        assert LLVM_PASSES, "no passes declared"
+        if not self.PASS_SRC.is_dir():
+            pytest.skip(f"{self.PASS_SRC} not visible from here (containerised run)")
+        for p in LLVM_PASSES:
+            stem = Path(p.path).stem  # /opt/llvm-passes/Foo.so -> Foo
+            src = self.PASS_SRC / f"{stem}.cpp"
+            assert src.exists(), (
+                f"{p.name} promises {p.path}, but {src} does not exist, so the "
+                "image cannot be building it"
+            )
+
+    def test_the_tools_that_can_load_them_say_so(self):
+        for name in self.CAN_LOAD:
+            spec = next(s for s in SPECS if s.name == name)
+            desc = spec.parameters["properties"]["flags"]["description"]
+            assert "fpass-plugin" in desc, f"{name} never mentions the passes"
+
+    def test_the_tools_that_cannot_load_them_stay_quiet(self):
+        """Naming a flag the runtime would refuse is worse than naming none."""
+        for name in self.CANNOT_LOAD:
+            spec = next(s for s in SPECS if s.name == name)
+            desc = spec.parameters["properties"]["flags"]["description"]
+            assert (
+                "fpass-plugin" not in desc
+            ), f"{name} runs in a different image and would refuse the flag"
+
+    def test_a_result_changing_pass_says_so_where_a_model_will_read_it(self):
+        from app.services.agent_toolchains import describe_llvm_passes
+
+        text = describe_llvm_passes()
+        assert "CHANGES RESULTS" in text, (
+            "common-divisor-reciprocal moves 34.89% of outputs; a description "
+            "that does not say so invites it into a correctness-sensitive run"
+        )

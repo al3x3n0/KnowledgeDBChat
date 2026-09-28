@@ -121,6 +121,29 @@ RUST_CRATES: Tuple[Crate, ...] = (
 )
 
 
+#: LLVM pass plugins built into the compiler-research image, declared here for
+#: the same reason RUST_CRATES is: the image and the tool description must not
+#: be able to disagree about what exists. A pass a model is not told about is
+#: reachable and undiscoverable, which is indistinguishable from absent -- the
+#: first version of these plugins was worse still, registering only a `-passes=`
+#: parser so `clang -fpass-plugin=` accepted the flag and silently did nothing.
+#:
+#: Sources live in deploy/sandbox-images/compiler-research/passes/.
+LLVM_PASSES: Tuple["LlvmPass", ...] = ()  # populated below, after the dataclass
+
+
+def describe_llvm_passes() -> str:
+    """One line per pass, for the tool description a model reads."""
+    if not LLVM_PASSES:
+        return ""
+    return "; ".join(
+        f"-fpass-plugin={p.path} ({p.summary}, "
+        + ("value-preserving" if p.value_preserving else "CHANGES RESULTS")
+        + ")"
+        for p in LLVM_PASSES
+    )
+
+
 def describe_rust_crates() -> str:
     """One line per crate, for the tool description a model reads."""
     return "; ".join(f"{c.name} {c.version} ({c.purpose})" for c in RUST_CRATES)
@@ -288,3 +311,39 @@ def build_script(chain: Toolchain, flags: str) -> str:
     """
     command = compile_command(chain, flags)
     return f"{chain.prelude}; {command}" if chain.prelude else command
+
+
+@dataclass(frozen=True)
+class LlvmPass:
+    """One plugin in /opt/llvm-passes, and what a caller needs to decide on it."""
+
+    name: str
+    path: str
+    summary: str
+    #: Whether the transformation can change a result. The reciprocal pass
+    #: moves 34.89% of outputs by up to 3 ulp; the sqrt pass moves none.
+    value_preserving: bool
+
+
+LLVM_PASSES = (
+    LlvmPass(
+        name="sqrt-errno-elision",
+        path="/opt/llvm-passes/SqrtErrnoElision.so",
+        summary=(
+            "rewrites libm sqrt to llvm.sqrt where the argument is provably "
+            "non-negative, which unblocks vectorisation the errno contract "
+            "would otherwise prevent"
+        ),
+        value_preserving=True,
+    ),
+    LlvmPass(
+        name="common-divisor-reciprocal",
+        path="/opt/llvm-passes/CommonDivisorReciprocal.so",
+        summary=(
+            "turns N divisions by one denominator into a reciprocal and N "
+            "multiplies, measured 41% cheaper from two divisions upward and "
+            "20.6% dearer at one"
+        ),
+        value_preserving=False,
+    ),
+)

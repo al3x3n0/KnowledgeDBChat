@@ -571,6 +571,30 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   checked on the given inputs, not proved, so the invariant a proposal relies
   on is recorded on its finding.
 
+- **A winning rewrite can become a pass, and the pass is judged on four
+  separate questions** (`services/agent_pass_from_rewrite.py`,
+  `synthesize_pass_from_rewrite` and `evaluate_pass_on_kernel`). Does it
+  *fire* under `clang -fpass-plugin` (`did_not_fire` otherwise, never timed)?
+  Is the output identical on every input? How much of the hand rewrite's gain
+  does it *recover*? Both are timed in one interleaved run. And does it leave
+  a `must_decline` case alone? A pass that changes that case gets
+  `overreaches` whatever its speed. One live example matched any integer width
+  and indexed past its 256-entry table on 16-bit input. The kernel's inputs
+  could not catch that. The decline case is **frozen after the first
+  attempt**, or the cheapest repair is to move the test. Each source also goes
+  through `opt -passes=<name>,verify` right after the pass. Release clang does
+  not verify IR, and later passes papered over a fastmod pass's
+  `lshr i128 %x, i64 64`: the final IR verified clean, two repairs were told
+  only "diverged", and the verifier named the instruction at once
+  (`invalid_ir`). `not_expressible` is a result, not a failure. The model is
+  asked to say when a rewrite relies on a fact the IR does not carry. Asked to
+  drop stores the driver never reads, it named exactly that fact. Live: the
+  trig-table pass was 8.0x, with 116% recovered, since the table is computed
+  at compile time. The fastmod pass was 2.48x on the median, 2.44x over -O3.
+  An `unresolved` verdict is re-measured once at 15 trials, because the Docker
+  VM's load average cannot see load on the macOS host. It read "quiet" while
+  that host was saturated.
+
 - **A mechanism that never engaged is not a measurement of that mechanism.**
   `evaluate_across_kernels` reported `geomean 1.0000x over 4 kernels` and
   recorded it as a `mechanism_evaluation` finding a contract accepted. The

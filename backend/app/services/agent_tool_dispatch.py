@@ -5122,6 +5122,44 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             **harness,
         )
 
+    async def _synthesize_pass_from_rewrite(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_pass_from_rewrite
+
+        harness = _harness(params)
+        if "error" in harness:
+            return harness
+        return await agent_pass_from_rewrite.synthesize_pass_from_rewrite(
+            kernel=str(params.get("kernel") or ""),
+            rewrite_kernel=str(params.get("rewrite_kernel") or ""),
+            idea=str(params.get("idea") or ""),
+            invariant=str(params.get("invariant") or ""),
+            user_id=ctx.user_id,
+            db=ctx.db,
+            **harness,
+        )
+
+    async def _evaluate_pass_on_kernel(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_pass_from_rewrite
+
+        harness = _harness(params)
+        if "error" in harness:
+            return harness
+        return await agent_pass_from_rewrite.evaluate_pass_on_kernel(
+            pass_source=str(params.get("pass_source") or ""),
+            pass_name=str(params.get("pass_name") or ""),
+            kernel=str(params.get("kernel") or ""),
+            rewrite_kernel=str(params.get("rewrite_kernel") or ""),
+            must_decline=str(params.get("must_decline") or ""),
+            value_preserving=params.get("value_preserving") is not False,
+            precondition=str(params.get("precondition") or ""),
+            trials=int(params.get("trials") or 7),
+            **harness,
+        )
+
     async def _profile_c_workload(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -6445,6 +6483,8 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "disassemble_symbol": _disassemble_symbol,
             "propose_binary_rewrites": _propose_binary_rewrites,
             "evaluate_binary_rewrite": _evaluate_binary_rewrite,
+            "synthesize_pass_from_rewrite": _synthesize_pass_from_rewrite,
+            "evaluate_pass_on_kernel": _evaluate_pass_on_kernel,
             "analyze_snippet_cycles": _analyze_snippet_cycles,
             "profile_c_workload": _profile_c_workload,
             "simulate_c_workload": _simulate_c_workload,

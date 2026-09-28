@@ -421,6 +421,105 @@ SPECS: tuple[ToolSpec, ...] = (
         consumes="an object, a symbol and replacement assembly; returns equivalence and a speed verdict.",
     ),
     ToolSpec(
+        name="synthesize_pass_from_rewrite",
+        description=(
+            "Generalise a winning hand rewrite of a C kernel (e.g. a 'faster' "
+            "result from propose_restructurings) into an LLVM 14 pass that "
+            "makes the same change to any code with the same shape, and judge "
+            "the pass. A model writes it -- or answers not_expressible when "
+            "the rewrite relies on a fact the IR does not carry, which is a "
+            "result: it marks an optimisation only the application's author "
+            "can make. The pass must FIRE on the kernel under clang "
+            "-fpass-plugin (else did_not_fire), keep output identical on "
+            "every input, and leave a must_decline case untouched (else "
+            "overreaches, whatever its speed). `recovered` is the share of "
+            "the rewrite's gain the pass reproduces, both timed in one run. "
+            "Up to three attempts, each repaired with the evidence; the "
+            "must_decline case is frozen after the first."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "kernel": {
+                    "type": "string",
+                    "description": "The original C kernel (no main).",
+                },
+                "rewrite_kernel": {
+                    "type": "string",
+                    "description": "The hand-optimised kernel to generalise.",
+                },
+                **_HARNESS_PROPS,
+                "idea": {"type": "string", "description": "What the rewrite does."},
+                "invariant": {
+                    "type": "string",
+                    "description": "What the rewrite relies on about the application.",
+                },
+            },
+            "required": ["kernel", "rewrite_kernel", "driver", "inputs"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("pass_evaluation",),
+        typical_seconds=600,
+        consumes="a kernel and its winning rewrite, a driver and inputs; returns a pass and its measured verdict.",
+    ),
+    ToolSpec(
+        name="evaluate_pass_on_kernel",
+        description=(
+            "Judge YOUR LLVM pass plugin on a real kernel: does it fire under "
+            "clang -fpass-plugin, is the compiled program's output identical "
+            "on every input, is it faster than the original and than -O3, how "
+            "much of a hand rewrite's gain does it recover (give "
+            "rewrite_kernel), and does it leave must_decline alone? "
+            "Verdicts add did_not_fire, pass_crashed and overreaches to the "
+            "usual ones. Complements build_llvm_pass, which only says whether "
+            "a pass changed some test IR."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "pass_source": {"type": "string", "description": "C++ of the plugin."},
+                "pass_name": {
+                    "type": "string",
+                    "description": "The name it registers.",
+                },
+                "kernel": {
+                    "type": "string",
+                    "description": "The C kernel to compile with it.",
+                },
+                **_HARNESS_PROPS,
+                "rewrite_kernel": {
+                    "type": "string",
+                    "description": "Optional hand rewrite, timed alongside for `recovered`.",
+                },
+                "must_decline": {
+                    "type": "string",
+                    "description": "Optional C file the pass must NOT change.",
+                },
+                "value_preserving": {
+                    "type": "boolean",
+                    "description": "false allows 1e-6 drift.",
+                },
+                "precondition": {
+                    "type": "string",
+                    "description": "The IR condition the pass checks.",
+                },
+                "trials": {
+                    "type": "integer",
+                    "description": "Interleaved trials, 3-15 (default 7).",
+                },
+            },
+            "required": ["pass_source", "pass_name", "kernel", "driver", "inputs"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("pass_evaluation",),
+        typical_seconds=180,
+        consumes="a pass plugin, a kernel, a driver and inputs; returns firing, equivalence, speed and recovery.",
+    ),
+    ToolSpec(
         name="compile_c_snippet",
         description="Compile a C snippet in the compiler research sandbox and return "
         "the generated assembly plus codegen counts (vector instructions, "

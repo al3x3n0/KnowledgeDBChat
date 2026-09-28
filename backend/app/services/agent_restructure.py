@@ -511,7 +511,9 @@ async def run_comparison(
     them. The first arm is the baseline and the second the candidate.
     """
     baseline, candidate = arms[0].name, arms[1].name
-    ceiling = next((a.name for a in arms[2:] if not a.differential), None)
+    # By name, not position: other timed-only arms (a hand rewrite a pass is
+    # compared with) may sit beside the ceiling, and must not be mistaken for it.
+    ceiling = next((a.name for a in arms[2:] if a.name == "ceiling"), None)
 
     with tempfile.TemporaryDirectory(prefix="restructure_") as workdir:
         for name, content in files.items():
@@ -605,6 +607,11 @@ async def run_comparison(
         load=load,
         cpus=cpus,
     )
+    # Every arm's fastest trial, from the same interleaved run, so a caller
+    # comparing more than two programs compares numbers taken together.
+    speed["arms_fastest_ms"] = {
+        name: _best_ms(values) for name, values in sorted(timings.items())
+    }
     return {
         "verdict": speed.pop("verdict"),
         "equivalence": equivalence,

@@ -537,6 +537,40 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   editing anything, and read the ledger's error, which is what makes an outage
   distinguishable from an agent with nothing to say.
 
+- **A model proposes application-specific optimisations; it never judges
+  them.** Scanning and `build_llvm_pass` stay inside what a compiler may
+  assume about *any* program. `propose_restructurings`
+  (`services/agent_restructure_proposer.py`) asks for the other kind of change:
+  one that holds because of something true of *this* application, such as a
+  parameter that doesn't change within a call, a bounded value range, or work
+  that gets repeated. Every proposal goes through `agent_restructure`, which
+  compiles a caller-owned driver once. A candidate replaces only the kernel,
+  so it can't change what is measured. The checks run in order: build, then
+  identical output on **every** input (a diverging candidate is never timed),
+  then interleaved timing against the original **and** against the original
+  at -O3 (plus -ffast-math if results may change). A win must beat the noise
+  on both the fastest and the median trial. `compiler_already_can` requires
+  the ceiling to *show* the gain. When the ceiling comparison is inside the
+  noise, the verdict is `faster_than_original`: a sincos rewrite 1.31x over
+  -O3 was first mislabelled because the host noise was 34%. Two things the
+  first live run got wrong are now structural. Proposals are requested **one
+  per call**, each told which ideas are taken; three whole files in one reply
+  exhausted a reasoning model's 32k budget before it wrote a character. And
+  when several proposals win, each is re-measured **against the best**. Three
+  "different" ideas all carried the same lookup table, so "branchless
+  masking, 6.3x" was really the table's 7.2x under another name.
+  `propose_binary_rewrites` / `evaluate_binary_rewrite`
+  (`services/agent_binary_rewrite.py`) apply the same judgement to one
+  function of a relocatable object. The model sees only the disassembly;
+  given C, it is compiled and withheld. The replacement is spliced in by
+  `llvm-objcopy --weaken-symbol`, and the build refuses a replacement that
+  does not export the symbol globally. Without that check the link succeeds
+  against the weakened original, and the "rewrite" is the original measured
+  twice. That check uses `false`, not `exit 1`: inside the shared script's
+  brace group, `exit` ended the whole run and hid the log. Equivalence is
+  checked on the given inputs, not proved, so the invariant a proposal relies
+  on is recorded on its finding.
+
 - **A mechanism that never engaged is not a measurement of that mechanism.**
   `evaluate_across_kernels` reported `geomean 1.0000x over 4 kernels` and
   recorded it as a `mechanism_evaluation` finding a contract accepted. The

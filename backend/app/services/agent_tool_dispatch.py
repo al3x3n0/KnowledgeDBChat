@@ -5013,6 +5013,115 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             label=str(params.get("label") or ""),
         )
 
+    def _harness(params: Dict[str, Any]) -> Any:
+        """The driver/inputs half every restructuring tool shares.
+
+        Returns the kwargs, or an error dict when `inputs` is not a list --
+        a single string would otherwise be split into one input per character.
+        """
+        raw = params.get("inputs")
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, list):
+            return {
+                "error": (
+                    "inputs must be a list of stdin texts for the driver, "
+                    f"e.g. ['100000 7']; got {type(raw).__name__}"
+                )
+            }
+        return {
+            "driver": str(params.get("driver") or ""),
+            "inputs": [str(x if x is not None else "") for x in raw],
+            "flags": str(params.get("flags") or "-O2"),
+            "bench_input": int(params.get("bench_input") or 0),
+            "label": str(params.get("label") or ""),
+        }
+
+    async def _propose_restructurings(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_restructure_proposer
+
+        harness = _harness(params)
+        if "error" in harness:
+            return harness
+        return await agent_restructure_proposer.propose_restructurings(
+            kernel=str(params.get("kernel") or ""),
+            focus=str(params.get("focus") or ""),
+            count=int(params.get("count") or 3),
+            user_id=ctx.user_id,
+            db=ctx.db,
+            **harness,
+        )
+
+    async def _evaluate_restructuring(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_restructure
+
+        harness = _harness(params)
+        if "error" in harness:
+            return harness
+        return await agent_restructure.evaluate_restructuring(
+            kernel=str(params.get("kernel") or ""),
+            candidate=str(params.get("candidate") or ""),
+            value_preserving=params.get("value_preserving") is not False,
+            invariant=str(params.get("invariant") or ""),
+            trials=int(params.get("trials") or 7),
+            **harness,
+        )
+
+    async def _disassemble_symbol(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_binary_rewrite
+
+        return await agent_binary_rewrite.disassemble_symbol(
+            symbol=str(params.get("symbol") or ""),
+            object_b64=str(params.get("object_b64") or ""),
+            kernel=str(params.get("kernel") or ""),
+            flags=str(params.get("flags") or "-O2"),
+        )
+
+    async def _propose_binary_rewrites(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_restructure_proposer
+
+        harness = _harness(params)
+        if "error" in harness:
+            return harness
+        return await agent_restructure_proposer.propose_binary_rewrites(
+            symbol=str(params.get("symbol") or ""),
+            object_b64=str(params.get("object_b64") or ""),
+            kernel=str(params.get("kernel") or ""),
+            focus=str(params.get("focus") or ""),
+            count=int(params.get("count") or 3),
+            user_id=ctx.user_id,
+            db=ctx.db,
+            **harness,
+        )
+
+    async def _evaluate_binary_rewrite(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_binary_rewrite
+
+        harness = _harness(params)
+        if "error" in harness:
+            return harness
+        return await agent_binary_rewrite.evaluate_binary_rewrite(
+            symbol=str(params.get("symbol") or ""),
+            replacement_asm=str(params.get("replacement_asm") or ""),
+            object_b64=str(params.get("object_b64") or ""),
+            kernel=str(params.get("kernel") or ""),
+            baseline_asm=str(params.get("baseline_asm") or ""),
+            value_preserving=params.get("value_preserving") is not False,
+            invariant=str(params.get("invariant") or ""),
+            trials=int(params.get("trials") or 7),
+            **harness,
+        )
+
     async def _profile_c_workload(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -6331,6 +6440,11 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "compile_c_snippet": _compile_c_snippet,
             "scan_for_optimizations": _scan_for_optimizations,
             "build_llvm_pass": _build_llvm_pass,
+            "propose_restructurings": _propose_restructurings,
+            "evaluate_restructuring": _evaluate_restructuring,
+            "disassemble_symbol": _disassemble_symbol,
+            "propose_binary_rewrites": _propose_binary_rewrites,
+            "evaluate_binary_rewrite": _evaluate_binary_rewrite,
             "analyze_snippet_cycles": _analyze_snippet_cycles,
             "profile_c_workload": _profile_c_workload,
             "simulate_c_workload": _simulate_c_workload,

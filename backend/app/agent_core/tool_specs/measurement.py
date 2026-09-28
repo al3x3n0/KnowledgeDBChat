@@ -30,6 +30,47 @@ _LLVM_PASSES_HINT = describe_llvm_passes()
 #: fails at compile time with an error that blames the code.
 _LANGUAGES = list(SUPPORTED)
 
+
+_HARNESS_PROPS = {
+    "driver": {
+        "type": "string",
+        "description": (
+            "C source defining main: reads a workload from stdin, calls the "
+            "kernel's functions, and PRINTS what they computed (a checksum "
+            "is fine). It is yours and fixed -- compiled separately, so a "
+            "candidate cannot change what is measured or printed. Make the "
+            "bench workload run for >=250 ms or the host's noise decides."
+        ),
+    },
+    "inputs": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": (
+            "stdin texts for the driver, up to 12. Output must match on "
+            "EVERY one, so include edge cases (size 1, extremes of each "
+            "parameter), not only the bench workload."
+        ),
+    },
+    "bench_input": {
+        "type": "integer",
+        "description": "Index of the input that is timed (default 0).",
+    },
+    "flags": {
+        "type": "string",
+        "description": "clang flags for every arm (default '-O2').",
+    },
+    "label": {"type": "string", "description": "Names the result in the finding."},
+}
+
+_VERDICTS_HINT = (
+    "Verdicts: did_not_compile (errors verbatim), crashed, diverged (the "
+    "first input where output differs, never timed), slower, unresolved "
+    "(inside the trial noise), compiler_already_can (faster than the "
+    "original but not than the original at -O3 / -ffast-math -- a flag, not "
+    "an optimisation), faster_than_original (beats the original; against the ceiling it is inside the noise), faster (beats both), and baseline_broken (the "
+    "ORIGINAL did not build or run: fix the driver or inputs)."
+)
+
 SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="build_llvm_pass",
@@ -143,6 +184,241 @@ SPECS: tuple[ToolSpec, ...] = (
         produces=("optimization_opportunity",),
         typical_seconds=30,
         consumes="C sources; returns where known optimisations apply and what shapes have none.",
+    ),
+    ToolSpec(
+        name="propose_restructurings",
+        description=(
+            "Ask a model for APPLICATION-SPECIFIC optimisations of a C kernel "
+            "-- changes valid or worthwhile only because of something true of "
+            "this program (an invariant parameter, a bounded value range, a "
+            "repeated computation, a better layout or algorithm for these "
+            "inputs) which a compiler may not assume -- and judge every one. "
+            "The model is shown the compiler's own -O2 output so it does not "
+            "re-propose what is already done. Each proposal is run against the "
+            "original on every input, timed interleaved against the original "
+            "and against the original at -O3, and repaired once if it fails. "
+            "When several win, each is re-measured against the best, so a "
+            "proposal that only carries another's idea is credited with "
+            "nothing. The model's claims (`invariant`, `why_compiler_cannot`) "
+            "ride beside measured verdicts, never as evidence. " + _VERDICTS_HINT
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "kernel": {
+                    "type": "string",
+                    "description": (
+                        "The application code to optimise: one C file with "
+                        "no main. Candidates replace this file and keep its "
+                        "external functions."
+                    ),
+                },
+                **_HARNESS_PROPS,
+                "focus": {
+                    "type": "string",
+                    "description": (
+                        "Where to look, e.g. a hot function from "
+                        "profile_c_workload or a shape from "
+                        "scan_for_optimizations."
+                    ),
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Proposals to ask for, 1-5 (default 3).",
+                },
+            },
+            "required": ["kernel", "driver", "inputs"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("restructuring_result",),
+        typical_seconds=600,
+        consumes="a C kernel, a driver and inputs; returns model-proposed rewrites, each with a measured verdict.",
+    ),
+    ToolSpec(
+        name="evaluate_restructuring",
+        description=(
+            "Judge YOUR rewrite of a C kernel: same output as the original on "
+            "every input, and faster than both the original and the original "
+            "rebuilt at -O3 (-ffast-math too if value_preserving is false)? "
+            "Timed interleaved, trial by trial, so host load lands on both. "
+            + _VERDICTS_HINT
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "kernel": {
+                    "type": "string",
+                    "description": "The original C file (no main).",
+                },
+                "candidate": {
+                    "type": "string",
+                    "description": "The complete rewritten C file, same external functions.",
+                },
+                **_HARNESS_PROPS,
+                "value_preserving": {
+                    "type": "boolean",
+                    "description": (
+                        "true (default) demands identical output; false "
+                        "allows 1e-6 relative drift and compares against "
+                        "-ffast-math."
+                    ),
+                },
+                "invariant": {
+                    "type": "string",
+                    "description": (
+                        "The fact about this application the rewrite relies "
+                        "on. Carried on the finding: equivalence is checked "
+                        "on the inputs given, not proved."
+                    ),
+                },
+                "trials": {
+                    "type": "integer",
+                    "description": "Interleaved trials, 3-15 (default 7).",
+                },
+            },
+            "required": ["kernel", "candidate", "driver", "inputs"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("restructuring_result",),
+        typical_seconds=90,
+        consumes="original and rewritten C kernels, a driver and inputs; returns equivalence and a speed verdict.",
+    ),
+    ToolSpec(
+        name="disassemble_symbol",
+        description=(
+            "Disassemble one function of a relocatable aarch64 object, with "
+            "relocations, so it can be rewritten without source. Takes the "
+            "object as base64, or C that is compiled to one. Also reports how "
+            "many calls inside the object go through the symbol (replacing it "
+            "reaches those, not copies the compiler inlined) and the ABI a "
+            "replacement must keep."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "The function's symbol name.",
+                },
+                "object_b64": {
+                    "type": "string",
+                    "description": "A relocatable ELF .o, base64. Give this or kernel.",
+                },
+                "kernel": {
+                    "type": "string",
+                    "description": "C to compile to the object instead.",
+                },
+                "flags": {
+                    "type": "string",
+                    "description": "clang flags when compiling kernel (default '-O2').",
+                },
+            },
+            "required": ["symbol"],
+        },
+        effects="write",
+        cost_tier="medium",
+        pii_risk="medium",
+        typical_seconds=15,
+        consumes="an object (or C) and a symbol; returns its disassembly with relocations.",
+    ),
+    ToolSpec(
+        name="propose_binary_rewrites",
+        description=(
+            "The binary counterpart of propose_restructurings: a model reads "
+            "ONE function's disassembly -- never its source, even when "
+            "`kernel` is given, which is compiled and withheld -- and proposes "
+            "replacement aarch64 assembly. Each is spliced in by weakening the "
+            "original symbol, so the rest of the object links exactly as it "
+            "came, then run against the original on every input and timed. A "
+            "replacement that does not export the symbol is refused by name, "
+            "because the link would otherwise succeed against the original "
+            "and measure it twice. " + _VERDICTS_HINT
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "The function to rewrite."},
+                "object_b64": {
+                    "type": "string",
+                    "description": "A relocatable ELF .o, base64. Give this or kernel.",
+                },
+                "kernel": {
+                    "type": "string",
+                    "description": "C compiled to the object, then withheld from the model.",
+                },
+                **_HARNESS_PROPS,
+                "focus": {
+                    "type": "string",
+                    "description": "What to look at in the function.",
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Proposals to ask for, 1-5 (default 3).",
+                },
+            },
+            "required": ["symbol", "driver", "inputs"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("binary_rewrite_result",),
+        typical_seconds=600,
+        consumes="an object and a symbol, a driver and inputs; returns model-written assembly rewrites with verdicts.",
+    ),
+    ToolSpec(
+        name="evaluate_binary_rewrite",
+        description=(
+            "Judge YOUR assembly replacement for one symbol of an object: the "
+            "original symbol is weakened and yours linked beside it, then both "
+            "programs are run on every input and timed interleaved. Give "
+            "baseline_asm to measure one rewrite against another. " + _VERDICTS_HINT
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "The function replaced."},
+                "replacement_asm": {
+                    "type": "string",
+                    "description": "A complete GNU-as file defining the symbol with .globl.",
+                },
+                "object_b64": {
+                    "type": "string",
+                    "description": "A relocatable ELF .o, base64. Give this or kernel.",
+                },
+                "kernel": {
+                    "type": "string",
+                    "description": "C compiled to the object instead.",
+                },
+                "baseline_asm": {
+                    "type": "string",
+                    "description": "Optional: another replacement to use as the baseline.",
+                },
+                **_HARNESS_PROPS,
+                "value_preserving": {
+                    "type": "boolean",
+                    "description": "false allows 1e-6 relative drift.",
+                },
+                "invariant": {
+                    "type": "string",
+                    "description": "What about this application the rewrite relies on.",
+                },
+                "trials": {
+                    "type": "integer",
+                    "description": "Interleaved trials, 3-15 (default 7).",
+                },
+            },
+            "required": ["symbol", "replacement_asm", "driver", "inputs"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("binary_rewrite_result",),
+        typical_seconds=90,
+        consumes="an object, a symbol and replacement assembly; returns equivalence and a speed verdict.",
     ),
     ToolSpec(
         name="compile_c_snippet",

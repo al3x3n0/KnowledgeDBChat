@@ -36,6 +36,12 @@ RUN cargo build --release --offline || cargo build --release
 # before and 9 after, with output bit-identical over 20,000 elements. It is the
 # safe subset of -fno-math-errno, applied where proved rather than promised
 # globally.
+#
+# common-divisor-reciprocal trades N divisions by a shared denominator for one
+# reciprocal and N multiplies. Unlike the above it is NOT value-preserving --
+# 34.89% of results move, by up to 3 ulp -- and it is here to price one member
+# of the -ffast-math bundle on its own. Measured scalar: 20.6% dearer at one
+# division, about 41% cheaper from two upward, which is why it fires at two.
 FROM ghcr.io/al3x3n0/kdbc-sandbox-base:latest AS passes
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -43,9 +49,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY deploy/sandbox-images/compiler-research/passes/ ./
-RUN g++ -fPIC -shared -o SqrtErrnoElision.so SqrtErrnoElision.cpp \
-        $(llvm-config --cxxflags) -fno-rtti \
-    && test -s SqrtErrnoElision.so
+# llvm-14-dev puts llvm-config under /usr/lib/llvm-14/bin and not on PATH in
+# this base, so it is named in full: a bare `llvm-config` resolves in the
+# compiler image but not here, which is how the first build of this stage
+# failed with a missing llvm/IR/Function.h rather than a missing tool.
+RUN LLVM_CONFIG=/usr/lib/llvm-14/bin/llvm-config \
+    && test -x "$LLVM_CONFIG" \
+    && for src in *.cpp; do \
+         g++ -fPIC -shared -o "${src%.cpp}.so" "$src" \
+             $($LLVM_CONFIG --cxxflags) -fno-rtti \
+         && test -s "${src%.cpp}.so"; \
+       done
 
 FROM ghcr.io/al3x3n0/kdbc-sandbox-base:latest
 
@@ -133,7 +147,7 @@ RUN mkdir -p /opt/rust-deps \
 WORKDIR /
 
 COPY --from=coster /src/target/release/candidate-coster /usr/local/bin/candidate-coster
-COPY --from=passes /src/SqrtErrnoElision.so /opt/llvm-passes/SqrtErrnoElision.so
+COPY --from=passes /src/*.so /opt/llvm-passes/
 
 RUN llvm-mca --version > /dev/null && candidate-coster --help > /dev/null
 

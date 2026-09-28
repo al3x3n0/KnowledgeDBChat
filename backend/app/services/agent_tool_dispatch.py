@@ -4978,6 +4978,28 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             label=str(params.get("label") or ""),
         )
 
+    async def _scan_for_optimizations(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_optscan
+
+        raw = params.get("sources")
+        if not isinstance(raw, dict):
+            # A caller that passed a single snippet gets told the shape rather
+            # than a type error from inside the sandbox.
+            return {
+                "error": (
+                    "sources must be a mapping of bare .c filename to source "
+                    "text, e.g. {'kernel.c': '...'}; got "
+                    f"{type(raw).__name__}"
+                )
+            }
+        return await agent_optscan.scan_for_optimizations(
+            sources={str(k): str(v or "") for k, v in raw.items()},
+            flags=str(params.get("flags") or "-O1"),
+            label=str(params.get("label") or ""),
+        )
+
     async def _profile_c_workload(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -6294,6 +6316,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "run_custom_tool": _run_custom_tool_autonomous,
             "list_custom_tools": _list_custom_tools_autonomous,
             "compile_c_snippet": _compile_c_snippet,
+            "scan_for_optimizations": _scan_for_optimizations,
             "analyze_snippet_cycles": _analyze_snippet_cycles,
             "profile_c_workload": _profile_c_workload,
             "simulate_c_workload": _simulate_c_workload,

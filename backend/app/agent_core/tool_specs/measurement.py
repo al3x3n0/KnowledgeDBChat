@@ -32,6 +32,55 @@ _LANGUAGES = list(SUPPORTED)
 
 SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
+        name="scan_for_optimizations",
+        description=(
+            "Scan C sources for places a known optimisation applies, and for "
+            "shapes that have none yet. Returns two answers kept apart: "
+            "`suggestions`, each naming the pass that handles it, the "
+            "-fpass-plugin flag to apply it and whether it preserves results; "
+            "and `shapes_without_a_pass`, a tally of what feeds each expensive "
+            "operation, which is where a new pass comes from. Counts are "
+            "STATIC -- how often a pattern is written, not how often it runs -- "
+            "so this is a list of places to look and ranking them needs a "
+            "profile. Sources that fail to compile are named rather than "
+            "dropped, because a scan of nothing must not read as a clean bill."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "sources": {
+                    "type": "object",
+                    "description": (
+                        "Bare .c filenames mapped to their source text, e.g. "
+                        "{'raymath.c': '...'}. Several translation units may be "
+                        "scanned at once; each is compiled and scanned "
+                        "separately and the counts are summed."
+                    ),
+                },
+                "flags": {
+                    "type": "string",
+                    "description": (
+                        "Compiler flags for the IR the scan reads (default "
+                        "'-O1'). Use -O1 unless there is a reason: at -O0 the "
+                        "shapes the passes match have not formed yet, and at "
+                        "-O2 the vectoriser may already have rewritten them."
+                    ),
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Names the scan in the finding it records.",
+                },
+            },
+            "required": ["sources"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("optimization_opportunity",),
+        typical_seconds=30,
+        consumes="C sources; returns where known optimisations apply and what shapes have none.",
+    ),
+    ToolSpec(
         name="compile_c_snippet",
         description="Compile a C snippet in the compiler research sandbox and return "
         "the generated assembly plus codegen counts (vector instructions, "

@@ -405,6 +405,7 @@ def _summarise(
         "problem": data.get("compile_errors")
         or (data.get("equivalence") or {}).get("first_problem")
         or data.get("detail")
+        or (data.get("equivalence") or {}).get("detail")
         or result.get("error"),
         "warnings": timing.get("warnings") or [],
         body_key: proposal[body_key],

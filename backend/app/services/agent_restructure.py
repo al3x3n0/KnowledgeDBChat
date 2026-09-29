@@ -871,7 +871,13 @@ async def run_comparison(
             tolerance=tolerance,
         )
         if equivalence["status"] != "equivalent":
-            return {"verdict": equivalence["status"], "equivalence": equivalence}
+            out = {"verdict": equivalence["status"], "equivalence": equivalence}
+            if equivalence.get("detail"):
+                # Every baseline_broken result says why at the top level, where
+                # readers look. This one kept its reason inside `equivalence`,
+                # and a run was told "Fix the harness: no detail was reported".
+                out["detail"] = equivalence["detail"]
+            return out
 
         timed = [a for a in arms if parsed["built"].get(a.name)]
         # The control: a byte-identical copy of the baseline binary, timed with
@@ -946,7 +952,14 @@ async def run_comparison(
         }
     elif failures.get(baseline):
         verdict = "baseline_broken"
+        detail = (
+            f"the ORIGINAL passed every differential run, then failed "
+            f"{len(failures[baseline])} timed run(s) with exit code(s) "
+            f"{sorted(set(failures[baseline]))} on the bench input"
+        )
     out = {"verdict": verdict, "equivalence": equivalence, "timing": speed}
+    if verdict == "baseline_broken":
+        out["detail"] = detail
     if collected:
         out["collected"] = collected
     return out

@@ -544,3 +544,36 @@ def test_a_broken_harness_is_the_headline_and_says_why():
         "source",
     )
     assert out["success"] is False and "unknown type name 'Color'" in out["error"]
+
+
+def test_a_baseline_that_fails_at_runtime_says_why_in_the_summary():
+    """The second baseline_broken path kept its reason inside equivalence."""
+    parsed = r.parse_differential(
+        _stdout("__prep__ 1", "__built__ orig 1", "__built__ cand 1")
+        + _run("orig", 0, 2, "aa", "")
+        + _run("cand", 0, 0, "bb", "1")
+    )
+    equivalence = r.compare_runs(
+        parsed, 1, baseline="orig", candidate="cand", tolerance=0
+    )
+    assert (
+        equivalence["status"] == "baseline_broken"
+        and "exited 2" in equivalence["detail"]
+    )
+    entry = proposer._summarise(
+        {
+            "name": "p",
+            "idea": "",
+            "invariant": "",
+            "why_compiler_cannot": "",
+            "value_preserving": True,
+            "kernel": "k",
+        },
+        "kernel",
+        {
+            "success": False,
+            "data": {"verdict": "baseline_broken", "equivalence": equivalence},
+        },
+        False,
+    )
+    assert "exited 2" in entry["problem"]

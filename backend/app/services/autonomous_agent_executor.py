@@ -148,9 +148,15 @@ def _tool_requires_params(tool_name: str) -> bool:
     try:
         from app.agent_core.tool_catalog import get_tool_metadata
 
+        from app.services.agent_tool_validation import ALTERNATIVE_FIELDS
+
         metadata = get_tool_metadata(tool_name)
         schema = getattr(metadata, "input_schema", None) or {}
-        return bool(schema.get("required"))
+        # A tool that needs ONE OF two fields declares neither as required,
+        # so `required` alone said "no arguments needed" and the critic's
+        # pivot called clone_and_index_repo and scan_for_optimizations with
+        # {} -- three wasted actions in one live run, each a certain refusal.
+        return bool(schema.get("required")) or tool_name in ALTERNATIVE_FIELDS
     except Exception:
         return False
 
@@ -8439,6 +8445,15 @@ RESPONSE FORMAT:
                                 entry[edge] = float(rule.get(edge))
                         except (TypeError, ValueError):
                             continue
+                    # The flags that change what a bound means. Dropping them
+                    # here is silent: `latest: false` was documented and never
+                    # reached the checker, and `any` would have turned "some
+                    # proposal won" back into "the last one did".
+                    for flag in ("latest", "any"):
+                        if rule.get(flag) is not None:
+                            entry[flag] = self._coerce_bool(
+                                rule.get(flag), default=False
+                            )
                     # A bound with neither edge constrains nothing; keeping it
                     # would advertise a check that never fires.
                     if "min" in entry or "max" in entry:

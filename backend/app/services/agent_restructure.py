@@ -1127,6 +1127,9 @@ def package(
                 "subject": subject,
                 "title": title,
                 "verdict": verdict,
+                # Numeric so a contract can bound it: 1 only for a candidate
+                # that beat the original AND the ceiling on identical output.
+                "win": 1 if verdict == "faster" else 0,
                 "speedup": timing.get("speedup"),
                 "median_speedup": timing.get("median_speedup"),
                 "speedup_over_ceiling": timing.get("speedup_over_ceiling"),

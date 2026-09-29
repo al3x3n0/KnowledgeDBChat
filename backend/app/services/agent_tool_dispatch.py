@@ -3802,6 +3802,22 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
 def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvider:
     """Read-oriented workspace tools for AutonomousAgentExecutor."""
 
+    async def _document_source_exists(db: Any, source_id: str) -> bool:
+        from uuid import UUID
+
+        from sqlalchemy import select
+
+        from app.models.document import DocumentSource
+
+        try:
+            key = UUID(str(source_id))
+        except (TypeError, ValueError):
+            return False
+        row = await db.execute(
+            select(DocumentSource.id).where(DocumentSource.id == key)
+        )
+        return row.scalar_one_or_none() is not None
+
     async def _clone_and_index_repo(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -3814,6 +3830,27 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
             source_id = str((job.config or {}).get("source_id") or "").strip()
         if not source_id and not repo_url:
             return {"error": "Either source_id or repo_url is required"}
+        fallback_note = ""
+        if source_id:
+            # A source id that names nothing used to load zero documents and
+            # report success with files_count 0. Measured: a run's critic
+            # suggested a placeholder UUID, the clone "succeeded" empty, the
+            # repo_url passed in the SAME call was ignored, and three
+            # iterations went to confirming the workspace was empty.
+            if not await _document_source_exists(ctx.db, source_id):
+                if not repo_url:
+                    return {
+                        "error": (
+                            f"source_id {source_id!r} names no document source in "
+                            "the knowledge base. To clone from git, pass repo_url "
+                            "(and branch) and leave source_id out."
+                        )
+                    }
+                fallback_note = (
+                    f"source_id {source_id!r} names no document source; cloned "
+                    "repo_url instead. Leave source_id out when giving a URL."
+                )
+                source_id = ""
         try:
             if source_id:
                 ws = await executor.workspace_manager.create_from_source(
@@ -3831,6 +3868,21 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
                 if not enabled:
                     return {"error": "Git clone requires unsafe_code_execution_enabled"}
                 ws = await executor.workspace_manager.create_from_url(repo_url, branch)
+            if not ws.original_hashes:
+                # An empty workspace is never a success: every later tool
+                # would report "0 files" as if that were the repository.
+                executor.workspace_manager.cleanup(ws.workspace_id)
+                return {
+                    "error": (
+                        "the workspace came out EMPTY -- "
+                        + (
+                            f"source {source_id} has no documents"
+                            if source_id
+                            else f"cloning {repo_url} produced no files"
+                        )
+                        + ". Nothing was indexed; do not proceed as if it were."
+                    )
+                }
             state["coding_workspace_id"] = ws.workspace_id
             ws.owner_job_id = str(job.id)
             ws.session_id = (
@@ -3903,6 +3955,7 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
                     }
             return {
                 "success": True,
+                **({"note": fallback_note} if fallback_note else {}),
                 "data": {
                     "workspace_id": ws.workspace_id,
                     "files_count": len(ws.original_hashes),

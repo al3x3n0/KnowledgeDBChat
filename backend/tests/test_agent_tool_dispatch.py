@@ -594,3 +594,85 @@ def test_no_two_providers_claim_the_same_tool_name():
 
     shadowed = {name: sorted(names) for name, names in owners.items() if len(names) > 1}
     assert shadowed == {}
+
+
+class _NoSourceDB:
+    """A session in which no document source exists."""
+
+    async def execute(self, *_args, **_kwargs):
+        class _Result:
+            def scalar_one_or_none(self):
+                return None
+
+        return _Result()
+
+
+class _EmptyWorkspaceManager:
+    def __init__(self):
+        self.cloned = []
+        self.cleaned = []
+
+    async def create_from_url(self, repo_url, branch):
+        from types import SimpleNamespace
+
+        self.cloned.append((repo_url, branch))
+        return SimpleNamespace(workspace_id="ws-empty", original_hashes={})
+
+    async def create_from_source(self, source_id, db):  # pragma: no cover
+        raise AssertionError("a source that does not exist must not be loaded")
+
+    def cleanup(self, workspace_id):
+        self.cleaned.append(workspace_id)
+
+
+def _clone(params, manager, monkeypatch=None):
+    import asyncio
+
+    if monkeypatch is not None:
+        from app.core import config, feature_flags
+
+        async def _no_flag(name):
+            return None
+
+        monkeypatch.setattr(feature_flags, "get_flag", _no_flag)
+        monkeypatch.setattr(config.settings, "ENABLE_UNSAFE_CODE_EXECUTION", True)
+
+    service = _DummyService()
+    service.workspace_manager = manager
+    provider = build_autonomous_workspace_read_provider(service)
+    ctx = AgentToolExecutionContext(
+        mode="autonomous",
+        db=_NoSourceDB(),
+        service=None,
+        user_id="u",
+        job=_DummyJob(),
+        state={},
+    )
+    return asyncio.run(provider.execute("clone_and_index_repo", params, ctx))
+
+
+def test_an_unknown_source_id_without_a_url_is_refused_with_the_remedy():
+    out = _clone(
+        {"source_id": "11111111-1111-1111-1111-111111111111"}, _EmptyWorkspaceManager()
+    )
+    assert "names no document source" in out["error"] and "repo_url" in out["error"]
+
+
+def test_an_unknown_source_id_beside_a_url_clones_the_url(monkeypatch):
+    manager = _EmptyWorkspaceManager()
+    _clone(
+        {
+            "source_id": "11111111-1111-1111-1111-111111111111",
+            "repo_url": "https://github.com/raysan5/raylib.git",
+            "branch": "5.0",
+        },
+        manager,
+        monkeypatch,
+    )
+    assert manager.cloned == [("https://github.com/raysan5/raylib.git", "5.0")]
+
+
+def test_an_empty_workspace_is_never_a_success(monkeypatch):
+    manager = _EmptyWorkspaceManager()
+    out = _clone({"repo_url": "https://example.invalid/r.git"}, manager, monkeypatch)
+    assert "EMPTY" in out["error"] and manager.cleaned == ["ws-empty"]

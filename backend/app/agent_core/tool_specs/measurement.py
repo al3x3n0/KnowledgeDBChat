@@ -53,7 +53,10 @@ _HARNESS_PROPS = {
     },
     "bench_input": {
         "type": "integer",
-        "description": "Index of the input that is timed (default 0).",
+        "description": (
+            "0-based INDEX into inputs of the input that is timed (default "
+            "0) -- a number such as 2, not the input text."
+        ),
     },
     "flags": {
         "type": "string",
@@ -131,7 +134,7 @@ _PROGRAM_PROPS = {
     },
     "bench_input": {
         "type": "integer",
-        "description": "Index of the timed input (default 0).",
+        "description": "0-based INDEX into inputs of the timed input (default 0), not its text.",
     },
     "label": {"type": "string", "description": "Names the result in the finding."},
 }

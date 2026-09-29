@@ -215,17 +215,32 @@ SPECS: tuple[ToolSpec, ...] = (
         produces=("repo_workspace",),
         typical_seconds=90,
         consumes="A document source pointing at a git repo; returns the workspace every other coding tool needs.",
-        description="Clone a git repository into a temporary coding workspace and index its file tree. Returns a workspace_id for subsequent file operations.",
+        description=(
+            "Clone a git repository into a temporary coding workspace and index "
+            "its file tree. Returns a workspace_id for subsequent file "
+            "operations. For a public repository give repo_url (and branch); "
+            "source_id is only for a repository already ingested into the "
+            "knowledge base. An empty result is reported as an error."
+        ),
         parameters={
             "type": "object",
             "properties": {
                 "source_id": {
                     "type": "string",
-                    "description": "UUID of a git DocumentSource in KB (preferred)",
+                    "description": (
+                        "UUID of a git DocumentSource that ALREADY EXISTS in the "
+                        "knowledge base. Omit it when cloning by repo_url -- never "
+                        "invent or guess one: a name like 'raylib' is refused, and "
+                        "a made-up UUID names nothing."
+                    ),
                 },
                 "repo_url": {
                     "type": "string",
-                    "description": "Git clone URL (alternative to source_id, requires code execution enabled)",
+                    "description": (
+                        "Git clone URL, e.g. 'https://github.com/owner/repo.git'. "
+                        "Use this for any repository not already in the knowledge "
+                        "base, with branch for a tag or branch."
+                    ),
                 },
                 "branch": {
                     "type": "string",

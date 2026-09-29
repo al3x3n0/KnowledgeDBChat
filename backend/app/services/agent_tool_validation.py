@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from uuid import UUID
 
 # JSON Schema types mapped to what Python actually arrives as. bool is checked
@@ -87,6 +87,76 @@ def _shape_hint(spec: Dict[str, Any]) -> str:
 SPACE_SEPARATED_STRING_FIELDS = frozenset({"flags", "compile_flags", "extra_flags"})
 
 
+#: Fields a tool takes as ALTERNATIVES: (field, the field it is an alternative
+#: to, the test the field must pass to mean anything). When the alternative is
+#: present and this one is malformed, the malformed one is noise beside a
+#: complete call, and refusing the whole call throws the complete part away.
+#: Measured in one live run: `clone_and_index_repo` was refused three times
+#: for an invented `source_id` ('raylib-5.0', 'raylib5') sitting beside the
+#: correct `repo_url`; `scan_for_optimizations` for `sources` sent as a list
+#: of paths beside the correct `paths`. A model's prior for an id field wins
+#: over any description of it, so this is repaired, not re-explained.
+ALTERNATIVE_FIELDS: Dict[str, Tuple[Tuple[str, str, Callable[[Any], bool]], ...]] = {
+    "clone_and_index_repo": (
+        ("source_id", "repo_url", lambda v: isinstance(v, str) and _is_uuid(v.strip())),
+    ),
+    "scan_for_optimizations": (("sources", "paths", lambda v: isinstance(v, dict)),),
+    "propose_bolt_configurations": (
+        ("sources", "paths", lambda v: isinstance(v, dict)),
+    ),
+    "optimize_executable_with_bolt": (
+        ("sources", "paths", lambda v: isinstance(v, dict)),
+    ),
+    # Needs a symbol and one of object_b64/kernel; symbol is already required.
+}
+
+
+def _resolve_bench_input(
+    properties: Dict[str, Any], params: Dict[str, Any]
+) -> List[str]:
+    """`bench_input` sent as the input's TEXT rather than its index.
+
+    Measured twice in one live run: '4096 4096 17 83 211 40' -- which was also
+    inputs[4] -- and '12000 9000 77 153 201', which was in no list. The name
+    reads as "the bench input", and either value says exactly which workload
+    to time: one already listed is its index; one that is not is appended.
+    """
+    if properties.get("bench_input", {}).get("type") != "integer":
+        return []
+    if (properties.get("inputs") or {}).get("type") != "array":
+        return []
+    value = params.get("bench_input")
+    if not isinstance(value, str) or not value.strip():
+        return []
+    text = value.strip()
+    if text.lstrip("-").isdigit():
+        params["bench_input"] = int(text)
+        return ["bench_input"]
+    inputs = params.get("inputs")
+    if not isinstance(inputs, list):
+        return []
+    for index, item in enumerate(inputs):
+        if isinstance(item, str) and item.strip() == text:
+            params["bench_input"] = index
+            return ["bench_input"]
+    inputs.append(value)
+    params["bench_input"] = len(inputs) - 1
+    return ["bench_input"]
+
+
+def _drop_malformed_alternatives(tool_name: str, params: Dict[str, Any]) -> List[str]:
+    dropped: List[str] = []
+    for field, alternative, valid in ALTERNATIVE_FIELDS.get(tool_name, ()):
+        if field not in params or params.get(field) in (None, "", [], {}):
+            continue
+        if params.get(alternative) in (None, "", [], {}):
+            continue
+        if not valid(params[field]):
+            params.pop(field)
+            dropped.append(field)
+    return dropped
+
+
 def coerce_tool_params(tool_name: str, params: Optional[Dict[str, Any]]) -> List[str]:
     """Repair unambiguous shape mistakes in place, returning what was changed.
 
@@ -119,7 +189,8 @@ def coerce_tool_params(tool_name: str, params: Optional[Dict[str, Any]]) -> List
     if not isinstance(properties, dict):
         return []
 
-    repaired: List[str] = []
+    repaired: List[str] = _drop_malformed_alternatives(tool_name, params)
+    repaired += _resolve_bench_input(properties, params)
     for name, value in list(params.items()):
         spec = properties.get(name)
         if not isinstance(spec, dict):

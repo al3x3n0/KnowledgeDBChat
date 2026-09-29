@@ -377,6 +377,7 @@ def _override(packaged: Dict[str, Any], verdict: str) -> None:
         data["verdict"] = verdict
     for finding in packaged.get("findings") or []:
         finding["verdict"] = verdict
+        finding["win"] = 1 if verdict == "faster" else 0
         finding["title"] = f"{finding.get('subject')}: {verdict}"
 
 

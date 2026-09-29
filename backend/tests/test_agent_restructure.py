@@ -479,3 +479,40 @@ class TestControl:
             timings, baseline="orig", candidate="cand", ceiling=None, control="control"
         )
         assert any("manufacturing differences" in w for w in out.get("warnings", []))
+
+
+class TestAnyBoundContract:
+    """A contract that asks "did some proposal win" must not be satisfied by
+    one that diverged and so carries no numbers at all."""
+
+    SPEC = {"bounds": {"restructuring_result": {"field": "win", "min": 1, "any": True}}}
+
+    def _check(self, findings):
+        from app.services import agent_measurement_validity as v
+
+        return v.evaluate({"validity": self.SPEC}, {"findings": findings})
+
+    def test_one_winner_among_losers_satisfies_it(self):
+        out = self._check(
+            [
+                {"type": "restructuring_result", "win": 0},
+                {"type": "restructuring_result", "win": 1},
+                {"type": "restructuring_result", "win": 0},
+            ]
+        )
+        assert out["missing"] == []
+
+    def test_findings_without_the_field_do_not_satisfy_it(self):
+        out = self._check([{"type": "restructuring_result", "verdict": "diverged"}])
+        assert out["missing"] == ["validity:bounds:restructuring_result"]
+
+    def test_the_finding_carries_win(self):
+        packaged = r.package(
+            {"verdict": "faster", "timing": {"speedup": 2.0}},
+            kind="restructuring_result",
+            label="x",
+            invariant="",
+            value_preserving=True,
+            n_inputs=3,
+        )
+        assert packaged["findings"][0]["win"] == 1

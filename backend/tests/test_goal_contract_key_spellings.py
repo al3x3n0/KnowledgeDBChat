@@ -82,3 +82,21 @@ class TestAnEnabledContractNeverRequiresNothing:
         )
         assert out["satisfied"] is False
         assert any("fusion_candidate" in item for item in out["missing"])
+
+
+def test_bound_flags_survive_normalisation():
+    """`latest` was documented and dropped here; `any` would have been too."""
+    cfg = _config_for(
+        {
+            "min_progress": 0,
+            "validity": {
+                "bounds": {
+                    "restructuring_result": {"field": "win", "min": 1, "any": True},
+                    "test_result": {"field": "failed", "max": 0, "latest": False},
+                }
+            },
+        }
+    )
+    bounds = cfg["validity"]["bounds"]
+    assert bounds["restructuring_result"]["any"] is True
+    assert bounds["test_result"]["latest"] is False

@@ -577,3 +577,20 @@ def test_a_baseline_that_fails_at_runtime_says_why_in_the_summary():
         False,
     )
     assert "exited 2" in entry["problem"]
+
+
+def test_a_link_failure_reports_the_error_line_and_the_static_remedy():
+    """The linker's first line is context; the error is on the next one."""
+    from app.services.agent_compiler_sandbox import explain_compiler_failure
+
+    stderr = (
+        "/usr/bin/ld: driver.o: in function `main':\n"
+        "driver.c:(.text+0x9c): undefined reference to `tint_rgba8'\n"
+        "clang: error: linker command failed with exit code 1\n"
+    )
+    message = explain_compiler_failure(stderr)
+    assert "undefined reference to `tint_rgba8'" in message
+    assert "WITHOUT `static`" in message
+    assert explain_compiler_failure(
+        "x.c:6:49: error: unknown type name 'Color'"
+    ).endswith("unknown type name 'Color'")

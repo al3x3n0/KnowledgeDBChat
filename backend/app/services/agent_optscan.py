@@ -343,9 +343,40 @@ async def scan_workspace(
     for rel in list(paths) + list(include_dirs or []):
         if not SAFE_REPO_PATH.match(str(rel or "")):
             return {"error": f"path {rel!r} is not a plain repository-relative path"}
-    missing = [p for p in paths if not (base / p).is_file()]
+    # A directory means the C files directly in it. A run passed ["src"] and
+    # was told "not in the workspace: src" -- false, since src is there -- and
+    # spent an iteration checking the workspace. Not recursive: src/external/
+    # holds vendored libraries nobody asked to scan.
+    expanded: List[str] = []
+    missing: List[str] = []
+    for rel in paths:
+        target = base / rel
+        if target.is_dir():
+            found = sorted(
+                f.relative_to(base).as_posix()
+                for f in target.glob("*.c")
+                if f.is_file()
+            )
+            if not found:
+                return {
+                    "error": f"{rel!r} is a directory with no .c files directly in it"
+                }
+            expanded.extend(found)
+        elif target.is_file():
+            expanded.append(rel)
+        else:
+            missing.append(rel)
     if missing:
-        return {"error": f"not in the workspace: {', '.join(missing[:8])}"}
+        return {
+            "error": (
+                "no such file or directory in the workspace: " + ", ".join(missing[:8])
+            )
+        }
+    paths = list(dict.fromkeys(expanded))
+    if len(paths) > MAX_SOURCES:
+        return {
+            "error": f"the paths expand to {len(paths)} files; at most {MAX_SOURCES}"
+        }
     if not SAFE_FLAGS.match(flags or ""):
         return {"error": f"flags contain unsupported characters: {flags!r}"}
     if not agent_sandbox_runtime.execution_enabled():

@@ -237,7 +237,9 @@ SPECS: tuple[ToolSpec, ...] = (
                     "items": {"type": "string"},
                     "description": (
                         "Repository-relative .c files in the coding workspace "
-                        "(clone_and_index_repo first), e.g. ['src/rtextures.c']. "
+                        "(clone_and_index_repo first), e.g. ['src/rtextures.c'], "
+                        "or a directory, meaning the .c files directly in it "
+                        "(not recursive). "
                         "Each is compiled in place, so its includes resolve as "
                         "in the repo's own build. Up to 64."
                     ),

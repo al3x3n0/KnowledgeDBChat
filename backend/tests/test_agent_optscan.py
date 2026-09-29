@@ -120,3 +120,30 @@ def test_each_failed_file_is_named_with_its_own_error():
 
     script = o._scan_script(["src/a.c", "src/b.c"], "-O1 -Isrc")
     assert "failed_file" in script and "'src/a.c' 'src/b.c'" in script
+
+
+def test_a_directory_means_the_c_files_directly_in_it(tmp_path, monkeypatch):
+    import asyncio
+
+    from app.services import agent_optscan as o
+
+    (tmp_path / "src" / "external").mkdir(parents=True)
+    (tmp_path / "src" / "a.c").write_text("int a;")
+    (tmp_path / "src" / "b.c").write_text("int b;")
+    (tmp_path / "src" / "external" / "vendored.c").write_text("int v;")
+    seen = {}
+
+    async def fake_scan(workdir, paths, flags, **kwargs):
+        seen["paths"] = paths
+        return {"success": True}
+
+    monkeypatch.setattr(o, "_scan_in", fake_scan)
+    monkeypatch.setattr(o.agent_sandbox_runtime, "execution_enabled", lambda: True)
+    monkeypatch.setattr(
+        o.agent_sandbox_runtime, "allowed_images", lambda: [o.DEFAULT_IMAGE]
+    )
+    asyncio.run(o.scan_workspace(root=str(tmp_path), paths=["src"]))
+    assert seen["paths"] == ["src/a.c", "src/b.c"]
+
+    out = asyncio.run(o.scan_workspace(root=str(tmp_path), paths=["nope/x.c"]))
+    assert "no such file or directory" in out["error"]

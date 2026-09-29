@@ -71,6 +71,62 @@ _VERDICTS_HINT = (
     "ORIGINAL did not build or run: fix the driver or inputs)."
 )
 
+_PROGRAM_PROPS = {
+    "sources": {
+        "type": "object",
+        "description": "Bare .c filenames mapped to source text. Give this OR paths.",
+    },
+    "paths": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": (
+            "Repository-relative .c files in the coding workspace to compile "
+            "and link into one executable, e.g. ['onelua.c']."
+        ),
+    },
+    "include_dirs": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Repository-relative -I directories.",
+    },
+    "workspace_id": {
+        "type": "string",
+        "description": "Workspace for paths (default: current).",
+    },
+    "build_flags": {
+        "type": "string",
+        "description": (
+            "clang flags and defines (default '-O2'). The tool adds -fno-pie "
+            "-no-pie -Wl,--emit-relocs itself: BOLT needs relocations, and "
+            "instrumenting a PIE build failed on Lua's hottest function."
+        ),
+    },
+    "libs": {"type": "string", "description": "Link libraries (default '-lm')."},
+    "inputs": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": (
+            "stdin texts, up to 12. Output must match on every one. The "
+            "profile comes from all but the timed one unless profile_inputs "
+            "says otherwise, so give several DIFFERENT workloads."
+        ),
+    },
+    "run_args": {
+        "type": "string",
+        "description": "Arguments for every run, e.g. '- 300000' for an interpreter reading stdin.",
+    },
+    "profile_inputs": {
+        "type": "array",
+        "items": {"type": "integer"},
+        "description": "Indices of inputs to profile on (default: all but bench_input).",
+    },
+    "bench_input": {
+        "type": "integer",
+        "description": "Index of the timed input (default 0).",
+    },
+    "label": {"type": "string", "description": "Names the result in the finding."},
+}
+
 SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="build_llvm_pass",
@@ -541,6 +597,80 @@ SPECS: tuple[ToolSpec, ...] = (
         produces=("pass_evaluation",),
         typical_seconds=180,
         consumes="a pass plugin, a kernel, a driver and inputs; returns firing, equivalence, speed and recovery.",
+    ),
+    ToolSpec(
+        name="propose_bolt_configurations",
+        description=(
+            "Optimise a whole LINKED EXECUTABLE with BOLT (llvm-bolt 19), with "
+            "a model proposing configurations tuned to this program's profile. "
+            "The program is built non-PIE with relocations, instrumented, and "
+            "profiled on held-out workloads (every input but the timed one). "
+            "The model sees the hottest functions and what the standard recipe "
+            "achieved, and proposes one configuration per call from an "
+            "allowlist of BOLT options. Each is judged: identical output on "
+            "every input, then timed interleaved against the unoptimised "
+            "binary and against the standard recipe -- matching the recipe is "
+            "compiler_already_can. BOLT's branch statistics are reported as "
+            "the mechanism; the verdict rests on timing. " + _VERDICTS_HINT
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                **_PROGRAM_PROPS,
+                "focus": {
+                    "type": "string",
+                    "description": "What the program is, e.g. 'a bytecode interpreter'.",
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Configurations to ask for, 1-5 (default 3).",
+                },
+            },
+            "required": ["inputs"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("binary_layout_result",),
+        typical_seconds=900,
+        consumes="a program (sources or workspace paths) and workloads; returns BOLT configurations with measured verdicts.",
+    ),
+    ToolSpec(
+        name="optimize_executable_with_bolt",
+        description=(
+            "Judge ONE BOLT configuration you choose on a linked executable: "
+            "build (non-PIE, --emit-relocs), instrument, profile on held-out "
+            "inputs, apply your options, check output on every input, time "
+            "against the unoptimised binary and the standard recipe ("
+            "-reorder-blocks=ext-tsp -reorder-functions=cdsort "
+            "-split-functions -split-all-cold -icf=1). Options outside the "
+            "allowlist are refused by name. " + _VERDICTS_HINT
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                **_PROGRAM_PROPS,
+                "options": {
+                    "type": "string",
+                    "description": "BOLT options, space-separated, e.g. '-reorder-blocks=ext-tsp -split-functions'.",
+                },
+                "rationale": {
+                    "type": "string",
+                    "description": "What about this program's profile the configuration relies on.",
+                },
+                "trials": {
+                    "type": "integer",
+                    "description": "Interleaved trials, 3-15 (default 7).",
+                },
+            },
+            "required": ["options", "inputs"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("binary_layout_result",),
+        typical_seconds=300,
+        consumes="a program, BOLT options and workloads; returns equivalence and a speed verdict.",
     ),
     ToolSpec(
         name="compile_c_snippet",

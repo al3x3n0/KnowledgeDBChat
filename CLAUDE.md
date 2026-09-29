@@ -628,6 +628,34 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   master `6ecf21f` (2026-09-28), shown with guard-page allocations since the
   image ships no ASan runtime. It has not been reported upstream.
 
+- **Linked executables are optimised with BOLT, and judged like everything
+  else** (`services/agent_bolt.py`, image `kdbc-bolt-research` =
+  sandbox-base + Debian's `bolt-19`, `make sandbox-bolt`). A linked binary
+  has no linker left to prefer a strong symbol, so the function-swap used for
+  object files is impossible. What can change is *layout*. The tools build the
+  program **non-PIE with `--emit-relocs`**. Both are required: BOLT cannot
+  move functions without relocations, and instrumenting a PIE Lua failed on
+  `luaV_execute`, its hottest function. Profiles come from BOLT's own
+  instrumentation, because `perf` cannot run under `--cap-drop ALL`. By
+  default the profile is taken on **every input except the timed one**. The
+  measured binary is the profiled binary's own bytes, not a rebuild, because
+  BOLT maps a profile by address. There are three arms: the original, the
+  configuration under test, and the **standard recipe** as the ceiling, so
+  matching the recipe reads as `compiler_already_can`.
+  `propose_bolt_configurations` asks a model for configurations one at a
+  time, from the hot-function profile and what the recipe achieved.
+  `optimize_executable_with_bolt` judges one configuration you choose.
+  Options must come from an **allowlist**: they are interpolated into a
+  shell, and several BOLT options write files. BOLT's branch statistics are
+  reported as the mechanism (Lua: taken branches -89% to -93%), but the
+  verdict rests on timing. On Lua that effect is about 4% (fastest run 250 to
+  243 ms in a quiet prototype). With the host at load 58 to 72, every
+  configuration came back `unresolved`, which is correct.
+  Also fixed in the shared comparison: a timed run that *fails* is no longer
+  recorded as a time. A prototype "timed" a binary that was never built at
+  3 ms, beside the real one at 250 ms. A candidate that passes every
+  differential run and then fails a timed one is `crashed`.
+
 - **A mechanism that never engaged is not a measurement of that mechanism.**
   `evaluate_across_kernels` reported `geomean 1.0000x over 4 kernels` and
   recorded it as a `mechanism_evaluation` finding a contract accepted. The

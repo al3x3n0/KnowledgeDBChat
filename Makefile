@@ -333,7 +333,11 @@ sandbox-axis: ## Build the axis-research image (needs AXIS_PATH=/path/to/axis)
 	  --build-arg AXIS_GIT_REV="$$(git -C $(AXIS_PATH) describe --always --dirty 2>/dev/null || echo unknown)" \
 	  -t $(SANDBOX_REGISTRY)/kdbc-axis-research:latest $(AXIS_PATH)
 
-sandbox-images: sandbox-compiler sandbox-polyglot sandbox-profiling sandbox-microarch sandbox-pass-dev ## Build every sandbox image this repo can build
+sandbox-bolt: sandbox-base ## Build the bolt-research image (llvm-bolt 19, for rewriting linked executables)
+	docker build -f deploy/sandbox-images/bolt-research/Dockerfile \
+	  -t $(SANDBOX_REGISTRY)/kdbc-bolt-research:latest .
+
+sandbox-images: sandbox-compiler sandbox-polyglot sandbox-profiling sandbox-microarch sandbox-pass-dev sandbox-bolt ## Build every sandbox image this repo can build
 	@echo "Built from this repository. gem5 (make sandbox-gem5, arm64) and"
 	@echo "axis (make sandbox-axis AXIS_PATH=...) are separate: see"
 	@echo "deploy/sandbox-images/README.md for why."
@@ -342,7 +346,7 @@ sandbox-check: ## Report which sandbox images exist locally and what they carry
 	@for image in kdbc-sandbox-base kdbc-compiler-research kdbc-polyglot-slim \
 	              kdbc-profiling-research \
 	              kdbc-microarch-research kdbc-gem5-research kdbc-axis-research \
-	              kdbc-pass-dev; do \
+	              kdbc-pass-dev kdbc-bolt-research; do \
 	  if docker image inspect $(SANDBOX_REGISTRY)/$$image:latest >/dev/null 2>&1; then \
 	    printf '  %-28s %s\n' "$$image" \
 	      "$$(docker image ls --format '{{.Size}}' \

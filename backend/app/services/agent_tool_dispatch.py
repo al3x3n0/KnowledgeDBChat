@@ -5182,6 +5182,82 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             **harness,
         )
 
+    def _bolt_program(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+        """The program half of the BOLT tools: sources, or workspace paths."""
+        raw_inputs = params.get("inputs")
+        if isinstance(raw_inputs, str):
+            raw_inputs = [raw_inputs]
+        if not isinstance(raw_inputs, list):
+            return {"error": "inputs must be a list of stdin texts"}
+        program: Dict[str, Any] = {
+            "inputs": [str(x if x is not None else "") for x in raw_inputs],
+            "run_args": str(params.get("run_args") or ""),
+            "build_flags": str(params.get("build_flags") or "-O2"),
+            "libs": str(
+                params.get("libs") if params.get("libs") is not None else "-lm"
+            ),
+            "bench_input": int(params.get("bench_input") or 0),
+            "label": str(params.get("label") or ""),
+        }
+        profile = params.get("profile_inputs")
+        if profile is not None:
+            if not isinstance(profile, list):
+                return {"error": "profile_inputs must be a list of input indices"}
+            program["profile_inputs"] = [int(i) for i in profile]
+        if isinstance(params.get("sources"), dict):
+            program["sources"] = {
+                str(k): str(v or "") for k, v in params["sources"].items()
+            }
+            return program
+        state = ctx.state if isinstance(ctx.state, dict) else {}
+        ws = executor.workspace_manager.get_or_default(
+            params.get("workspace_id"), state
+        )
+        if not ws:
+            return {
+                "error": "give sources, or clone_and_index_repo first and give paths"
+            }
+        paths, dirs = params.get("paths") or [], params.get("include_dirs") or []
+        if not isinstance(paths, list) or not isinstance(dirs, list):
+            return {"error": "paths and include_dirs must be lists of repo paths"}
+        program.update(
+            root=str(ws.base_path),
+            paths=[str(p) for p in paths],
+            include_dirs=[str(d) for d in dirs],
+        )
+        return program
+
+    async def _propose_bolt_configurations(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_bolt
+
+        program = _bolt_program(params, ctx)
+        if "error" in program:
+            return program
+        return await agent_bolt.propose_bolt_configurations(
+            count=int(params.get("count") or 3),
+            focus=str(params.get("focus") or ""),
+            user_id=ctx.user_id,
+            db=ctx.db,
+            **program,
+        )
+
+    async def _optimize_executable_with_bolt(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_bolt
+
+        program = _bolt_program(params, ctx)
+        if "error" in program:
+            return program
+        return await agent_bolt.optimize_executable(
+            options=str(params.get("options") or ""),
+            rationale=str(params.get("rationale") or ""),
+            trials=int(params.get("trials") or 7),
+            **program,
+        )
+
     async def _profile_c_workload(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -6507,6 +6583,8 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "evaluate_binary_rewrite": _evaluate_binary_rewrite,
             "synthesize_pass_from_rewrite": _synthesize_pass_from_rewrite,
             "evaluate_pass_on_kernel": _evaluate_pass_on_kernel,
+            "propose_bolt_configurations": _propose_bolt_configurations,
+            "optimize_executable_with_bolt": _optimize_executable_with_bolt,
             "analyze_snippet_cycles": _analyze_snippet_cycles,
             "profile_c_workload": _profile_c_workload,
             "simulate_c_workload": _simulate_c_workload,

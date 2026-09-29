@@ -322,6 +322,7 @@ def _usable(p: Any, body_key: str) -> Optional[Dict[str, Any]]:
 _BODY_ALIASES = {
     "kernel": ("kernel", "code", "source", "c_source", "candidate"),
     "assembly": ("assembly", "asm", "code", "source", "replacement_asm"),
+    "options": ("options", "bolt_options", "flags", "configuration"),
 }
 
 

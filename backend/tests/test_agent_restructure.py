@@ -343,3 +343,12 @@ class TestCpuBasis:
         )
         assert out["basis"] == "wall" and out["verdict"] == "faster"
         assert any("more than one core" in w for w in out["warnings"])
+
+
+def test_a_failed_timed_run_is_not_a_time():
+    out = "__t__ orig 250000 240000\n__tfail__ cand 139\n__t__ cand 3000 2000\n"
+    assert r.parse_timing_failures(out) == {"cand": [139]}
+    script = r.timing_script(
+        [r.Arm("orig", "true")], 0, 3, 10**9, run_args="- 300000"
+    )
+    assert "__tfail__" in script and "./$a - 300000 <in_0.txt" in script

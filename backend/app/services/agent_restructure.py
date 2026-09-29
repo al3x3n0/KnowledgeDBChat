@@ -151,7 +151,9 @@ def sandbox_blocked(image: str) -> Optional[str]:
 # --------------------------------------------------------------------------- #
 
 
-def differential_script(prep: str, arms: Sequence[Arm], n_inputs: int) -> str:
+def differential_script(
+    prep: str, arms: Sequence[Arm], n_inputs: int, run_args: str = ""
+) -> str:
     parts = [
         f"if {{ {prep}; }} >build_prep.log 2>&1; then echo '__prep__ 1'; "
         "else echo '__prep__ 0'; echo '__log_begin__ prep'; "
@@ -171,7 +173,7 @@ def differential_script(prep: str, arms: Sequence[Arm], n_inputs: int) -> str:
             out = f"out_{arm.name}_{i}.txt"
             parts.append(
                 f"if [ -x ./{arm.name} ]; then "
-                f"timeout {PER_RUN_TIMEOUT} ./{arm.name} <in_{i}.txt >{out} 2>/dev/null; "
+                f"timeout {PER_RUN_TIMEOUT} ./{arm.name} {run_args} <in_{i}.txt >{out} 2>/dev/null; "
                 f'echo "__rc__ {arm.name} {i} $?"; '
                 f'echo "__hash__ {arm.name} {i} $(sha256sum {out} | cut -c1-16)"; '
                 f"echo '__out_begin__ {arm.name} {i}'; head -c {OUTPUT_EXCERPT_BYTES} {out}; "
@@ -217,7 +219,11 @@ int main(int argc, char **argv) {
 
 
 def timing_script(
-    arms: Sequence[Arm], bench_input: int, trials: int, budget_ns: int
+    arms: Sequence[Arm],
+    bench_input: int,
+    trials: int,
+    budget_ns: int,
+    run_args: str = "",
 ) -> str:
     # Interleaved: trial t runs every arm once before trial t+1 starts, so a
     # stall on the shared host is paid by all arms rather than by whichever
@@ -230,16 +236,20 @@ def timing_script(
     return (
         f"clang -O2 -o {CPUTIME_BIN} {CPUTIME_SOURCE} 2>/dev/null; "
         f"__t0=$(date +%s%N); "
-        f"for a in {names}; do [ -x ./$a ] && ./$a <in_{bench_input}.txt >/dev/null 2>&1; done; "
+        f"for a in {names}; do [ -x ./$a ] && ./$a {run_args} <in_{bench_input}.txt >/dev/null 2>&1; done; "
         f"for t in $(seq 1 {trials}); do "
         f"  for a in {names}; do "
         f"    [ -x ./$a ] || continue; "
         f"    if [ -x ./{CPUTIME_BIN} ]; then "
-        f"      ./{CPUTIME_BIN} __t.txt {PER_RUN_TIMEOUT} ./$a <in_{bench_input}.txt >/dev/null 2>&1; "
-        f'      echo "__t__ $a $(cat __t.txt)"; '
+        # A run that fails is not a time. A prototype timed a binary that
+        # was never built at 3 ms, beside the real one at 250 ms.
+        f"      ./{CPUTIME_BIN} __t.txt {PER_RUN_TIMEOUT} ./$a {run_args} <in_{bench_input}.txt >/dev/null 2>&1; "
+        f"      rc=$?; "
+        f'      if [ $rc -eq 0 ]; then echo "__t__ $a $(cat __t.txt)"; else echo "__tfail__ $a $rc"; fi; '
         f"    else "
-        f"      s=$(date +%s%N); timeout {PER_RUN_TIMEOUT} ./$a <in_{bench_input}.txt >/dev/null 2>&1; "
-        f'      e=$(date +%s%N); echo "__t__ $a $(( (e-s)/1000 ))"; '
+        f"      s=$(date +%s%N); timeout {PER_RUN_TIMEOUT} ./$a {run_args} <in_{bench_input}.txt >/dev/null 2>&1; "
+        f"      rc=$?; e=$(date +%s%N); "
+        f'      if [ $rc -eq 0 ]; then echo "__t__ $a $(( (e-s)/1000 ))"; else echo "__tfail__ $a $rc"; fi; '
         f"    fi; "
         f"  done; "
         f"  [ $(( $(date +%s%N) - __t0 )) -gt {budget_ns} ] && break; "
@@ -316,6 +326,20 @@ def parse_timings(
         elif parts[:1] == ["__cpus__"] and len(parts) == 2 and parts[1].isdigit():
             cpus = int(parts[1])
     return timings, load, cpus
+
+
+def parse_timing_failures(stdout: str) -> Dict[str, List[int]]:
+    """Exit codes of timed runs that failed, per arm."""
+    failed: Dict[str, List[int]] = {}
+    for line in (stdout or "").splitlines():
+        parts = line.split()
+        if (
+            parts[:1] == ["__tfail__"]
+            and len(parts) == 3
+            and parts[2].lstrip("-").isdigit()
+        ):
+            failed.setdefault(parts[1], []).append(int(parts[2]))
+    return failed
 
 
 def parse_cpu_timings(stdout: str) -> Dict[str, List[int]]:
@@ -644,8 +668,13 @@ async def run_comparison(
     tolerance: float,
     image: str,
     timeout_seconds: int,
+    run_args: str = "",
+    collect: Sequence[str] = (),
 ) -> Dict[str, Any]:
     """Build, compare and time. Returns the raw judgement pieces.
+
+    `collect` names files the arm builds leave in the workdir -- a BOLT log's
+    statistics, say -- to be read back after the run, capped at 64 KB each.
 
     `files` maps names to text or bytes; the caller's build lines refer to
     them. The first arm is the baseline and the second the candidate.
@@ -668,7 +697,7 @@ async def run_comparison(
 
         try:
             _, stdout, stderr = await agent_sandbox_runtime.run_in_sandbox(
-                differential_script(prep, arms, len(inputs)),
+                differential_script(prep, arms, len(inputs), run_args),
                 workdir,
                 image=image,
                 timeout_seconds=timeout_seconds,
@@ -726,7 +755,7 @@ async def run_comparison(
         budget_ns = int(timeout_seconds * TRIAL_BUDGET_SHARE * 1_000_000_000)
         try:
             _, t_out, _ = await agent_sandbox_runtime.run_in_sandbox(
-                timing_script(timed, bench_input, trials, budget_ns),
+                timing_script(timed, bench_input, trials, budget_ns, run_args),
                 workdir,
                 image=image,
                 timeout_seconds=timeout_seconds,
@@ -738,6 +767,12 @@ async def run_comparison(
                 "equivalence": equivalence,
                 "error": f"equivalent, but timing did not finish: {detail}",
             }
+
+        collected = {
+            name: Path(workdir, name).read_text(encoding="utf-8", errors="replace")[:65536]
+            for name in collect
+            if Path(workdir, name).is_file()
+        }
 
     timings, load, cpus = parse_timings(t_out)
     speed = judge_speed(
@@ -755,11 +790,31 @@ async def run_comparison(
     speed["arms_fastest_ms"] = {
         name: _best_ms(values) for name, values in sorted(basis.items())
     }
-    return {
-        "verdict": speed.pop("verdict"),
-        "equivalence": equivalence,
-        "timing": speed,
-    }
+    verdict = speed.pop("verdict")
+    failures = parse_timing_failures(t_out)
+    if failures:
+        speed["failed_trials"] = failures
+    # Passing every differential run and then failing a timed one is a
+    # program that fails sometimes. That outranks any speed it showed.
+    if failures.get(candidate):
+        verdict = "crashed"
+        equivalence = {
+            **equivalence,
+            "status": "crashed",
+            "first_problem": {
+                "detail": (
+                    f"passed every differential run, then failed "
+                    f"{len(failures[candidate])} timed run(s) with exit code(s) "
+                    f"{sorted(set(failures[candidate]))}: it fails intermittently"
+                )
+            },
+        }
+    elif failures.get(baseline):
+        verdict = "baseline_broken"
+    out = {"verdict": verdict, "equivalence": equivalence, "timing": speed}
+    if collected:
+        out["collected"] = collected
+    return out
 
 
 # --------------------------------------------------------------------------- #

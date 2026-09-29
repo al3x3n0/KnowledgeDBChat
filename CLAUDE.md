@@ -680,6 +680,34 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   resolved**: an in-sample "8%" did not reproduce, and a held-out profile
   never showed a gain. That is the finding, not a failure to find one.
 
+- **A layout claim is a claim about a predictor, so BOLT can also be judged
+  in simulated cycles on a named core** (`measure="cycles"` on
+  `optimize_executable_with_bolt`, default `NeoverseV2`). Wall time could not
+  resolve BOLT on Lua on this host. Cycles are deterministic and could, and
+  the generic model told a very different story from the named one:
+
+  | core (conditional predictor) | recipe speedup | mispredicts |
+  |---|---|---|
+  | `O3CPU` (TournamentBP) | 1.307x | -72% |
+  | `NeoverseV2` (TAGE-SC-L 64KB) | 1.026x | -0.4% |
+
+  Nearly all of the generic core's gain was a weak predictor being rescued
+  by layout. What remains on a modern predictor is 19% fewer i-cache misses,
+  worth about 2.6%, below this host's wall-clock noise, which is why nothing
+  resolved natively.
+  Three traps are handled in code:
+  - BOLT cannot flush an instrumentation profile from a static binary at
+    exit, and a BOLT-ed static glibc binary aborts with "Unexpected reloc
+    type in static binary" (IRELATIVE). So the dynamic non-PIE build is
+    simulated; the gem5 and BOLT images carry the same glibc 2.36.
+  - NeoverseV2 cannot execute scalar `fmadd`, and Lua contains some. The
+    tool counts the fmadd family in every arm and refuses with the remedy
+    (`-ffp-contract=off`) before spending a simulation that would never end.
+  - `profile_run_args` sizes profiling separately from the measured run.
+    Simulation wants a small run and a profile wants a large one. Profiling
+    at the simulated size (n=300) turned the 2.6% gain into a 6.8% loss, with
+    mispredicts +134%.
+
 - **A mechanism that never engaged is not a measurement of that mechanism.**
   `evaluate_across_kernels` reported `geomean 1.0000x over 4 kernels` and
   recorded it as a `mechanism_evaluation` finding a contract accepted. The

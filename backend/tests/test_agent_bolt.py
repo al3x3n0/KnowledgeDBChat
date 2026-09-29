@@ -81,3 +81,67 @@ def test_run_args_cannot_carry_shell():
     for bad in ("- 1; id", "$(id)", "a|b", "x > y"):
         assert not b.SAFE_RUN_ARGS.match(bad), bad
     assert b.SAFE_RUN_ARGS.match("- 300000")
+
+
+class TestCycles:
+    # The Lua numbers, generic core and named core, from the same binaries.
+    O3 = {
+        "orig": {"cycles": 19182198},
+        "cand": {"cycles": 14671610},
+        "ceiling": {"cycles": 14671610},
+    }
+    V2 = {
+        "orig": {"cycles": 16814675},
+        "cand": {"cycles": 16388369},
+        "ceiling": {"cycles": 16388369},
+    }
+
+    def test_the_recipe_as_candidate_is_the_recipe(self):
+        out = b.judge_cycles(self.O3, "O3CPU")
+        assert out["speedup"] == 1.3074 and out["verdict"] == "compiler_already_can"
+
+    def test_a_small_real_gain_on_the_named_core_is_reported_as_what_it_is(self):
+        out = b.judge_cycles(self.V2, "NeoverseV2")
+        assert out["speedup"] == 1.026 and out["core"] == "NeoverseV2"
+
+    def test_differences_under_the_floor_are_not_claimed(self):
+        stats = {
+            "orig": {"cycles": 1000000},
+            "cand": {"cycles": 995000},
+            "ceiling": {"cycles": 1000000},
+        }
+        assert b.judge_cycles(stats, "NeoverseV2")["verdict"] == "unresolved"
+
+    def test_counters_change_is_reported(self):
+        stats = {
+            "orig": {"cycles": 100, "branch_mispredicts": 420, "icache_misses": 90},
+            "cand": {"cycles": 80, "branch_mispredicts": 120, "icache_misses": 70},
+            "ceiling": {"cycles": 100},
+        }
+        out = b.judge_cycles(stats, "O3CPU")
+        assert out["change_pct"]["branch_mispredicts"] == -71.4
+
+    def test_gem5_stats_are_parsed(self):
+        text = (
+            "simInsts                                     35528902   # Number\n"
+            "system.cpu.numCycles                         19177232   # cycles\n"
+            "system.cpu.commit.branchMispredicts            419821   # x\n"
+        )
+        s = b.parse_gem5_stats(text)
+        assert s["instructions"] == 35528902 and s["cycles"] == 19177232
+        assert s["branch_mispredicts"] == 419821 and s["icache_misses"] is None
+
+
+def test_measured_run_args_are_checked_even_when_profiling_args_differ():
+    import asyncio
+
+    out = asyncio.run(
+        b.optimize_executable(
+            options=b.STANDARD_RECIPE,
+            inputs=["x"],
+            run_args="- 1; id",
+            profile_run_args="- 3000",
+            sources={"a.c": "int main(){}"},
+        )
+    )
+    assert "unsupported characters" in out["error"]

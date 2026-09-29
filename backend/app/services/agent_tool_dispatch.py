@@ -5192,6 +5192,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         program: Dict[str, Any] = {
             "inputs": [str(x if x is not None else "") for x in raw_inputs],
             "run_args": str(params.get("run_args") or ""),
+            "profile_run_args": str(params.get("profile_run_args") or ""),
             "build_flags": str(params.get("build_flags") or "-O2"),
             "libs": str(
                 params.get("libs") if params.get("libs") is not None else "-lm"
@@ -5255,6 +5256,8 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             options=str(params.get("options") or ""),
             rationale=str(params.get("rationale") or ""),
             trials=int(params.get("trials") or 7),
+            measure=str(params.get("measure") or "wall"),
+            core=str(params.get("core") or agent_bolt.DEFAULT_CORE),
             **program,
         )
 

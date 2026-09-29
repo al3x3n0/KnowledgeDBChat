@@ -65,6 +65,10 @@ from app.services.agent_restructure import (
 )
 
 BOLT_IMAGE = "ghcr.io/al3x3n0/kdbc-bolt-research:latest"
+GEM5_IMAGE = "ghcr.io/al3x3n0/kdbc-gem5-research:latest"
+#: The modelled real core. The generic O3CPU's TournamentBP credited BOLT with
+#: 12x the gain NeoverseV2's TAGE-SC-L did on the same Lua binaries.
+DEFAULT_CORE = "NeoverseV2"
 STANDARD_RECIPE = (
     "-reorder-blocks=ext-tsp -reorder-functions=cdsort "
     "-split-functions -split-all-cold -icf=1"
@@ -463,8 +467,28 @@ async def optimize_executable(
     trials: int = DEFAULT_TRIALS,
     label: str = "",
     rationale: str = "",
+    measure: str = "wall",
+    core: str = DEFAULT_CORE,
+    profile_run_args: str = "",
 ) -> Dict[str, Any]:
-    """Build, profile, and judge one BOLT configuration."""
+    """Build, profile, and judge one BOLT configuration.
+
+    `measure="cycles"` simulates every arm on `core` instead of timing it --
+    for effects under this host's noise, which BOLT's usually are.
+
+    `profile_run_args` sizes the profiling runs separately from the measured
+    one. Simulation wants a small measured run; a profile wants a large one.
+    Measured on Lua under NeoverseV2: the same recipe was 1.026x faster with a
+    profile taken at n=3000 and 0.932x -- slower, mispredicts +134% -- with one
+    taken at n=300, because the tool had profiled at the size it simulated.
+    """
+    if measure not in ("wall", "cycles"):
+        return {"error": "measure is 'wall' or 'cycles'"}
+    for args in (run_args, profile_run_args):
+        # Both are interpolated into shell commands; build_and_profile checks
+        # only the profiling pair, so the measured one is checked here.
+        if not SAFE_RUN_ARGS.match(args or ""):
+            return {"error": f"run arguments contain unsupported characters: {args!r}"}
     problem, cleaned = check_inputs(inputs, bench_input)
     if problem:
         return {"error": problem}
@@ -478,7 +502,7 @@ async def optimize_executable(
             "error": f"profile_inputs {chosen} are not indices into {len(cleaned)} inputs"
         }
     profiled = await build_and_profile(
-        run_args=run_args,
+        run_args=profile_run_args or run_args,
         inputs=cleaned,
         profile_inputs=chosen,
         sources=sources,
@@ -491,16 +515,28 @@ async def optimize_executable(
     if profiled.get("error"):
         return {"success": False, "error": profiled["error"]}
     profiled["profiled_on"] = chosen
-    result = await judge_configuration(
-        profiled=profiled,
-        options=options,
-        inputs=cleaned,
-        run_args=run_args,
-        bench_input=bench_input,
-        trials=trials,
-        label=label,
-        rationale=rationale,
-    )
+    if measure == "cycles":
+        result = await simulate_configuration(
+            profiled=profiled,
+            options=options,
+            inputs=cleaned,
+            run_args=run_args,
+            bench_input=bench_input,
+            core=core,
+            label=label,
+            rationale=rationale,
+        )
+    else:
+        result = await judge_configuration(
+            profiled=profiled,
+            options=options,
+            inputs=cleaned,
+            run_args=run_args,
+            bench_input=bench_input,
+            trials=trials,
+            label=label,
+            rationale=rationale,
+        )
     data = result.get("data")
     if isinstance(data, dict):
         data["hot_functions"] = profiled["hot_functions"][:8]
@@ -582,10 +618,16 @@ async def propose_bolt_configurations(
     label: str = "",
     user_id: Any = None,
     db: Any = None,
+    profile_run_args: str = "",
 ) -> Dict[str, Any]:
     """Profile once, ask for configurations one at a time, judge each."""
     from app.services import agent_restructure_proposer as proposer
 
+    for args in (run_args, profile_run_args):
+        # Both are interpolated into shell commands; build_and_profile checks
+        # only the profiling pair, so the measured one is checked here.
+        if not SAFE_RUN_ARGS.match(args or ""):
+            return {"error": f"run arguments contain unsupported characters: {args!r}"}
     problem, cleaned = check_inputs(inputs, bench_input)
     if problem:
         return {"error": problem}
@@ -599,7 +641,7 @@ async def propose_bolt_configurations(
             "error": f"profile_inputs {chosen} are not indices into {len(cleaned)} inputs"
         }
     profiled = await build_and_profile(
-        run_args=run_args,
+        run_args=profile_run_args or run_args,
         inputs=cleaned,
         profile_inputs=chosen,
         sources=sources,
@@ -668,3 +710,260 @@ async def propose_bolt_configurations(
         result["data"]["profiled_on_inputs"] = chosen
         result["data"]["timed_on_input"] = bench_input
     return result
+
+
+# --------------------------------------------------------------------------- #
+# Simulated cycles: the instrument for effects below the host's noise.
+# --------------------------------------------------------------------------- #
+
+SIMULATION_TIMEOUT_SECONDS = 1800
+#: Simulated cycles are deterministic, so there is no noise to clear -- but a
+#: difference this small is not worth a claim either way.
+CYCLE_FLOOR = 0.01
+_FMA_FAMILY = r"\b(fmadd|fmsub|fnmadd|fnmsub)\b"
+
+
+def parse_gem5_stats(text: str) -> Dict[str, Optional[int]]:
+    """The counters that explain a layout change: cycles, mispredicts, i-cache."""
+    wanted = {
+        "simInsts": "instructions",
+        "system.cpu.numCycles": "cycles",
+        "system.cpu.commit.branchMispredicts": "branch_mispredicts",
+        "system.cpu.icache.overallMisses::total": "icache_misses",
+        "system.l2.overallMisses::total": "l2_misses",
+    }
+    out: Dict[str, Optional[int]] = {v: None for v in wanted.values()}
+    for line in (text or "").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] in wanted:
+            try:
+                out[wanted[parts[0]]] = int(float(parts[1]))
+            except ValueError:
+                pass
+    return out
+
+
+def _ratio(a: Optional[int], b: Optional[int]) -> Optional[float]:
+    return round(a / b, 4) if a and b else None
+
+
+def judge_cycles(
+    stats: Dict[str, Dict[str, Optional[int]]], core: str
+) -> Dict[str, Any]:
+    """Verdict from simulated cycles: original, candidate, recipe."""
+    orig, cand, ceil = (
+        stats.get("orig", {}),
+        stats.get("cand", {}),
+        stats.get("ceiling", {}),
+    )
+    speedup = _ratio(orig.get("cycles"), cand.get("cycles"))
+    over_recipe = _ratio(ceil.get("cycles"), cand.get("cycles"))
+    recipe_gain = _ratio(orig.get("cycles"), ceil.get("cycles"))
+    if speedup is None:
+        verdict = "unresolved"
+    elif speedup > 1 + CYCLE_FLOOR:
+        if over_recipe is not None and over_recipe > 1 + CYCLE_FLOOR:
+            verdict = "faster"
+        elif recipe_gain is not None and recipe_gain > 1 + CYCLE_FLOOR:
+            verdict = "compiler_already_can"
+        else:
+            verdict = "faster_than_original"
+    elif speedup < 1 / (1 + CYCLE_FLOOR):
+        verdict = "slower"
+    else:
+        verdict = "unresolved"
+
+    def change(key: str) -> Optional[float]:
+        a, b = orig.get(key), cand.get(key)
+        return round((b - a) / a * 100, 1) if a and b is not None else None
+
+    return {
+        "verdict": verdict,
+        "basis": "simulated_cycles",
+        "core": core,
+        "speedup": speedup,
+        "speedup_over_ceiling": over_recipe,
+        "ceiling_speedup_over_original": recipe_gain,
+        "per_arm": stats,
+        "change_pct": {
+            k: change(k)
+            for k in (
+                "branch_mispredicts",
+                "icache_misses",
+                "l2_misses",
+                "instructions",
+            )
+        },
+    }
+
+
+async def simulate_configuration(
+    *,
+    profiled: Dict[str, Any],
+    options: str,
+    inputs: List[str],
+    run_args: str = "",
+    bench_input: int = 0,
+    core: str = DEFAULT_CORE,
+    label: str = "",
+    rationale: str = "",
+) -> Dict[str, Any]:
+    """Equivalence natively, then cycles for every arm on a named core.
+
+    Measured on Lua: the generic O3CPU, whose conditional predictor is a
+    TournamentBP, credited BOLT's recipe with 1.307x -- mispredicts fell 72%.
+    NeoverseV2, with a TAGE-SC-L predictor, credited it with 1.026x and no
+    change in mispredicts; its gain was 20% fewer i-cache misses. Wall-clock
+    on this host could resolve neither. A layout claim is a claim about a
+    predictor and a cache, so the core is named on every result and the
+    default is the modelled real one.
+    """
+    from app.services.agent_gem5_sandbox import (
+        CPU_TYPES,
+        GEM5_BINARY,
+        GEM5_SE_CONFIG,
+        MODELS_WITHOUT_SCALAR_FMA,
+        resolve_cpu_type,
+    )
+    from app.services.agent_restructure import (
+        compare_runs,
+        differential_script,
+        parse_differential,
+    )
+
+    model = resolve_cpu_type(core or DEFAULT_CORE)
+    if model not in CPU_TYPES:
+        return {"error": f"core {core!r} is not one of: {', '.join(CPU_TYPES)}"}
+    problem, safe_options = check_options(options)
+    if problem:
+        return {
+            "success": True,
+            "data": {"verdict": "did_not_compile", "compile_errors": problem},
+            "findings": [],
+        }
+    for image in (BOLT_IMAGE, GEM5_IMAGE):
+        blocked = sandbox_blocked(image)
+        if blocked:
+            return {"error": blocked}
+
+    arms = [
+        Arm("orig", "cp prog orig"),
+        Arm("cand", _bolt_build("cand", safe_options)),
+        Arm("ceiling", _bolt_build("ceiling", STANDARD_RECIPE), differential=False),
+    ]
+    with tempfile.TemporaryDirectory(prefix="bolt_cycles_") as workdir:
+        Path(workdir, "prog").write_bytes(profiled["prog"])
+        Path(workdir, "prof.fdata").write_text(profiled["fdata"], encoding="utf-8")
+        for i, text in enumerate(inputs):
+            Path(workdir, f"in_{i}.txt").write_text(text, encoding="utf-8")
+        fma_probe = "; ".join(
+            f"echo \"__fma__ {a.name} $(objdump -d {a.name} 2>/dev/null | grep -cE '{_FMA_FAMILY}')\""
+            for a in arms
+        )
+        try:
+            _, stdout, _ = await agent_sandbox_runtime.run_in_sandbox(
+                differential_script("chmod +x prog", arms, len(inputs), run_args)
+                + "; "
+                + fma_probe,
+                workdir,
+                image=BOLT_IMAGE,
+                timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            return {"error": "building and checking the arms timed out"}
+        parsed = parse_differential(stdout)
+        if not parsed["built"].get("cand"):
+            return {
+                "success": True,
+                "data": {
+                    "verdict": "did_not_compile",
+                    "compile_errors": parsed["logs"].get("cand", "")[:3000],
+                },
+                "findings": [],
+            }
+        equivalence = compare_runs(
+            parsed,
+            len(inputs),
+            baseline="orig",
+            candidate="cand",
+            tolerance=DEFAULT_TOLERANCE,
+        )
+        if equivalence["status"] != "equivalent":
+            return package(
+                {"verdict": equivalence["status"], "equivalence": equivalence},
+                kind="binary_layout_result",
+                label=label or safe_options,
+                invariant=rationale,
+                value_preserving=True,
+                n_inputs=len(inputs),
+            )
+        fma = {
+            m.group(1): int(m.group(2))
+            for m in re.finditer(r"__fma__ (\w+) (\d+)", stdout)
+        }
+        if model in MODELS_WITHOUT_SCALAR_FMA and any(fma.values()):
+            return {
+                "error": (
+                    f"{model}'s functional units cannot execute scalar fmadd, and "
+                    f"the binaries contain {max(fma.values())} -- the simulation "
+                    "would never finish. Rebuild with build_flags including "
+                    "-ffp-contract=off, which removes them without other change."
+                )
+            }
+
+        built = [a.name for a in arms if Path(workdir, a.name).is_file()]
+        sims = " ".join(
+            f"( {GEM5_BINARY} -q -d m5_{name} {GEM5_SE_CONFIG} --cpu-type={model} "
+            f"--caches --l2cache -c ./{name} -o '{run_args}' --input in_{bench_input}.txt "
+            f'>sim_{name}.log 2>&1; echo "__simrc__ {name} $?" ) &'
+            for name in built
+        )
+        try:
+            _, sim_out, _ = await agent_sandbox_runtime.run_in_sandbox(
+                f"{sims} wait",
+                workdir,
+                image=GEM5_IMAGE,
+                timeout_seconds=SIMULATION_TIMEOUT_SECONDS,
+                cpus=str(max(1, len(built))),
+            )
+        except asyncio.TimeoutError:
+            return {
+                "error": (
+                    f"simulation did not finish in {SIMULATION_TIMEOUT_SECONDS}s. "
+                    "An out-of-order core simulates on the order of 100k "
+                    "instructions a second: shrink the timed input."
+                )
+            }
+        stats: Dict[str, Dict[str, Optional[int]]] = {}
+        failed: Dict[str, str] = {}
+        for name in built:
+            stats_file = Path(workdir, f"m5_{name}", "stats.txt")
+            if stats_file.is_file():
+                stats[name] = parse_gem5_stats(
+                    stats_file.read_text(encoding="utf-8", errors="replace")
+                )
+            else:
+                log = Path(workdir, f"sim_{name}.log")
+                failed[name] = (
+                    log.read_text(errors="replace") if log.is_file() else ""
+                )[-800:]
+
+    if "orig" in failed or "cand" in failed:
+        return {"success": False, "error": f"simulation failed: {failed}"}
+    speed = judge_cycles(stats, model)
+    verdict = speed.pop("verdict")
+    result = {"verdict": verdict, "equivalence": equivalence, "timing": speed}
+    return package(
+        result,
+        kind="binary_layout_result",
+        label=label or safe_options,
+        invariant=rationale,
+        value_preserving=True,
+        n_inputs=len(inputs),
+        ceiling_flags=f"the standard BOLT recipe ({STANDARD_RECIPE})",
+        extra={
+            "options": safe_options,
+            "measured_by": f"gem5 {model}, cycles on input {bench_input}",
+            "profiled_on_inputs": profiled.get("profiled_on"),
+        },
+    )

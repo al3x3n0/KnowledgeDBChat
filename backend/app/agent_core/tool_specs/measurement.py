@@ -115,6 +115,15 @@ _PROGRAM_PROPS = {
         "type": "string",
         "description": "Arguments for every run, e.g. '- 300000' for an interpreter reading stdin.",
     },
+    "profile_run_args": {
+        "type": "string",
+        "description": (
+            "Arguments for the PROFILING runs, when they should differ from "
+            "run_args -- e.g. a large workload to profile and a small one to "
+            "simulate. A thin profile makes a worse layout: on Lua, n=300 "
+            "profiles turned a 2.6% gain into a 6.8% loss."
+        ),
+    },
     "profile_inputs": {
         "type": "array",
         "items": {"type": "integer"},
@@ -657,6 +666,27 @@ SPECS: tuple[ToolSpec, ...] = (
                 "rationale": {
                     "type": "string",
                     "description": "What about this program's profile the configuration relies on.",
+                },
+                "measure": {
+                    "type": "string",
+                    "enum": ["wall", "cycles"],
+                    "description": (
+                        "'wall' (default) times natively. 'cycles' simulates "
+                        "every arm in gem5 on a named core -- deterministic, so "
+                        "it resolves effects under the host's noise, which "
+                        "layout effects usually are. Keep the timed input "
+                        "small (~100k simulated instructions a second)."
+                    ),
+                },
+                "core": {
+                    "type": "string",
+                    "description": (
+                        "gem5 core for measure='cycles' (default NeoverseV2). "
+                        "The generic O3CPU's weak TournamentBP credited BOLT on "
+                        "Lua with 12x the gain NeoverseV2's TAGE-SC-L did. "
+                        "NeoverseV2 cannot execute scalar fmadd: build with "
+                        "-ffp-contract=off."
+                    ),
                 },
                 "trials": {
                     "type": "integer",

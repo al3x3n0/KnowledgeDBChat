@@ -516,3 +516,31 @@ class TestAnyBoundContract:
             n_inputs=3,
         )
         assert packaged["findings"][0]["win"] == 1
+
+
+def test_a_broken_harness_is_the_headline_and_says_why():
+    """Measured: problem was null and the run went browsing instead of
+    fixing a driver that used a type only the kernel defined."""
+    detail = (
+        "the harness itself did not build: driver.c:6: error: unknown type name 'Color'"
+    )
+    entry = proposer._summarise(
+        {
+            "name": "lut",
+            "idea": "",
+            "invariant": "",
+            "why_compiler_cannot": "",
+            "value_preserving": True,
+            "kernel": "k",
+        },
+        "kernel",
+        {"success": False, "data": {"verdict": "baseline_broken", "detail": detail}},
+        False,
+    )
+    assert entry["problem"] == detail
+    out = proposer._as_result(
+        {"proposals": [entry], "verdicts": {"baseline_broken": 1}, "findings": []},
+        "s",
+        "source",
+    )
+    assert out["success"] is False and "unknown type name 'Color'" in out["error"]

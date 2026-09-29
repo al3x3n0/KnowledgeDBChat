@@ -398,8 +398,13 @@ def _summarise(
         "bit_identical": (data.get("equivalence") or {}).get("bit_identical"),
         "repaired": repaired,
         "notes": data.get("notes") or [],
+        # `detail` is where a broken harness explains itself. It was missing
+        # here, so a run was told "baseline_broken" with problem null -- a
+        # driver that used a type only the kernel defined -- and went
+        # browsing the repository instead of fixing the driver.
         "problem": data.get("compile_errors")
         or (data.get("equivalence") or {}).get("first_problem")
+        or data.get("detail")
         or result.get("error"),
         "warnings": timing.get("warnings") or [],
         body_key: proposal[body_key],
@@ -771,6 +776,20 @@ def _as_result(out: Dict[str, Any], subject: str, mode: str) -> Dict[str, Any]:
     if out.get("error"):
         return {"success": False, "error": out["error"]}
     proposals = out["proposals"]
+    broken = next((p for p in proposals if p["verdict"] == "baseline_broken"), None)
+    if broken is not None:
+        # Nothing was judged: every candidate would be compared with an
+        # original that does not build or run. That is the whole answer, so
+        # it is the headline rather than one proposal's verdict.
+        return {
+            "success": False,
+            "error": (
+                "the ORIGINAL kernel does not build or run with this driver and "
+                "these inputs, so no proposal was judged. Fix the harness: "
+                f"{broken.get('problem') or 'no detail was reported'}"
+            ),
+            "data": {"verdicts": out["verdicts"], "proposals": proposals},
+        }
     winners = [p for p in proposals if p["verdict"] == "faster"]
     borrowed = [
         p

@@ -38,8 +38,11 @@ _HARNESS_PROPS = {
             "C source defining main: reads a workload from stdin, calls the "
             "kernel's functions, and PRINTS what they computed (a checksum "
             "is fine). It is yours and fixed -- compiled separately, so a "
-            "candidate cannot change what is measured or printed. Make the "
-            "bench workload run for >=250 ms or the host's noise decides."
+            "candidate cannot change what is measured or printed. Because it "
+            "is a separate file it sees NOTHING from the kernel: declare every "
+            "type and prototype it uses (repeat a struct the kernel defines). "
+            "Make the bench workload run for >=250 ms or the host's noise "
+            "decides."
         ),
     },
     "inputs": {

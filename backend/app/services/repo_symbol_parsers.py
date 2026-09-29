@@ -17,9 +17,11 @@ So each language is read by a real parser:
               rtextures.c, 108 definitions with or without include paths.
   JS / TS     tree-sitter with the JavaScript and TypeScript grammars.
 
-Nothing falls back to a regex. A language whose parser is not installed is
-reported as unreadable (`parser_available`), so a caller is told "cannot read
-this file" rather than "the symbol is not there".
+Nothing falls back to a regex. libclang is ESSENTIAL: if it cannot be
+loaded, `LibclangMissing` is raised where it is first needed, and the image
+build asserts it parses. The tree-sitter grammars are reported as unreadable
+when missing, so a caller is told "cannot read this file" rather than "the
+symbol is not there".
 
 Each result is (name, kind, start_line, end_line), 1-based and inclusive.
 """
@@ -52,16 +54,28 @@ ALL_EXTS = PYTHON_EXTS | CLANG_EXTS | TREE_SITTER_EXTS
 # --------------------------------------------------------------------------- #
 
 
+class LibclangMissing(RuntimeError):
+    """libclang is essential here; its absence is a broken install."""
+
+
 @lru_cache(maxsize=1)
 def _clang_index():
+    # Not optional. A missing libclang used to make C/C++ files "unreadable",
+    # which quietly turned symbol lookup off for the languages this project's
+    # optimisation work is about. It is a hard dependency, and a broken install
+    # says so where it is first needed.
     try:
         from clang import cindex
 
-        return cindex.Index.create()
-    except Exception:
         # The bindings import without the shared library they drive; only
         # creating an index proves libclang is actually loadable.
-        return None
+        return cindex.Index.create()
+    except Exception as exc:
+        raise LibclangMissing(
+            "libclang is required for C/C++ symbol lookup and could not be "
+            f"loaded ({exc.__class__.__name__}: {exc}). Install the pinned "
+            "`libclang` from backend/requirements.txt, or rebuild the image."
+        ) from exc
 
 
 @lru_cache(maxsize=4)
@@ -103,7 +117,8 @@ def parser_available(path: str) -> bool:
     if ext in PYTHON_EXTS:
         return True
     if ext in CLANG_EXTS:
-        return _clang_index() is not None
+        _clang_index()  # raises LibclangMissing rather than answering False
+        return True
     if ext in TREE_SITTER_EXTS:
         return _ts_parser(_ts_kind(ext)) is not None
     return False
@@ -175,8 +190,6 @@ def clang_symbols(
     from clang import cindex
 
     index = _clang_index()
-    if index is None:
-        return []
     try:
         tu = index.parse(
             str(path),

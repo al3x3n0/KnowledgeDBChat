@@ -100,17 +100,38 @@ def test_typescript_interfaces_classes_methods_arrows_and_tests(tmp_path):
     assert ("blends two colours", "test") in found
 
 
-def test_no_parser_means_unreadable_not_empty(tmp_path, monkeypatch):
-    """A missing parser is reported, never replaced by a pattern."""
+def test_libclang_is_installed_and_parses():
+    """Essential, so this fails CI on a broken install rather than letting C
+    and C++ lookup switch itself off."""
+    parsers._clang_index.cache_clear()
+    from clang import cindex
+
+    tu = parsers._clang_index().parse(
+        "t.c", unsaved_files=[("t.c", "int f(void) { return 0; }")]
+    )
+    assert [c.spelling for c in tu.cursor.get_children() if c.is_definition()] == ["f"]
+    assert isinstance(tu, cindex.TranslationUnit)
+
+
+def test_a_missing_libclang_is_an_error_not_an_empty_answer(tmp_path, monkeypatch):
     path = tmp_path / "src" / "a.c"
     path.parent.mkdir()
     path.write_text("int visible(void) { return 0; }\n")
-    monkeypatch.setattr(parsers, "_clang_index", lambda: None)
-    assert not RepoSymbolIndexService.reads("src/a.c")
-    result = RepoSymbolIndexService().retrieve(
-        repo_root=tmp_path, query_keywords=["visible"], include_paths=["src/a.c"]
-    )
-    assert result["symbol_scan_files"] == 0
+
+    def missing():
+        raise parsers.LibclangMissing("libclang is required")
+
+    monkeypatch.setattr(parsers, "_clang_index", missing)
+    with pytest.raises(parsers.LibclangMissing):
+        RepoSymbolIndexService.reads("src/a.c")
+    with pytest.raises(parsers.LibclangMissing):
+        parsers.symbols_in(path)
+
+
+def test_a_missing_grammar_is_unreadable_not_empty(monkeypatch):
+    """The JS/TS grammars stay optional: reported, never replaced by a pattern."""
+    monkeypatch.setattr(parsers, "_ts_parser", lambda kind: None)
+    assert not RepoSymbolIndexService.reads("web/app.ts")
 
 
 def test_a_parse_is_cached_per_file_version(tmp_path, monkeypatch):

@@ -157,6 +157,15 @@ database that already has a revision recorded.
 - **LLM**: DeepSeek (default), OpenAI, Anthropic, Qwen (DashScope), Kimi (Moonshot), or Ollama, selected by `LLM_PROVIDER`. The stack no longer bundles Ollama — that provider still works against an instance you run yourself via `OLLAMA_BASE_URL`. `DEFAULT_MODEL` must name a model the chosen provider serves, since it reaches the request as `model or <PROVIDER>_MODEL`; per-request routing via `services/llm_routing.py` (fast/balanced/deep tiers). Native tool calling and schema-constrained output live in `services/llm_providers/` (used by `LLMService.generate_structured()`); `generate_response()` is the legacy prompted-text path
 - **Storage**: MinIO (S3-compatible object storage)
 - **Transcription**: OpenAI Whisper, on a dedicated `celery_transcription` worker. Whisper, librosa, speechbrain and resemblyzer (and numba/llvmlite under them) live only in `Dockerfile.transcription-worker`, which builds FROM the backend image; the API, general worker and beat images do not carry them. `transcribe_document` is routed to the `transcription` queue (`TRANSCRIPTION_CELERY_QUEUE`), so with that worker stopped the task waits rather than fails. Speaker diarization (speechbrain first, then resemblyzer + KMeans) is optional and off by default
+- **Code symbols**: every language through its own parser
+  (`services/repo_symbol_parsers.py`): Python `ast`, JS/TS tree-sitter, and
+  **C/C++ libclang, which is essential**, not optional. A missing libclang
+  raises `LibclangMissing` where it is first needed, instead of quietly
+  treating C files as unreadable. The backend image's runtime stage asserts
+  that libclang parses, so a broken install fails the build, and
+  `test_libclang_is_installed_and_parses` fails CI. No regex fallback for any
+  language: a pattern answered "not found" for a function defined in the file
+  it searched
 - **Diagrams**: Mermaid, rendered by `mermaid-renderer/` — a first-party Node service holding one headless Chromium, speaking the Kroki companion protocol (the full Kroki gateway was 3.76 GB to proxy to it, and its mermaid companion 1.54 GB); falls back to kroki.io
 
 ### Backend Structure (`backend/app/`)

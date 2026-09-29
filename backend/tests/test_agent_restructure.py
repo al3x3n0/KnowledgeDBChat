@@ -594,3 +594,25 @@ def test_a_link_failure_reports_the_error_line_and_the_static_remedy():
     assert explain_compiler_failure(
         "x.c:6:49: error: unknown type name 'Color'"
     ).endswith("unknown type name 'Color'")
+
+
+def test_trials_are_floored_where_the_paired_analysis_can_exist():
+    assert r.clamp_trials(3) == r.MIN_PAIRS
+    assert r.clamp_trials(None) == r.DEFAULT_TRIALS
+    assert r.clamp_trials(99) == r.MAX_TRIALS
+    assert r.clamp_trials("x") == r.DEFAULT_TRIALS
+
+
+def test_a_broken_baseline_result_carries_error_at_the_top():
+    out = r.package(
+        {
+            "verdict": "baseline_broken",
+            "detail": "the ORIGINAL program exited 2 on input 0",
+        },
+        kind="restructuring_result",
+        label="x",
+        invariant="",
+        value_preserving=True,
+        n_inputs=1,
+    )
+    assert out["success"] is False and "exited 2 on input 0" in out["error"]

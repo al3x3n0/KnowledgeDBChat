@@ -562,6 +562,21 @@ def judge_speed(
 
 CONTROL_ARM = "control"
 
+
+def clamp_trials(trials: Any) -> int:
+    """At least enough trials for the paired analysis, at most MAX_TRIALS.
+
+    A run asked for 3 and got a bit-identical rewrite at 1.32x reported as
+    unresolved: below MIN_PAIRS the paired interval cannot exist, so the
+    coarse unpaired rule decides, and with three trials it rarely can.
+    """
+    try:
+        requested = int(trials or DEFAULT_TRIALS)
+    except (TypeError, ValueError):
+        requested = DEFAULT_TRIALS
+    return max(MIN_PAIRS, min(requested, MAX_TRIALS))
+
+
 #: Paired analysis needs enough pairs for a 95% interval on the median to
 #: exist at all: with 5 pairs the tightest order-statistic interval covers
 #: only 94%, so below this the unpaired rule decides.
@@ -1044,7 +1059,7 @@ async def evaluate_restructuring(
         arms=arms,
         inputs=cleaned,
         bench_input=bench_input,
-        trials=max(3, min(int(trials or DEFAULT_TRIALS), MAX_TRIALS)),
+        trials=clamp_trials(trials),
         tolerance=tolerance,
         image=image,
         timeout_seconds=timeout_seconds,
@@ -1133,6 +1148,14 @@ def package(
         title += ")"
     return {
         "success": verdict not in ("baseline_broken",),
+        # A failed result says why at the top, where the action ledger (and so
+        # the critic) reads it. Without this a broken harness appeared there
+        # as a bare "FAILED" while the reason sat in data.detail.
+        **(
+            {"error": data.get("detail") or f"verdict: {verdict}"}
+            if verdict == "baseline_broken"
+            else {}
+        ),
         "data": data,
         "findings": [
             {

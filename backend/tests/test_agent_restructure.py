@@ -291,3 +291,55 @@ def test_a_bare_proposal_object_is_accepted():
     wrapped = {"proposals": [{"name": "t", "kernel": "int f;"}]}
     assert proposer._first_proposal(wrapped, "kernel")["name"] == "t"
     assert proposer._first_proposal({"note": "nothing"}, "kernel") is None
+
+
+def test_an_unresolved_hint_of_a_gain_is_remeasured_once():
+    calls = []
+
+    async def evaluate(proposal, baseline=None, trials=7):
+        calls.append(trials)
+        return {"data": {"verdict": "faster", "timing": {"speedup": 1.5}}}
+
+    first = {"data": {"verdict": "unresolved", "timing": {"speedup": 1.53}}}
+    out = asyncio.run(proposer._remeasure_if_hinted(first, {"name": "p"}, evaluate))
+    assert calls == [proposer.MAX_TRIALS] and out["data"]["verdict"] == "faster"
+    assert out["data"]["first_measurement"] == {"speedup": 1.53}
+
+    # No hint of a gain: nothing is spent re-timing it.
+    calls.clear()
+    flat = {"data": {"verdict": "unresolved", "timing": {"speedup": 0.99}}}
+    assert asyncio.run(proposer._remeasure_if_hinted(flat, {}, evaluate)) is flat
+    assert calls == []
+
+
+class TestCpuBasis:
+    def test_cpu_time_is_parsed_beside_wall_time(self):
+        out = "__t__ orig 300000 250000\n__t__ cand 150000 120000\n__t__ orig 900000\n"
+        assert r.parse_cpu_timings(out) == {"orig": [250000], "cand": [120000]}
+        wall, _, _ = r.parse_timings(out)
+        assert wall["orig"] == [300000, 900000]
+
+    def test_a_single_threaded_pair_is_judged_on_cpu_time(self):
+        # Wall time swamped by queueing; CPU time steady and clearly 1.4x.
+        wall = {
+            "orig": [300_000, 520_000, 410_000, 700_000],
+            "cand": [210_000, 600_000, 380_000, 520_000],
+        }
+        cpu = {
+            "orig": [280_000, 281_000, 282_000, 283_000],
+            "cand": [200_000, 201_000, 201_000, 202_000],
+        }
+        out = r.judge_speed(
+            wall, baseline="orig", candidate="cand", ceiling=None, cpu_timings=cpu
+        )
+        assert out["basis"] == "cpu" and out["verdict"] == "faster"
+        assert out["wall"]["verdict"] == "unresolved"
+
+    def test_a_parallel_candidate_falls_back_to_wall_time(self):
+        wall = {"orig": [400_000] * 4, "cand": [100_000] * 4}
+        cpu = {"orig": [390_000] * 4, "cand": [380_000] * 4}  # four threads
+        out = r.judge_speed(
+            wall, baseline="orig", candidate="cand", ceiling=None, cpu_timings=cpu
+        )
+        assert out["basis"] == "wall" and out["verdict"] == "faster"
+        assert any("more than one core" in w for w in out["warnings"])

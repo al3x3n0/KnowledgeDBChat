@@ -97,3 +97,26 @@ class TestReadingTheScannerOutput:
         for s in scan._suggestions(p):
             assert s["flag"], f"{s['pass']} has no plugin path"
             assert s["value_preserving"] is not None
+
+
+def test_workspace_paths_cannot_escape_or_inject():
+    import asyncio
+
+    from app.services import agent_optscan as o
+
+    for bad in (
+        "../etc/passwd.c",
+        "src/../../x.c",
+        "/abs/x.c",
+        "a.c; rm -rf /",
+        "a'b.c",
+    ):
+        out = asyncio.run(o.scan_workspace(root="/tmp", paths=[bad]))
+        assert "not a plain repository-relative path" in out["error"], bad
+
+
+def test_each_failed_file_is_named_with_its_own_error():
+    from app.services import agent_optscan as o
+
+    script = o._scan_script(["src/a.c", "src/b.c"], "-O1 -Isrc")
+    assert "failed_file" in script and "'src/a.c' 'src/b.c'" in script

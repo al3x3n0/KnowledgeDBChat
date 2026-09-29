@@ -595,6 +595,39 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   VM's load average cannot see load on the macOS host. It read "quiet" while
   that host was saturated.
 
+- **The optimisation chain has been run on a real codebase (raylib 5.0),
+  and three things only real code could show are fixed.**
+  First, `scan_for_optimizations` could not take a repository at all. It
+  accepted only bare `.c` text, while raylib's translation units include
+  11 MB of headers under `external/`. It now takes `paths` + `include_dirs`
+  from a `clone_and_index_repo` workspace. The workspace is copied into the
+  sandbox directory, because the daemon resolves mounts on the host, where
+  only that directory is shared. Each failed file is reported with its own
+  first error. Over 7 of 7 translation units, 227 of 374 divisions inside
+  loops were loop-invariant.
+  Second, `propose_restructurings` did not re-measure. Three
+  `ImageBlurGaussian` rewrites were all bit-identical to raylib and all
+  `unresolved` at 7 trials. The proposer now does what the pass path does: an
+  unresolved candidate whose fastest trial hints at a gain is re-timed once at
+  15 trials. The one that held was 1.43x, and 1.44x over -O3: it stores the
+  blur's intermediate as bytes, since the vertical pass truncates to
+  `unsigned char` anyway.
+  Third, verdicts are judged on user+sys time from a tiny `wait4` helper
+  built in the sandbox. That helper resolves microseconds where `times` and
+  `/usr/bin/time` give 10 ms, and it enforces its own timeout, since
+  `timeout` around it would orphan the program. **This does not remove noise
+  under Docker Desktop.** The VM cannot see host preemption of its vCPUs, so
+  that time counts as running. The same null control read 0.159 on both
+  bases. Wall time is still used whenever CPU time exceeds it, because then
+  the candidate is multithreaded.
+  Turning the blur rewrite into a pass failed honestly: two compile errors,
+  then a pass that never fired. A data-layout change is a hard case, and
+  nothing broken was reported as working.
+  Found on the way: raylib's `ImageBlurGaussian` reads past its pixel buffer
+  when `blurSize` exceeds the image width or height. It is still present on
+  master `6ecf21f` (2026-09-28), shown with guard-page allocations since the
+  image ships no ASan runtime. It has not been reported upstream.
+
 - **A mechanism that never engaged is not a measurement of that mechanism.**
   `evaluate_across_kernels` reported `geomean 1.0000x over 4 kernels` and
   recorded it as a `mechanism_evaluation` finding a contract accepted. The

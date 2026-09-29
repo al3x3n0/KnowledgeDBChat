@@ -157,10 +157,33 @@ SPECS: tuple[ToolSpec, ...] = (
                     "type": "object",
                     "description": (
                         "Bare .c filenames mapped to their source text, e.g. "
-                        "{'raymath.c': '...'}. Several translation units may be "
-                        "scanned at once; each is compiled and scanned "
-                        "separately and the counts are summed."
+                        "{'raymath.c': '...'}, for self-contained files. Give "
+                        "this OR paths."
                     ),
+                },
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Repository-relative .c files in the coding workspace "
+                        "(clone_and_index_repo first), e.g. ['src/rtextures.c']. "
+                        "Each is compiled in place, so its includes resolve as "
+                        "in the repo's own build. Up to 64."
+                    ),
+                },
+                "include_dirs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Repository-relative -I directories for paths, e.g. "
+                        "['src', 'src/external/glfw/include']. Defines go in "
+                        "flags. A file that fails to compile is reported with "
+                        "its first error."
+                    ),
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace to read paths from (default: the current one).",
                 },
                 "flags": {
                     "type": "string",
@@ -176,7 +199,7 @@ SPECS: tuple[ToolSpec, ...] = (
                     "description": "Names the scan in the finding it records.",
                 },
             },
-            "required": ["sources"],
+            "required": [],
         },
         effects="write",
         cost_tier="high",

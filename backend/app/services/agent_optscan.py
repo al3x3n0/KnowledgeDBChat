@@ -179,37 +179,71 @@ async def scan_for_optimizations(
     with tempfile.TemporaryDirectory(prefix="optscan_") as workdir:
         for name, text in sources.items():
             Path(workdir, name).write_text(text or "", encoding="utf-8")
-        script = (
-            "ok=0; bad=''; "
-            "for f in *.c; do "
-            f'  if clang {flags} -S -emit-llvm -o "$f.ll" "$f" 2>>build_err.txt; then '
-            "    ok=$((ok+1)); "
-            f"    opt -load-pass-plugin={SCANNER} -passes=opt-scan "
-            '      -disable-output "$f.ll" 2>&1 | grep "^OPTSCAN" || true; '
-            '  else bad="$bad $f"; fi; '
-            "done; "
-            'echo "OPTSCAN_META\tcompiled\t$ok"; '
-            'echo "OPTSCAN_META\tfailed\t$bad"'
+        return await _scan_in(
+            workdir,
+            list(sources),
+            flags,
+            label=label,
+            image=image,
+            timeout_seconds=timeout_seconds,
         )
-        try:
-            returncode, stdout, stderr = await agent_sandbox_runtime.run_in_sandbox(
-                script, workdir, image=image, timeout_seconds=timeout_seconds
-            )
-        except asyncio.TimeoutError:
-            return {"error": f"scan timed out after {timeout_seconds}s"}
-        except FileNotFoundError:
-            return {"error": "Docker is not available to this process"}
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning(f"scan_for_optimizations failed: {exc}")
-            return {"error": f"scan failed: {exc}"}
+
+
+def _scan_script(paths: List[str], flags: str) -> str:
+    """Compile each path to IR and run the scanner over it.
+
+    Each file's IR goes beside it as <path>.ll, and a failure records the
+    first compiler error for that file rather than one shared log: across a
+    real repository, "3 of 12 failed" is only actionable with each reason.
+    """
+    listed = " ".join(f"'{p}'" for p in paths)
+    return (
+        "ok=0; "
+        f"for f in {listed}; do "
+        f'  if clang {flags} -S -emit-llvm -o "$f.ll" "$f" 2>err.txt; then '
+        "    ok=$((ok+1)); "
+        f"    opt -load-pass-plugin={SCANNER} -passes=opt-scan "
+        '      -disable-output "$f.ll" 2>&1 | grep "^OPTSCAN" || true; '
+        '  else echo "OPTSCAN_META\tfailed_file\t$f\t$(grep -m1 error: err.txt | cut -c1-240)"; fi; '
+        "done; "
+        'echo "OPTSCAN_META\tcompiled\t$ok"'
+    )
+
+
+async def _scan_in(
+    workdir: str,
+    paths: List[str],
+    flags: str,
+    *,
+    label: str,
+    image: str,
+    timeout_seconds: int,
+) -> Dict[str, Any]:
+    try:
+        _, stdout, _ = await agent_sandbox_runtime.run_in_sandbox(
+            _scan_script(paths, flags),
+            workdir,
+            image=image,
+            timeout_seconds=timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        return {"error": f"scan timed out after {timeout_seconds}s"}
+    except FileNotFoundError:
+        return {"error": "Docker is not available to this process"}
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"scan_for_optimizations failed: {exc}")
+        return {"error": f"scan failed: {exc}"}
 
     compiled = 0
     failed: List[str] = []
+    failure_reasons: Dict[str, str] = {}
     for line in (stdout or "").splitlines():
         if line.startswith("OPTSCAN_META\tcompiled\t"):
             compiled = int(line.rsplit("\t", 1)[1] or 0)
-        elif line.startswith("OPTSCAN_META\tfailed\t"):
-            failed = line.rsplit("\t", 1)[1].split()
+        elif line.startswith("OPTSCAN_META\tfailed_file\t"):
+            parts = line.split("\t")
+            failed.append(parts[2])
+            failure_reasons[parts[2]] = parts[3] if len(parts) > 3 else ""
 
     if not compiled:
         # Coverage of zero is not a scan with no findings, and must not read as
@@ -217,8 +251,9 @@ async def scan_for_optimizations(
         return {
             "success": False,
             "error": (
-                f"none of the {len(sources)} sources compiled, so nothing was "
-                "scanned. First errors: " + (stderr or "")[:400]
+                f"none of the {len(paths)} sources compiled, so nothing was "
+                "scanned. "
+                + "; ".join(f"{k}: {v}" for k, v in list(failure_reasons.items())[:4])
             ),
         }
 
@@ -236,7 +271,8 @@ async def scan_for_optimizations(
         "data": {
             "modules_compiled": compiled,
             "modules_failed": failed,
-            "coverage": f"{compiled} of {len(sources)}",
+            "failure_reasons": failure_reasons,
+            "coverage": f"{compiled} of {len(paths)}",
             "suggestions": suggestions,
             "loop_divisions": parsed["loop_divisions"],
             "loop_invariant_divisions": parsed["loop_invariant_divisions"],
@@ -256,8 +292,82 @@ async def scan_for_optimizations(
                     else f"no known opportunity in {compiled} module(s)"
                 ),
                 "sites": parsed["known"],
-                "coverage": f"{compiled} of {len(sources)}",
+                "coverage": f"{compiled} of {len(paths)}",
                 "counts_are_static": caveat,
             }
         ],
     }
+
+
+#: A repository-relative source path: segments of safe characters, no `..`,
+#: no leading slash. It is quoted into a shell loop, so nothing else passes.
+SAFE_REPO_PATH = re.compile(
+    r"^(?!.*(^|/)\.\.(/|$))[A-Za-z0-9_.+-]+(/[A-Za-z0-9_.+-]+)*$"
+)
+#: A scan of a whole repository compiles each file; a timeout sized for one
+#: pasted file is not enough for dozens.
+WORKSPACE_TIMEOUT_SECONDS = 900
+
+
+async def scan_workspace(
+    *,
+    root: str,
+    paths: List[str],
+    include_dirs: Optional[List[str]] = None,
+    flags: str = "-O1",
+    label: str = "",
+    image: str = DEFAULT_IMAGE,
+    timeout_seconds: int = WORKSPACE_TIMEOUT_SECONDS,
+) -> Dict[str, Any]:
+    """Scan files of a cloned repository, with its headers where they live.
+
+    Pasting sources cannot scan a real codebase: raylib's translation units
+    include raylib.h, rlgl.h, config.h and a dozen headers under external/,
+    11 MB in all, and the text form takes bare .c names under a 4 MB cap. Here
+    the workspace is copied whole into the sandbox's directory -- the daemon
+    resolves mounts on the host, where only that directory is shared -- and
+    each named file is compiled in place, so its includes resolve as they do
+    in the repository's own build.
+    """
+    import shutil
+
+    base = Path(root or "")
+    if not root or not base.is_dir():
+        return {
+            "error": "the workspace is not available; run clone_and_index_repo first"
+        }
+    if not paths:
+        return {"error": "paths is required: repository-relative .c files to scan"}
+    if len(paths) > MAX_SOURCES:
+        return {"error": f"at most {MAX_SOURCES} paths per scan, got {len(paths)}"}
+    for rel in list(paths) + list(include_dirs or []):
+        if not SAFE_REPO_PATH.match(str(rel or "")):
+            return {"error": f"path {rel!r} is not a plain repository-relative path"}
+    missing = [p for p in paths if not (base / p).is_file()]
+    if missing:
+        return {"error": f"not in the workspace: {', '.join(missing[:8])}"}
+    if not SAFE_FLAGS.match(flags or ""):
+        return {"error": f"flags contain unsupported characters: {flags!r}"}
+    if not agent_sandbox_runtime.execution_enabled():
+        return {
+            "error": "Sandboxed execution is disabled (ENABLE_UNSAFE_CODE_EXECUTION is false)."
+        }
+    if image not in agent_sandbox_runtime.allowed_images():
+        return {"error": agent_sandbox_runtime.image_not_allowlisted(image)}
+
+    includes = " ".join(f"-I{d}" for d in (include_dirs or []))
+    with tempfile.TemporaryDirectory(prefix="optscan_ws_") as workdir:
+        shutil.copytree(
+            base,
+            workdir,
+            dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns(".git"),
+        )
+        return await _scan_in(
+            workdir,
+            list(paths),
+            f"{flags} {includes}".strip(),
+            label=label,
+            image=image,
+            timeout_seconds=timeout_seconds,
+        )

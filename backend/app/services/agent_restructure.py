@@ -180,6 +180,42 @@ def differential_script(prep: str, arms: Sequence[Arm], n_inputs: int) -> str:
     return "; ".join(parts)
 
 
+CPUTIME_SOURCE = "__cputime.c"
+CPUTIME_BIN = "__cputime"
+#: Runs one program and writes "wall_us cpu_us" to a file. rusage's user and
+#: sys times come from the scheduler's own accounting, so they resolve far
+#: below the 10 ms `times` and /usr/bin/time report in this image.
+CPUTIME_C = r"""
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
+static pid_t child;
+static void on_alarm(int s) { (void)s; if (child > 0) kill(child, SIGKILL); }
+int main(int argc, char **argv) {
+    if (argc < 4) return 125;
+    struct timespec a, b;
+    clock_gettime(CLOCK_MONOTONIC, &a);
+    child = fork();
+    if (child == 0) { execv(argv[3], argv + 3); _exit(127); }
+    signal(SIGALRM, on_alarm);
+    alarm((unsigned)atoi(argv[2]));
+    int st; struct rusage ru;
+    if (wait4(child, &st, 0, &ru) < 0) return 126;
+    clock_gettime(CLOCK_MONOTONIC, &b);
+    long long wall = (b.tv_sec - a.tv_sec) * 1000000LL + (b.tv_nsec - a.tv_nsec) / 1000;
+    long long cpu = ru.ru_utime.tv_sec * 1000000LL + ru.ru_utime.tv_usec
+                  + ru.ru_stime.tv_sec * 1000000LL + ru.ru_stime.tv_usec;
+    FILE *f = fopen(argv[1], "w");
+    if (f) { fprintf(f, "%lld %lld\n", wall, cpu); fclose(f); }
+    return WIFEXITED(st) ? WEXITSTATUS(st) : 128 + WTERMSIG(st);
+}
+"""
+
+
 def timing_script(
     arms: Sequence[Arm], bench_input: int, trials: int, budget_ns: int
 ) -> str:
@@ -187,14 +223,24 @@ def timing_script(
     # stall on the shared host is paid by all arms rather than by whichever
     # happened to be running.
     names = " ".join(a.name for a in arms)
+    # The helper times each run itself: wall and user+sys in microseconds,
+    # with its own timeout, since `timeout` around it would kill the helper
+    # and orphan the program still running. If it fails to build, the shell's
+    # clock is the fallback and the verdict is on wall time.
     return (
+        f"clang -O2 -o {CPUTIME_BIN} {CPUTIME_SOURCE} 2>/dev/null; "
         f"__t0=$(date +%s%N); "
         f"for a in {names}; do [ -x ./$a ] && ./$a <in_{bench_input}.txt >/dev/null 2>&1; done; "
         f"for t in $(seq 1 {trials}); do "
         f"  for a in {names}; do "
         f"    [ -x ./$a ] || continue; "
-        f"    s=$(date +%s%N); timeout {PER_RUN_TIMEOUT} ./$a <in_{bench_input}.txt >/dev/null 2>&1; "
-        f'    e=$(date +%s%N); echo "__t__ $a $(( (e-s)/1000 ))"; '
+        f"    if [ -x ./{CPUTIME_BIN} ]; then "
+        f"      ./{CPUTIME_BIN} __t.txt {PER_RUN_TIMEOUT} ./$a <in_{bench_input}.txt >/dev/null 2>&1; "
+        f'      echo "__t__ $a $(cat __t.txt)"; '
+        f"    else "
+        f"      s=$(date +%s%N); timeout {PER_RUN_TIMEOUT} ./$a <in_{bench_input}.txt >/dev/null 2>&1; "
+        f'      e=$(date +%s%N); echo "__t__ $a $(( (e-s)/1000 ))"; '
+        f"    fi; "
         f"  done; "
         f"  [ $(( $(date +%s%N) - __t0 )) -gt {budget_ns} ] && break; "
         f"done; "
@@ -260,7 +306,7 @@ def parse_timings(
     cpus: Optional[int] = None
     for line in (stdout or "").splitlines():
         parts = line.split()
-        if parts[:1] == ["__t__"] and len(parts) == 3 and parts[2].isdigit():
+        if parts[:1] == ["__t__"] and len(parts) in (3, 4) and parts[2].isdigit():
             timings.setdefault(parts[1], []).append(int(parts[2]))
         elif parts[:1] == ["__loadavg__"] and len(parts) == 2:
             try:
@@ -270,6 +316,16 @@ def parse_timings(
         elif parts[:1] == ["__cpus__"] and len(parts) == 2 and parts[1].isdigit():
             cpus = int(parts[1])
     return timings, load, cpus
+
+
+def parse_cpu_timings(stdout: str) -> Dict[str, List[int]]:
+    """User+sys microseconds per arm, where the helper reported them."""
+    cpu: Dict[str, List[int]] = {}
+    for line in (stdout or "").splitlines():
+        parts = line.split()
+        if parts[:1] == ["__t__"] and len(parts) == 4 and parts[3].isdigit():
+            cpu.setdefault(parts[1], []).append(int(parts[3]))
+    return cpu
 
 
 # --------------------------------------------------------------------------- #
@@ -375,7 +431,91 @@ def _median_ms(values: Sequence[int]) -> Optional[float]:
     return round(med / 1000.0, 3)
 
 
+#: A program whose CPU time exceeds its wall time by more than this is using
+#: several cores, and CPU time would charge its parallelism as a cost.
+PARALLEL_CPU_RATIO = 1.2
+
+
 def judge_speed(
+    timings: Dict[str, List[int]],
+    *,
+    baseline: str,
+    candidate: str,
+    ceiling: Optional[str],
+    load: Optional[float] = None,
+    cpus: Optional[int] = None,
+    cpu_timings: Optional[Dict[str, List[int]]] = None,
+) -> Dict[str, Any]:
+    """Judge on CPU time when it is the honest measure, wall time otherwise.
+
+    On a Linux host, user+sys time does not count the moments a program sat
+    descheduled behind someone else's work, so a single-threaded kernel's work
+    is measured without the run queue. It does NOT help inside Docker
+    Desktop's VM, and this is measured rather than assumed: when the host takes
+    a vCPU away the guest cannot tell, so the time is charged as running.
+    raylib's blur null control read a 0.159 noise band on CPU time and 0.159
+    on wall time in the same run. Both readings are reported so the difference
+    is visible where there is one.
+
+    A program using several cores is the exception: its CPU time sums the
+    threads and would read as slower exactly when it is faster, so any arm
+    whose CPU time exceeds its wall time sends the verdict back to wall time.
+    """
+    names = [baseline, candidate] + ([ceiling] if ceiling else [])
+    usable = bool(cpu_timings) and all(
+        cpu_timings.get(n) and timings.get(n) for n in (baseline, candidate)
+    )
+    parallel = [
+        n
+        for n in names
+        if usable
+        and cpu_timings.get(n)
+        and timings.get(n)
+        and _median_ms(cpu_timings[n]) > PARALLEL_CPU_RATIO * _median_ms(timings[n])
+    ]
+    if not usable or parallel:
+        out = _judge_on(
+            timings,
+            baseline=baseline,
+            candidate=candidate,
+            ceiling=ceiling,
+            load=load,
+            cpus=cpus,
+        )
+        out["basis"] = "wall"
+        if parallel:
+            out.setdefault("warnings", []).append(
+                f"{', '.join(parallel)} used more than one core (CPU time above "
+                "wall time), so this is judged on wall time and carries the "
+                "host's scheduling noise"
+            )
+        return out
+
+    out = _judge_on(
+        cpu_timings,
+        baseline=baseline,
+        candidate=candidate,
+        ceiling=ceiling,
+        load=load,
+        cpus=cpus,
+    )
+    wall = _judge_on(timings, baseline=baseline, candidate=candidate, ceiling=ceiling)
+    out["basis"] = "cpu"
+    out["wall"] = {
+        k: wall.get(k)
+        for k in (
+            "verdict",
+            "speedup",
+            "median_speedup",
+            "resolvable_difference",
+            "baseline_ms",
+            "candidate_ms",
+        )
+    }
+    return out
+
+
+def _judge_on(
     timings: Dict[str, List[int]],
     *,
     baseline: str,
@@ -524,6 +664,7 @@ async def run_comparison(
                 target.write_text(content, encoding="utf-8")
         for i, text in enumerate(inputs):
             Path(workdir, f"in_{i}.txt").write_text(text, encoding="utf-8")
+        Path(workdir, CPUTIME_SOURCE).write_text(CPUTIME_C, encoding="utf-8")
 
         try:
             _, stdout, stderr = await agent_sandbox_runtime.run_in_sandbox(
@@ -606,11 +747,13 @@ async def run_comparison(
         ceiling=ceiling if ceiling in timings else None,
         load=load,
         cpus=cpus,
+        cpu_timings=parse_cpu_timings(t_out),
     )
     # Every arm's fastest trial, from the same interleaved run, so a caller
     # comparing more than two programs compares numbers taken together.
+    basis = parse_cpu_timings(t_out) if speed.get("basis") == "cpu" else timings
     speed["arms_fastest_ms"] = {
-        name: _best_ms(values) for name, values in sorted(timings.items())
+        name: _best_ms(values) for name, values in sorted(basis.items())
     }
     return {
         "verdict": speed.pop("verdict"),

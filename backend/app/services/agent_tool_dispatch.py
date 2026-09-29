@@ -4996,6 +4996,28 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
     ) -> Any:
         from app.services import agent_optscan
 
+        if params.get("paths"):
+            # A real repository: its headers live beside the sources, which
+            # pasted text cannot carry (raylib's includes are 11 MB).
+            state = ctx.state if isinstance(ctx.state, dict) else {}
+            ws = executor.workspace_manager.get_or_default(
+                params.get("workspace_id"), state
+            )
+            if not ws:
+                return {
+                    "error": "paths needs a workspace: use clone_and_index_repo first"
+                }
+            paths = params.get("paths")
+            dirs = params.get("include_dirs") or []
+            if not isinstance(paths, list) or not isinstance(dirs, list):
+                return {"error": "paths and include_dirs must be lists of repo paths"}
+            return await agent_optscan.scan_workspace(
+                root=str(ws.base_path),
+                paths=[str(p) for p in paths],
+                include_dirs=[str(d) for d in dirs],
+                flags=str(params.get("flags") or "-O1"),
+                label=str(params.get("label") or ""),
+            )
         raw = params.get("sources")
         if not isinstance(raw, dict):
             # A caller that passed a single snippet gets told the shape rather

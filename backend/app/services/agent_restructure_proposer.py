@@ -51,6 +51,9 @@ from app.services.agent_compiler_sandbox import _clean_flags
 from app.services.agent_restructure import (
     DEFAULT_FLAGS,
     DEFAULT_IMAGE,
+    DEFAULT_TRIALS,
+    MAX_TRIALS,
+    MIN_RESOLVABLE,
     check_inputs,
     evaluate_restructuring,
     sandbox_blocked,
@@ -402,6 +405,29 @@ def _summarise(
     }
 
 
+async def _remeasure_if_hinted(
+    result: Dict[str, Any], proposal: Dict[str, Any], evaluate
+) -> Dict[str, Any]:
+    """One bigger sample for an equivalent candidate the noise swallowed.
+
+    Only when the fastest trial hints at a gain: re-timing a candidate that
+    was never faster would just spend time. Measured on raylib's
+    ImageBlurGaussian: three bit-identical proposals, all unresolved at 7
+    trials, the best at 1.53x fastest and 1.20x median -- the same shape a
+    fastmod pass showed before resolving at 15 trials to 2.48x.
+    """
+    data = result.get("data") or {}
+    speedup = (data.get("timing") or {}).get("speedup") or 0
+    if data.get("verdict") != "unresolved" or speedup <= 1 + MIN_RESOLVABLE:
+        return result
+    again = await evaluate(proposal, None, MAX_TRIALS)
+    again_data = again.get("data")
+    if isinstance(again_data, dict):
+        again_data["first_measurement"] = data.get("timing")
+        return again
+    return result
+
+
 async def _attribute(judged: List[Dict[str, Any]], evaluate) -> List[Dict[str, Any]]:
     """Credit each winner only with what it adds over the best winner.
 
@@ -522,6 +548,7 @@ async def _propose_and_judge(
                 fixed["name"] = proposal["name"]
                 proposal, repaired = fixed, True
                 result = await evaluate(proposal)
+        result = await _remeasure_if_hinted(result, proposal, evaluate)
         if result.get("error") and not result.get("data"):
             # A sandbox failure says nothing about the proposal; stop rather
             # than spend the remaining proposals against a broken harness.
@@ -588,7 +615,9 @@ async def propose_restructurings(
     subject = (label or "").strip() or "kernel"
 
     async def evaluate(
-        proposal: Dict[str, Any], baseline: Optional[Dict[str, Any]] = None
+        proposal: Dict[str, Any],
+        baseline: Optional[Dict[str, Any]] = None,
+        trials: int = DEFAULT_TRIALS,
     ) -> Dict[str, Any]:
         return await evaluate_restructuring(
             kernel=baseline["kernel"] if baseline else kernel,
@@ -599,6 +628,7 @@ async def propose_restructurings(
             invariant=proposal["invariant"],
             flags=safe,
             bench_input=bench_input,
+            trials=trials,
             label=f"{subject}/{proposal['name']}"
             + (f" over {baseline['name']}" if baseline else ""),
         )
@@ -669,7 +699,9 @@ async def propose_binary_rewrites(
     subject = (label or "").strip() or symbol
 
     async def evaluate(
-        proposal: Dict[str, Any], baseline: Optional[Dict[str, Any]] = None
+        proposal: Dict[str, Any],
+        baseline: Optional[Dict[str, Any]] = None,
+        trials: int = DEFAULT_TRIALS,
     ) -> Dict[str, Any]:
         return await evaluate_binary_rewrite(
             symbol=symbol,
@@ -682,6 +714,7 @@ async def propose_binary_rewrites(
             invariant=proposal["invariant"],
             flags=flags,
             bench_input=bench_input,
+            trials=trials,
             label=f"{subject}/{proposal['name']}"
             + (f" over {baseline['name']}" if baseline else ""),
         )

@@ -6771,6 +6771,18 @@ def build_autonomous_symbol_retrieval_provider(executor: Any) -> FunctionToolPro
         )
         if not ws:
             return {"error": "No active coding workspace"}
+        from app.services.repo_symbol_index_service import RepoSymbolIndexService
+
+        if not RepoSymbolIndexService.reads(file_path_param):
+            # "Not found" from an index that cannot read the file is a claim
+            # about the file it has no grounds for.
+            return {
+                "error": (
+                    f"the symbol index does not read {file_path_param!r} files; "
+                    f"use search_code with a pattern for {symbol_name!r} in that "
+                    "file, then read_file with the line range it reports"
+                )
+            }
         try:
             retrieve_result = await _asyncio.to_thread(
                 executor.symbol_index_service.retrieve,

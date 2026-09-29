@@ -867,7 +867,14 @@ class CodingWorkspaceManager:
             return [{"error": f"Invalid regex: {pattern}"}]
 
         results: List[Dict[str, Any]] = []
-        files = target.rglob(file_glob) if file_glob else target.rglob("*")
+        # A file is searched as itself. `rglob` on a file yields nothing, so a
+        # search scoped to `src/rtextures.c` returned "0 matches" for a
+        # function defined in it -- and a run took that as an answer and spent
+        # five iterations looking elsewhere.
+        if target.is_file():
+            files = [target]
+        else:
+            files = target.rglob(file_glob) if file_glob else target.rglob("*")
 
         for fpath in sorted(files):
             if not fpath.is_file() or ".git" in fpath.parts:

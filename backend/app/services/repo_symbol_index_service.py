@@ -11,7 +11,20 @@ from typing import Any, Dict, List, Tuple
 
 
 class RepoSymbolIndexService:
-    _allowed_exts = {".py", ".ts", ".tsx", ".js", ".jsx"}
+    _allowed_exts = {".py", ".ts", ".tsx", ".js", ".jsx"} | {
+        ".c",
+        ".h",
+        ".cc",
+        ".cpp",
+        ".cxx",
+        ".hpp",
+    }
+    _c_exts = {".c", ".h", ".cc", ".cpp", ".cxx", ".hpp"}
+
+    @classmethod
+    def reads(cls, path: str) -> bool:
+        """Whether this index can see symbols in a file of this kind at all."""
+        return Path(path).suffix.lower() in cls._allowed_exts
 
     def retrieve(
         self,
@@ -87,6 +100,8 @@ class RepoSymbolIndexService:
         self, file_path: Path, rel_path: str, query_keywords: List[str]
     ) -> List[Dict[str, Any]]:
         ext = file_path.suffix.lower()
+        if ext in self._c_exts:
+            return self._extract_c_symbols(file_path, rel_path, query_keywords)
         if ext == ".py":
             return self._extract_python_symbols(file_path, rel_path, query_keywords)
         return self._extract_regex_symbols(file_path, rel_path, query_keywords)
@@ -126,6 +141,71 @@ class RepoSymbolIndexService:
                     "kind": kind,
                     "start_line": start,
                     "end_line": end,
+                    "score": score,
+                    "why_relevant": self._why_relevant(rel_path, name, query_keywords),
+                }
+            )
+        return rows
+
+    #: A C or C++ function DEFINITION starts at column 0: a return type, the
+    #: name, and a parameter list, not ending in ';' (that is a declaration).
+    #: raylib, Lua and gem5 all write definitions this way; an indented match
+    #: is a call or a nested declaration and is ignored.
+    _C_DEF = re.compile(
+        r"^(?!\s)(?!(?:if|for|while|switch|return|else|do|case)\b)"
+        r"[A-Za-z_][\w\s\*&:<>,]*?\b([A-Za-z_]\w*)\s*\([^;]*$"
+    )
+
+    #: A definition whose body opens on the same line -- `static inline int
+    #: clampi(int v) { return ...; }` -- which the pattern above refuses for
+    #: the `;` inside the body.
+    _C_DEF_INLINE = re.compile(
+        r"^(?!\s)(?!(?:if|for|while|switch|return|else|do|case)\b)"
+        r"[A-Za-z_][\w\s\*&:<>,]*?\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*\{"
+    )
+
+    def _extract_c_symbols(
+        self, file_path: Path, rel_path: str, query_keywords: List[str]
+    ) -> List[Dict[str, Any]]:
+        try:
+            text = file_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return []
+        lines = text.splitlines()
+        rows: List[Dict[str, Any]] = []
+        for idx, line in enumerate(lines):
+            match = self._C_DEF_INLINE.match(line) or (
+                None if line.rstrip().endswith(";") else self._C_DEF.match(line)
+            )
+            if not match:
+                continue
+            # The body must open within a few lines, or this was a prototype
+            # split across lines, a macro, or a call at file scope.
+            opener = next(
+                (j for j in range(idx, min(idx + 6, len(lines))) if "{" in lines[j]),
+                None,
+            )
+            if opener is None or any(
+                lines[j].rstrip().endswith(";") for j in range(idx, opener)
+            ):
+                continue
+            name = match.group(1)
+            score = self._score_symbol(rel_path, name, "function", query_keywords)
+            if score <= 0:
+                continue
+            depth, end = 0, opener
+            for j in range(opener, len(lines)):
+                depth += lines[j].count("{") - lines[j].count("}")
+                if depth <= 0 and j >= opener:
+                    end = j
+                    break
+            rows.append(
+                {
+                    "path": rel_path,
+                    "symbol": name[:120],
+                    "kind": "function",
+                    "start_line": idx + 1,
+                    "end_line": end + 1,
                     "score": score,
                     "why_relevant": self._why_relevant(rel_path, name, query_keywords),
                 }

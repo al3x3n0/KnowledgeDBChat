@@ -1,30 +1,25 @@
-"""
-Repository symbol-aware retrieval service (MVP).
+"""Repository symbol-aware retrieval: where is this defined, and what is near it.
+
+Re-scans the repository on every call; it keeps no index of its own beyond a
+per-file parse cache. Each language is read by a real parser -- `ast` for
+Python, libclang for C/C++, tree-sitter for JS/TS -- in `repo_symbol_parsers`,
+and a file whose parser is not installed is skipped and reported as
+unreadable rather than searched by pattern.
 """
 
 from __future__ import annotations
 
-import ast
-import re
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
+
+from app.services import repo_symbol_parsers as parsers
 
 
 class RepoSymbolIndexService:
-    _allowed_exts = {".py", ".ts", ".tsx", ".js", ".jsx"} | {
-        ".c",
-        ".h",
-        ".cc",
-        ".cpp",
-        ".cxx",
-        ".hpp",
-    }
-    _c_exts = {".c", ".h", ".cc", ".cpp", ".cxx", ".hpp"}
-
-    @classmethod
-    def reads(cls, path: str) -> bool:
+    @staticmethod
+    def reads(path: str) -> bool:
         """Whether this index can see symbols in a file of this kind at all."""
-        return Path(path).suffix.lower() in cls._allowed_exts
+        return parsers.parser_available(path)
 
     def retrieve(
         self,
@@ -45,15 +40,17 @@ class RepoSymbolIndexService:
             }
 
         include_prefixes = [token for token in include_paths if token]
+        needles = self._needles(query_keywords)
         symbol_rows: List[Dict[str, Any]] = []
         scanned = 0
 
         for file_path in repo_root.rglob("*"):
             if scanned >= max_scan_files:
                 break
-            if not file_path.is_file():
+            if not file_path.is_file() or ".git" in file_path.parts:
                 continue
-            if file_path.suffix.lower() not in self._allowed_exts:
+            ext = file_path.suffix.lower()
+            if ext not in parsers.ALL_EXTS or not parsers.parser_available(file_path.name):
                 continue
             rel_path = file_path.relative_to(repo_root).as_posix()
             if include_prefixes and not any(
@@ -61,9 +58,32 @@ class RepoSymbolIndexService:
             ):
                 continue
             scanned += 1
-            symbol_rows.extend(
-                self._extract_symbols(file_path, rel_path, query_keywords)
-            )
+            # A C/C++ parse costs ~0.5 s; skip the files where no symbol could
+            # score -- no keyword in the path and none in the text. Python and
+            # JS/TS parse in milliseconds and are always read, so a test file
+            # still earns its structural bonus.
+            if ext in parsers.CLANG_EXTS and needles:
+                if not any(
+                    n in rel_path.lower() for n in needles
+                ) and not self._mentions(file_path, needles):
+                    continue
+            for name, kind, start, end in parsers.symbols_in(file_path, repo_root):
+                score = self._score_symbol(rel_path, name, kind, query_keywords)
+                if score <= 0:
+                    continue
+                symbol_rows.append(
+                    {
+                        "path": rel_path,
+                        "symbol": name[:120],
+                        "kind": kind,
+                        "start_line": start,
+                        "end_line": end,
+                        "score": score,
+                        "why_relevant": self._why_relevant(
+                            rel_path, name, query_keywords
+                        ),
+                    }
+                )
 
         symbol_rows.sort(
             key=lambda row: (-int(row.get("score", 0)), str(row.get("path", "")))
@@ -96,162 +116,26 @@ class RepoSymbolIndexService:
             "symbol_scan_files": scanned,
         }
 
-    def _extract_symbols(
-        self, file_path: Path, rel_path: str, query_keywords: List[str]
-    ) -> List[Dict[str, Any]]:
-        ext = file_path.suffix.lower()
-        if ext in self._c_exts:
-            return self._extract_c_symbols(file_path, rel_path, query_keywords)
-        if ext == ".py":
-            return self._extract_python_symbols(file_path, rel_path, query_keywords)
-        return self._extract_regex_symbols(file_path, rel_path, query_keywords)
+    @staticmethod
+    def _needles(query_keywords: List[str]) -> List[str]:
+        """Every string whose presence could make a symbol score (see below)."""
+        out: List[str] = []
+        for token in query_keywords:
+            token_l = str(token or "").lower().strip()
+            if token_l:
+                out.append(token_l)
+            for part in token_l.replace("-", "_").split("_"):
+                if len(part.strip()) > 2:
+                    out.append(part.strip())
+        return out
 
-    def _extract_python_symbols(
-        self, file_path: Path, rel_path: str, query_keywords: List[str]
-    ) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _mentions(file_path: Path, needles: List[str]) -> bool:
         try:
-            source = file_path.read_text(encoding="utf-8", errors="ignore")
-            tree = ast.parse(source)
-        except Exception:
-            return []
-
-        rows: List[Dict[str, Any]] = []
-        for node in ast.walk(tree):
-            kind = ""
-            name = ""
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                kind = "function"
-                name = str(node.name)
-            elif isinstance(node, ast.ClassDef):
-                kind = "class"
-                name = str(node.name)
-            else:
-                continue
-            if not name:
-                continue
-            start = int(getattr(node, "lineno", 1) or 1)
-            end = int(getattr(node, "end_lineno", start) or start)
-            score = self._score_symbol(rel_path, name, kind, query_keywords)
-            if score <= 0:
-                continue
-            rows.append(
-                {
-                    "path": rel_path,
-                    "symbol": name,
-                    "kind": kind,
-                    "start_line": start,
-                    "end_line": end,
-                    "score": score,
-                    "why_relevant": self._why_relevant(rel_path, name, query_keywords),
-                }
-            )
-        return rows
-
-    #: A C or C++ function DEFINITION starts at column 0: a return type, the
-    #: name, and a parameter list, not ending in ';' (that is a declaration).
-    #: raylib, Lua and gem5 all write definitions this way; an indented match
-    #: is a call or a nested declaration and is ignored.
-    _C_DEF = re.compile(
-        r"^(?!\s)(?!(?:if|for|while|switch|return|else|do|case)\b)"
-        r"[A-Za-z_][\w\s\*&:<>,]*?\b([A-Za-z_]\w*)\s*\([^;]*$"
-    )
-
-    #: A definition whose body opens on the same line -- `static inline int
-    #: clampi(int v) { return ...; }` -- which the pattern above refuses for
-    #: the `;` inside the body.
-    _C_DEF_INLINE = re.compile(
-        r"^(?!\s)(?!(?:if|for|while|switch|return|else|do|case)\b)"
-        r"[A-Za-z_][\w\s\*&:<>,]*?\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*\{"
-    )
-
-    def _extract_c_symbols(
-        self, file_path: Path, rel_path: str, query_keywords: List[str]
-    ) -> List[Dict[str, Any]]:
-        try:
-            text = file_path.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
-            return []
-        lines = text.splitlines()
-        rows: List[Dict[str, Any]] = []
-        for idx, line in enumerate(lines):
-            match = self._C_DEF_INLINE.match(line) or (
-                None if line.rstrip().endswith(";") else self._C_DEF.match(line)
-            )
-            if not match:
-                continue
-            # The body must open within a few lines, or this was a prototype
-            # split across lines, a macro, or a call at file scope.
-            opener = next(
-                (j for j in range(idx, min(idx + 6, len(lines))) if "{" in lines[j]),
-                None,
-            )
-            if opener is None or any(
-                lines[j].rstrip().endswith(";") for j in range(idx, opener)
-            ):
-                continue
-            name = match.group(1)
-            score = self._score_symbol(rel_path, name, "function", query_keywords)
-            if score <= 0:
-                continue
-            depth, end = 0, opener
-            for j in range(opener, len(lines)):
-                depth += lines[j].count("{") - lines[j].count("}")
-                if depth <= 0 and j >= opener:
-                    end = j
-                    break
-            rows.append(
-                {
-                    "path": rel_path,
-                    "symbol": name[:120],
-                    "kind": "function",
-                    "start_line": idx + 1,
-                    "end_line": end + 1,
-                    "score": score,
-                    "why_relevant": self._why_relevant(rel_path, name, query_keywords),
-                }
-            )
-        return rows
-
-    def _extract_regex_symbols(
-        self, file_path: Path, rel_path: str, query_keywords: List[str]
-    ) -> List[Dict[str, Any]]:
-        try:
-            text = file_path.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
-            return []
-        rows: List[Dict[str, Any]] = []
-        patterns: List[Tuple[str, re.Pattern[str]]] = [
-            ("function", re.compile(r"\bfunction\s+([A-Za-z0-9_]+)\s*\(")),
-            ("function", re.compile(r"\bconst\s+([A-Za-z0-9_]+)\s*=\s*\(.*?\)\s*=>")),
-            ("class", re.compile(r"\bclass\s+([A-Za-z0-9_]+)\b")),
-            ("test", re.compile(r"\b(?:test|it)\s*\(\s*[\"'`](.+?)[\"'`]")),
-        ]
-        lines = text.splitlines()
-        for idx, line in enumerate(lines, start=1):
-            for kind, pattern in patterns:
-                match = pattern.search(line)
-                if not match:
-                    continue
-                name = str(match.group(1) or "").strip()
-                if not name:
-                    continue
-                score = self._score_symbol(rel_path, name, kind, query_keywords)
-                if score <= 0:
-                    continue
-                rows.append(
-                    {
-                        "path": rel_path,
-                        "symbol": name[:120],
-                        "kind": kind,
-                        "start_line": idx,
-                        "end_line": min(idx + 4, len(lines)),
-                        "score": score,
-                        "why_relevant": self._why_relevant(
-                            rel_path, name, query_keywords
-                        ),
-                    }
-                )
-        return rows
+            text = file_path.read_text(encoding="utf-8", errors="ignore").lower()
+        except OSError:
+            return False
+        return any(n in text for n in needles)
 
     def _score_symbol(
         self, path: str, symbol: str, kind: str, query_keywords: List[str]

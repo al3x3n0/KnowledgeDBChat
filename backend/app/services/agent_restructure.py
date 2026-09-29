@@ -40,6 +40,7 @@ result, and the result says it was checked on N inputs rather than proved.
 from __future__ import annotations
 
 import asyncio
+import shutil
 import re
 import tempfile
 from dataclasses import dataclass
@@ -228,7 +229,17 @@ def timing_script(
     # Interleaved: trial t runs every arm once before trial t+1 starts, so a
     # stall on the shared host is paid by all arms rather than by whichever
     # happened to be running.
+    #
+    # And ROTATED: trial t starts at arm t mod k. Always running the baseline
+    # first gave every pair the same position effect, and the paired analysis
+    # -- which assumes a pair's members are exchangeable -- turned it into a
+    # verdict: BOLT's standard recipe on Lua read "slower", CI [0.776, 0.995],
+    # and neutral, CI [0.999, 1.054], on the next identical run.
     names = " ".join(a.name for a in arms)
+    order_cases = " ".join(
+        f"{i}) order='{' '.join(a.name for a in list(arms[i:]) + list(arms[:i]))}';;"
+        for i in range(len(arms))
+    )
     # The helper times each run itself: wall and user+sys in microseconds,
     # with its own timeout, since `timeout` around it would kill the helper
     # and orphan the program still running. If it fails to build, the shell's
@@ -238,7 +249,8 @@ def timing_script(
         f"__t0=$(date +%s%N); "
         f"for a in {names}; do [ -x ./$a ] && ./$a {run_args} <in_{bench_input}.txt >/dev/null 2>&1; done; "
         f"for t in $(seq 1 {trials}); do "
-        f"  for a in {names}; do "
+        f"  case $(( t % {max(1, len(arms))} )) in {order_cases} esac; "
+        f"  for a in $order; do "
         f"    [ -x ./$a ] || continue; "
         f"    if [ -x ./{CPUTIME_BIN} ]; then "
         # A run that fails is not a time. A prototype timed a binary that
@@ -469,6 +481,7 @@ def judge_speed(
     load: Optional[float] = None,
     cpus: Optional[int] = None,
     cpu_timings: Optional[Dict[str, List[int]]] = None,
+    control: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Judge on CPU time when it is the honest measure, wall time otherwise.
 
@@ -503,6 +516,7 @@ def judge_speed(
             baseline=baseline,
             candidate=candidate,
             ceiling=ceiling,
+            control=control,
             load=load,
             cpus=cpus,
         )
@@ -520,10 +534,17 @@ def judge_speed(
         baseline=baseline,
         candidate=candidate,
         ceiling=ceiling,
+        control=control,
         load=load,
         cpus=cpus,
     )
-    wall = _judge_on(timings, baseline=baseline, candidate=candidate, ceiling=ceiling)
+    wall = _judge_on(
+        timings,
+        baseline=baseline,
+        candidate=candidate,
+        ceiling=ceiling,
+        control=control,
+    )
     out["basis"] = "cpu"
     out["wall"] = {
         k: wall.get(k)
@@ -539,6 +560,78 @@ def judge_speed(
     return out
 
 
+CONTROL_ARM = "control"
+
+#: Paired analysis needs enough pairs for a 95% interval on the median to
+#: exist at all: with 5 pairs the tightest order-statistic interval covers
+#: only 94%, so below this the unpaired rule decides.
+MIN_PAIRS = 6
+
+
+def paired_ratio(num: Sequence[int], den: Sequence[int]) -> Optional[Dict[str, Any]]:
+    """Median of per-trial ratios num[t]/den[t], with a 95% interval.
+
+    The trials are interleaved -- trial t runs every arm back to back -- so a
+    slow stretch on the host lands on both members of a pair. Comparing each
+    arm's fastest and median separately throws that away and has to clear the
+    whole host's spread. Measured on Lua under BOLT: a ~4% layout effect sat
+    under a 15-80% spread band on a "quiet" host, and every configuration,
+    including the standard recipe, read unresolved.
+
+    The interval is distribution-free: order statistics x(k)..x(n-k+1) of the
+    sorted ratios, with k the largest rank for which P(Binomial(n, 1/2) < k)
+    stays within 2.5%. It assumes only that pairs are independent, which
+    interleaving is for.
+    """
+    n = min(len(num), len(den))
+    if n < MIN_PAIRS or len(num) != len(den):
+        return None
+    ratios = sorted(num[i] / den[i] for i in range(n) if den[i] > 0)
+    if len(ratios) < MIN_PAIRS:
+        return None
+    n = len(ratios)
+    from math import comb
+
+    k, cumulative = 0, 0.0
+    while True:
+        cumulative += comb(n, k) / 2**n
+        if cumulative > 0.025:
+            break
+        k += 1
+    # k is now the count of order statistics trimmed from each end.
+    k = max(k, 1)
+    mid = n // 2
+    median = ratios[mid] if n % 2 else (ratios[mid - 1] + ratios[mid]) / 2
+    return {
+        "median": round(median, 4),
+        "ci95": [round(ratios[k - 1], 4), round(ratios[n - k], 4)],
+        "pairs": n,
+    }
+
+
+def _clears(
+    pair: Dict[str, Any],
+    slower: bool = False,
+    null: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """A paired effect that is certain, larger than code placement, and --
+    when the run carried a control -- outside what an identical binary showed.
+
+    The control is the empirical null: a byte-identical copy of the baseline,
+    interleaved with everything else. Calibrated on Lua with the host at load
+    ~59, one of six A/A runs of identical binaries read "faster" at 1.037x,
+    CI [1.015, 1.128] -- the interval alone assumes independent pairs, and a
+    host whose load arrives in bursts breaks that. The control is measured
+    under the same bursts, in the same run.
+    """
+    low, high = pair["ci95"]
+    if slower:
+        ok = high < 1 and pair["median"] < 1 / (1 + MIN_RESOLVABLE)
+        return ok and (null is None or high < null["ci95"][0])
+    ok = low > 1 and pair["median"] > 1 + MIN_RESOLVABLE
+    return ok and (null is None or low > null["ci95"][1])
+
+
 def _judge_on(
     timings: Dict[str, List[int]],
     *,
@@ -547,6 +640,7 @@ def _judge_on(
     ceiling: Optional[str],
     load: Optional[float] = None,
     cpus: Optional[int] = None,
+    control: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Faster, slower, or not resolvable -- and whether the compiler gets there too.
 
@@ -586,22 +680,36 @@ def _judge_on(
     if len(base) < 4:
         warnings.append("fewer than four trials; the spread is barely an estimate")
 
-    if (
-        speedup
-        and median_speedup
-        and speedup > 1 + noise
-        and median_speedup > 1 + noise
-    ):
-        verdict = "faster"
-    elif (
-        speedup
-        and median_speedup
-        and speedup < 1 / (1 + noise)
-        and median_speedup < 1 / (1 + noise)
-    ):
-        verdict = "slower"
+    pair = paired_ratio(base, cand)
+    null = paired_ratio(base, timings.get(control, [])) if control else None
+    if pair:
+        out["paired"] = pair
+        is_faster, is_slower = _clears(pair, null=null), _clears(
+            pair, slower=True, null=null
+        )
+        if null:
+            out["control"] = null
+            if _clears(null) or _clears(null, slower=True):
+                warnings.append(
+                    "the run's control -- a byte-identical copy of the baseline "
+                    f"-- itself read {null['median']}x (CI {null['ci95']}); this "
+                    "host is manufacturing differences, and only an effect "
+                    "outside the control's interval is reported"
+                )
     else:
-        verdict = "unresolved"
+        is_faster = bool(
+            speedup
+            and median_speedup
+            and speedup > 1 + noise
+            and median_speedup > 1 + noise
+        )
+        is_slower = bool(
+            speedup
+            and median_speedup
+            and speedup < 1 / (1 + noise)
+            and median_speedup < 1 / (1 + noise)
+        )
+    verdict = "faster" if is_faster else "slower" if is_slower else "unresolved"
 
     if ceiling and verdict == "faster":
         ceil = timings.get(ceiling, [])
@@ -612,9 +720,23 @@ def _judge_on(
             out["ceiling_ms"] = {"fastest": ceil_best, "median": _median_ms(ceil)}
             out["speedup_over_ceiling"] = ceiling_ratio
             out["ceiling_speedup_over_original"] = ceiling_gain
-            if ceiling_ratio > 1 + noise:
+            over_ceiling = paired_ratio(ceil, cand)
+            ceiling_over_base = paired_ratio(base, ceil)
+            if over_ceiling:
+                out["paired_over_ceiling"] = over_ceiling
+            beats_ceiling = (
+                _clears(over_ceiling, null=null)
+                if over_ceiling
+                else ceiling_ratio > 1 + noise
+            )
+            ceiling_gains = (
+                _clears(ceiling_over_base, null=null)
+                if ceiling_over_base
+                else ceiling_gain > 1 + noise
+            )
+            if beats_ceiling:
                 pass
-            elif ceiling_gain > 1 + noise:
+            elif ceiling_gains:
                 # The compiler, given the licence, measurably gets the gain.
                 verdict = "compiler_already_can"
             else:
@@ -752,6 +874,16 @@ async def run_comparison(
             return {"verdict": equivalence["status"], "equivalence": equivalence}
 
         timed = [a for a in arms if parsed["built"].get(a.name)]
+        # The control: a byte-identical copy of the baseline binary, timed with
+        # everything else. What it "gains" over the baseline is this host's
+        # noise, measured in this run. Copied after the differential stage, so
+        # it is the exact binary that was checked.
+        if (
+            not any(a.name == CONTROL_ARM for a in timed)
+            and Path(workdir, baseline).is_file()
+        ):
+            shutil.copy2(Path(workdir, baseline), Path(workdir, CONTROL_ARM))
+            timed.append(Arm(CONTROL_ARM, "true", differential=False))
         budget_ns = int(timeout_seconds * TRIAL_BUDGET_SHARE * 1_000_000_000)
         try:
             _, t_out, _ = await agent_sandbox_runtime.run_in_sandbox(
@@ -769,7 +901,9 @@ async def run_comparison(
             }
 
         collected = {
-            name: Path(workdir, name).read_text(encoding="utf-8", errors="replace")[:65536]
+            name: Path(workdir, name).read_text(encoding="utf-8", errors="replace")[
+                :65536
+            ]
             for name in collect
             if Path(workdir, name).is_file()
         }
@@ -783,6 +917,7 @@ async def run_comparison(
         load=load,
         cpus=cpus,
         cpu_timings=parse_cpu_timings(t_out),
+        control=CONTROL_ARM if CONTROL_ARM in timings else None,
     )
     # Every arm's fastest trial, from the same interleaved run, so a caller
     # comparing more than two programs compares numbers taken together.

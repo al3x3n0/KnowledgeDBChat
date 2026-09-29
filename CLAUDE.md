@@ -656,6 +656,30 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   3 ms, beside the real one at 250 ms. A candidate that passes every
   differential run and then fails a timed one is `crashed`.
 
+- **A speed verdict is paired, rotated, and checked against a control that
+  runs inside the same measurement.** This lives in the comparison
+  (`agent_restructure.judge_speed` / `run_comparison`), which every
+  restructuring, binary-rewrite, pass and BOLT tool shares. Three steps, each
+  forced by a measurement that lied without it.
+  *Paired*: arms are interleaved trial by trial, so the verdict uses the
+  median of per-trial ratios, with a distribution-free 95% interval from
+  order statistics (x(4)..x(12) at 15 pairs; the unpaired rule below 6).
+  Comparing each arm's fastest and median separately had to clear the whole
+  host's spread, and a ~4% BOLT effect sat under a 15-80% band.
+  *Rotated*: trial t starts at arm t mod k. With the baseline always first,
+  the same held-out BOLT recipe read "slower" (CI [0.776, 0.995]) and then
+  neutral on an identical run.
+  *Controlled*: a byte-identical copy of the baseline is timed alongside the
+  other arms, and a candidate's interval must clear the control's, not just
+  1. With the host at load 59, one of six A/A runs of identical binaries
+  still read "faster" at 1.037x, because bursty load breaks the independence
+  the interval assumes. With the control, six of six A/A runs were
+  unresolved at load 44-95. Real wins survived: raylib blur 1.31x
+  (CI [1.21, 1.48]), fastmod 2.10x. A win still has to clear the 3%
+  code-placement floor. Under this host's load, BOLT on Lua **never
+  resolved**: an in-sample "8%" did not reproduce, and a held-out profile
+  never showed a gain. That is the finding, not a failure to find one.
+
 - **A mechanism that never engaged is not a measurement of that mechanism.**
   `evaluate_across_kernels` reported `geomean 1.0000x over 4 kernels` and
   recorded it as a `mechanism_evaluation` finding a contract accepted. The

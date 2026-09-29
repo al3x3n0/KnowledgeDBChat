@@ -352,3 +352,130 @@ def test_a_failed_timed_run_is_not_a_time():
         [r.Arm("orig", "true")], 0, 3, 10**9, run_args="- 300000"
     )
     assert "__tfail__" in script and "./$a - 300000 <in_0.txt" in script
+
+
+class TestPaired:
+    DRIFT = [250, 380, 260, 520, 300, 270, 410, 255, 600, 280, 265, 330, 450, 262, 290]
+
+    def test_a_consistent_small_gain_under_drift_is_resolved(self):
+        # The host's load swings 2.4x across trials; within each trial the
+        # candidate is 4% faster. Unpaired, the spread swallows it.
+        base = [t * 1000 for t in self.DRIFT]
+        cand = [round(t * 1000 / 1.04) for t in self.DRIFT]
+        out = r.judge_speed(
+            {"orig": base, "cand": cand},
+            baseline="orig",
+            candidate="cand",
+            ceiling=None,
+        )
+        assert out["verdict"] == "faster"
+        assert (
+            out["paired"]["ci95"][0] > 1 and abs(out["paired"]["median"] - 1.04) < 0.001
+        )
+
+    def test_a_null_under_the_same_drift_stays_unresolved(self):
+        import random
+
+        rng = random.Random(7)
+        base = [t * 1000 for t in self.DRIFT]
+        cand = [round(t * 1000 * rng.uniform(0.97, 1.03)) for t in self.DRIFT]
+        out = r.judge_speed(
+            {"orig": base, "cand": cand},
+            baseline="orig",
+            candidate="cand",
+            ceiling=None,
+        )
+        assert out["verdict"] == "unresolved"
+
+    def test_gains_under_code_placement_are_not_claimed(self):
+        base = [t * 1000 for t in self.DRIFT]
+        cand = [round(t * 1000 / 1.02) for t in self.DRIFT]
+        out = r.judge_speed(
+            {"orig": base, "cand": cand},
+            baseline="orig",
+            candidate="cand",
+            ceiling=None,
+        )
+        assert out["paired"]["ci95"][0] > 1 and out["verdict"] == "unresolved"
+
+    def test_too_few_pairs_fall_back_to_the_unpaired_rule(self):
+        assert r.paired_ratio([1, 2, 3, 4, 5], [1, 2, 3, 4, 5]) is None
+
+
+def test_arm_order_rotates_across_trials():
+    import subprocess
+
+    arms = [r.Arm("orig", "true"), r.Arm("cand", "true"), r.Arm("ceiling", "true")]
+    script = r.timing_script(arms, 0, 3, 10**12)
+    # Run just the ordering logic in a real POSIX shell.
+    probe = script.split("for t in", 1)[1].split("  for a in $order;", 1)[0]
+    shell = "for t in" + probe + ' echo "$order"; done'
+    out = subprocess.run(
+        ["sh", "-c", shell], capture_output=True, text=True
+    ).stdout.split("\n")
+    assert out[:3] == ["cand ceiling orig", "ceiling orig cand", "orig cand ceiling"]
+
+
+class TestControl:
+    DRIFT = TestPaired.DRIFT
+
+    def _series(self, factor, jitter=None):
+        out = []
+        for i, t in enumerate(self.DRIFT):
+            j = jitter[i] if jitter else 1.0
+            out.append(round(t * 1000 / factor * j))
+        return out
+
+    def test_a_gain_inside_the_controls_interval_is_not_claimed(self):
+        # The identical copy wanders +-8% against the baseline; a 4% candidate
+        # cannot be told from that.
+        wobble = [
+            1.08,
+            0.93,
+            1.05,
+            0.95,
+            1.07,
+            0.92,
+            1.06,
+            0.94,
+            1.08,
+            0.93,
+            1.05,
+            0.96,
+            1.07,
+            0.92,
+            1.06,
+        ]
+        timings = {
+            "orig": self._series(1.0),
+            "cand": self._series(1.04),
+            "control": self._series(1.0, wobble),
+        }
+        out = r.judge_speed(
+            timings, baseline="orig", candidate="cand", ceiling=None, control="control"
+        )
+        assert out["paired"]["ci95"][0] > 1
+        assert out["verdict"] == "unresolved"
+
+    def test_a_gain_clear_of_a_quiet_control_is_claimed(self):
+        steady = [1.0 + (0.004 if i % 2 else -0.004) for i in range(15)]
+        timings = {
+            "orig": self._series(1.0),
+            "cand": self._series(1.10),
+            "control": self._series(1.0, steady),
+        }
+        out = r.judge_speed(
+            timings, baseline="orig", candidate="cand", ceiling=None, control="control"
+        )
+        assert out["verdict"] == "faster" and "control" in out
+
+    def test_a_control_that_reads_as_different_is_called_out(self):
+        timings = {
+            "orig": self._series(1.0),
+            "cand": self._series(1.2),
+            "control": self._series(1.05),
+        }
+        out = r.judge_speed(
+            timings, baseline="orig", candidate="cand", ceiling=None, control="control"
+        )
+        assert any("manufacturing differences" in w for w in out.get("warnings", []))

@@ -1589,6 +1589,91 @@ def _how_to_record_bounded_findings(validity: Any) -> str:
     return "HOW TO RECORD THE BOUNDED RESULTS:\n" + "\n".join(lines)
 
 
+#: Support actions the runtime adds after every step; they say nothing about
+#: what the run has done, and they crowded the real steps out of the critic's
+#: window.
+_LEDGER_SKIP_TOOLS = frozenset({"write_progress_report"})
+
+
+def _ledger_arg(value: Any) -> str:
+    if isinstance(value, str):
+        return repr(value) if len(value) <= 48 else f"<{len(value)} chars>"
+    if isinstance(value, (list, tuple)):
+        inner = ", ".join(_ledger_arg(v) for v in list(value)[:4])
+        return f"[{inner}{', ...' if len(value) > 4 else ''}]"
+    if isinstance(value, dict):
+        return f"<object: {', '.join(list(value)[:4])}>"
+    return repr(value)
+
+
+def _critic_action_ledger(actions: Sequence[Any], max_lines: int = 60) -> str:
+    """Every substantive call this run made, one line each, oldest first.
+
+    The critic used to see the last six raw action records, serialised and cut
+    at 5,000 characters. Support records interleave with real ones and a
+    single scan result or function body fills the budget, so by iteration 7 a
+    run's scan (iteration 2) and symbol lookup (iteration 3) had fallen out of
+    view. The critic then asserted, at 0.9 confidence, that the scan had never
+    run and forced a pivot -- overriding the model's decision with the same
+    parameterless browse_repo_files, twice.
+    """
+    lines: List[str] = []
+    for entry in actions:
+        if not isinstance(entry, dict) or entry.get("node") == "summarize":
+            continue
+        action = entry.get("action") if isinstance(entry.get("action"), dict) else {}
+        tool = str(action.get("tool") or entry.get("tool") or "").strip()
+        if not tool or tool in _LEDGER_SKIP_TOOLS:
+            continue
+        result = entry.get("result") if isinstance(entry.get("result"), dict) else {}
+        ok = bool(result.get("success", entry.get("success")))
+        params = action.get("params") if isinstance(action.get("params"), dict) else {}
+        args = ", ".join(
+            f"{k}={_ledger_arg(v)}"
+            for k, v in list(params.items())[:6]
+            if not k.startswith("_")
+        )
+        line = f"it{entry.get('iteration', '?')} {tool}({args}) -> {'ok' if ok else 'FAILED'}"
+        if not ok and result.get("error"):
+            line += f": {str(result.get('error'))[:160]}"
+        purpose = str(action.get("purpose") or "")
+        if "pivot" in purpose.lower() or "recover" in purpose.lower():
+            line += f"  [{purpose[:40]}]"
+        lines.append(line)
+    if len(lines) > max_lines:
+        dropped = len(lines) - max_lines
+        lines = [f"... {dropped} earlier call(s) omitted"] + lines[-max_lines:]
+    return "\n".join(lines) or "(no substantive calls yet)"
+
+
+def _repeats_recent_call(
+    state: Mapping[str, Any], action: Mapping[str, Any], window: int = 8
+) -> bool:
+    """Whether the run made this exact call (tool and arguments) recently.
+
+    A pivot that repeats a call already made learns nothing new: a run's
+    critic pivot listed the repository root with identical arguments on two
+    consecutive iterations, overriding the model both times.
+    """
+    tool = str(action.get("tool") or "")
+    params = action.get("params") if isinstance(action.get("params"), dict) else {}
+    taken = (
+        state.get("actions_taken")
+        if isinstance(state.get("actions_taken"), list)
+        else []
+    )
+    for entry in taken[-window * 2 :]:
+        if not isinstance(entry, dict):
+            continue
+        prior = entry.get("action") if isinstance(entry.get("action"), dict) else {}
+        if (
+            str(prior.get("tool") or "") == tool
+            and (prior.get("params") or {}) == params
+        ):
+            return True
+    return False
+
+
 def _tools_with_params(tool_names: Sequence[str], limit: int = 6000) -> str:
     """Render each tool as ``name(param, param)`` for the critic.
 
@@ -5289,7 +5374,21 @@ class AutonomousAgentExecutor:
             if isinstance(state.get("actions_taken"), list)
             else []
         )
-        recent = recent_actions[-6:]
+        ledger = _critic_action_ledger(recent_actions)
+        substantive = [
+            a
+            for a in recent_actions
+            if isinstance(a, dict)
+            and a.get("node") != "summarize"
+            and str(
+                (
+                    (a.get("action") or {}) if isinstance(a.get("action"), dict) else {}
+                ).get("tool")
+                or ""
+            )
+            not in _LEDGER_SKIP_TOOLS
+        ]
+        recent = substantive[-2:]
         system_prompt = (
             "You are a strict critic for an autonomous agent.\n"
             "Assess trajectory quality, identify risks, and propose a concrete pivot when needed.\n"
@@ -5300,7 +5399,11 @@ class AutonomousAgentExecutor:
             f"Iteration: {job.iteration}/{job.max_iterations}\n"
             f"Progress: {state.get('goal_progress', 0)}\n"
             f"Stalled iterations: {state.get('stalled_iterations', 0)}\n"
-            f"Recent actions: {json.dumps(recent, default=str)[:5000]}\n"
+            "Every substantive call this run has made, oldest first -- judge "
+            "the trajectory from THIS, and never claim a step has not "
+            "happened when it appears here:\n"
+            f"{ledger}\n"
+            f"The last two calls in detail: {json.dumps(recent, default=str)[:3000]}\n"
             f"Current observation: {json.dumps(observation, default=str)[:2500]}\n"
             f"Available tools (with their parameters): "
             f"{_tools_with_params(available_tools)}\n"
@@ -5453,7 +5556,7 @@ class AutonomousAgentExecutor:
                 doc_ids=doc_ids,
                 purpose="Critic-directed pivot.",
             )
-            if action:
+            if action and not _repeats_recent_call(state, action):
                 return action
         return None
 

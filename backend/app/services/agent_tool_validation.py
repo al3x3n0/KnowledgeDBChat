@@ -147,11 +147,13 @@ def _resolve_bench_input(
 def _drop_malformed_alternatives(tool_name: str, params: Dict[str, Any]) -> List[str]:
     dropped: List[str] = []
     for field, alternative, valid in ALTERNATIVE_FIELDS.get(tool_name, ()):
-        if field not in params or params.get(field) in (None, "", [], {}):
+        if field not in params:
             continue
         if params.get(alternative) in (None, "", [], {}):
             continue
-        if not valid(params[field]):
+        # An EMPTY field beside a complete alternative is noise too: a run sent
+        # `sources: []` next to a correct `paths` and was refused for it.
+        if params.get(field) in (None, "", [], {}) or not valid(params[field]):
             params.pop(field)
             dropped.append(field)
     return dropped

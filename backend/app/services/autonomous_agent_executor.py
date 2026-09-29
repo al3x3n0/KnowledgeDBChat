@@ -47,8 +47,8 @@ from app.services import (
     agent_plan_normalization,
     agent_prompt_sections,
     agent_repeated_success,
-    agent_unproductive_cycle,
     agent_tool_scoring,
+    agent_unproductive_cycle,
 )
 from app.services.agent_action_service import AgentActionService
 from app.services.agent_chain_orchestration_service import (
@@ -64,6 +64,7 @@ from app.services.agent_deterministic_runner_registry import (
     build_deterministic_runner_registry,
 )
 from app.services.agent_execution_journal_service import agent_execution_journal_service
+from app.services.agent_execution_lease_service import ExecutionLeaseLostError
 from app.services.agent_execution_planner import (
     AgentExecutionPlanner,
     ExecutionPlan,
@@ -147,7 +148,6 @@ def _tool_requires_params(tool_name: str) -> bool:
     """
     try:
         from app.agent_core.tool_catalog import get_tool_metadata
-
         from app.services.agent_tool_validation import ALTERNATIVE_FIELDS
 
         metadata = get_tool_metadata(tool_name)
@@ -1917,6 +1917,7 @@ class AutonomousAgentExecutor:
         job.last_activity_at = datetime.utcnow()
         await db.commit()
 
+        lease_lost = False
         try:
             det = (job.config or {}).get("deterministic_runner")
             (
@@ -1975,6 +1976,20 @@ class AutonomousAgentExecutor:
 
             return result
 
+        except ExecutionLeaseLostError:
+            # Another execution owns this job now. Writing anything to it --
+            # status, error, artifacts, a chain event -- is exactly what the
+            # fence exists to prevent. Measured: a worker frozen for two hours
+            # woke, found its lease gone, and wrote status='failed' over a job
+            # a newer execution had resumed 13 seconds earlier; that execution
+            # completed and the row still said failed. The task layer abandons
+            # the stale execution; nothing here touches the row.
+            lease_lost = True
+            logger.warning(
+                f"Job {job_id}: execution lease lost; leaving the job to its "
+                "current owner"
+            )
+            raise
         except Exception as e:
             logger.error(f"Autonomous job execution failed: {e}")
             job.status = AgentJobStatus.FAILED.value
@@ -1989,9 +2004,15 @@ class AutonomousAgentExecutor:
                 pass
             return {"error": str(e), "status": "failed"}
         finally:
-            # Persist workspace artifacts to MinIO before cleanup
+            # Persist workspace artifacts to MinIO before cleanup -- unless the
+            # lease was lost, when the job row is no longer this worker's to
+            # write.
             try:
-                for _wid, _ws in list(self.workspace_manager._workspaces.items()):
+                for _wid, _ws in (
+                    []
+                    if lease_lost
+                    else list(self.workspace_manager._workspaces.items())
+                ):
                     if _ws.owner_job_id and _ws.owner_job_id != str(job_id):
                         continue
                     existing_workspace_ids = {

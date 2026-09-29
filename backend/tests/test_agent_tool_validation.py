@@ -294,3 +294,14 @@ def test_a_tool_needing_one_of_two_fields_is_never_called_with_none():
     assert _tool_requires_params("clone_and_index_repo")
     assert _tool_requires_params("scan_for_optimizations")
     assert not _tool_requires_params("definitely_not_a_tool")
+
+
+def test_an_empty_alternative_beside_a_complete_one_is_dropped():
+    from app.services.agent_tool_validation import (
+        coerce_tool_params,
+        validate_tool_params,
+    )
+
+    params = {"sources": [], "paths": ["src/rtextures.c"], "include_dirs": ["src"]}
+    assert "sources" in coerce_tool_params("scan_for_optimizations", params)
+    assert validate_tool_params("scan_for_optimizations", params) is None

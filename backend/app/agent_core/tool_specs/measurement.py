@@ -82,8 +82,19 @@ _REFERENCE_PROP = {
             "defining the real function, e.g. ['src/rtextures.c']), "
             "include_dirs, flags (defines, e.g. '-DPLATFORM_DESKTOP'). The "
             "driver is linked against both; they must print the same on every "
-            "input, or the verdict is extraction_unfaithful. Findings then "
-            "carry verified_win."
+            "input, or the verdict is extraction_unfaithful. The adapter must "
+            "CALL the real function, not copy it: one that calls nothing the "
+            "repository files define is refused as reference_not_called. "
+            'Findings then carry verified_win. Example: {"adapter": '
+            '"#include \\"raylib.h\\"\\n#include <stdlib.h>\\n#include <string.h>\\n'
+            "typedef struct { int w, h; unsigned char *px; } K;\\n"
+            "void TraceLog(int l, const char *t, ...) {}\\n"
+            "void tint(K *k, Color c) { size_t n = (size_t)k->w * k->h * 4; "
+            "unsigned char *cp = malloc(n); memcpy(cp, k->px, n); "
+            "Image im = { cp, k->w, k->h, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 }; "
+            'ImageColorTint(&im, c); memcpy(k->px, im.data, n); free(im.data); }", '
+            '"paths": ["src/rtextures.c"], "include_dirs": ["src", '
+            '"src/external/glfw/include"], "flags": "-DPLATFORM_DESKTOP"}'
         ),
     },
 }

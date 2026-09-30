@@ -161,3 +161,34 @@ def test_only_a_verified_extraction_earns_verified_win():
         and unchecked["verified_win"] == 0
         and unchecked["extraction"] == "unchecked"
     )
+
+
+def test_an_adapter_that_copies_instead_of_calling_is_refused(repo, monkeypatch):
+    """A run's "adapter" mirrored raylib's loop instead of calling it."""
+    seen = {}
+
+    async def fake(**kwargs):
+        seen.update(kwargs)
+        return {
+            "verdict": "did_not_compile",
+            "compile_errors": "Compilation failed: error: REFERENCE_NOT_CALLED",
+        }
+
+    monkeypatch.setattr(r, "run_comparison", fake)
+    out = asyncio.run(
+        r.check_extraction(
+            kernel="k",
+            driver="int main(){}",
+            inputs=["1"],
+            reference=_ref(),
+            root=str(repo),
+        )
+    )
+    assert (
+        out["verdict"] == "reference_not_called" and "copy of the code" in out["detail"]
+    )
+    build = seen["arms"][1].build
+    # The check runs before the link: needs of the adapter against what the
+    # repository objects define.
+    assert "llvm-nm -u -j __adapter.o" in build and "comm -12" in build
+    assert build.index("comm -12") < build.index("-o cand")

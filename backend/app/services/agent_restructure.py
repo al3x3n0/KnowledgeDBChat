@@ -1030,7 +1030,9 @@ EXTRACTION_FAILURES = (
     "extraction_unfaithful",
     "reference_did_not_build",
     "reference_crashed",
+    "reference_not_called",
 )
+_NOT_CALLED = "REFERENCE_NOT_CALLED"
 
 
 def _check_reference_spec(
@@ -1116,6 +1118,16 @@ async def check_extraction(
         for i, path in enumerate(spec["paths"])
     )
     ref_objects = " ".join(f"__ref_{i}.o" for i in range(len(spec["paths"])))
+    # The adapter must CALL into the repository. A run wrote an "adapter"
+    # that was a copy of raylib's loop -- comparing a copy with a copy would
+    # have verified nothing -- so at least one symbol the adapter needs must be
+    # one the repository's objects define.
+    calls_repo = (
+        "llvm-nm -u -j __adapter.o | sort -u > __needs.txt && "
+        f"llvm-nm --defined-only -j {ref_objects} | sort -u > __defines.txt && "
+        '{ [ -n "$(comm -12 __needs.txt __defines.txt)" ] || '
+        f"{{ echo 'error: {_NOT_CALLED}'; false; }}; }}"
+    )
     arms = [
         Arm(
             "orig",
@@ -1125,7 +1137,7 @@ async def check_extraction(
         Arm(
             "cand",
             f"clang {safe} {spec['flags']} {includes} {REFERENCE_LINK[0]} "
-            f"-c __adapter.c -o __adapter.o && {compile_ref} && "
+            f"-c __adapter.c -o __adapter.o && {compile_ref} && {calls_repo} && "
             f"clang {safe} {REFERENCE_LINK[1]} -o cand __driver.o __adapter.o "
             f"{ref_objects} -lm",
         ),
@@ -1154,6 +1166,19 @@ async def check_extraction(
             "verdict": "faithful",
             "checked_on_inputs": len(inputs),
             "paths": spec["paths"],
+        }
+    if verdict == "did_not_compile" and _NOT_CALLED in str(
+        result.get("compile_errors") or ""
+    ):
+        return {
+            "verdict": "reference_not_called",
+            "detail": (
+                "the adapter calls nothing the repository files define, so it is a "
+                "copy of the code, not a reference to it -- comparing a copy with "
+                "the kernel verifies nothing. The adapter must implement the "
+                "kernel's interface by CALLING the real function (e.g. "
+                "ImageColorTint(&img, color)) from the files in reference.paths."
+            ),
         }
     if verdict == "did_not_compile":
         return {

@@ -218,7 +218,7 @@ class TestProposer:
         assert len(findings) == 2
         by_name = {j["name"]: j for j in judged}
         assert by_name["branchless"]["over_best"]["verdict"] == "unresolved"
-        assert any("added nothing" in n for n in by_name["branchless"]["notes"])
+        assert any("adds nothing on top" in n for n in by_name["branchless"]["notes"])
         # The one that adds something of its own outranks the one that does not.
         assert [j["name"] for j in judged] == ["table", "own-idea", "branchless"]
 

@@ -463,9 +463,15 @@ async def _attribute(judged: List[Dict[str, Any]], evaluate) -> List[Dict[str, A
         }
         if verdict != "faster":
             other["notes"] = list(other.get("notes") or []) + [
-                f"Measured against {best['name']} it is {verdict}: its gain over "
-                f"the original is {best['name']}'s gain, and the idea it is "
-                "named for added nothing that was measured."
+                # Two cases the measurement cannot tell apart, so neither is
+                # claimed: it carried the best one's idea (three "different"
+                # proposals once all held one lookup table), or it is a
+                # different idea that is simply not as good (a LUT at 1.51x
+                # beside NEON at 2.53x). Either way, it adds nothing on top.
+                f"Measured against {best['name']} it is {verdict}, so it adds "
+                f"nothing on top of {best['name']}: either it carries the same "
+                "idea, or it is a different one that is not as good. Check "
+                "its source to tell which."
             ]
         findings.extend(result.get("findings") or [])
     # Winners that add nothing of their own rank after winners that do.

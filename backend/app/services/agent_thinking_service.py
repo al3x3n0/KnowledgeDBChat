@@ -2,12 +2,35 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
 from app.services import agent_decision_parser
+
+#: Waits between attempts when the model provider cannot be reached. Short
+#: blips recover inside the iteration; a real outage stops the run after about
+#: three minutes instead of spending its budget on fallback actions.
+PROVIDER_BACKOFF_SECONDS = (15, 45, 120)
+
+_UNREACHABLE = re.compile(
+    r"connection error|request error|connect(ion)? (timed out|refused|reset)|"
+    r"timed out|timeout|temporarily unavailable|service unavailable|"
+    r"\b50[234]\b|rate.?limit|\b429\b|name or service not known|"
+    r"failed to generate response",
+    re.IGNORECASE,
+)
+
+
+def provider_unreachable(exc: Any) -> bool:
+    """The model call never reached a model -- as distinct from a model that
+    answered with something the parser could not use, which is still worth a
+    recovery action."""
+    text = f"{exc.__class__.__name__}: {exc}"
+    return bool(_UNREACHABLE.search(text))
 
 
 class AgentThinkingService:
@@ -22,6 +45,7 @@ class AgentThinkingService:
         observation: Dict[str, Any],
         user_settings: Optional[Any],
         db: Any,
+        _provider_attempt: int = 0,
     ) -> Dict[str, Any]:
         """Decide the next action based on goal and current state."""
         # Automatic context compaction runs before prompt assembly so a
@@ -177,6 +201,43 @@ Respond in JSON format:
                 available_tools=available_tools,
             )
         except Exception as exc:
+            if provider_unreachable(exc):
+                if _provider_attempt < len(PROVIDER_BACKOFF_SECONDS):
+                    delay = PROVIDER_BACKOFF_SECONDS[_provider_attempt]
+                    logger.warning(
+                        f"Job {getattr(job, 'id', '?')}: model provider unreachable "
+                        f"({exc}); retrying in {delay}s "
+                        f"({_provider_attempt + 1}/{len(PROVIDER_BACKOFF_SECONDS)})"
+                    )
+                    await asyncio.sleep(delay)
+                    return await self.think(
+                        executor,
+                        job,
+                        agent_def,
+                        state,
+                        observation,
+                        user_settings,
+                        db,
+                        _provider_attempt=_provider_attempt + 1,
+                    )
+                # Acting without a model is not recovery. Measured: a run whose
+                # provider went unreachable at iteration 8 spent seven more on
+                # fallback searches and verifications, then paused as "no new
+                # findings" -- blaming the work for an outage.
+                waited = sum(PROVIDER_BACKOFF_SECONDS)
+                return {
+                    "goal_achieved": False,
+                    "should_stop": True,
+                    "provider_unreachable": True,
+                    "stop_reason": (
+                        "the model provider could not be reached after "
+                        f"{len(PROVIDER_BACKOFF_SECONDS) + 1} attempts over {waited}s "
+                        f"({exc}); stopped rather than acting without a model. "
+                        "Resume once the provider answers."
+                    ),
+                    "reasoning": str(exc),
+                    "action": None,
+                }
             logger.error(f"Error in thinking phase: {exc}")
             recovery_action = executor._build_recovery_action(job, state)
             return {

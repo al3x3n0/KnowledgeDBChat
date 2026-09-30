@@ -559,6 +559,17 @@ class _AutonomousRuntimeAdapter:
                 )
                 self.state["goal_progress"] = 100
 
+        if decision.get("should_stop") and decision.get("provider_unreachable"):
+            # An outage is not the run giving up, so the contract does not argue
+            # with it: blocking the stop would only spend another three minutes
+            # of retries per attempt. Recorded as a policy stop, which the
+            # finaliser treats as a run that ended itself -- paused with this
+            # reason, and resumable once the provider answers.
+            reason = str(decision.get("stop_reason") or "model provider unreachable")
+            self.job.add_log_entry({"phase": "provider_unreachable", "reason": reason})
+            self.state["loop_policy_stop_reason"] = reason
+            return decision
+
         if decision.get("should_stop"):
             # A contract gates goal_achieved but used to leave this path open,
             # so a run could conclude its way out of its own requirements: one

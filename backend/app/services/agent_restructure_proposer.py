@@ -597,8 +597,14 @@ async def propose_restructurings(
     label: str = "",
     user_id: Any = None,
     db: Any = None,
+    reference: Optional[Dict[str, Any]] = None,
+    reference_root: str = "",
 ) -> Dict[str, Any]:
-    """Ask for application-specific rewrites of `kernel`, and judge each one."""
+    """Ask for application-specific rewrites of `kernel`, and judge each one.
+
+    With `reference`, the kernel is first checked against the repository's
+    real function -- once, before any model call is spent on it.
+    """
     problem, cleaned = check_inputs(inputs, bench_input)
     if problem:
         return {"error": problem}
@@ -611,6 +617,22 @@ async def propose_restructurings(
     if blocked:
         return {"error": blocked}
     count = max(1, min(int(count or DEFAULT_PROPOSALS), MAX_PROPOSALS))
+
+    verified = False
+    if reference:
+        from app.services.agent_restructure import check_extraction, extraction_refusal
+
+        fidelity = await check_extraction(
+            kernel=kernel,
+            driver=driver,
+            inputs=cleaned,
+            reference=reference,
+            root=reference_root,
+            flags=safe,
+        )
+        if fidelity["verdict"] != "faithful":
+            return extraction_refusal(fidelity, label)
+        verified = True
 
     listing = await compiler_listing(kernel, safe)
     message = (
@@ -644,6 +666,7 @@ async def propose_restructurings(
             trials=trials,
             label=f"{subject}/{proposal['name']}"
             + (f" over {baseline['name']}" if baseline else ""),
+            extraction_verified=verified,
         )
 
     out = await _propose_and_judge(
@@ -656,7 +679,15 @@ async def propose_restructurings(
         user_id=user_id,
         db=db,
     )
-    return _as_result(out, subject, "source")
+    result = _as_result(out, subject, "source")
+    if result.get("success"):
+        result["data"]["extraction"] = (
+            "verified against the repository's own function"
+            if verified
+            else "unchecked: pass reference to compare the kernel with the code "
+            "it was extracted from"
+        )
+    return result
 
 
 async def propose_binary_rewrites(

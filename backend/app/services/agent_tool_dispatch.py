@@ -5112,6 +5112,27 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "label": str(params.get("label") or ""),
         }
 
+    def _reference_args(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+        """`reference` plus the workspace it names files in, or an error."""
+        reference = params.get("reference")
+        if not reference:
+            return {}
+        if not isinstance(reference, dict):
+            return {
+                "error": (
+                    "reference must be an object: {adapter, paths, include_dirs, flags}"
+                )
+            }
+        state = ctx.state if isinstance(ctx.state, dict) else {}
+        ws = executor.workspace_manager.get_or_default(
+            reference.get("workspace_id") or params.get("workspace_id"), state
+        )
+        if not ws:
+            return {
+                "error": "reference needs the repository: clone_and_index_repo first"
+            }
+        return {"reference": reference, "reference_root": str(ws.base_path)}
+
     async def _propose_restructurings(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -5120,8 +5141,12 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         harness = _harness(params)
         if "error" in harness:
             return harness
+        ref = _reference_args(params, ctx)
+        if "error" in ref:
+            return ref
         return await agent_restructure_proposer.propose_restructurings(
             kernel=str(params.get("kernel") or ""),
+            **ref,
             focus=str(params.get("focus") or ""),
             count=int(params.get("count") or 3),
             user_id=ctx.user_id,
@@ -5137,9 +5162,13 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         harness = _harness(params)
         if "error" in harness:
             return harness
+        ref = _reference_args(params, ctx)
+        if "error" in ref:
+            return ref
         return await agent_restructure.evaluate_restructuring(
             kernel=str(params.get("kernel") or ""),
             candidate=str(params.get("candidate") or ""),
+            **ref,
             value_preserving=params.get("value_preserving") is not False,
             invariant=str(params.get("invariant") or ""),
             trials=int(params.get("trials") or 7),

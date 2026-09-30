@@ -807,8 +807,14 @@ async def run_comparison(
     timeout_seconds: int,
     run_args: str = "",
     collect: Sequence[str] = (),
+    tree: str = "",
+    time_it: bool = True,
 ) -> Dict[str, Any]:
     """Build, compare and time. Returns the raw judgement pieces.
+
+    `tree` is a directory copied into the sandbox before `files` are written
+    (a repository whose own sources an arm compiles); `time_it=False` stops
+    after the differential check.
 
     `collect` names files the arm builds leave in the workdir -- a BOLT log's
     statistics, say -- to be read back after the run, capped at 64 KB each.
@@ -822,6 +828,10 @@ async def run_comparison(
     ceiling = next((a.name for a in arms[2:] if a.name == "ceiling"), None)
 
     with tempfile.TemporaryDirectory(prefix="restructure_") as workdir:
+        if tree:
+            shutil.copytree(
+                tree, workdir, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git")
+            )
         for name, content in files.items():
             target = Path(workdir, name)
             if isinstance(content, bytes):
@@ -893,6 +903,8 @@ async def run_comparison(
                 # and a run was told "Fix the harness: no detail was reported".
                 out["detail"] = equivalence["detail"]
             return out
+        if not time_it:
+            return {"verdict": "equivalent", "equivalence": equivalence}
 
         timed = [a for a in arms if parsed["built"].get(a.name)]
         # The control: a byte-identical copy of the baseline binary, timed with
@@ -1003,6 +1015,189 @@ def _source_preflight(kernel: str, candidate: str, driver: str) -> Optional[str]
     return None
 
 
+#: How a repository's own sources are linked for the reference build. The
+#: file that defines the extracted function usually references much more --
+#: raylib's rtextures.c calls into the GPU layer -- that the path under test
+#: never reaches. Unused sections are dropped, and what is left unresolved is
+#: tolerated; if the reference path DOES call it, the program crashes, and
+#: that is reported as the reference failing, never as agreement.
+REFERENCE_LINK = (
+    "-ffunction-sections -fdata-sections",
+    "-Wl,--gc-sections -Wl,--unresolved-symbols=ignore-all",
+)
+#: Verdicts of the fidelity check, other than "faithful".
+EXTRACTION_FAILURES = (
+    "extraction_unfaithful",
+    "reference_did_not_build",
+    "reference_crashed",
+)
+
+
+def _check_reference_spec(
+    reference: Any, root: str
+) -> Tuple[Optional[str], Dict[str, Any]]:
+    from app.services.agent_optscan import SAFE_REPO_PATH
+
+    if not isinstance(reference, dict):
+        return "reference must be an object with adapter and paths", {}
+    adapter = str(reference.get("adapter") or "")
+    if not adapter.strip():
+        return (
+            "reference.adapter is required: C that implements the kernel's "
+            "interface by calling the repository's real function",
+            {},
+        )
+    if len(adapter) > MAX_SOURCE_CHARS:
+        return f"reference.adapter exceeds {MAX_SOURCE_CHARS} characters", {}
+    paths = reference.get("paths") or []
+    dirs = reference.get("include_dirs") or []
+    if isinstance(paths, str):
+        paths = [paths]
+    if isinstance(dirs, str):
+        dirs = [dirs]
+    if not isinstance(paths, list) or not paths or not isinstance(dirs, list):
+        return (
+            "reference.paths is required: the repository .c files that define "
+            "the real function, e.g. ['src/rtextures.c']",
+            {},
+        )
+    if not root or not Path(root).is_dir():
+        return "reference needs the repository: clone_and_index_repo first", {}
+    for rel in list(paths) + list(dirs):
+        if not SAFE_REPO_PATH.match(str(rel)):
+            return f"reference path {rel!r} is not a plain repository-relative path", {}
+    missing = [p for p in paths if not Path(root, p).is_file()]
+    if missing:
+        return f"reference paths not in the workspace: {', '.join(missing[:6])}", {}
+    extra = _clean_flags(str(reference.get("flags") or ""))
+    if extra is None:
+        return (
+            f"reference.flags contain unsupported characters: {reference.get('flags')!r}",
+            {},
+        )
+    return None, {
+        "adapter": adapter,
+        "paths": [str(p) for p in paths],
+        "include_dirs": [str(d) for d in dirs],
+        "flags": extra,
+    }
+
+
+async def check_extraction(
+    *,
+    kernel: str,
+    driver: str,
+    inputs: List[str],
+    reference: Dict[str, Any],
+    root: str,
+    flags: str = DEFAULT_FLAGS,
+    image: str = DEFAULT_IMAGE,
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+) -> Dict[str, Any]:
+    """Does the extracted kernel compute what the repository's code computes?
+
+    Every candidate is judged against the kernel it is given, and nothing
+    checked the kernel against the code it was extracted from. Two agent runs
+    extracted raylib's ImageColorTint and silently dropped its alpha tinting
+    -- faithful only for opaque tints, a specialisation neither declared, and
+    established by hand afterwards. Here the driver is linked twice, against
+    the extracted kernel and against an adapter over the repository's real
+    function, and the two must print the same thing on every input.
+    """
+    problem, spec = _check_reference_spec(reference, root)
+    if problem:
+        return {"verdict": "reference_did_not_build", "detail": problem}
+    safe = _clean_flags(flags or DEFAULT_FLAGS)
+    if safe is None:
+        return {"verdict": "reference_did_not_build", "detail": f"bad flags: {flags!r}"}
+    includes = " ".join(f"-I{d}" for d in spec["include_dirs"])
+    compile_ref = " && ".join(
+        f"clang {safe} {spec['flags']} {includes} {REFERENCE_LINK[0]} -c {path} -o __ref_{i}.o"
+        for i, path in enumerate(spec["paths"])
+    )
+    ref_objects = " ".join(f"__ref_{i}.o" for i in range(len(spec["paths"])))
+    arms = [
+        Arm(
+            "orig",
+            f"clang {safe} -c __kernel.c -o __kernel.o && "
+            f"clang {safe} -o orig __driver.o __kernel.o -lm",
+        ),
+        Arm(
+            "cand",
+            f"clang {safe} {spec['flags']} {includes} {REFERENCE_LINK[0]} "
+            f"-c __adapter.c -o __adapter.o && {compile_ref} && "
+            f"clang {safe} {REFERENCE_LINK[1]} -o cand __driver.o __adapter.o "
+            f"{ref_objects} -lm",
+        ),
+    ]
+    result = await run_comparison(
+        files={
+            "__kernel.c": kernel,
+            "__driver.c": driver,
+            "__adapter.c": spec["adapter"],
+        },
+        prep=f"clang {safe} -c __driver.c -o __driver.o",
+        arms=arms,
+        inputs=inputs,
+        bench_input=0,
+        trials=MIN_PAIRS,
+        tolerance=0.0,
+        image=image,
+        timeout_seconds=timeout_seconds,
+        tree=root,
+        time_it=False,
+    )
+    verdict = result.get("verdict")
+    equivalence = result.get("equivalence") or {}
+    if verdict == "equivalent":
+        return {
+            "verdict": "faithful",
+            "checked_on_inputs": len(inputs),
+            "paths": spec["paths"],
+        }
+    if verdict == "did_not_compile":
+        return {
+            "verdict": "reference_did_not_build",
+            "detail": "the adapter or the repository sources did not build: "
+            + str(result.get("compile_errors") or ""),
+        }
+    if verdict == "crashed":
+        return {
+            "verdict": "reference_crashed",
+            "detail": (
+                "the reference program failed where the kernel ran: "
+                f"{(equivalence.get('first_problem') or {}).get('detail')}. If the "
+                "real function calls something the repository files given do not "
+                "define, add the file that does to reference.paths, or stub it "
+                "in the adapter."
+            ),
+        }
+    if verdict == "diverged":
+        problem_at = equivalence.get("first_problem") or {}
+        return {
+            "verdict": "extraction_unfaithful",
+            # The kernel is the baseline arm and the reference the candidate,
+            # so "expected" is the kernel's output and "actual" the repo's.
+            "detail": (
+                "the extracted kernel does not compute what the repository's "
+                f"function computes: on input #{problem_at.get('input')} the "
+                f"kernel printed {str(problem_at.get('expected_excerpt', ''))[:160]!r} "
+                "and the repository's function printed "
+                f"{str(problem_at.get('actual_excerpt', ''))[:160]!r}. Either the "
+                "extraction changed the behaviour or it specialises to something "
+                "these inputs leave: make the kernel match, or narrow the inputs "
+                "to what the specialisation covers and say so."
+            ),
+            "first_problem": problem_at,
+        }
+    return {
+        "verdict": verdict or "reference_did_not_build",
+        "detail": result.get("detail")
+        or result.get("error")
+        or "the check did not run",
+    }
+
+
 async def evaluate_restructuring(
     *,
     kernel: str,
@@ -1017,8 +1212,17 @@ async def evaluate_restructuring(
     label: str = "",
     image: str = DEFAULT_IMAGE,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+    reference: Optional[Dict[str, Any]] = None,
+    reference_root: str = "",
+    extraction_verified: bool = False,
 ) -> Dict[str, Any]:
-    """Is `candidate` the same program as `kernel` on these inputs, and faster?"""
+    """Is `candidate` the same program as `kernel` on these inputs, and faster?
+
+    With `reference`, the kernel itself is first checked against the
+    repository's real function (`check_extraction`); a kernel that does not
+    match is refused before any candidate is timed against it.
+    `extraction_verified` says a caller already ran that check.
+    """
     problem = _source_preflight(kernel, candidate, driver)
     if problem:
         return {"error": problem}
@@ -1031,6 +1235,21 @@ async def evaluate_restructuring(
     blocked = sandbox_blocked(image)
     if blocked:
         return {"error": blocked}
+
+    fidelity: Optional[Dict[str, Any]] = None
+    if reference and not extraction_verified:
+        fidelity = await check_extraction(
+            kernel=kernel,
+            driver=driver,
+            inputs=cleaned,
+            reference=reference,
+            root=reference_root,
+            flags=safe,
+            image=image,
+        )
+        if fidelity["verdict"] != "faithful":
+            return extraction_refusal(fidelity, label)
+        extraction_verified = True
 
     # The ceiling is the compiler given every liberty the candidate takes: a
     # value-changing candidate is compared against -ffast-math, because that is
@@ -1073,7 +1292,32 @@ async def evaluate_restructuring(
         n_inputs=len(cleaned),
         added_state=max(0, mutable_statics(candidate) - mutable_statics(kernel)),
         ceiling_flags=ceiling_flags,
+        extraction_verified=extraction_verified,
     )
+
+
+def extraction_refusal(fidelity: Dict[str, Any], label: str) -> Dict[str, Any]:
+    """Nothing is judged against a kernel that is not the repository's code."""
+    verdict = fidelity.get("verdict")
+    subject = (label or "").strip() or "kernel"
+    return {
+        "success": False,
+        "error": f"{verdict}: {fidelity.get('detail')}",
+        "data": {"verdict": verdict, **fidelity},
+        "findings": [
+            {
+                "type": "restructuring_result",
+                "subject": subject,
+                "title": f"{subject}: {verdict}",
+                "verdict": verdict,
+                "win": 0,
+                "verified_win": 0,
+                "extraction": "unfaithful"
+                if verdict == "extraction_unfaithful"
+                else "unchecked",
+            }
+        ],
+    }
 
 
 def package(
@@ -1087,6 +1331,7 @@ def package(
     added_state: int = 0,
     ceiling_flags: str = "",
     extra: Optional[Dict[str, Any]] = None,
+    extraction_verified: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """The tool result: the verdict, what it rests on, and a finding."""
     if (
@@ -1103,6 +1348,13 @@ def package(
     }
     data["value_preserving"] = value_preserving
     data["checked_on_inputs"] = n_inputs
+    if extraction_verified is not None:
+        data["extraction"] = (
+            "verified against the repository's own function"
+            if extraction_verified
+            else "unchecked: nothing compared this kernel with the code it was "
+            "extracted from; pass reference to check"
+        )
     if invariant:
         data["relies_on"] = invariant
     if ceiling_flags:
@@ -1166,6 +1418,16 @@ def package(
                 # Numeric so a contract can bound it: 1 only for a candidate
                 # that beat the original AND the ceiling on identical output.
                 "win": 1 if verdict == "faster" else 0,
+                # A win on a kernel checked against the repository's own
+                # function. `win` alone is a win on whatever was extracted.
+                "verified_win": 1 if verdict == "faster" and extraction_verified else 0,
+                "extraction": (
+                    "verified"
+                    if extraction_verified
+                    else "unchecked"
+                    if extraction_verified is not None
+                    else None
+                ),
                 "speedup": timing.get("speedup"),
                 "median_speedup": timing.get("median_speedup"),
                 "speedup_over_ceiling": timing.get("speedup_over_ceiling"),

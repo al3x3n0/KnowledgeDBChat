@@ -68,6 +68,26 @@ _HARNESS_PROPS = {
     "label": {"type": "string", "description": "Names the result in the finding."},
 }
 
+_REFERENCE_PROP = {
+    "reference": {
+        "type": "object",
+        "description": (
+            "Check the extracted kernel against the REPOSITORY's real function "
+            "before anything is judged -- without it, nothing confirms the "
+            "kernel computes what the code it came from computes. An object: "
+            "adapter (C implementing the kernel's exact interface by calling "
+            "the repository's real function; declare its own copy of any "
+            "struct the driver passes, and stub helpers the path needs from "
+            "files not listed, e.g. TraceLog), paths (repository .c files "
+            "defining the real function, e.g. ['src/rtextures.c']), "
+            "include_dirs, flags (defines, e.g. '-DPLATFORM_DESKTOP'). The "
+            "driver is linked against both; they must print the same on every "
+            "input, or the verdict is extraction_unfaithful. Findings then "
+            "carry verified_win."
+        ),
+    },
+}
+
 _VERDICTS_HINT = (
     "Verdicts: did_not_compile (errors verbatim), crashed, diverged (the "
     "first input where output differs, never timed), slower, unresolved "
@@ -310,6 +330,7 @@ SPECS: tuple[ToolSpec, ...] = (
                     ),
                 },
                 **_HARNESS_PROPS,
+                **_REFERENCE_PROP,
                 "focus": {
                     "type": "string",
                     "description": (
@@ -353,6 +374,7 @@ SPECS: tuple[ToolSpec, ...] = (
                     "description": "The complete rewritten C file, same external functions.",
                 },
                 **_HARNESS_PROPS,
+                **_REFERENCE_PROP,
                 "value_preserving": {
                     "type": "boolean",
                     "description": (

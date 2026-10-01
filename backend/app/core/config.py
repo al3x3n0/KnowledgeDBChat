@@ -552,6 +552,18 @@ class Settings(BaseSettings):
     # for if a deployment wants extension to be an operator decision.
     PLUGINS_USER_AUTHORING_ENABLED: bool = True
 
+    # Sandbox skills
+    # Whether a user may author sandbox skills. A skill only ever runs inside
+    # the confined sandbox, in an image that is already allowed, and only once
+    # its control run has passed -- so authoring is on by default. Running one
+    # still needs ENABLE_UNSAFE_CODE_EXECUTION.
+    SANDBOX_SKILLS_AUTHORING_ENABLED: bool = True
+    # Whether an administrator may BUILD an image proposed for a skill. Off by
+    # default: a build runs a Dockerfile on the host daemon with the network
+    # available, which is a far larger grant than running a confined command.
+    SANDBOX_SKILL_IMAGE_BUILD_ENABLED: bool = False
+    SANDBOX_SKILL_IMAGE_BUILD_TIMEOUT_SECONDS: int = 1800
+
     # AI Hub Training Configuration
     TRAINING_ENABLED: bool = True
     TRAINING_MAX_CONCURRENT_JOBS: int = 2

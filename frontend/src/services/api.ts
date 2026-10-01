@@ -291,6 +291,13 @@ import {
   DocumentFolderTree,
   Plugin,
   PluginListResponse,
+  SandboxSkill,
+  SandboxSkillDraftStatus,
+  SandboxSkillDryRunResponse,
+  SandboxSkillImage,
+  SandboxSkillImageListResponse,
+  SandboxSkillListResponse,
+  SandboxSkillManifest,
   ContributedToolsResponse,
   PluginUiResponse,
   ResearchCampaign,
@@ -4744,6 +4751,117 @@ class ApiClient {
     pending: boolean;
   }> {
     const response = await this.client.get(`/api/v1/plugins/draft/${taskId}`);
+    return response.data;
+  }
+
+  // Sandbox skills --------------------------------------------------------
+
+  async listSandboxSkills(): Promise<SandboxSkillListResponse> {
+    const response = await this.client.get('/api/v1/sandbox-skills');
+    return response.data;
+  }
+
+  /** Stores a draft. A skill is never active on creation. */
+  async createSandboxSkill(
+    manifest: SandboxSkillManifest | Record<string, any>
+  ): Promise<SandboxSkill> {
+    const response = await this.client.post('/api/v1/sandbox-skills', {
+      manifest,
+    });
+    return response.data;
+  }
+
+  /** An active skill whose content changes becomes a draft again. */
+  async updateSandboxSkill(
+    skillId: string,
+    manifest: SandboxSkillManifest | Record<string, any>
+  ): Promise<SandboxSkill> {
+    const response = await this.client.put(
+      `/api/v1/sandbox-skills/${skillId}`,
+      { manifest }
+    );
+    return response.data;
+  }
+
+  async deleteSandboxSkill(skillId: string): Promise<void> {
+    await this.client.delete(`/api/v1/sandbox-skills/${skillId}`);
+  }
+
+  /** Run the skill's control in the sandbox and record the verdict. */
+  async dryRunSandboxSkill(skillId: string): Promise<SandboxSkillDryRunResponse> {
+    const response = await this.client.post(
+      `/api/v1/sandbox-skills/${skillId}/dry-run`
+    );
+    return response.data;
+  }
+
+  /** Refused (409) until the control has passed against the current content. */
+  async activateSandboxSkill(skillId: string): Promise<SandboxSkill> {
+    const response = await this.client.post(
+      `/api/v1/sandbox-skills/${skillId}/activate`
+    );
+    return response.data;
+  }
+
+  async disableSandboxSkill(skillId: string): Promise<SandboxSkill> {
+    const response = await this.client.post(
+      `/api/v1/sandbox-skills/${skillId}/disable`
+    );
+    return response.data;
+  }
+
+  /**
+   * Draft a skill from a description; with `current`, revise that skill.
+   *
+   * Drafting stores nothing. The skill comes back for review.
+   */
+  async draftSandboxSkill(
+    description: string,
+    current?: Record<string, any> | null
+  ): Promise<{ task_id: string; poll_url: string }> {
+    const response = await this.client.post('/api/v1/sandbox-skills/draft', {
+      description,
+      current: current || undefined,
+    });
+    return response.data;
+  }
+
+  async getSandboxSkillDraft(taskId: string): Promise<SandboxSkillDraftStatus> {
+    const response = await this.client.get(
+      `/api/v1/sandbox-skills/draft/${taskId}`
+    );
+    return response.data;
+  }
+
+  async listSandboxSkillImages(): Promise<SandboxSkillImageListResponse> {
+    const response = await this.client.get('/api/v1/sandbox-skills/images');
+    return response.data;
+  }
+
+  /** Proposes an image. Nothing is built until an administrator says so. */
+  async proposeSandboxSkillImage(payload: {
+    slug: string;
+    dockerfile: string;
+    description?: string;
+  }): Promise<SandboxSkillImage> {
+    const response = await this.client.post(
+      '/api/v1/sandbox-skills/images',
+      payload
+    );
+    return response.data;
+  }
+
+  async buildSandboxSkillImage(imageId: string): Promise<SandboxSkillImage> {
+    const response = await this.client.post(
+      `/api/v1/sandbox-skills/images/${imageId}/build`
+    );
+    return response.data;
+  }
+
+  async rejectSandboxSkillImage(imageId: string): Promise<SandboxSkillImage> {
+    const response = await this.client.post(
+      `/api/v1/sandbox-skills/images/${imageId}/reject`
+    );
     return response.data;
   }
 

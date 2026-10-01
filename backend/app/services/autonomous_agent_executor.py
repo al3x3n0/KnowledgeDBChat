@@ -120,6 +120,7 @@ from app.services.agent_tool_dispatch import (
     build_autonomous_project_bootstrap_provider,
     build_autonomous_reasoning_provider,
     build_autonomous_research_provider,
+    build_autonomous_sandbox_skill_provider,
     build_autonomous_scheduling_provider,
     build_autonomous_snapshot_provider,
     build_autonomous_symbol_retrieval_provider,
@@ -1753,6 +1754,7 @@ class AutonomousAgentExecutor:
                 build_autonomous_media_provider(self),
                 build_autonomous_snapshot_provider(self),
                 build_autonomous_project_bootstrap_provider(self),
+                build_autonomous_sandbox_skill_provider(self),
                 # Last: it claims the reserved `p_` namespace, which no
                 # built-in may occupy, so ordering cannot matter -- but a
                 # contributed tool should never be ahead of a first-party one

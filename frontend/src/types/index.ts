@@ -92,6 +92,96 @@ export interface PluginListResponse {
   total: number;
 }
 
+/** The skill document an author writes. Mirrors `sandbox_skill_manifest.py`. */
+export interface SandboxSkillManifest {
+  id: string;
+  name: string;
+  description: string;
+  image: string;
+  procedure: string;
+  files?: Record<string, string>;
+  result: { fields: Record<string, string> };
+  judge_command?: string;
+  control: { command: string; files?: Record<string, string> };
+  timeout_seconds?: number;
+}
+
+/** What the last control run did. `ran` false means nothing could be tested. */
+export interface SandboxSkillDryRun {
+  ok: boolean;
+  ran: boolean;
+  detail: string;
+  returncode?: number | null;
+  stdout?: string;
+  stderr?: string;
+  result?: Record<string, unknown> | null;
+  judged_by?: string;
+  at?: string;
+}
+
+export interface SandboxSkill {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  manifest: SandboxSkillManifest;
+  status: 'draft' | 'active' | 'disabled';
+  origin: 'manual' | 'drafted' | 'agent';
+  origin_job_id?: string | null;
+  /** The finding type a contract writes to require this skill's result. */
+  produces: string;
+  /** True only when the control passed against the current content. */
+  verified: boolean;
+  last_dry_run?: SandboxSkillDryRun | null;
+  notes: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SandboxSkillListResponse {
+  items: SandboxSkill[];
+  images: string[];
+  execution_enabled: boolean;
+  authoring_enabled: boolean;
+  image_build_enabled: boolean;
+}
+
+export interface SandboxSkillDryRunResponse extends SandboxSkillDryRun {
+  skill: SandboxSkill;
+}
+
+export interface SandboxSkillDraftStatus {
+  state: string;
+  stage: string | null;
+  attempt: number;
+  notes: string[];
+  manifest: SandboxSkillManifest | null;
+  dry_run: SandboxSkillDryRun | null;
+  attempts: number;
+  pending: boolean;
+}
+
+export interface SandboxSkillImage {
+  id: string;
+  slug: string;
+  description?: string | null;
+  dockerfile: string;
+  base_image: string;
+  tag: string;
+  status: 'proposed' | 'building' | 'built' | 'failed' | 'rejected';
+  proposed_by?: string | null;
+  approved_by?: string | null;
+  build_log?: string | null;
+  built_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SandboxSkillImageListResponse {
+  items: SandboxSkillImage[];
+  build_enabled: boolean;
+}
+
 export interface ContributedToolsResponse {
   tools: {
     name: string;

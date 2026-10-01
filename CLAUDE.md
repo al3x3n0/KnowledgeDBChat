@@ -423,6 +423,45 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   `workflow_engine.NODE_TYPES` rather than restated, and node ids are
   **refused** when longer than the `String(50)` column rather than truncated —
   shortening an identifier changes which node an edge names.
+- **Sandbox skills** — a sandboxed capability written as *data*. Every
+  sandbox tool used to be a handler plus a `ToolSpec`, so a new kind of
+  sandboxed work was a code change and a pipeline could only require evidence
+  one of those handlers produced. A skill (`models/sandbox_skill.py`,
+  validated by `services/sandbox_skill_manifest.py`) carries a procedure the
+  agent reads, helper files, the image it runs in, the fields its
+  `result.json` must have, and a control. Four built-in tools
+  (`agent_core/tool_specs/skills.py`, handlers in
+  `services/agent_sandbox_skill_tools.py`) let a run list, load, run and
+  propose one. **The agent chooses the commands; the platform decides what
+  counts.** A result is read from the sandbox and checked against the declared
+  fields, a stale `result.json` is deleted before every run, and a skill may
+  name a `judge_command` whose output replaces whatever the run wrote — the
+  finding records `judged_by` because those are not equally strong.
+  **One path to active**: every skill arrives as a draft (hand-written,
+  drafted, or proposed by a run), and `activate` refuses until the control has
+  passed against the *current* content hash. Editing an active skill returns
+  it to draft; a control that starts failing deactivates it; a daemon that is
+  merely unreachable revokes nothing, since it says nothing about the skill.
+  Evidence is named `skill_<id>`, a namespace no built-in occupies
+  (`test_no_builtin_evidence_lives_in_the_skill_namespace`).
+  `agent_evidence_map` treats the namespace as produced by
+  `run_sandbox_skill`, so contracts, chains and prices work unchanged — but
+  that static check has no user, so it accepts a skill nobody has. The half
+  that knows is `agent_pipeline_draft.skill_problems`, applied in the pipeline
+  `check`/`bind`/`launch` endpoints and in the drafter's repair loop.
+  Drafting (`services/sandbox_skill_author_service.py`,
+  `POST /sandbox-skills/draft`) repairs against the real validator and **runs
+  the control it wrote**; when the sandbox cannot run at all it returns the
+  draft unverified rather than spending model calls on a failure no edit can
+  fix. Images: a skill may only name an allowlisted image or a *built*
+  authored one. Authored images (`services/sandbox_skill_image_service.py`)
+  are proposed by anyone and built only by an admin, only with
+  `SANDBOX_SKILL_IMAGE_BUILD_ENABLED` (default off); a Dockerfile must have
+  exactly one `FROM` naming an allowlisted image, no `COPY`/`ADD` (there is no
+  build context) and no `ENTRYPOINT` (the sandbox runs `/bin/sh -lc`). The UI
+  is the Sandbox Skills panel on the Tools page. Not done yet: chat cannot
+  use skills (autonomous jobs only), and per-job run directories under
+  `$TMPDIR/kdbc-skills` are pruned after a day rather than at job end.
 - **Tool governance** — `tool_registry.py` + `tool_policy_engine.py` + `models/tool_audit.py`; per-user tool policies, approval gates for dangerous tools (`AGENT_REQUIRE_TOOL_APPROVAL`, `AGENT_DANGEROUS_TOOLS`), full execution audit log, user-defined custom tools (optionally Docker-executed). Tool dispatch lives in `agent_tool_dispatch.py`. Every tool is **declared once** in `app/agent_core/tool_specs/` (one module per domain): the schema a model reads, the governance classification, which job types may call it, and — for measurement tools — what evidence it produces. `agent_tools.AGENT_TOOLS`, the catalog, the job-type policy and the evidence map are all views of those specs, so adding a tool is a handler plus a `ToolSpec`, not four files kept in step by hand. `tests/test_tool_specs.py` enforces it.
 - **Chains are retired as an authoring concept.** `POST`/`PATCH
   /agent-jobs/chains` are marked `deprecated` in the OpenAPI schema and the
@@ -907,6 +946,8 @@ Backend configuration is in `backend/.env` (copy from `env.example`). `core/conf
 - `AGENT_REQUIRE_TOOL_APPROVAL`, `AGENT_DANGEROUS_TOOLS`, `AGENT_KB_PATCH_APPLY_ENABLED` - Agent governance
 - `PLUGIN_BUILTIN_DIR`, `PLUGINS_USER_AUTHORING_ENABLED` - Plugin bundles shipped
   with the repo, and whether users may author their own
+- `SANDBOX_SKILLS_AUTHORING_ENABLED`, `SANDBOX_SKILL_IMAGE_BUILD_ENABLED` - Whether
+  users may author sandbox skills, and whether an admin may build images for them
 - `SECRETS_ENCRYPTION_KEY` - Fernet key for the encrypted secrets store
 - `KROKI_URL` - Diagram rendering; `GITLAB_*`, `CONFLUENCE_*` - Data sources
 

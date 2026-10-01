@@ -92,6 +92,48 @@ _BY_EVIDENCE_FIRST: Dict[str, ToolEvidence] = {
 }
 
 
+#: Evidence a packaged sandbox skill yields.
+#:
+#: Everything above is fixed at import: a tool declares what it produces and
+#: the map is derived from that. A skill is data a user writes, so the evidence
+#: it yields has no spec to be derived from -- and a module-level map has no
+#: idea whose skills exist. What *is* fixed is the route: every skill's result
+#: is recorded by one tool, under a type in a namespace no built-in occupies.
+#: So the rule is about the namespace rather than about any one skill.
+#:
+#: This answers "could a tool produce it" and nothing more. Whether the skill
+#: a contract names actually exists and is active is a question about a user,
+#: asked where there is one (`sandbox_skill_service.unmet_skill_evidence`).
+SKILL_EVIDENCE_PREFIX = "skill_"
+SKILL_RUNNER = "run_sandbox_skill"
+
+
+def is_skill_evidence(finding_type: str) -> bool:
+    name = str(finding_type or "").strip()
+    return name.startswith(SKILL_EVIDENCE_PREFIX) and len(name) > len(
+        SKILL_EVIDENCE_PREFIX
+    )
+
+
+def _skill_runner_entry() -> Optional[ToolEvidence]:
+    spec = tool_specs.spec_for(SKILL_RUNNER)
+    if spec is None:
+        return None
+    return ToolEvidence(
+        tool=spec.name,
+        typical_seconds=spec.typical_seconds,
+        consumes=spec.consumes,
+    )
+
+
+# In `_BY_TOOL` so a chain can plan and price it, and absent from
+# `EVIDENCE_TOOLS` because that tuple is exactly the specs that *declare*
+# evidence -- which this one, yielding a different type per skill, cannot.
+_SKILL_RUNNER_ENTRY = _skill_runner_entry()
+if _SKILL_RUNNER_ENTRY is not None:
+    _BY_TOOL[SKILL_RUNNER] = _SKILL_RUNNER_ENTRY
+
+
 def entry_for(tool: str) -> Optional[ToolEvidence]:
     """What this tool costs and produces, or None if it is not an evidence tool."""
     return _BY_TOOL.get(str(tool or "").strip())
@@ -104,7 +146,10 @@ def producers_of(finding_type: str) -> List[str]:
     planner that knows only one of them sends a run down it even when another
     fits the job better.
     """
-    return [entry.tool for entry in _PRODUCERS.get(str(finding_type).strip(), [])]
+    declared = [entry.tool for entry in _PRODUCERS.get(str(finding_type).strip(), [])]
+    if not declared and is_skill_evidence(finding_type) and SKILL_RUNNER in _BY_TOOL:
+        return [SKILL_RUNNER]
+    return declared
 
 
 def producer_of(finding_type: str) -> str:
@@ -115,8 +160,8 @@ def producer_of(finding_type: str) -> str:
     reordering two specs in a file would have changed which tool every
     pipeline planned, with nothing to notice it.
     """
-    producers = _PRODUCERS.get(str(finding_type).strip())
-    return producers[0].tool if producers else ""
+    producers = producers_of(finding_type)
+    return producers[0] if producers else ""
 
 
 def is_perishable(finding_type: str) -> bool:
@@ -205,6 +250,24 @@ def describe_chain(
     runnable = _callable_by(job_type)
     lines: List[str] = []
     for tool in chain:
+        if tool == SKILL_RUNNER:
+            # One line per skill, naming it: the tool is the same for all of
+            # them and only the skill differs, so "run_sandbox_skill yields
+            # ..." with nothing after it would tell the run which tool and
+            # leave out the one argument that decides what it gets.
+            if runnable is not None and tool not in runnable:
+                continue
+            for finding_type in dict.fromkeys(
+                str(t).strip() for t in required if is_skill_evidence(t)
+            ):
+                skill = finding_type[len(SKILL_EVIDENCE_PREFIX) :]
+                lines.append(
+                    f"{SKILL_RUNNER} with skill={skill!r} and collect_result=true "
+                    f"yields {finding_type}. Call load_sandbox_skill first: it "
+                    "returns the procedure to follow and the fields the result "
+                    "must have."
+                )
+            continue
         entry = _BY_TOOL[tool]
         alternatives = [
             other

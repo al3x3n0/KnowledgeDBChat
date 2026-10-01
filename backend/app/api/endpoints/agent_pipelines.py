@@ -110,10 +110,28 @@ def _normalized(spec):
         raise HTTPException(status_code=400, detail=f"Not a pipeline spec: {error}")
 
 
+async def _skill_problems(db: AsyncSession, user: User, pipeline) -> list[str]:
+    """Skill evidence a stage requires that this user has no active skill for.
+
+    `validate()` has no user, so it accepts any `skill_*` type as producible in
+    principle. This is the half of the check that knows whose skills exist --
+    without it a stage requiring a skill nobody activated validates, plans,
+    launches, and then waits on evidence nothing can produce.
+    """
+    from app.services import sandbox_skill_service
+
+    available = [
+        entry.name
+        for entry in await sandbox_skill_service.evidence_types_for_user(db, user.id)
+    ]
+    return agent_pipeline_draft.skill_problems(pipeline, available)
+
+
 @router.post("/check", response_model=PipelineCheckResponse)
 async def check_pipeline(
     payload: PipelineSpecRequest,
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Say everything that is wrong with a pipeline, without running it.
 
@@ -123,6 +141,7 @@ async def check_pipeline(
     """
     pipeline = _normalized(payload.spec)
     problems = agent_pipeline_spec.validate(pipeline)
+    problems.extend(await _skill_problems(db, current_user, pipeline))
     valid = not problems
 
     # Only ask the later questions once the earlier ones are settled: binding
@@ -170,6 +189,7 @@ async def check_pipeline(
 @router.get("/vocabulary", response_model=PipelineVocabularyResponse)
 async def get_pipeline_vocabulary(
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """The finding types a contract may require, and the job types available.
 
@@ -178,10 +198,16 @@ async def get_pipeline_vocabulary(
     the failure it causes -- a contract asking for evidence nothing produces --
     is the most common way an authored pipeline fails its own check.
     """
+    from app.services import sandbox_skill_service
+
     vocabulary = agent_pipeline_vocabulary.as_dict()
+    # The static vocabulary is derived from the tool specs and has no user.
+    # What this user's active sandbox skills yield is the part it cannot know.
+    skills = await sandbox_skill_service.evidence_types_for_user(db, current_user.id)
     return PipelineVocabularyResponse(
         evidence_types=[
-            PipelineEvidenceType(**e) for e in vocabulary["evidence_types"]
+            PipelineEvidenceType(**e)
+            for e in [*vocabulary["evidence_types"], *(s.as_dict() for s in skills)]
         ],
         job_types=list(vocabulary["job_types"]),
     )
@@ -200,6 +226,7 @@ async def draft_pipeline(
     them. The draft lands in the editor and is checked there like anything
     else -- this endpoint spends one LLM call and starts no run.
     """
+    from app.services import sandbox_skill_service
     from app.services.llm_service import LLMService
 
     try:
@@ -209,6 +236,9 @@ async def draft_pipeline(
             user_id=current_user.id,
             db=db,
             budget_seconds=payload.budget_seconds,
+            extra_evidence=await sandbox_skill_service.evidence_types_for_user(
+                db, current_user.id
+            ),
         )
     except agent_pipeline_draft.PipelineDraftError as error:
         raise HTTPException(status_code=502, detail=str(error))
@@ -224,6 +254,7 @@ async def draft_pipeline(
 async def bind_pipeline(
     payload: PipelineSpecRequest,
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Compile a pipeline to the job chain it would run as.
 
@@ -232,6 +263,7 @@ async def bind_pipeline(
     """
     pipeline = _normalized(payload.spec)
     problems = agent_pipeline_spec.validate(pipeline)
+    problems.extend(await _skill_problems(db, current_user, pipeline))
     if problems:
         # 422 rather than 400: the request was well-formed and the pipeline is
         # not, which is a different thing for a caller to handle.
@@ -272,6 +304,7 @@ async def launch_pipeline(
     pipeline = _normalized(payload.spec)
 
     problems = agent_pipeline_spec.validate(pipeline)
+    problems.extend(await _skill_problems(db, current_user, pipeline))
     if problems:
         raise HTTPException(status_code=422, detail="; ".join(problems))
 

@@ -453,7 +453,12 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   `POST /sandbox-skills/draft`) repairs against the real validator and **runs
   the control it wrote**; when the sandbox cannot run at all it returns the
   draft unverified rather than spending model calls on a failure no edit can
-  fix. Images: a skill may only name an allowlisted image or a *built*
+  fix. The drafter also **asks each image what it contains**
+  (`sandbox_skill_runtime.probe_tools`, cached per process): the first live
+  draft called `gcc` in an image that ships clang, was shown the error, and
+  called `gcc` again; with the tool list in the prompt the same request was
+  right first time. An image that cannot be asked is "unknown", never "empty".
+  Images: a skill may only name an allowlisted image or a *built*
   authored one. Authored images (`services/sandbox_skill_image_service.py`)
   are proposed by anyone and built only by an admin, only with
   `SANDBOX_SKILL_IMAGE_BUILD_ENABLED` (default off); a Dockerfile must have

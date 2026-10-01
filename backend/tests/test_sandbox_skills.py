@@ -836,3 +836,42 @@ def test_only_an_administrator_may_build_an_image(
         headers=auth_headers,
     )
     assert built.status_code == 403
+
+
+# ------------------------------------------------------------------- drafting
+
+
+async def test_an_image_is_asked_what_it_contains(sandbox, monkeypatch):
+    """The first live draft called gcc in an image that ships clang, twice."""
+    sandbox_skill_runtime._PROBED.clear()
+    probes = []
+
+    async def fake(script, workdir, *, image, timeout_seconds):
+        probes.append(image)
+        return 0, "clang\npython3\nnot-a-candidate\n", ""
+
+    monkeypatch.setattr(sandbox_skill_runtime, "_run_in_sandbox", fake)
+    assert await sandbox_skill_runtime.probe_tools(IMAGE) == ["clang", "python3"]
+    # Remembered: an image's contents do not change under a tag mid-process.
+    assert await sandbox_skill_runtime.probe_tools(IMAGE) == ["clang", "python3"]
+    assert probes == [IMAGE]
+    sandbox_skill_runtime._PROBED.clear()
+
+
+async def test_an_image_that_cannot_be_asked_is_unknown_not_empty(monkeypatch):
+    sandbox_skill_runtime._PROBED.clear()
+    monkeypatch.setattr(sandbox_skill_runtime, "_execution_enabled", lambda: False)
+    assert await sandbox_skill_runtime.probe_tools(IMAGE) == []
+    # Nothing is remembered, so a later probe that can run still does.
+    assert IMAGE not in sandbox_skill_runtime._PROBED
+
+
+def test_the_drafting_prompt_says_what_each_image_has():
+    from app.services import sandbox_skill_author_service as author
+
+    prompt = author._system_prompt([IMAGE, "other:latest"], {IMAGE: ["clang", "opt"]})
+    assert f"{IMAGE}\n              has: clang, opt" in prompt
+    assert (
+        "other:latest\n" in prompt and "other:latest\n              has" not in prompt
+    )
+    assert "is not installed" in prompt

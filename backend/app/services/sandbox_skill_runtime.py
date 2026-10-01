@@ -351,6 +351,59 @@ async def execute(
     return run
 
 
+#: Programs worth knowing about before writing a skill for an image. A short
+#: list of the things a procedure is likely to call, not an inventory.
+PROBE_CANDIDATES = (
+    "clang clang++ gcc g++ cc rustc cargo python3 make cmake "
+    "opt llc lld llvm-mca llvm-objdump llvm-size llvm-nm llvm-bolt "
+    "objdump size nm readelf strip valgrind perf gem5 gem5.opt "
+    "git jq bc awk sed"
+).split()
+
+_PROBED: Dict[str, List[str]] = {}
+
+
+async def probe_tools(image: str) -> List[str]:
+    """Which of the usual programs this image actually has.
+
+    A drafter told only an image's name guesses its contents, and guesses the
+    common case: the first live draft called `gcc` in an image that ships
+    clang, was shown `No such file or directory: 'gcc'`, and called `gcc`
+    again. Asking the image costs one container start and is remembered for
+    the life of the process, since an image's contents do not change under a
+    tag while this is running.
+
+    Returns [] when nothing could be asked. Silence is not evidence that an
+    image is empty, so a caller must treat [] as "unknown", never as "none".
+    """
+    if image in _PROBED:
+        return list(_PROBED[image])
+    if not _execution_enabled():
+        return []
+    script = "for t in %s; do command -v $t >/dev/null 2>&1 && echo $t; done; true" % (
+        " ".join(PROBE_CANDIDATES)
+    )
+    base = root_dir()
+    base.mkdir(parents=True, exist_ok=True)
+    _open_up(base)
+    workdir = Path(tempfile.mkdtemp(prefix="probe_", dir=str(base)))
+    _open_up(workdir)
+    try:
+        returncode, stdout, _ = await _run_in_sandbox(
+            script, str(workdir), image=image, timeout_seconds=60
+        )
+    except Exception as exc:
+        logger.warning(f"Could not probe {image}: {exc}")
+        return []
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+    if returncode != 0:
+        return []
+    found = [t for t in stdout.split() if t in PROBE_CANDIDATES]
+    _PROBED[image] = found
+    return list(found)
+
+
 async def dry_run(
     manifest: Mapping[str, Any], *, image_allowed: bool
 ) -> Dict[str, Any]:

@@ -86,8 +86,29 @@ DRAFT_SCHEMA: Dict[str, Any] = {
 }
 
 
-def _system_prompt(images: List[str]) -> str:
+def _image_lines(images: List[str], contents: Mapping[str, List[str]]) -> str:
+    """Each allowed image, with what it was found to contain.
+
+    An image whose contents could not be asked is listed without any, and the
+    prompt says what that means: unknown, not empty.
+    """
+    if not images:
+        return "            (none available)"
+    lines = []
+    for image in images:
+        tools = contents.get(image) or []
+        lines.append(
+            f"            {image}"
+            + (f"\n              has: {', '.join(tools)}" if tools else "")
+        )
+    return "\n".join(lines)
+
+
+def _system_prompt(
+    images: List[str], contents: Optional[Mapping[str, List[str]]] = None
+) -> str:
     m = sandbox_skill_manifest
+    image_lines = _image_lines(images, contents or {})
     return f"""You write sandbox skills for an autonomous research agent.
 
 A skill packages ONE kind of sandboxed work: a procedure the agent follows,
@@ -103,7 +124,11 @@ id          lowercase letters, digits, underscore; starts with a letter; 2-32
 name        a short human name.
 description WHEN to use the skill, in one or two sentences. This is all the
             agent sees before deciding to load it.
-image       exactly one of: {', '.join(images) if images else '(none available)'}
+image       exactly one of these, spelled in full:
+{image_lines}
+            Where an image lists what it has, call ONLY those programs: a
+            program not listed (gcc, where only clang is) is not installed.
+            Where it lists nothing, its contents are unknown.
 procedure   the steps, as text. Say what to write, what to run, what the
             output means, and what commonly goes wrong.
 files       {{relative_path: text}} helper files. They appear in the sandbox
@@ -188,7 +213,12 @@ async def draft_skill(
         }
 
     images = await sandbox_skill_service.known_images(db)
-    system = _system_prompt(images)
+    # Ask each image what it has, so the model is not left to guess. Probing
+    # is best-effort: an image that cannot be asked is simply listed bare.
+    contents = {
+        image: await sandbox_skill_runtime.probe_tools(image) for image in images
+    }
+    system = _system_prompt(images, contents)
     revising = isinstance(current, Mapping) and bool(current)
     if revising:
         message = (

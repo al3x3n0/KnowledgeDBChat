@@ -367,9 +367,27 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   unchanged. `agent_core/tool_specs.ToolCatalog` is what makes this possible:
   the module-level views now delegate to `STATIC_CATALOG` (built-ins only), and
   a caller that knows whose tools it wants builds its own with
-  `extended_with()`, which refuses anything shadowing a built-in. **Chat is not
-  wired yet** — it builds its menu from the global `AGENT_TOOLS` at three
-  sites; plugin tools reach autonomous jobs only.
+  `extended_with()`, which refuses anything shadowing a built-in. Chat offers
+  contributed tools too (`AgentService._contributed_tool_schemas`, resolved
+  per call because the service is a singleton).
+
+  **Chat offers only the built-ins it can run** (`AgentService._chat_tools`).
+  `AGENT_TOOLS` is every declared tool and most are answered only by the
+  autonomous-job providers; chat described all 250 in 158,600 characters of
+  every planning prompt, and 180 of them came back as "Unknown tool". The menu
+  is asked of the registry rather than listed, so a provider that starts
+  answering in chat is offered there without anyone remembering to say so.
+  Chat planning is **single-shot**: every call in a turn is planned before any
+  result is seen, so a multi-step procedure (load a skill, then run it) takes
+  more than one turn.
+
+  **`llm_json` must define every helper a caller uses.** `extract_json_array`
+  was deleted on 2026-08-06 while the chat planner and the presentation
+  generator still called it. Both wrap the call in `except Exception`, so
+  nothing raised: chat discarded every tool call the model made for eight
+  weeks and answered as though none had been needed.
+  `test_every_helper_a_caller_uses_exists` reads the callers, since a missing
+  attribute is invisible to a test that exercises only the helper.
 
   A plugin also contributes **UI, declaratively** (`services/plugin_ui.py`,
   rendered by `frontend/src/plugins/`): `contributes.views` (kinds `table`,

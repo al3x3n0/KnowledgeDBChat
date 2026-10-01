@@ -262,3 +262,37 @@ def test_the_streaming_path_actually_passes_them():
 
     assert "_contributed_tool_schemas" in source
     assert "contributed=contributed" in source
+
+
+def test_chat_offers_only_tools_it_can_run():
+    """Chat described every declared tool, and most are answered only by the
+    autonomous-job providers: 180 of 250 came back as "Unknown tool". A model
+    cannot tell those from the ones that work."""
+    from app.services.agent_tool_dispatch import AgentToolExecutionContext
+
+    service = AgentService()
+    offered = service._chat_tools()
+    assert offered, "an empty menu would pass every check below vacuously"
+
+    probe = AgentToolExecutionContext(mode="chat", db=None, service=service)
+    unanswered = [
+        t["name"]
+        for t in offered
+        if service.tool_registry.resolve(t["name"], probe) is None
+    ]
+    assert not unanswered
+
+    names = {t["name"] for t in offered}
+    # A chat tool, a tool answered in both modes, and an autonomous-only one.
+    assert "search_documents" in names
+    assert "run_sandbox_skill" in names
+    assert "simulate_mechanism" not in names
+    assert len(offered) < len(AGENT_TOOLS)
+
+
+def test_the_planning_prompt_describes_only_what_chat_can_run():
+    service = AgentService()
+    described = get_tools_description(tools=service._chat_tools())
+    assert "Tool: search_documents" in described
+    assert "Tool: simulate_mechanism" not in described
+    assert len(described) < len(get_tools_description()) / 2

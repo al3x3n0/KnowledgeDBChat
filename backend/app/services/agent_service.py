@@ -295,6 +295,33 @@ class AgentService:
             return None
         return out
 
+    def _chat_tools(self) -> List[Dict[str, Any]]:
+        """The built-in tools chat can actually run.
+
+        `AGENT_TOOLS` is every declared tool, and most of them are answered
+        only by the autonomous-job providers. Chat offered all of them:
+        measured, 250 tools described in 158,600 characters of every planning
+        prompt, of which 180 came back as "Unknown tool" when called. A model
+        cannot tell a tool that will be refused from one that will work, so it
+        picked them, and the turn failed on a tool it had been invited to use.
+
+        Asked of the registry rather than kept as a list, so a provider that
+        starts answering in chat is offered there without anyone remembering
+        to say so. Built-ins are the same for every user, so remembering the
+        answer on a shared service is safe -- unlike contributed tools.
+        """
+        cached = getattr(self, "_chat_tool_schemas", None)
+        if cached is None:
+            probe = AgentToolExecutionContext(mode="chat", db=None, service=self)
+            cached = [
+                tool
+                for tool in AGENT_TOOLS
+                if self.tool_registry.resolve(str(tool.get("name") or ""), probe)
+                is not None
+            ]
+            self._chat_tool_schemas = cached
+        return list(cached)
+
     def _filter_tools_for_agent(
         self, agent: AgentDefinition, all_tools: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
@@ -339,7 +366,7 @@ class AgentService:
         # plugin tool an agent's whitelist could not exclude would be a hole in
         # that whitelist rather than a feature.
         filtered_tools = self._filter_tools_for_agent(
-            agent, list(AGENT_TOOLS) + list(contributed or [])
+            agent, self._chat_tools() + list(contributed or [])
         )
         if not filtered_tools:
             return "No tools available."
@@ -793,7 +820,7 @@ Your response:"""
         """Use LLM to determine which tools to call based on user message."""
 
         # Build the planning prompt
-        tools_desc = get_tools_description(contributed)
+        tools_desc = get_tools_description(contributed, tools=self._chat_tools())
 
         # Build conversation context
         context_messages = []
@@ -4317,20 +4344,21 @@ Include relevant information from the knowledge base when applicable.
                 {"role": "user", "content": delegation_prompt},
             ]
 
-            # Get tools available to the delegated agent
-            from app.services.agent_tools import AGENT_TOOLS
+            # Get tools available to the delegated agent: what chat can run,
+            # since that is where a delegated call is executed.
+            chat_tools = self._chat_tools()
 
             if target_agent.tool_whitelist:
                 allowed_tools = [
                     t
-                    for t in AGENT_TOOLS
+                    for t in chat_tools
                     if t["name"] in target_agent.tool_whitelist
                     and t["name"] != "delegate_to_agent"  # Prevent recursive delegation
                 ]
             else:
                 # All tools except delegate_to_agent to prevent infinite loops
                 allowed_tools = [
-                    t for t in AGENT_TOOLS if t["name"] != "delegate_to_agent"
+                    t for t in chat_tools if t["name"] != "delegate_to_agent"
                 ]
 
             # Generate response from the delegated agent

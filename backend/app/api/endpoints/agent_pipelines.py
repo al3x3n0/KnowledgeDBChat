@@ -400,7 +400,7 @@ async def get_pipeline_run_stages(
         raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
 
     owner_ids = {str(stage.job.user_id) for stage in stages}
-    if owner_ids != {str(current_user.id)} and not current_user.is_admin:
+    if owner_ids != {str(current_user.id)} and not current_user.is_admin():
         raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
 
     latest = agent_pipeline_restart.latest_per_stage(stages)
@@ -530,7 +530,7 @@ async def restart_pipeline_run(
     if not stages:
         raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
     owner_ids = {str(stage.job.user_id) for stage in stages}
-    if owner_ids != {str(current_user.id)} and not current_user.is_admin:
+    if owner_ids != {str(current_user.id)} and not current_user.is_admin():
         raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
 
     from app.services.autonomous_agent_executor import AutonomousAgentExecutor
@@ -575,7 +575,7 @@ async def insert_pipeline_stage(
     if not stages:
         raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
     owner_ids = {str(stage.job.user_id) for stage in stages}
-    if owner_ids != {str(current_user.id)} and not current_user.is_admin:
+    if owner_ids != {str(current_user.id)} and not current_user.is_admin():
         raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
 
     from app.services.autonomous_agent_executor import AutonomousAgentExecutor

@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob, AgentJobStatus
+from app.services import agent_sandbox_runtime
 from app.services.agent_artifact_paths import insert_before_end_document, safe_relpath
 from app.services.llm_service import LLMService
 from app.services.project_profile_service import build_project_profile
@@ -1435,6 +1436,7 @@ class AgentExperimentRunnerService:
                             "stderr": "",
                             "duration_ms": 0,
                         }
+                        container_name = ""
                         try:
                             if backend_effective == "docker":
                                 mem_mb = int(
@@ -1462,33 +1464,20 @@ class AgentExperimentRunnerService:
                                         128,
                                     )
                                 )
-                                command = [
-                                    "docker",
-                                    "run",
-                                    "--rm",
-                                    "--network",
-                                    "none",
-                                    "--cap-drop",
-                                    "ALL",
-                                    "--security-opt",
-                                    "no-new-privileges",
-                                    "--pids-limit",
-                                    str(max(32, min(pids, 1024))),
-                                    "--memory",
-                                    f"{max(128, min(mem_mb, 8192))}m",
-                                    "--cpus",
-                                    str(max(0.25, min(cpus, 8.0))),
-                                    "--user",
-                                    "65534:65534",
-                                    "-v",
-                                    f"{tmp}:/work:rw",
-                                    "-w",
-                                    "/work",
-                                    image_effective,
-                                    "/bin/sh",
-                                    "-lc",
-                                    cmd,
-                                ]
+                                # Named, so a run that outlives its timeout can be removed:
+                                # killing the `docker run` client leaves the container running.
+                                container_name = (
+                                    agent_sandbox_runtime.new_container_name()
+                                )
+                                command = agent_sandbox_runtime.docker_command(
+                                    image=image_effective,
+                                    workdir=str(tmp),
+                                    script=cmd,
+                                    memory=f"{max(128, min(mem_mb, 8192))}m",
+                                    cpus=str(max(0.25, min(cpus, 8.0))),
+                                    pids_limit=str(max(32, min(pids, 1024))),
+                                    name=container_name,
+                                )
                                 run_kwargs = {
                                     "cwd": str(tmp_path),
                                     "env": env,
@@ -1525,8 +1514,18 @@ class AgentExperimentRunnerService:
                             rec["stderr"] = (
                                 str(getattr(e, "stderr", "") or "") or "Timed out"
                             )[:stderr_cap]
+                            await _asyncio.to_thread(
+                                agent_sandbox_runtime.remove_container_sync,
+                                container_name,
+                            )
                         except Exception as e:
                             rec["stderr"] = str(e)[:stderr_cap]
+                            # Includes the outer wait_for giving up, which
+                            # abandons the thread and the container with it.
+                            await _asyncio.to_thread(
+                                agent_sandbox_runtime.remove_container_sync,
+                                container_name,
+                            )
                         finally:
                             rec["duration_ms"] = int(
                                 (datetime.utcnow() - start).total_seconds() * 1000

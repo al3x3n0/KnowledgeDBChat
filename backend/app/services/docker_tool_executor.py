@@ -21,7 +21,11 @@ from app.schemas.docker_tool import (
     DockerToolExecutionInput,
     DockerToolExecutionResult,
 )
+from app.services import agent_sandbox_runtime
 from app.services.storage_service import StorageService
+
+#: Processes a custom tool's container may hold at once.
+PIDS_LIMIT = 512
 
 
 class DockerToolExecutor:
@@ -78,10 +82,12 @@ class DockerToolExecutor:
                 logger.debug(f"Wrote input file: {input_path}")
 
             # Build docker run command
+            container_name = agent_sandbox_runtime.new_container_name()
             cmd = self._build_docker_command(
                 config=config,
                 workspace_dir=workspace_dir,
                 environment_overrides=execution_input.environment_overrides,
+                container_name=container_name,
             )
 
             logger.info(f"Executing Docker command: {' '.join(cmd)}")
@@ -109,6 +115,7 @@ class DockerToolExecutor:
                 except asyncio.TimeoutError:
                     process.kill()
                     await process.wait()
+                    await agent_sandbox_runtime.remove_container(container_name)
                     duration = time.time() - start_time
                     return DockerToolExecutionResult(
                         success=False,
@@ -196,6 +203,7 @@ class DockerToolExecutor:
         config: DockerToolConfig,
         workspace_dir: str,
         environment_overrides: Optional[Dict[str, str]] = None,
+        container_name: str = "",
     ) -> List[str]:
         """
         Build the docker run command with all options.
@@ -209,6 +217,19 @@ class DockerToolExecutor:
             List of command arguments
         """
         cmd = ["docker", "run", "--rm"]
+
+        # Named, so a run that outlives its timeout can be removed. Killing
+        # the `docker run` client -- which is all a timeout did here -- leaves
+        # the container running on the daemon for as long as it likes.
+        if container_name:
+            cmd.extend(["--name", container_name])
+
+        # A custom tool chooses its own image, user and network, so this is
+        # not the confined sandbox and does not pretend to be. These two cost
+        # an honest tool nothing: a process that cannot gain privileges it was
+        # not started with, and a bound on how many it may fork.
+        cmd.extend(["--security-opt", "no-new-privileges"])
+        cmd.extend(["--pids-limit", str(PIDS_LIMIT)])
 
         # Resource limits
         cmd.extend(["--memory", config.memory_limit])

@@ -548,6 +548,24 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   under `$TMPDIR/kdbc-skills` are pruned after a day rather than at job end,
   so a stage waiting longer than that on a checkpoint inherits nothing; and a
   stage inherits from its chain parent only, not from every `depends_on`.
+- **There is one confined `docker run`, and it is `agent_sandbox_runtime.docker_command`.**
+  Five places built that command by hand: the runtime, the experiment runner,
+  the ingestion demo runner (twice) and the admin sandbox check. They agreed
+  on the posture — no network, no capabilities, uid 65534 — so nothing looked
+  wrong. But only the runtime named its container, so a timeout in the other
+  four killed the `docker run` client and left the container running on the
+  daemon: the orphan leak that module's docstring describes, fixed in one copy
+  out of five. Checked on the real daemon: after a timed-out `subprocess.run`
+  the container was still listed until removed by name. All four now call
+  `docker_command(..., name=new_container_name())` and remove the container
+  on timeout (`remove_container_sync` for code running in a thread).
+  `tests/test_sandbox_container_cleanup.py` fails if `--cap-drop` appears in
+  any other module. `docker_tool_executor` is a different thing — a custom
+  tool chooses its own image, user and network, and is gated by
+  `CUSTOM_TOOL_DOCKER_ENABLED` and approvals — so it keeps its own builder,
+  but it had the same leak and now also sets `no-new-privileges` and a pids
+  limit. It still does not drop capabilities: that could break a tool that
+  legitimately runs as root, and is a decision rather than a cleanup.
 - **Tool governance** — `tool_registry.py` + `tool_policy_engine.py` + `models/tool_audit.py`; per-user tool policies, approval gates for dangerous tools (`AGENT_REQUIRE_TOOL_APPROVAL`, `AGENT_DANGEROUS_TOOLS`), full execution audit log, user-defined custom tools (optionally Docker-executed). Tool dispatch lives in `agent_tool_dispatch.py`. Every tool is **declared once** in `app/agent_core/tool_specs/` (one module per domain): the schema a model reads, the governance classification, which job types may call it, and — for measurement tools — what evidence it produces. `agent_tools.AGENT_TOOLS`, the catalog, the job-type policy and the evidence map are all views of those specs, so adding a tool is a handler plus a `ToolSpec`, not four files kept in step by hand. `tests/test_tool_specs.py` enforces it.
 - **Chains are retired as an authoring concept.** `POST`/`PATCH
   /agent-jobs/chains` are marked `deprecated` in the OpenAPI schema and the

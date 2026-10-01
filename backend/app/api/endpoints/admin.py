@@ -64,6 +64,7 @@ from app.schemas.ldap import (
     LdapImportUserRow,
     LdapStatusResponse,
 )
+from app.services import agent_sandbox_runtime
 from app.services.auth_service import require_admin
 from app.services.llm_service import LLMService
 from app.services.vector_store import vector_store_service
@@ -1368,34 +1369,17 @@ async def check_unsafe_exec_docker_sandbox(
         with tempfile.TemporaryDirectory(prefix="unsafe_docker_check_") as tmp:
             Path(tmp, "demo.py").write_text("print('OK')\n", encoding="utf-8")
 
-            cmd = [
-                "docker",
-                "run",
-                "--rm",
-                "--network",
-                "none",
-                "--cap-drop",
-                "ALL",
-                "--security-opt",
-                "no-new-privileges",
-                "--pids-limit",
-                str(max(32, min(pids, 1024))),
-                "--memory",
-                f"{max(64, min(mem_mb, 4096))}m",
-                "--cpus",
-                str(max(0.25, min(cpus, 4.0))),
-                "--user",
-                "65534:65534",
-                "-v",
-                f"{tmp}:/work:ro",
-                "-w",
-                "/work",
-                image,
-                "python",
-                "-I",
-                "-S",
-                "demo.py",
-            ]
+            container_name = agent_sandbox_runtime.new_container_name()
+            cmd = agent_sandbox_runtime.docker_command(
+                image=image,
+                workdir=str(tmp),
+                argv=["python", "-I", "-S", "demo.py"],
+                memory=f"{max(64, min(mem_mb, 4096))}m",
+                cpus=str(max(0.25, min(cpus, 4.0))),
+                pids_limit=str(max(32, min(pids, 1024))),
+                name=container_name,
+                read_only=True,
+            )
 
             def _run():
                 return subprocess.run(cmd, capture_output=True, text=True)
@@ -1403,6 +1387,9 @@ async def check_unsafe_exec_docker_sandbox(
             try:
                 proc = await asyncio.wait_for(asyncio.to_thread(_run), timeout=20.0)
             except asyncio.TimeoutError:
+                # The thread is abandoned, and with it the only handle on the
+                # container -- except the name.
+                await agent_sandbox_runtime.remove_container(container_name)
                 return {
                     "image": image,
                     "status": "timeout",

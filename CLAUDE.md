@@ -464,9 +464,21 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   `SANDBOX_SKILL_IMAGE_BUILD_ENABLED` (default off); a Dockerfile must have
   exactly one `FROM` naming an allowlisted image, no `COPY`/`ADD` (there is no
   build context) and no `ENTRYPOINT` (the sandbox runs `/bin/sh -lc`). The UI
-  is the Sandbox Skills panel on the Tools page. Not done yet: chat cannot
-  use skills (autonomous jobs only), and per-job run directories under
-  `$TMPDIR/kdbc-skills` are pruned after a day rather than at job end.
+  is the Sandbox Skills panel on the Tools page.
+  **Files pass between pipeline stages by copy.** A job has one working
+  directory, shared by every skill it uses; a job with a parent starts with a
+  *copy* of the parent's (minus `skill/` and `result.json`), made once when
+  the directory is first created. Copied rather than shared because sibling
+  stages run at the same time and each rewrites `skill/` and deletes
+  `result.json`. `load_sandbox_skill` and every run return the directory
+  listing, since a stage is only spared rebuilding what it was handed if it
+  is told the files exist; a stage that inherits nothing (parent used no
+  skill, directory pruned, or over 256 MB) is told it starts empty. Run live:
+  a build stage left `kernel.o` and an inspect stage read its symbols from it.
+  Not done yet: chat cannot use skills (autonomous jobs only); run directories
+  under `$TMPDIR/kdbc-skills` are pruned after a day rather than at job end,
+  so a stage waiting longer than that on a checkpoint inherits nothing; and a
+  stage inherits from its chain parent only, not from every `depends_on`.
 - **Tool governance** — `tool_registry.py` + `tool_policy_engine.py` + `models/tool_audit.py`; per-user tool policies, approval gates for dangerous tools (`AGENT_REQUIRE_TOOL_APPROVAL`, `AGENT_DANGEROUS_TOOLS`), full execution audit log, user-defined custom tools (optionally Docker-executed). Tool dispatch lives in `agent_tool_dispatch.py`. Every tool is **declared once** in `app/agent_core/tool_specs/` (one module per domain): the schema a model reads, the governance classification, which job types may call it, and — for measurement tools — what evidence it produces. `agent_tools.AGENT_TOOLS`, the catalog, the job-type policy and the evidence map are all views of those specs, so adding a tool is a handler plus a `ToolSpec`, not four files kept in step by hand. `tests/test_tool_specs.py` enforces it.
 - **Chains are retired as an authoring concept.** `POST`/`PATCH
   /agent-jobs/chains` are marked `deprecated` in the OpenAPI schema and the

@@ -875,3 +875,107 @@ def test_the_drafting_prompt_says_what_each_image_has():
         "other:latest\n" in prompt and "other:latest\n              has" not in prompt
     )
     assert "is not installed" in prompt
+
+
+# ------------------------------------------------- files between pipeline stages
+
+
+@pytest.fixture
+def skills_root(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        sandbox_skill_runtime.tempfile, "gettempdir", lambda: str(tmp_path)
+    )
+    return tmp_path
+
+
+def test_a_later_stage_starts_with_a_copy_of_the_one_before(skills_root):
+    build = sandbox_skill_runtime.run_dir("build-job")
+    (build / "prog").write_text("binary")
+    (build / "obj").mkdir()
+    (build / "obj" / "a.o").write_text("object")
+    (build / "skill").mkdir()
+    (build / "skill" / "judge.py").write_text("the build skill's judge")
+    (build / "result.json").write_text("{}")
+
+    measure = sandbox_skill_runtime.run_dir("measure-job", "build-job")
+    assert (measure / "prog").read_text() == "binary"
+    assert (measure / "obj" / "a.o").read_text() == "object"
+    # Another skill's files and another command's result are not inherited: a
+    # stale judge would be run as this stage's own, and a stale result would
+    # be this stage's evidence.
+    assert not (measure / "skill").exists()
+    assert not (measure / "result.json").exists()
+    assert "copy of the 2" in sandbox_skill_runtime.inheritance_note(measure)
+
+
+def test_a_copy_is_not_a_shared_directory(skills_root):
+    """Sibling stages run at once; each must be able to wreck its own files."""
+    build = sandbox_skill_runtime.run_dir("build-job")
+    (build / "prog").write_text("binary")
+    left = sandbox_skill_runtime.run_dir("left", "build-job")
+    right = sandbox_skill_runtime.run_dir("right", "build-job")
+    (left / "prog").write_text("patched")
+    assert (build / "prog").read_text() == "binary"
+    assert (right / "prog").read_text() == "binary"
+
+
+def test_a_stage_that_has_started_is_never_reseeded(skills_root):
+    build = sandbox_skill_runtime.run_dir("build-job")
+    (build / "prog").write_text("v1")
+    measure = sandbox_skill_runtime.run_dir("measure-job", "build-job")
+    (measure / "prog").write_text("mine now")
+    (build / "prog").write_text("v2")
+    again = sandbox_skill_runtime.run_dir("measure-job", "build-job")
+    assert (again / "prog").read_text() == "mine now"
+
+
+def test_too_much_to_inherit_is_refused_out_loud(skills_root, monkeypatch):
+    monkeypatch.setattr(sandbox_skill_runtime, "MAX_INHERIT_BYTES", 10)
+    build = sandbox_skill_runtime.run_dir("build-job")
+    (build / "prog").write_text("x" * 100)
+    measure = sandbox_skill_runtime.run_dir("measure-job", "build-job")
+    assert not (measure / "prog").exists()
+    assert "starts empty" in sandbox_skill_runtime.inheritance_note(measure)
+
+
+def test_a_parent_with_no_directory_says_this_one_starts_empty(skills_root):
+    measure = sandbox_skill_runtime.run_dir("measure-job", "never-used-a-skill")
+    assert "starts empty" in sandbox_skill_runtime.inheritance_note(measure)
+    # A root job has no parent and nothing to explain.
+    root = sandbox_skill_runtime.run_dir("root-job")
+    assert sandbox_skill_runtime.inheritance_note(root) == ""
+
+
+def test_a_run_is_shown_its_files_but_not_the_skills(skills_root):
+    work = sandbox_skill_runtime.run_dir("job", "missing-parent")
+    (work / "kernel.c").write_text("int f;")
+    (work / "out").mkdir()
+    (work / "out" / "prog").write_text("x")
+    (work / "skill").mkdir()
+    (work / "skill" / "judge.py").write_text("x")
+    view = sandbox_skill_runtime.list_files(work)
+    assert view == {"files": ["kernel.c", "out/prog"], "truncated": False}
+
+
+async def test_a_later_stage_is_told_what_it_was_handed(
+    db_session, test_user, active_skill, sandbox
+):
+    parent_id, child_id = uuid4(), uuid4()
+    built = sandbox_skill_runtime.run_dir(str(parent_id))
+    (built / "prog").write_text("binary")
+
+    ctx = ctx_for(db_session, test_user, job_id=child_id)
+    ctx.job.parent_job_id = parent_id
+    loaded = await agent_sandbox_skill_tools.load_sandbox_skill(
+        {"skill": "loop_trip"}, ctx
+    )
+    view = loaded["data"]["working_directory"]
+    assert view["files"] == ["prog"] and "copy of the 1" in view["inherited"]
+
+    seen = []
+    sandbox.on("use", lambda w: (seen.append((w / "prog").read_text()), (0, "", ""))[1])
+    ran = await agent_sandbox_skill_tools.run_sandbox_skill(
+        {"skill": "loop_trip", "command": "use"}, ctx
+    )
+    assert seen == ["binary"]
+    assert "prog" in ran["data"]["working_directory"]["files"]

@@ -45,6 +45,23 @@ def _user_id(ctx: Any) -> Any:
     )
 
 
+def _workdir(ctx: Any):
+    """This job's working directory, seeded from its parent stage if it has one."""
+    job = getattr(ctx, "job", None)
+    return sandbox_skill_runtime.run_dir(
+        str(getattr(job, "id", "") or "adhoc"),
+        getattr(job, "parent_job_id", None),
+    )
+
+
+def _directory_view(workdir: Any) -> Dict[str, Any]:
+    view = sandbox_skill_runtime.list_files(workdir)
+    note = sandbox_skill_runtime.inheritance_note(workdir)
+    if note:
+        view["inherited"] = note
+    return view
+
+
 async def _unknown_skill(ctx: Any, wanted: str) -> Dict[str, Any]:
     active = await sandbox_skill_service.active_skills(ctx.db, _user_id(ctx))
     names = ", ".join(skill.slug for skill in active)
@@ -109,6 +126,10 @@ async def load_sandbox_skill(params: Dict[str, Any], ctx: Any) -> Dict[str, Any]
             ),
             "control_command": (manifest.get("control") or {}).get("command"),
             "timeout_seconds": manifest.get("timeout_seconds"),
+            # What is already there. A later pipeline stage starts with a copy
+            # of the previous stage's files, and is only spared rebuilding
+            # them if it is told they exist.
+            "working_directory": _directory_view(_workdir(ctx)),
         },
     }
 
@@ -128,12 +149,12 @@ async def run_sandbox_skill(params: Dict[str, Any], ctx: Any) -> Dict[str, Any]:
     image = str(manifest.get("image") or "")
     collect = bool(params.get("collect_result"))
     command = str(params.get("command") or "")
-    job_key = str(getattr(getattr(ctx, "job", None), "id", "") or "adhoc")
 
     sandbox_skill_runtime.prune_stale()
+    workdir = _workdir(ctx)
     run = await sandbox_skill_runtime.execute(
         manifest,
-        workdir=sandbox_skill_runtime.run_dir(job_key, skill.slug),
+        workdir=workdir,
         command=command,
         files=files or None,
         collect_result=collect,
@@ -147,6 +168,7 @@ async def run_sandbox_skill(params: Dict[str, Any], ctx: Any) -> Dict[str, Any]:
         "returncode": run.returncode,
         "stdout": run.stdout,
         "stderr": run.stderr,
+        "working_directory": _directory_view(workdir),
     }
 
     if not run.ran or run.timed_out:

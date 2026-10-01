@@ -127,25 +127,167 @@ def prune_stale(now: Optional[float] = None) -> int:
     return removed
 
 
-def run_dir(job_key: str, slug: str) -> Path:
-    """The directory one job uses for one skill, created if need be.
+#: The most a stage inherits from the stage before it. A copy, so it costs
+#: disk per stage; past this the inheritance is refused and said to be, rather
+#: than quietly filling a laptop's disk one stage at a time.
+MAX_INHERIT_BYTES = 256 * 1024 * 1024
 
-    It persists across calls within the job: a procedure is several commands
-    -- write, build, run, measure -- and each needs what the last one left.
+#: How many file names a run is shown. Enough to see what is there; a build
+#: tree's thousands of objects are not something a model should read.
+LISTING_LIMIT = 60
+
+_INHERITANCE_NOTE = ".kdbc-inherited"
+
+
+def _safe_key(job_key: Any) -> str:
+    return "".join(c for c in str(job_key) if c.isalnum() or c in "-_")
+
+
+def _tree_bytes(path: Path) -> int:
+    total = 0
+    for dirpath, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(dirpath, name)).st_size
+            except OSError:
+                continue
+    return total
+
+
+def _not_inherited(_directory: str, names: List[str]) -> List[str]:
+    # The skill's own files are rewritten before every run, a result belongs
+    # to the command that produced it, and the note describes the parent.
+    return [
+        n
+        for n in names
+        if n
+        in (
+            sandbox_skill_manifest.SKILL_DIR,
+            sandbox_skill_manifest.RESULT_FILE,
+            _INHERITANCE_NOTE,
+        )
+    ]
+
+
+def _inherit(target: Path, parent: Path) -> str:
+    """Copy what the previous stage left, and say what happened."""
+    size = _tree_bytes(parent)
+    if size > MAX_INHERIT_BYTES:
+        return (
+            f"The previous stage left {size // (1024 * 1024)} MB, over the "
+            f"{MAX_INHERIT_BYTES // (1024 * 1024)} MB a stage may inherit, so "
+            "this directory starts empty. Rebuild what you need."
+        )
+    copied = 0
+    for entry in parent.iterdir():
+        if _not_inherited(str(parent), [entry.name]):
+            continue
+        destination = target / entry.name
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.copytree(entry, destination, symlinks=True, ignore=_not_inherited)
+        else:
+            shutil.copy2(entry, destination, follow_symlinks=False)
+        copied += 1
+    # Copied files belong to this process; the sandbox runs as another uid and
+    # must be able to rebuild over them.
+    for dirpath, dirs, files in os.walk(target):
+        for name in [*dirs, *files]:
+            full = Path(dirpath) / name
+            if not full.is_symlink():
+                _open_up(full)
+    if not copied:
+        return ""
+    return (
+        f"Started with a copy of the {copied} top-level item(s) the previous "
+        "stage left in its working directory. Changes here do not reach it."
+    )
+
+
+def run_dir(job_key: Any, parent_key: Any = None) -> Path:
+    """The directory one job works in, created if need be.
+
+    One per job, shared by every skill that job uses, and persistent across
+    its calls: a procedure is several commands -- write, build, run, measure --
+    and each needs what the last one left.
+
+    A job with a parent is a later stage of a pipeline, and its directory
+    starts as a **copy** of the parent's. Copied rather than shared because
+    sibling stages run at the same time: two of them in one directory would
+    each rewrite ``skill/`` and delete the other's ``result.json``. A copy
+    also leaves the earlier stage's directory as it was, so restarting a later
+    stage starts from the same place twice.
+
+    Only ever done once, when the directory is first made. A stage that has
+    started working must not have its files replaced underneath it.
     """
-    safe_job = "".join(c for c in str(job_key) if c.isalnum() or c in "-_") or "job"
     base = root_dir()
     base.mkdir(parents=True, exist_ok=True)
     _open_up(base)
-    job_dir = base / safe_job
-    job_dir.mkdir(exist_ok=True)
-    _open_up(job_dir)
-    # Touch it, so a long job's directory is not mistaken for an abandoned one.
-    os.utime(job_dir, None)
-    target = job_dir / slug
+    target = base / (_safe_key(job_key) or "job")
+    created = not target.exists()
     target.mkdir(exist_ok=True)
     _open_up(target)
+    # Touch it, so a long job's directory is not mistaken for an abandoned one.
+    os.utime(target, None)
+
+    parent_name = _safe_key(parent_key) if parent_key else ""
+    if created and parent_name:
+        parent = base / parent_name
+        note = ""
+        if parent.is_dir() and parent != target:
+            try:
+                note = _inherit(target, parent)
+            except OSError as exc:
+                note = (
+                    "The previous stage's files could not be copied "
+                    f"({str(exc)[:200]}), so this directory starts empty."
+                )
+        elif parent != target:
+            # Either the previous stage never used a skill, or its directory
+            # was pruned while this stage waited. The two look the same from
+            # here, and a stage expecting files should know not to.
+            note = (
+                "The previous stage left no working directory (it used no "
+                "skill, or its files were cleaned up after "
+                f"{STALE_AFTER_SECONDS // 3600} hours), so this one starts empty."
+            )
+        if note:
+            (target / _INHERITANCE_NOTE).write_text(note, encoding="utf-8")
     return target
+
+
+def inheritance_note(workdir: Path) -> str:
+    """What this directory started from, or "" if it started empty."""
+    try:
+        return (workdir / _INHERITANCE_NOTE).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def list_files(workdir: Path) -> Dict[str, Any]:
+    """What is in a working directory, as a run should see it.
+
+    A later stage is told files exist only if something tells it; without
+    this it rebuilds what it was handed, or -- worse -- assumes a file is
+    there because the goal mentioned it.
+    """
+    names: List[str] = []
+    truncated = False
+    for dirpath, dirs, files in os.walk(workdir):
+        relative = Path(dirpath).relative_to(workdir)
+        if relative == Path("."):
+            dirs[:] = [d for d in dirs if d != sandbox_skill_manifest.SKILL_DIR]
+        dirs.sort()
+        for name in sorted(files):
+            if name == _INHERITANCE_NOTE:
+                continue
+            if len(names) >= LISTING_LIMIT:
+                truncated = True
+                break
+            names.append(str(relative / name) if str(relative) != "." else name)
+        if truncated:
+            break
+    return {"files": names, "truncated": truncated}
 
 
 def _place(base: Path, files: Mapping[str, str]) -> None:

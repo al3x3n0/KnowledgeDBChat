@@ -46,8 +46,11 @@ SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="run_sandbox_skill",
         description="Run a shell command inside a skill's sandbox. The working "
-        "directory persists between your calls for the same skill, so a "
-        "procedure can be several commands: write a file, build, run, measure. "
+        "directory persists between your calls in this run and is shared by "
+        "every skill you use, so a procedure can be several commands: write a "
+        "file, build, run, measure. In a pipeline, a later stage starts with a "
+        "copy of the files the stage before it left; the result lists what is "
+        "in the directory. "
         "The skill's helper files are at ./skill/ and are restored before every "
         "call. There is no network. Pass collect_result=true on the call that "
         "should count: the result is then read from ./result.json (written by "

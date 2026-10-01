@@ -377,9 +377,23 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   every planning prompt, and 180 of them came back as "Unknown tool". The menu
   is asked of the registry rather than listed, so a provider that starts
   answering in chat is offered there without anyone remembering to say so.
-  Chat planning is **single-shot**: every call in a turn is planned before any
-  result is seen, so a multi-step procedure (load a skill, then run it) takes
-  more than one turn.
+  **A chat turn plans in rounds** (`AgentService._run_tool_rounds`). It used
+  to plan every call before any result existed, which cannot do anything whose
+  second step depends on the first: asked to use a sandbox skill, chat planned
+  `list` and `load` and stopped, because the command is in the procedure
+  `load` had not yet returned. The planner is now asked again with what came
+  back until it plans nothing. The loop also ends at
+  `AGENT_CHAT_MAX_TOOL_ROUNDS` (4; 1 restores single-shot), at
+  `AGENT_CHAT_MAX_TOOL_CALLS` (12), on a round that only repeats calls already
+  made, and on anything that needs the person (an approval, a file). Run live:
+  list → load → run in one turn, 28 s, with the judged result.
+  **A specialist's whitelist decides what it can do in chat.** The router sent
+  that same request to `compiler_optimization_expert`, whose whitelist
+  predates the skill tools, so it planned nothing — and the reply then
+  described what the skill *would* have printed. Migration `0104` grants that
+  one agent the skill tools, and the response prompt now forbids presenting an
+  expected output for a run that did not happen. Other specialists were left
+  alone: only `generalist` and the compiler expert can use skills in chat.
 
   **`llm_json` must define every helper a caller uses.** `extract_json_array`
   was deleted on 2026-08-06 while the chat planner and the presentation

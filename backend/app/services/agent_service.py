@@ -502,48 +502,24 @@ class AgentService:
                 await db.commit()
 
             # Step 4: Plan - Determine which tools to call (filtered by agent)
+            # and Step 5: Execute. Planned and executed in rounds, each round
+            # seeing what the rounds before it returned.
             contributed = await self._contributed_tool_schemas(db, user_id)
-            tool_calls = await self._plan_tool_calls_for_agent(
+            (
+                tool_results,
+                requires_user_action,
+                action_type,
+            ) = await self._run_tool_rounds(
                 message=message,
                 history=history,
                 agent=selected_agent,
                 memory_context=memory_context,
                 user_settings=user_settings,
                 contributed=contributed,
+                user_id=user_id,
+                db=db,
+                conversation_id=conversation_id,
             )
-
-            # Step 5: Execute - Run each tool
-            tool_results = []
-            requires_user_action = False
-            action_type = None
-
-            for call in tool_calls:
-                # Verify tool is allowed for this agent
-                if not selected_agent.has_tool(call.tool_name):
-                    logger.warning(
-                        f"Agent '{selected_agent.name}' not allowed to use tool '{call.tool_name}'"
-                    )
-                    call.status = "failed"
-                    call.error = f"Tool '{call.tool_name}' not available for this agent"
-                    tool_results.append(call)
-                    continue
-
-                result = await self._execute_tool(
-                    call,
-                    user_id,
-                    db,
-                    conversation_id=conversation_id,
-                    agent_definition_id=selected_agent.id,
-                )
-                tool_results.append(result)
-
-                # Check if any tool requires user action
-                if (
-                    result.tool_name == "request_file_upload"
-                    and result.status == "completed"
-                ):
-                    requires_user_action = True
-                    action_type = "upload_file"
 
             # Step 6: Observe & Respond - Generate final response
             response_content = await self._generate_response_for_agent(
@@ -661,6 +637,137 @@ class AgentService:
         except Exception as e:
             logger.error(f"Background memory extraction failed: {e}")
 
+    #: How much of one tool result a later planning round is shown, and of all
+    #: of them together. Enough to carry a procedure or a listing; a search
+    #: returning whole documents is not something to plan from.
+    PRIOR_RESULT_CHARS = 4000
+    PRIOR_RESULTS_TOTAL_CHARS = 14000
+
+    @staticmethod
+    def _call_key(call: AgentToolCall) -> str:
+        try:
+            arguments = json.dumps(call.tool_input, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            arguments = str(call.tool_input)
+        return f"{call.tool_name}:{arguments}"
+
+    def _describe_prior_results(self, results: Sequence[AgentToolCall]) -> str:
+        """What this turn's tool calls returned, for the next planning round."""
+        parts: List[str] = []
+        budget = self.PRIOR_RESULTS_TOTAL_CHARS
+        for result in results:
+            if result.status == "completed":
+                body = json.dumps(result.tool_output, default=str)
+            elif result.status == "requires_approval":
+                body = "waiting for the user to approve it"
+            else:
+                body = f"FAILED: {result.error}"
+            if len(body) > self.PRIOR_RESULT_CHARS:
+                body = body[: self.PRIOR_RESULT_CHARS] + " ...[truncated]"
+            entry = (
+                f"- {result.tool_name}({json.dumps(result.tool_input, default=str)})"
+                f" -> {body}"
+            )
+            if len(entry) > budget:
+                parts.append("- (earlier results omitted for length)")
+                break
+            budget -= len(entry)
+            parts.append(entry)
+        return "\n".join(parts)
+
+    async def _run_tool_rounds(
+        self,
+        *,
+        message: str,
+        history: List[AgentMessage],
+        agent: AgentDefinition,
+        memory_context: str,
+        user_settings: Optional[UserLLMSettings],
+        contributed: Optional[Sequence[Dict[str, Any]]],
+        user_id: UUID,
+        db: AsyncSession,
+        conversation_id: Optional[UUID],
+    ) -> tuple[List[AgentToolCall], bool, Optional[str]]:
+        """Plan and run tool calls until the request can be answered.
+
+        A turn used to plan every call before any result existed. That is fine
+        for "find documents about X" and cannot do anything whose second step
+        depends on the first: asked to use a sandbox skill, chat planned
+        `list` and `load` -- correctly -- and stopped, because the command to
+        run is in the procedure `load` had not yet returned.
+
+        So the planner is asked again with what came back, until it plans
+        nothing. Four things end the loop besides that, each a way it could
+        otherwise run on: the round limit, the call limit, a round that only
+        repeats calls already made (a model shown a result it cannot improve
+        on tends to ask again), and anything that needs the person -- an
+        approval or a file -- since planning past a question nobody has
+        answered is planning on a guess.
+        """
+        max_rounds = max(1, int(getattr(settings, "AGENT_CHAT_MAX_TOOL_ROUNDS", 4)))
+        max_calls = max(1, int(getattr(settings, "AGENT_CHAT_MAX_TOOL_CALLS", 12)))
+
+        tool_results: List[AgentToolCall] = []
+        requires_user_action = False
+        action_type: Optional[str] = None
+        made: set = set()
+
+        for round_number in range(max_rounds):
+            planned = await self._plan_tool_calls_for_agent(
+                message=message,
+                history=history,
+                agent=agent,
+                memory_context=memory_context,
+                user_settings=user_settings,
+                contributed=contributed,
+                prior_results=tool_results if round_number else None,
+            )
+            fresh = [call for call in planned if self._call_key(call) not in made]
+            if not fresh:
+                break
+
+            waiting_on_person = False
+            for call in fresh:
+                if len(tool_results) >= max_calls:
+                    break
+                made.add(self._call_key(call))
+
+                # Verify tool is allowed for this agent
+                if not agent.has_tool(call.tool_name):
+                    logger.warning(
+                        f"Agent '{agent.name}' not allowed to use tool "
+                        f"'{call.tool_name}'"
+                    )
+                    call.status = "failed"
+                    call.error = f"Tool '{call.tool_name}' not available for this agent"
+                    tool_results.append(call)
+                    continue
+
+                result = await self._execute_tool(
+                    call,
+                    user_id,
+                    db,
+                    conversation_id=conversation_id,
+                    agent_definition_id=agent.id,
+                )
+                tool_results.append(result)
+
+                if result.status == "requires_approval":
+                    waiting_on_person = True
+                # Check if any tool requires user action
+                if (
+                    result.tool_name == "request_file_upload"
+                    and result.status == "completed"
+                ):
+                    requires_user_action = True
+                    action_type = "upload_file"
+                    waiting_on_person = True
+
+            if waiting_on_person or len(tool_results) >= max_calls:
+                break
+
+        return tool_results, requires_user_action, action_type
+
     async def _plan_tool_calls_for_agent(
         self,
         message: str,
@@ -669,10 +776,15 @@ class AgentService:
         memory_context: str,
         user_settings: Optional[UserLLMSettings] = None,
         contributed: Optional[Sequence[Dict[str, Any]]] = None,
+        prior_results: Optional[Sequence[AgentToolCall]] = None,
     ) -> List[AgentToolCall]:
         """
         Use LLM to determine which tools to call based on user message.
         Filtered by agent's tool whitelist and enhanced with memory context.
+
+        ``prior_results`` are the calls already made this turn. With them the
+        question changes from "what should be called" to "what should be
+        called NEXT", and the honest answer is often nothing.
         """
         # Get tools available to this agent, including whatever this user's
         # plugins contribute.
@@ -691,6 +803,22 @@ class AgentService:
         if memory_context:
             memory_section = f"\n\n{memory_context}\n"
 
+        if prior_results:
+            progress_section = f"""
+Tool calls ALREADY MADE for this message, and what they returned:
+{self._describe_prior_results(prior_results)}
+
+Decide what to call NEXT, using those results. Return [] if the request can
+now be answered, or if nothing further would help. Never repeat a call that
+has already been made.
+"""
+        else:
+            progress_section = """
+You will be shown the results and asked again, so plan only the calls whose
+inputs you already know. Do not guess an input that an earlier call would
+tell you.
+"""
+
         # Use agent's system prompt as base
         planning_prompt = f"""{agent.system_prompt}
 
@@ -703,7 +831,7 @@ Recent conversation:
 {context_str}
 
 User's current message: {message}
-
+{progress_section}
 Respond ONLY with a JSON array of tool calls. Each tool call should have:
 - "tool_name": name of the tool to call
 - "tool_input": object with the required parameters
@@ -721,7 +849,10 @@ Your response (JSON array only):"""
             response = await self.llm_service.generate_response(
                 query=planning_prompt,
                 temperature=0.1,
-                max_tokens=500,
+                # Room for a call that carries a file. At 500 a tool call with
+                # a few lines of source in it was cut off mid-string, and a
+                # truncated array parses as no calls at all.
+                max_tokens=1500,
                 user_settings=user_settings,
                 task_type="chat",
                 routing=self._routing_from_agent(agent),
@@ -785,6 +916,9 @@ Guidelines:
 - Summarize the results in a natural, conversational way
 - If search results are present, list the most relevant documents
 - If there were errors, explain what went wrong and suggest alternatives
+- If the user asked for a tool, a measurement or a run and it did not happen,
+  say so and stop there. Never describe what it "would" or "should" have
+  returned: an expected output presented beside a failed run reads as a result.
 - If a confirmation is required (like for deletion), ask the user to confirm
 - Use any relevant user context from memories to personalize your response
 - Keep the response concise but informative

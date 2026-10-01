@@ -536,6 +536,14 @@ class Settings(BaseSettings):
 
     AGENT_KB_PATCH_APPLY_ENABLED: bool = False
 
+    # Chat tool loop
+    # How many times a chat turn may plan tool calls, each time seeing the
+    # results of the calls before. 1 restores the old single-shot behaviour,
+    # where every call of a turn was planned before any result existed.
+    AGENT_CHAT_MAX_TOOL_ROUNDS: int = 4
+    # Ceiling on tool calls in one chat turn, across all rounds.
+    AGENT_CHAT_MAX_TOOL_CALLS: int = 12
+
     # Custom tools
     # Docker-based tools require access to a Docker daemon (often via host docker socket).
     # Keep disabled by default for safety.

@@ -188,6 +188,9 @@ class Settings(BaseSettings):
     # Data Sources
     GITLAB_URL: Optional[str] = None
     GITLAB_TOKEN: Optional[str] = None
+    # NOT READ: a Confluence source carries its own URL and credentials in its
+    # config row. Kept because env.example sets them, and removing a field a
+    # deployed .env still names makes Settings refuse to load.
     CONFLUENCE_URL: Optional[str] = None
     CONFLUENCE_USER: Optional[str] = None
     CONFLUENCE_API_TOKEN: Optional[str] = None
@@ -318,7 +321,8 @@ class Settings(BaseSettings):
     KG_EXTRACTION_MODEL: Optional[
         str
     ] = None  # Model for KG extraction (None = use default)
-    KG_EXTRACTION_BATCH_SIZE: int = 3  # Chunks to batch per LLM call
+    # NOT READ: extraction runs one chunk per call. Changing this does nothing.
+    KG_EXTRACTION_BATCH_SIZE: int = 3
     KG_EXTRACTION_MAX_TEXT_LENGTH: int = 3000  # Max chars per extraction call
 
     # Unsafe code execution (disabled by default)
@@ -575,8 +579,10 @@ class Settings(BaseSettings):
     # AI Hub Training Configuration
     TRAINING_ENABLED: bool = True
     TRAINING_MAX_CONCURRENT_JOBS: int = 2
+    # NOT READ: a job names its own backend (default "local" in the schema).
     TRAINING_DEFAULT_BACKEND: str = "local"  # local, modal, runpod
     TRAINING_LOCAL_DEVICE: str = "auto"  # cuda, cpu, mps, auto
+    # NOT READ: the local trainer does not cap GPU memory.
     TRAINING_LOCAL_MAX_GPU_MEMORY_GB: float = 24.0
     TRAINING_CHECKPOINT_INTERVAL_STEPS: int = 100
     TRAINING_OUTPUT_DIR: str = "./data/training_outputs"
@@ -594,6 +600,7 @@ class Settings(BaseSettings):
     ] = None  # Comma-separated preset IDs allowed for non-admin users
 
     # Cloud Training (future - optional)
+    # NOT READ: no cloud trainer exists yet.
     MODAL_API_KEY: Optional[str] = None
     RUNPOD_API_KEY: Optional[str] = None
 

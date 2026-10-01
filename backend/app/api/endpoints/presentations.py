@@ -831,6 +831,11 @@ async def presentation_progress(
         await websocket.close(code=4004, reason="Job not found")
         return
 
+    from app.utils.websocket_auth import authorize_owner
+
+    if await authorize_owner(websocket, job.user_id) is None:
+        return
+
     import redis.asyncio as redis
 
     from app.core.config import settings

@@ -659,6 +659,22 @@ async def execution_stream(
     """
     await websocket.accept()
 
+    # Who is asking, and whose execution this is, before anything is sent:
+    # the stream carries node outputs as the workflow runs.
+    from app.core.database import AsyncSessionLocal as _Session
+    from app.utils.websocket_auth import authorize_owner
+
+    async with _Session() as _db:
+        _owner = (
+            await _db.execute(
+                select(WorkflowExecution.user_id).where(
+                    WorkflowExecution.id == execution_id
+                )
+            )
+        ).scalar_one_or_none()
+    if await authorize_owner(websocket, _owner, what="Execution") is None:
+        return
+
     if not REDIS_AVAILABLE:
         await websocket.send_json(
             {

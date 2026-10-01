@@ -925,6 +925,26 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
 ### Multi-Tenancy / User Scoping
 - All resources filtered by `user_id` foreign key in database queries
 - Auth chain: `get_current_user` (validates JWT) → `get_current_active_user` (checks is_active)
+- **A route with no auth dependency is public, and nothing fails.** Twelve
+  knowledge-graph routes and the document editor's read *and write* declared
+  no user: `GET /kg/stats` answered anyone, and `PUT /documents/{id}/edit`
+  would overwrite a document for whoever knew its id. Three progress streams
+  (presentations, repo reports, workflow executions) accepted any socket that
+  knew a job id. `tests/test_every_route_requires_a_caller.py` tests the
+  absence: an HTTP route with no auth dependency must be listed in `PUBLIC`
+  with its reason, and a WebSocket — which cannot use the HTTP dependency —
+  must authenticate in its handler (`websocket_auth.authorize_owner` for a
+  stream about one user's job; a stranger gets 4004, not "forbidden"). This
+  covers *whether* a route knows its caller, not whether it checks the row
+  belongs to them.
+- **A setting must be read, or admitted inert.** `TRAINING_ENABLED` was the
+  documented gate on training and nothing read it; the concurrency limit and
+  two dataset limits beside it were the same. They are enforced now (the gate
+  as a router-level dependency, counted across users for concurrency since
+  the machine is what is rationed). A field cannot simply be deleted — a
+  deployed `.env` still naming it makes `Settings` refuse to load — so the
+  remaining eight are marked `NOT READ` in `config.py` and listed in
+  `tests/test_settings_are_read.py`, a list that may only shrink.
 - Admin users have broader access; non-admins cannot access other users' resources
 - Optional LDAP/AD auth with group-based role mapping (`LDAP_*` settings)
 - MCP API keys are tied to users; tool policies evaluated per user context

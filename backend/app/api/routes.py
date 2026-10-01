@@ -2,7 +2,7 @@
 Main API router configuration.
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.endpoints import (
     admin,
@@ -70,8 +70,25 @@ from app.api.endpoints import (
     users,
     workflows,
 )
+from app.core.config import settings
+from app.services.auth_service import get_current_user
 
 api_router = APIRouter()
+
+
+def require_training_enabled() -> None:
+    """Refuse the AI Hub's training routes where the deployment turned them off.
+
+    Takes no request on purpose: it is a router-level dependency, and one of
+    the routers it guards has a WebSocket route, which has no HTTP request to
+    hand it.
+    """
+    if not bool(getattr(settings, "TRAINING_ENABLED", True)):
+        raise HTTPException(
+            status_code=403,
+            detail="Training is disabled on this deployment (TRAINING_ENABLED=false).",
+        )
+
 
 # Include all endpoint routers
 api_router.include_router(auth.router, prefix="/auth", tags=["authentication"])
@@ -88,13 +105,26 @@ api_router.include_router(upload.router, prefix="/upload", tags=["upload"])
 api_router.include_router(memory.router, prefix="/memory", tags=["memory"])
 api_router.include_router(admin.router, prefix="/admin", tags=["administration"])
 api_router.include_router(system.router, prefix="/system", tags=["system"])
+# Signed-in users only. Twelve of these routes declared no user and answered
+# anyone: the whole entity graph of the knowledge base was readable, and a
+# document's graph rebuildable, without a token.
 api_router.include_router(
-    knowledge_graph.router, prefix="/kg", tags=["knowledge-graph"]
+    knowledge_graph.router,
+    prefix="/kg",
+    tags=["knowledge-graph"],
+    dependencies=[Depends(get_current_user)],
 )
 api_router.include_router(git.router, prefix="/git", tags=["git"])
 api_router.include_router(personas.router, prefix="/personas", tags=["personas"])
 api_router.include_router(templates.router, prefix="/templates", tags=["templates"])
-api_router.include_router(docx_editor.router, prefix="/documents", tags=["docx-editor"])
+# Every route here reads or rewrites a document. The handlers took no user at
+# all, so anyone who knew a document id could fetch it or overwrite it.
+api_router.include_router(
+    docx_editor.router,
+    prefix="/documents",
+    tags=["docx-editor"],
+    dependencies=[Depends(get_current_user)],
+)
 api_router.include_router(agent.router, prefix="/agent", tags=["agent"])
 api_router.include_router(user_tools.router, prefix="/user-tools", tags=["user-tools"])
 api_router.include_router(plugins.router, prefix="/plugins", tags=["plugins"])
@@ -208,15 +238,30 @@ api_router.include_router(synthesis.router, prefix="/synthesis", tags=["synthesi
 api_router.include_router(latex.router, prefix="/latex", tags=["latex"])
 
 # AI Hub / Training endpoints
+# TRAINING_ENABLED was documented as the gate on all of this and nothing read
+# it. It is applied here, once, rather than in each handler.
+_training = [Depends(require_training_enabled)]
 api_router.include_router(
-    training_datasets.router, prefix="/training/datasets", tags=["training-datasets"]
+    training_datasets.router,
+    prefix="/training/datasets",
+    tags=["training-datasets"],
+    dependencies=_training,
 )
 api_router.include_router(
-    training_jobs.router, prefix="/training/jobs", tags=["training-jobs"]
+    training_jobs.router,
+    prefix="/training/jobs",
+    tags=["training-jobs"],
+    dependencies=_training,
 )
 api_router.include_router(
-    model_registry.router, prefix="/training/models", tags=["model-registry"]
+    model_registry.router,
+    prefix="/training/models",
+    tags=["model-registry"],
+    dependencies=_training,
 )
 api_router.include_router(
-    ai_hub_eval.router, prefix="/training/evals", tags=["training-evals"]
+    ai_hub_eval.router,
+    prefix="/training/evals",
+    tags=["training-evals"],
+    dependencies=_training,
 )

@@ -56,6 +56,14 @@ class TrainingService:
         """Get a trainer by backend name."""
         return self._trainers.get(backend)
 
+    #: A job holding, or about to hold, a worker.
+    ACTIVE_STATUSES = (
+        TrainingJobStatus.QUEUED.value,
+        TrainingJobStatus.PREPARING.value,
+        TrainingJobStatus.TRAINING.value,
+        TrainingJobStatus.SAVING.value,
+    )
+
     async def create_training_job(
         self,
         db: AsyncSession,
@@ -205,6 +213,28 @@ class TrainingService:
 
         if not job.can_start():
             raise ValueError(f"Job cannot be started (status: {job.status})")
+
+        # TRAINING_MAX_CONCURRENT_JOBS was declared and never read, so the
+        # limit a deployment set did nothing: every job queued, and each one
+        # that reached a worker loaded a model beside the others. Counted
+        # across users because the thing being rationed is the machine.
+        limit = int(getattr(settings, "TRAINING_MAX_CONCURRENT_JOBS", 0) or 0)
+        if limit > 0:
+            active = (
+                await db.execute(
+                    select(func.count(TrainingJob.id)).where(
+                        TrainingJob.status.in_(self.ACTIVE_STATUSES),
+                        TrainingJob.id != job.id,
+                    )
+                )
+            ).scalar_one()
+            if int(active or 0) >= limit:
+                raise ValueError(
+                    f"{active} training job(s) are already running and this "
+                    f"deployment allows {limit} at a time "
+                    "(TRAINING_MAX_CONCURRENT_JOBS). Start this one when one "
+                    "of them finishes."
+                )
 
         # Queue job in Celery
         from app.tasks.training_tasks import execute_training_job_task
@@ -442,12 +472,7 @@ class TrainingService:
         user_id: UUID,
     ) -> Dict[str, Any]:
         """Get training statistics for a user."""
-        running_statuses = [
-            TrainingJobStatus.QUEUED.value,
-            TrainingJobStatus.PREPARING.value,
-            TrainingJobStatus.TRAINING.value,
-            TrainingJobStatus.SAVING.value,
-        ]
+        running_statuses = list(self.ACTIVE_STATUSES)
         result = await db.execute(
             select(
                 func.count(TrainingJob.id).label("total"),

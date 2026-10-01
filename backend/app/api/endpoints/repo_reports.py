@@ -68,7 +68,9 @@ def _parse_repo_url(url: str) -> tuple[str, str, str]:
 
 
 @router.get("/sections", response_model=AvailableSectionsResponse)
-async def list_available_sections():
+async def list_available_sections(
+    current_user: User = Depends(get_current_user),
+):
     """
     List available sections for repository reports/presentations.
 
@@ -407,6 +409,11 @@ async def repo_report_progress(
 
     if not job:
         await websocket.close(code=4004, reason="Job not found")
+        return
+
+    from app.utils.websocket_auth import authorize_owner
+
+    if await authorize_owner(websocket, job.user_id) is None:
         return
 
     import redis.asyncio as redis

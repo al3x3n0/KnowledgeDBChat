@@ -345,6 +345,31 @@ class TrainingDatasetService:
                 }
             )
 
+        # The two limits below were declared and never read, so a dataset of
+        # any size validated as READY and the first thing to refuse it was a
+        # trainer running out of memory.
+        max_samples = int(getattr(settings, "DATASET_MAX_SAMPLES", 0) or 0)
+        if max_samples > 0 and len(samples) > max_samples:
+            errors.append(
+                {
+                    "code": "SAMPLE_LIMIT",
+                    "message": f"Dataset exceeds sample limit ({len(samples)} > {max_samples}).",
+                }
+            )
+
+        max_bytes = int(getattr(settings, "DATASET_MAX_SIZE_MB", 0) or 0) * 1024 * 1024
+        if max_bytes > 0 and int(dataset.file_size or 0) > max_bytes:
+            errors.append(
+                {
+                    "code": "SIZE_LIMIT",
+                    "message": (
+                        f"Dataset exceeds size limit "
+                        f"({int(dataset.file_size) // (1024 * 1024)} MB > "
+                        f"{settings.DATASET_MAX_SIZE_MB} MB)."
+                    ),
+                }
+            )
+
         # Check token limits
         if total_tokens > settings.DATASET_MAX_TOKEN_COUNT:
             errors.append(

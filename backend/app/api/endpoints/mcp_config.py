@@ -108,7 +108,9 @@ class MCPKeyConfigResponse(BaseModel):
 
 
 @router.get("/tools", response_model=List[MCPToolInfo])
-async def list_available_tools():
+async def list_available_tools(
+    current_user: User = Depends(get_current_user),
+):
     """
     List all available MCP tools.
 

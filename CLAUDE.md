@@ -481,7 +481,14 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   `_inherit_assumed_findings` skips it, and `validity.bounds` reads only the
   latest. Omitted from the manifest when false, so adding the option did not
   change any existing skill's content hash.
-  Not done yet: chat cannot use skills (autonomous jobs only); run directories
+  **Chat can use skills too.** Every spec is advertised to chat whatever its
+  provider's modes, so an autonomous-only provider is a tool chat is offered
+  and then told is unknown; the skill provider answers in both. Chat has no
+  job, so the working directory is keyed on the conversation ("build it" and
+  "now measure it" two messages apart find the same files) and proposals are
+  bounded by the review queue (10 unreviewed) rather than per job. A finding
+  recorded in chat satisfies no contract -- there is none.
+  Not done yet: run directories
   under `$TMPDIR/kdbc-skills` are pruned after a day rather than at job end,
   so a stage waiting longer than that on a checkpoint inherits nothing; and a
   stage inherits from its chain parent only, not from every `depends_on`.

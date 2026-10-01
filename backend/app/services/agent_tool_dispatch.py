@@ -10894,6 +10894,12 @@ def build_autonomous_sandbox_skill_provider(executor: Any) -> FunctionToolProvid
     A table and nothing else. The handlers live in
     ``agent_sandbox_skill_tools`` and are imported when called, the way every
     other provider here reaches its service.
+
+    Answers in chat as well as in autonomous jobs. Every spec is advertised to
+    chat whatever its provider's modes, so an autonomous-only provider is a
+    tool chat is offered and then told is unknown. The handlers need a user
+    and something to key a working directory on, and a conversation supplies
+    both.
     """
 
     def _handler(name: str):
@@ -10905,8 +10911,8 @@ def build_autonomous_sandbox_skill_provider(executor: Any) -> FunctionToolProvid
         return _call
 
     return FunctionToolProvider(
-        name="autonomous_sandbox_skill_tools",
-        modes={"autonomous"},
+        name="sandbox_skill_tools",
+        modes={"autonomous", "chat"},
         handlers={
             name: _handler(name)
             for name in (

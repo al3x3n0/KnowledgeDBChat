@@ -48,6 +48,7 @@ from app.services.agent_tool_dispatch import (
     build_agent_service_knowledge_graph_provider,
     build_agent_service_research_provider,
     build_agent_service_workflow_provider,
+    build_autonomous_sandbox_skill_provider,
 )
 from app.services.agent_tools import (
     AGENT_TOOLS,
@@ -87,6 +88,9 @@ class AgentService:
                 build_agent_service_research_provider(self),
                 build_agent_service_analytics_content_provider(self),
                 build_agent_service_chat_core_provider(self),
+                # The same provider autonomous jobs use; it answers in chat
+                # too, keyed on the conversation instead of a job.
+                build_autonomous_sandbox_skill_provider(self),
                 # Last, and claiming only the reserved `p_` namespace no
                 # built-in may occupy.
                 PluginToolProvider(),

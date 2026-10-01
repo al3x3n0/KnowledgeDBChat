@@ -44,6 +44,10 @@ ORIGINS = ("manual", "drafted", "agent")
 #: queue; three is room for a genuine second thought.
 MAX_AGENT_DRAFTS_PER_JOB = 3
 
+#: How many assistant-proposed drafts may wait unreviewed, where there is no
+#: job to count against. The limit is on the queue a person has to read.
+MAX_UNREVIEWED_AGENT_DRAFTS = 10
+
 
 async def known_images(db: AsyncSession) -> List[str]:
     """Every image a skill may name right now.
@@ -257,6 +261,21 @@ async def agent_drafts_for_job(db: AsyncSession, job_id: Any) -> int:
             await db.execute(
                 select(func.count(SandboxSkill.id)).where(
                     SandboxSkill.origin_job_id == job_id
+                )
+            )
+        ).scalar_one()
+        or 0
+    )
+
+
+async def unreviewed_agent_drafts(db: AsyncSession, user_id: Any) -> int:
+    return int(
+        (
+            await db.execute(
+                select(func.count(SandboxSkill.id)).where(
+                    SandboxSkill.user_id == user_id,
+                    SandboxSkill.origin == "agent",
+                    SandboxSkill.status == DRAFT,
                 )
             )
         ).scalar_one()

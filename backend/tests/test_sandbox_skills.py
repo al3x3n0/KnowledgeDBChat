@@ -1053,3 +1053,129 @@ def test_a_bound_on_perishable_skill_evidence_reads_the_latest():
     # Durable readings each stand on their own, so the first still counts.
     durable = [{k: v for k, v in f.items() if k != "perishable"} for f in readings]
     assert verdict(durable)["missing"] == ["validity:bounds:skill_size"]
+
+
+# ------------------------------------------------------------------------ chat
+
+
+def chat_ctx(db_session, user, conversation_id=None):
+    from app.services.agent_tool_dispatch import AgentToolExecutionContext
+
+    return AgentToolExecutionContext(
+        mode="chat",
+        db=db_session,
+        service=None,
+        user_id=user.id,
+        extra={"conversation_id": conversation_id or uuid4()},
+    )
+
+
+def chat_registry():
+    """The provider as chat registers it, without building a whole AgentService."""
+    from app.services.agent_tool_dispatch import (
+        AgentToolRegistry,
+        build_autonomous_sandbox_skill_provider,
+    )
+
+    return AgentToolRegistry([build_autonomous_sandbox_skill_provider(None)])
+
+
+def test_chat_registers_the_skill_tools(db_session, test_user):
+    """Every spec is advertised to chat whatever its provider's modes, so a
+    provider that only answers autonomous jobs is a tool chat is offered and
+    then told is unknown."""
+    from app.services.agent_service import AgentService
+
+    registry = AgentService().tool_registry
+    ctx = chat_ctx(db_session, test_user)
+    for name in (
+        "list_sandbox_skills",
+        "load_sandbox_skill",
+        "run_sandbox_skill",
+        "propose_sandbox_skill",
+    ):
+        assert registry.resolve(name, ctx) is not None, name
+
+
+async def test_chat_can_find_and_run_a_skill(
+    db_session, test_user, active_skill, sandbox
+):
+    registry = chat_registry()
+    ctx = chat_ctx(db_session, test_user)
+
+    handled, listed = await registry.try_execute("list_sandbox_skills", {}, ctx)
+    assert handled and [s["skill"] for s in listed["data"]["skills"]] == ["loop_trip"]
+
+    sandbox.on("measure", writes_result({"loops": 4, "hottest": "inner"}))
+    handled, ran = await registry.try_execute(
+        "run_sandbox_skill",
+        {"skill": "loop_trip", "command": "measure", "collect_result": True},
+        ctx,
+    )
+    assert handled and ran["success"]
+    assert ran["data"]["result"] == {"loops": 4, "hottest": "inner"}
+
+
+async def test_a_conversation_keeps_its_files_and_no_other_sees_them(
+    db_session, test_user, active_skill, sandbox
+):
+    """ "Build it" and "now measure it" two messages apart must find the build;
+    a different conversation must not."""
+    registry = chat_registry()
+    seen = []
+    sandbox.on("write", lambda w: ((w / "built").write_text("x"), (0, "", ""))[1])
+    sandbox.on("look", lambda w: (seen.append((w / "built").exists()), (0, "", ""))[1])
+
+    first = chat_ctx(db_session, test_user)
+    await registry.try_execute(
+        "run_sandbox_skill", {"skill": "loop_trip", "command": "write"}, first
+    )
+    await registry.try_execute(
+        "run_sandbox_skill", {"skill": "loop_trip", "command": "look"}, first
+    )
+    await registry.try_execute(
+        "run_sandbox_skill",
+        {"skill": "loop_trip", "command": "look"},
+        chat_ctx(db_session, test_user),
+    )
+    assert seen == [True, False]
+
+
+async def test_chat_sees_only_its_own_users_skills(
+    db_session, test_user, admin_user, active_skill
+):
+    handled, listed = await chat_registry().try_execute(
+        "list_sandbox_skills", {}, chat_ctx(db_session, admin_user)
+    )
+    assert handled and listed["data"]["skills"] == []
+
+
+async def test_chat_proposals_are_bounded_by_the_review_queue(
+    db_session, test_user, allow_image, monkeypatch
+):
+    monkeypatch.setattr(sandbox_skill_service, "MAX_UNREVIEWED_AGENT_DRAFTS", 2)
+    registry = chat_registry()
+    ctx = chat_ctx(db_session, test_user)
+
+    def proposal(n):
+        return {
+            "id": f"probe_{n}",
+            "name": f"Probe {n}",
+            "description": "Count something worth counting in a kernel.",
+            "image": IMAGE,
+            "procedure": "Run the thing.",
+            "result_fields": {"n": "number"},
+            "control_command": "true",
+        }
+
+    for n in range(2):
+        _, result = await registry.try_execute(
+            "propose_sandbox_skill", proposal(n), ctx
+        )
+        assert result["success"], result
+    _, refused = await registry.try_execute("propose_sandbox_skill", proposal(2), ctx)
+    assert "waiting to be reviewed" in refused["error"]
+
+    skills = await sandbox_skill_service.list_skills(db_session, test_user.id)
+    assert {s.status for s in skills} == {"draft"}
+    assert "Proposed by the assistant in a chat." in skills[0].notes

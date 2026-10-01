@@ -57,12 +57,23 @@ def _user_id(ctx: Any) -> Any:
 
 
 def _workdir(ctx: Any):
-    """This job's working directory, seeded from its parent stage if it has one."""
+    """Where this caller works: a job's directory, or a conversation's.
+
+    A job's is seeded from its parent stage if it has one. Chat has no job, so
+    the conversation is what persists between calls -- "build it, now measure
+    it" two messages apart must find the build. A call with neither gets a
+    directory per user rather than one shared by everybody.
+    """
     job = getattr(ctx, "job", None)
-    return sandbox_skill_runtime.run_dir(
-        str(getattr(job, "id", "") or "adhoc"),
-        getattr(job, "parent_job_id", None),
-    )
+    if getattr(job, "id", None):
+        return sandbox_skill_runtime.run_dir(
+            str(job.id), getattr(job, "parent_job_id", None)
+        )
+    extra = getattr(ctx, "extra", None) or {}
+    conversation = extra.get("conversation_id") if isinstance(extra, dict) else None
+    if conversation:
+        return sandbox_skill_runtime.run_dir(f"chat-{conversation}")
+    return sandbox_skill_runtime.run_dir(f"user-{_user_id(ctx)}")
 
 
 def _directory_view(workdir: Any) -> Dict[str, Any]:
@@ -258,6 +269,17 @@ async def propose_sandbox_skill(params: Dict[str, Any], ctx: Any) -> Dict[str, A
                 "ones worth their time."
             )
         }
+    # Chat has no job to count against, so the bound there is the review
+    # queue itself: proposals nobody has yet looked at.
+    waiting = await sandbox_skill_service.unreviewed_agent_drafts(ctx.db, _user_id(ctx))
+    if job_id is None and waiting >= sandbox_skill_service.MAX_UNREVIEWED_AGENT_DRAFTS:
+        return {
+            "error": (
+                f"{waiting} proposed skills are already waiting to be reviewed, "
+                "which is the limit. Review or delete some in the Sandbox "
+                "Skills panel before proposing more."
+            )
+        }
 
     control: Dict[str, Any] = {"command": params.get("control_command")}
     if params.get("control_files"):
@@ -278,9 +300,13 @@ async def propose_sandbox_skill(params: Dict[str, Any], ctx: Any) -> Dict[str, A
         raw["perishable"] = params.get("perishable")
 
     notes: List[str] = [
-        f"Proposed by run {job_id}"
-        + (f" ({getattr(job, 'name', '')})" if getattr(job, "name", "") else "")
-        + "."
+        (
+            f"Proposed by run {job_id}"
+            + (f" ({getattr(job, 'name', '')})" if getattr(job, "name", "") else "")
+            + "."
+        )
+        if job_id
+        else "Proposed by the assistant in a chat."
     ]
     why = str(params.get("why") or "").strip()
     if why:

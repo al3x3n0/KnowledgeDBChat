@@ -165,6 +165,14 @@ SPECS: tuple[ToolSpec, ...] = (
                         "of its own result."
                     ),
                 },
+                "perishable": {
+                    "type": "boolean",
+                    "description": (
+                        "True when the result describes files a later change "
+                        "invalidates (a test run, a size, a timing), so a "
+                        "later stage must take it again."
+                    ),
+                },
                 "control_command": {
                     "type": "string",
                     "description": (

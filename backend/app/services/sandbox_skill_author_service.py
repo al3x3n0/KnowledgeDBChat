@@ -73,6 +73,7 @@ DRAFT_SCHEMA: Dict[str, Any] = {
             },
         },
         "timeout_seconds": {"type": "integer"},
+        "perishable": {"type": "boolean"},
     },
     "required": [
         "id",
@@ -146,6 +147,11 @@ control     {{"command": "...", "files": {{...}}}} -- the SMALLEST invocation
             executed to prove the skill works before anyone can use it, so it
             must be self-contained and finish in well under
             {sandbox_skill_runtime.DRY_RUN_TIMEOUT_SECONDS} seconds.
+perishable  optional boolean. true when the result describes files that a
+            later change invalidates -- a test run, a binary's size, a timing
+            -- so a later pipeline stage must take it again rather than reuse
+            it. false (the default) for a fact that stays true, such as what a
+            source file contains.
 timeout_seconds  optional, {m.MIN_TIMEOUT_SECONDS}-{m.MAX_TIMEOUT_SECONDS}.
 
 Facts about the sandbox that decide whether a skill works:

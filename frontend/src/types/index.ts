@@ -104,6 +104,8 @@ export interface SandboxSkillManifest {
   judge_command?: string;
   control: { command: string; files?: Record<string, string> };
   timeout_seconds?: number;
+  /** True when the result goes stale: a later stage must take it again. */
+  perishable?: boolean;
 }
 
 /** What the last control run did. `ran` false means nothing could be tested. */

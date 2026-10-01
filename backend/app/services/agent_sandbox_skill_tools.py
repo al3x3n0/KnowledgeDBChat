@@ -35,7 +35,18 @@ from app.services.sandbox_skill_manifest import SkillError
 #: Finding keys a result's own fields may not overwrite. A skill declaring a
 #: field called `type` would otherwise rename its own evidence.
 RESERVED_FINDING_KEYS = frozenset(
-    {"type", "skill", "subject", "title", "image", "judged_by", "command"}
+    {
+        "type",
+        "skill",
+        "subject",
+        "title",
+        "image",
+        "judged_by",
+        "command",
+        "perishable",
+        "inherited",
+        "inherited_from_job_id",
+    }
 )
 
 
@@ -114,6 +125,7 @@ async def load_sandbox_skill(params: Dict[str, Any], ctx: Any) -> Dict[str, Any]
             "result_fields": (manifest.get("result") or {}).get("fields") or {},
             "result_file": sandbox_skill_manifest.RESULT_FILE,
             "judged_by": "judge_command" if judge else "command",
+            "perishable": bool(manifest.get("perishable")),
             "how_the_result_is_decided": (
                 "When you pass collect_result=true the skill's judge runs "
                 f"after your command ({judge}) and writes "
@@ -214,6 +226,11 @@ async def run_sandbox_skill(params: Dict[str, Any], ctx: Any) -> Dict[str, Any]:
         "judged_by": run.judged_by,
         "command": command[:500],
     }
+    if manifest.get("perishable"):
+        # Said on the finding, because that is what the inheritance and
+        # bounds checks read: the evidence map is fixed at import and cannot
+        # know that this user's skill declared its result perishable.
+        finding["perishable"] = True
     data["result"] = run.result
     data["judged_by"] = run.judged_by
     data["recorded_as"] = finding_type
@@ -257,6 +274,8 @@ async def propose_sandbox_skill(params: Dict[str, Any], ctx: Any) -> Dict[str, A
     }
     if params.get("judge_command"):
         raw["judge_command"] = params.get("judge_command")
+    if "perishable" in params:
+        raw["perishable"] = params.get("perishable")
 
     notes: List[str] = [
         f"Proposed by run {job_id}"

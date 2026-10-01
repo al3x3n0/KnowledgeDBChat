@@ -979,3 +979,77 @@ async def test_a_later_stage_is_told_what_it_was_handed(
     )
     assert seen == ["binary"]
     assert "prog" in ran["data"]["working_directory"]["files"]
+
+
+# ---------------------------------------------------------------- perishability
+
+
+def test_a_skill_may_declare_its_result_perishable():
+    assert valid(perishable=True)["perishable"] is True
+    # Absent when false, so an existing skill's content hash does not change
+    # -- and with it, its verified status -- because a default was added.
+    assert "perishable" not in valid(perishable=False)
+    assert "perishable" not in valid()
+    with pytest.raises(SkillError) as refused:
+        valid(perishable="yes")
+    assert "true or false" in str(refused.value)
+
+
+async def test_a_perishable_skill_marks_its_findings(
+    db_session, test_user, allow_image, sandbox
+):
+    sandbox.on("sh skill/count.sh", writes_result({"loops": 1, "hottest": "a"}))
+    skill = await sandbox_skill_service.create_skill(
+        db_session, user_id=test_user.id, raw=manifest(perishable=True)
+    )
+    await sandbox_skill_service.dry_run_skill(db_session, skill)
+    await sandbox_skill_service.activate_skill(db_session, skill)
+
+    # A result field named `perishable` cannot unset what the skill declared.
+    sandbox.on(
+        "measure", writes_result({"loops": 4, "hottest": "x", "perishable": False})
+    )
+    result = await agent_sandbox_skill_tools.run_sandbox_skill(
+        {"skill": "loop_trip", "command": "measure", "collect_result": True},
+        ctx_for(db_session, test_user),
+    )
+    assert result["findings"][0]["perishable"] is True
+
+    (entry,) = await sandbox_skill_service.evidence_types_for_user(
+        db_session, test_user.id
+    )
+    assert entry.perishable is True
+
+
+async def test_a_durable_skill_does_not_mark_its_findings(
+    db_session, test_user, active_skill, sandbox
+):
+    sandbox.on(
+        "measure", writes_result({"loops": 4, "hottest": "x", "perishable": True})
+    )
+    result = await agent_sandbox_skill_tools.run_sandbox_skill(
+        {"skill": "loop_trip", "command": "measure", "collect_result": True},
+        ctx_for(db_session, test_user),
+    )
+    # Nor can a result field set it: the declaration is the skill's.
+    assert "perishable" not in result["findings"][0]
+
+
+def test_a_bound_on_perishable_skill_evidence_reads_the_latest():
+    """ "End with the size under the limit" must not be failed for ever by the
+    first, oversized build."""
+    from app.services import agent_measurement_validity
+
+    contract = {"validity": {"bounds": {"skill_size": {"field": "bytes", "max": 100}}}}
+
+    def verdict(findings):
+        return agent_measurement_validity.evaluate(contract, {"findings": findings})
+
+    readings = [
+        {"type": "skill_size", "bytes": 400, "perishable": True},
+        {"type": "skill_size", "bytes": 80, "perishable": True},
+    ]
+    assert not verdict(readings)["missing"]
+    # Durable readings each stand on their own, so the first still counts.
+    durable = [{k: v for k, v in f.items() if k != "perishable"} for f in readings]
+    assert verdict(durable)["missing"] == ["validity:bounds:skill_size"]

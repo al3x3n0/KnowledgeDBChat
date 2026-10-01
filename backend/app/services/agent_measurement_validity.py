@@ -329,7 +329,12 @@ def evaluate(contract: Mapping[str, Any], state: Mapping[str, Any]) -> Dict[str,
                 continue
             latest_only = rule.get("latest")
             if latest_only is None:
-                latest_only = agent_evidence_map.is_perishable(str(type_name))
+                # A sandbox skill declares perishability per skill, and the
+                # finding carries it: the evidence map is fixed at import.
+                latest_only = agent_evidence_map.is_perishable(str(type_name)) or any(
+                    isinstance(f, Mapping) and f.get("perishable") is True
+                    for f in matching
+                )
             if latest_only and matching:
                 matching = matching[-1:]
 

@@ -475,6 +475,12 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   is told the files exist; a stage that inherits nothing (parent used no
   skill, directory pruned, or over 256 MB) is told it starts empty. Run live:
   a build stage left `kernel.o` and an inspect stage read its symbols from it.
+  **A skill says whether its result goes stale** (`perishable: true`). The
+  evidence map is fixed at import and cannot know one user's skills, so the
+  *finding* carries the flag to the two places that act on it:
+  `_inherit_assumed_findings` skips it, and `validity.bounds` reads only the
+  latest. Omitted from the manifest when false, so adding the option did not
+  change any existing skill's content hash.
   Not done yet: chat cannot use skills (autonomous jobs only); run directories
   under `$TMPDIR/kdbc-skills` are pruned after a day rather than at job end,
   so a stage waiting longer than that on a checkpoint inherits nothing; and a

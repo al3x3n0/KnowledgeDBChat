@@ -20,6 +20,14 @@ be satisfied by any file at all.
 should work -- it is what a dry run executes, and a skill with none can never
 be shown to work, so it could never honestly be activated.
 
+**A skill says whether its result goes stale.** `perishable: true` means the
+result describes the working directory as it stood -- a test run, a size, a
+timing of a binary -- and is invalidated by whatever changes it. Such a result
+is never inherited by a later stage and only its latest reading is bounded,
+the same rule `test_result` follows. It is a declaration on the skill because
+the evidence map is fixed at import and cannot know one user's skills; the
+finding carries the flag to the two places that act on it.
+
 **Unknown keys are refused, not ignored.** `judge_cmd` for `judge_command`
 would otherwise be dropped in silence, and the skill would run with no judge
 while its author believed it had one.
@@ -74,6 +82,7 @@ KNOWN_KEYS = (
     "judge_command",
     "control",
     "timeout_seconds",
+    "perishable",
 )
 
 
@@ -300,6 +309,13 @@ def validate_skill(raw: Any, *, known_images: Iterable[str]) -> Dict[str, Any]:
             f"{MIN_TIMEOUT_SECONDS} and {MAX_TIMEOUT_SECONDS}"
         )
 
+    perishable = raw.get("perishable", False)
+    if not isinstance(perishable, bool):
+        raise SkillError(
+            "perishable must be true or false: true when the result describes "
+            "files that a later change invalidates"
+        )
+
     manifest: Dict[str, Any] = {
         "id": slug,
         "name": name,
@@ -313,6 +329,8 @@ def validate_skill(raw: Any, *, known_images: Iterable[str]) -> Dict[str, Any]:
     }
     if judge_command:
         manifest["judge_command"] = judge_command
+    if perishable:
+        manifest["perishable"] = True
     return manifest
 
 

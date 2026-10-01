@@ -306,6 +306,7 @@ async def evidence_types_for_user(db: AsyncSession, user_id: Any) -> List[Any]:
                 name=name,
                 producers=tuple(agent_evidence_map.producers_of(name)),
                 typical_seconds=agent_evidence_map.estimate_chain_seconds([name]),
+                perishable=bool((skill.manifest or {}).get("perishable")),
                 consumes=f"the sandbox skill {skill.name!r}: {skill.description}",
             )
         )

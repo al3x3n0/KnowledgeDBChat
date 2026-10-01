@@ -622,6 +622,8 @@ export const SandboxSkillsPanel: React.FC<{ isAdmin?: boolean }> = ({
                       {skill.manifest?.judge_command
                         ? 'result written by the skill’s judge'
                         : 'result written by the run’s own command'}
+                      {skill.manifest?.perishable &&
+                        ' · perishable: a later stage must take it again'}
                     </p>
                     <p className="text-[11px] text-gray-500">
                       result fields:{' '}

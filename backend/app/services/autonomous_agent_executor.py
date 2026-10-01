@@ -3820,6 +3820,7 @@ class AutonomousAgentExecutor:
         # Walk up the chain: a stage may assume evidence from further back than
         # its immediate parent.
         inherited: List[Dict[str, Any]] = []
+        flagged_perishable: set = set()
         seen_jobs = 0
         current_id = parent_id
         while current_id is not None and seen_jobs < 10:
@@ -3834,6 +3835,13 @@ class AutonomousAgentExecutor:
                 if not isinstance(finding, dict):
                     continue
                 if str(finding.get("type") or "") not in durable:
+                    continue
+                if finding.get("perishable") is True:
+                    # The type is durable as far as the evidence map knows,
+                    # but this finding says otherwise for itself: a sandbox
+                    # skill declared its result perishable, and the map --
+                    # fixed at import -- cannot know one user's skills.
+                    flagged_perishable.add(str(finding.get("type")))
                     continue
                 carried = dict(finding)
                 carried["inherited_from_job_id"] = str(ancestor.id)
@@ -3852,7 +3860,7 @@ class AutonomousAgentExecutor:
                 "phase": "assumed_evidence_inherited",
                 "inherited": len(inherited),
                 "types": sorted({str(f.get("type")) for f in inherited}),
-                "not_inherited_perishable": skipped,
+                "not_inherited_perishable": sorted({*skipped, *flagged_perishable}),
             }
         )
         logger.info(

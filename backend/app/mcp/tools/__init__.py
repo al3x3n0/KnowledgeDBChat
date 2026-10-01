@@ -8,6 +8,7 @@ from app.mcp.tools.chat import ChatTool
 from app.mcp.tools.docker_execute import DockerExecuteTool
 from app.mcp.tools.documents import DocumentsTool
 from app.mcp.tools.generation import GenerationTool
+from app.mcp.tools.sandbox_skills import SandboxSkillTool
 from app.mcp.tools.search import SearchTool
 from app.mcp.tools.web_scrape import WebScrapeTool
 
@@ -18,4 +19,5 @@ __all__ = [
     "GenerationTool",
     "WebScrapeTool",
     "DockerExecuteTool",
+    "SandboxSkillTool",
 ]

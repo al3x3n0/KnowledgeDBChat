@@ -392,8 +392,22 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   predates the skill tools, so it planned nothing — and the reply then
   described what the skill *would* have printed. Migration `0104` grants that
   one agent the skill tools, and the response prompt now forbids presenting an
-  expected output for a run that did not happen. Other specialists were left
-  alone: only `generalist` and the compiler expert can use skills in chat.
+  expected output for a run that did not happen. Migration `0105` then grants
+  them to every *system* specialist, because a skill working or silently not
+  depending on which agent the router picked is not a behaviour anyone chose;
+  agents a user authored keep the whitelist their author wrote.
+
+  **Skills are reachable from every surface, through one set of handlers.**
+  Autonomous jobs and pipelines (the `autonomous` registry), chat and
+  workflow `tool` nodes (the chat registry, which
+  `AgentService.execute_tool` also serves), and the MCP server
+  (`mcp/tools/sandbox_skills.py`), whose input schemas are read from the tool
+  specs rather than restated. What differs per surface is only what the
+  working directory is keyed on — job, conversation, user, or API key — and,
+  on MCP, the scope a call needs: `read` to list or load, `write` to run or
+  propose. MCP does not force approval for a skill run the way it does for
+  `docker_execute`: the image is allowlisted, there is no network, and only a
+  skill whose control has passed can run at all.
 
   **`llm_json` must define every helper a caller uses.** `extract_json_array`
   was deleted on 2026-08-06 while the chat planner and the presentation

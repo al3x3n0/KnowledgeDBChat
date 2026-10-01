@@ -70,7 +70,12 @@ def _workdir(ctx: Any):
             str(job.id), getattr(job, "parent_job_id", None)
         )
     extra = getattr(ctx, "extra", None) or {}
-    conversation = extra.get("conversation_id") if isinstance(extra, dict) else None
+    extra = extra if isinstance(extra, dict) else {}
+    # A surface with neither a job nor a conversation names its own key: the
+    # MCP server uses the API key, so two keys of one user do not share files.
+    if extra.get("workdir_key"):
+        return sandbox_skill_runtime.run_dir(str(extra["workdir_key"]))
+    conversation = extra.get("conversation_id")
     if conversation:
         return sandbox_skill_runtime.run_dir(f"chat-{conversation}")
     return sandbox_skill_runtime.run_dir(f"user-{_user_id(ctx)}")
@@ -306,7 +311,13 @@ async def propose_sandbox_skill(params: Dict[str, Any], ctx: Any) -> Dict[str, A
             + "."
         )
         if job_id
-        else "Proposed by the assistant in a chat."
+        else (
+            "Proposed by an external agent over MCP."
+            if str(
+                (getattr(ctx, "extra", None) or {}).get("workdir_key", "")
+            ).startswith("mcp-")
+            else "Proposed by the assistant in a chat."
+        )
     ]
     why = str(params.get("why") or "").strip()
     if why:

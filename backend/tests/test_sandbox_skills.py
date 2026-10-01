@@ -1179,3 +1179,191 @@ async def test_chat_proposals_are_bounded_by_the_review_queue(
     skills = await sandbox_skill_service.list_skills(db_session, test_user.id)
     assert {s.status for s in skills} == {"draft"}
     assert "Proposed by the assistant in a chat." in skills[0].notes
+
+
+# ------------------------------------------------------- every other surface
+
+
+async def test_a_workflow_tool_node_can_run_a_skill(
+    db_session, test_user, active_skill, sandbox
+):
+    """A workflow reaches built-in tools through `AgentService.execute_tool`,
+    the same registry chat uses; nothing workflow-specific has to know what a
+    skill is."""
+    from app.services.agent_service import AgentService
+
+    sandbox.on("measure", writes_result({"loops": 4, "hottest": "inner"}))
+    output = await AgentService().execute_tool(
+        tool_name="run_sandbox_skill",
+        tool_input={"skill": "loop_trip", "command": "measure", "collect_result": True},
+        user_id=test_user.id,
+        db=db_session,
+    )
+    assert output["data"]["result"] == {"loops": 4, "hottest": "inner"}
+
+
+class _Key:
+    def __init__(self, scopes):
+        self.id = uuid4()
+        self.scopes = scopes
+        self.allowed_tools = None
+
+    def is_mcp_enabled(self):
+        return True
+
+    def is_tool_allowed(self, name):
+        return self.allowed_tools is None or name in self.allowed_tools
+
+    def has_scope(self, scope):
+        return scope in self.scopes
+
+
+def mcp_auth(user, scopes=("read", "write")):
+    from app.mcp.auth import MCPAuthContext
+
+    return MCPAuthContext(user=user, api_key=_Key(list(scopes)), scopes=list(scopes))
+
+
+@pytest.fixture
+def mcp_client(client, test_user):
+    """The MCP endpoints, authenticated as `test_user` with a chosen key."""
+    from app.mcp import server
+    from main import app
+
+    holder = {"auth": mcp_auth(test_user)}
+
+    async def _auth():
+        return holder["auth"]
+
+    async def _no_log(**_kwargs):
+        return None
+
+    app.dependency_overrides[server.get_mcp_auth] = _auth
+    original = server.log_api_usage
+    server.log_api_usage = _no_log
+    try:
+        yield client, holder
+    finally:
+        server.log_api_usage = original
+        app.dependency_overrides.pop(server.get_mcp_auth, None)
+
+
+def test_mcp_lists_the_skill_tools_with_the_specs_own_schemas(mcp_client):
+    client, _ = mcp_client
+    listed = client.get("/api/v1/mcp/tools").json()["tools"]
+    by_name = {t["name"]: t for t in listed}
+    for name in (
+        "list_sandbox_skills",
+        "load_sandbox_skill",
+        "run_sandbox_skill",
+        "propose_sandbox_skill",
+    ):
+        spec = tool_specs.spec_for(name)
+        assert by_name[name]["inputSchema"] == spec.parameters
+        assert by_name[name]["description"] == spec.description
+
+
+def test_an_external_agent_runs_a_skill_over_mcp(mcp_client, active_skill, sandbox):
+    client, _ = mcp_client
+    sandbox.on("measure", writes_result({"loops": 4, "hottest": "inner"}))
+    response = client.post(
+        "/api/v1/mcp/tools/call",
+        json={
+            "name": "run_sandbox_skill",
+            "arguments": {
+                "skill": "loop_trip",
+                "command": "measure",
+                "collect_result": True,
+            },
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert not body["isError"]
+    assert body["content"][0]["text"]["data"]["result"] == {
+        "loops": 4,
+        "hottest": "inner",
+    }
+
+
+def test_running_a_skill_over_mcp_needs_the_write_scope(
+    mcp_client, test_user, active_skill
+):
+    client, holder = mcp_client
+    holder["auth"] = mcp_auth(test_user, scopes=("read",))
+
+    listed = client.post(
+        "/api/v1/mcp/tools/call", json={"name": "list_sandbox_skills", "arguments": {}}
+    )
+    assert listed.status_code == 200 and not listed.json()["isError"]
+
+    refused = client.post(
+        "/api/v1/mcp/tools/call",
+        json={
+            "name": "run_sandbox_skill",
+            "arguments": {"skill": "loop_trip", "command": "true"},
+        },
+    )
+    assert refused.status_code == 403
+    assert "write" in refused.json()["detail"]
+
+
+def test_a_key_restricted_to_other_tools_cannot_reach_skills(
+    mcp_client, test_user, active_skill
+):
+    client, holder = mcp_client
+    auth = mcp_auth(test_user)
+    auth.api_key.allowed_tools = ["search"]
+    holder["auth"] = auth
+
+    names = {t["name"] for t in client.get("/api/v1/mcp/tools").json()["tools"]}
+    assert "run_sandbox_skill" not in names
+    refused = client.post(
+        "/api/v1/mcp/tools/call", json={"name": "list_sandbox_skills", "arguments": {}}
+    )
+    assert refused.status_code == 403
+
+
+async def test_two_api_keys_of_one_user_do_not_share_files(
+    db_session, test_user, active_skill, sandbox
+):
+    from app.mcp.tools.sandbox_skills import SandboxSkillTool
+
+    seen = []
+    sandbox.on("write", lambda w: ((w / "built").write_text("x"), (0, "", ""))[1])
+    sandbox.on("look", lambda w: (seen.append((w / "built").exists()), (0, "", ""))[1])
+    tool = SandboxSkillTool()
+    first, second = mcp_auth(test_user), mcp_auth(test_user)
+
+    async def run(auth, command):
+        return await tool.execute(
+            "run_sandbox_skill",
+            auth=auth,
+            db=db_session,
+            arguments={"skill": "loop_trip", "command": command},
+        )
+
+    await run(first, "write")
+    await run(first, "look")
+    await run(second, "look")
+    assert seen == [True, False]
+
+
+def test_the_mcp_skill_tools_are_governed_by_their_specs():
+    """Classified by the spec, not by a second table that could say otherwise."""
+    from app.agent_core.tool_catalog import get_tool_metadata, iter_mcp_tools
+    from app.models.mcp_config import MCP_TOOLS
+
+    for name in (
+        "list_sandbox_skills",
+        "load_sandbox_skill",
+        "run_sandbox_skill",
+        "propose_sandbox_skill",
+    ):
+        spec = tool_specs.spec_for(name)
+        meta = get_tool_metadata(f"mcp:{name}")
+        assert name in iter_mcp_tools() and name in MCP_TOOLS
+        assert (meta.effects, meta.cost_tier) == (spec.effects, spec.cost_tier)
+        # The scope an API key needs follows what the spec says the tool does.
+        expected = "write" if spec.effects == "write" else "read"
+        assert MCP_TOOLS[name]["required_scope"] == expected

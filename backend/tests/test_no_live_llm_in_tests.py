@@ -21,6 +21,7 @@ from app.core.config import settings
         "ANTHROPIC_API_KEY",
         "QWEN_API_KEY",
         "KIMI_API_KEY",
+        "GLM_API_KEY",
     ],
 )
 def test_provider_credentials_are_cleared_during_tests(name):

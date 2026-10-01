@@ -8,6 +8,7 @@ Supported providers:
 - Anthropic (external, official SDK)
 - Qwen via DashScope compatible mode (external)
 - Kimi / Moonshot AI (external, OpenAI-compatible)
+- GLM / Zhipu AI (external, OpenAI-compatible)
 - Custom OpenAI-compatible APIs (user-configured)
 
 Two generation paths:
@@ -1080,6 +1081,7 @@ class LLMService:
                     "anthropic": ("claude",),
                     "qwen": ("qwen",),
                     "kimi": ("kimi", "moonshot"),
+                    "glm": ("glm",),
                 }
                 if effective_provider in _sdk_provider_model_prefixes:
                     from app.services.llm_providers import (

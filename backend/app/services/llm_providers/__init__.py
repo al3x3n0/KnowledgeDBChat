@@ -3,7 +3,7 @@
 Exposes a common provider interface (:class:`BaseLLMProvider`) with native
 tool calling and structured output, plus :func:`build_provider` which maps
 the platform's provider names ("ollama", "deepseek", "openai", "anthropic",
-"qwen", "kimi", "custom") to concrete implementations.
+"qwen", "kimi", "glm", "custom") to concrete implementations.
 
 Used by ``LLMService.generate_structured()``; the legacy prompted-text path
 in ``llm_service.py`` remains unchanged for existing callers.
@@ -95,6 +95,15 @@ def build_provider(
             default_model=settings.KIMI_MODEL,
             schema_mode="json_object",
             provider_label="kimi",
+        )
+    if name == "glm":
+        # Zhipu AI: native tool calling; JSON output is json_object only.
+        return OpenAICompatibleProvider(
+            api_key=api_key or settings.GLM_API_KEY,
+            base_url=api_url or settings.GLM_API_BASE,
+            default_model=settings.GLM_MODEL,
+            schema_mode="json_object",
+            provider_label="glm",
         )
     if name == "ollama" or (not name and not api_url):
         return OllamaProvider(base_url=api_url, http_client=http_client)

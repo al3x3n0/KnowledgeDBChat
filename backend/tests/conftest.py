@@ -246,6 +246,7 @@ def _no_live_llm_calls(monkeypatch: pytest.MonkeyPatch):
         "ANTHROPIC_API_KEY",
         "QWEN_API_KEY",
         "KIMI_API_KEY",
+        "GLM_API_KEY",
     ):
         if hasattr(settings, name):
             monkeypatch.setattr(settings, name, None, raising=False)

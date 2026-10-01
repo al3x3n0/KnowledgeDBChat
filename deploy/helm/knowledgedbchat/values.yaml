@@ -104,6 +104,7 @@ secrets:
   deepseekApiKey: ""
   qwenApiKey: ""
   kimiApiKey: ""
+  glmApiKey: ""
   qdrantApiKey: ""
   # Fernet key for the encrypted secrets store (python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
   secretsEncryptionKey: ""

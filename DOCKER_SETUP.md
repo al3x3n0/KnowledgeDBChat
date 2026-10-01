@@ -72,7 +72,7 @@ Key environment variables (see `docker-compose.yml` for full list):
 - `PRELOAD_WHISPER_MODEL`: Preload models on startup (true/false)
 
 ### LLM
-- `LLM_PROVIDER`: `deepseek` (default), `openai`, `anthropic`, `qwen`, `kimi`, `ollama`
+- `LLM_PROVIDER`: `deepseek` (default), `openai`, `anthropic`, `qwen`, `kimi`, `glm`, `ollama`
 - `DEFAULT_MODEL`: a model the chosen provider serves — it reaches the request
   as `model or <PROVIDER>_MODEL`, so an Ollama model name under
   `LLM_PROVIDER=deepseek` is sent to DeepSeek and rejected

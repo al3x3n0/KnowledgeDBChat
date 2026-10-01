@@ -36,7 +36,7 @@ class Settings(BaseSettings):
 
     # LLM Configuration
     # Provider: 'deepseek', 'openai', 'anthropic', 'qwen' (DashScope),
-    # 'kimi' (Moonshot AI), or 'ollama' (local).
+    # 'kimi' (Moonshot AI), 'glm' (Zhipu AI), or 'ollama' (local).
     #
     # Defaults to deepseek because the stack no longer bundles Ollama. The
     # previous default named a service nothing starts, so a stack brought up
@@ -129,6 +129,12 @@ class Settings(BaseSettings):
     KIMI_API_BASE: str = "https://api.moonshot.cn/v1"
     KIMI_API_KEY: Optional[str] = None
     KIMI_MODEL: str = "kimi-latest"
+
+    # GLM / Zhipu AI (external, OpenAI-compatible) — optional. The
+    # international endpoint is https://api.z.ai/api/paas/v4.
+    GLM_API_BASE: str = "https://open.bigmodel.cn/api/paas/v4"
+    GLM_API_KEY: Optional[str] = None
+    GLM_MODEL: str = "glm-4.6"
 
     # LLM call snapshots (replay/debug observability). Opt-in: snapshots
     # store full prompt and response text in the llm_call_snapshots table.

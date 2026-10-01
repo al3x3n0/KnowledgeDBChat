@@ -1621,7 +1621,8 @@ async def agent_chat_websocket(websocket: WebSocket):
     WebSocket endpoint for streaming agent chat with real-time tool execution feedback.
 
     Message Types (Client -> Server):
-        - {"type": "message", "content": "user message", "conversation_history": [...]}
+        - {"type": "message", "content": "user message", "conversation_history": [...],
+           "conversation_id": "...", "agent_id": "...", "turn_number": 0}  (last three optional)
         - {"type": "ping"}
 
     Message Types (Server -> Client):
@@ -1679,6 +1680,12 @@ async def agent_chat_websocket(websocket: WebSocket):
                         message=content,
                         conversation_history=conversation_history,
                         user=user,
+                        # Optional, so an older client that sends neither
+                        # still works; with them the turn gets memory and the
+                        # skill working directory is kept per conversation.
+                        conversation_id=_optional_uuid(data.get("conversation_id")),
+                        agent_id=_optional_uuid(data.get("agent_id")),
+                        turn_number=int(data.get("turn_number") or 0),
                     )
 
             except json.JSONDecodeError:
@@ -1699,8 +1706,22 @@ async def agent_chat_websocket(websocket: WebSocket):
         await websocket.close()
 
 
+def _optional_uuid(value: Any) -> Optional[UUID]:
+    """A UUID a client sent, or None if it sent nothing usable."""
+    try:
+        return UUID(str(value)) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
 async def _process_message_with_streaming(
-    websocket: WebSocket, message: str, conversation_history: List[dict], user: User
+    websocket: WebSocket,
+    message: str,
+    conversation_history: List[dict],
+    user: User,
+    conversation_id: Optional[UUID] = None,
+    agent_id: Optional[UUID] = None,
+    turn_number: int = 0,
 ):
     """Process agent message with real-time streaming updates."""
 
@@ -1740,117 +1761,34 @@ async def _process_message_with_streaming(
                         )
                     )
 
-            # Send planning indicator
-            await websocket.send_json(
-                {"type": "planning", "message": "Determining actions..."}
+            # One path for every chat turn. This handler used to plan and
+            # answer with its own copies of both steps, so the chat window had
+            # no agent routing, no whitelists, no memory and no tool rounds
+            # while the REST endpoint had all four. It now asks the same
+            # function and forwards what that function reports.
+            async def forward(event: dict) -> None:
+                await websocket.send_json(event)
+                if event.get("type") == "tool_start":
+                    # Small delay so a fast tool is still seen to have run.
+                    await asyncio.sleep(0.1)
+
+            response = await agent_service.process_message(
+                message=message,
+                conversation_history=history,
+                user_id=user.id,
+                db=db,
+                user_settings=user_settings,
+                conversation_id=conversation_id,
+                turn_number=turn_number,
+                agent_id=agent_id,
+                on_event=forward,
             )
 
-            # Step 1: Plan tool calls
-            #
-            # Streaming chat plans through a different entry point than the
-            # agent-routed path, and offering a user's contributed tools on one
-            # and not the other is the "works over there" failure: the same
-            # question typed into the same box would find the tool or not,
-            # depending on which handler took it.
-            contributed = await agent_service._contributed_tool_schemas(db, user.id)
-            tool_calls = await agent_service._plan_tool_calls(
-                message, history, user_settings, contributed=contributed
-            )
-
-            # Send planning result
-            await websocket.send_json(
-                {
-                    "type": "planning",
-                    "message": f"Found {len(tool_calls)} action(s) to perform",
-                    "tool_count": len(tool_calls),
-                }
-            )
-
-            # Step 2: Execute tools with streaming
-            tool_results = []
-            requires_user_action = False
-            action_type = None
-
-            for tool_call in tool_calls:
-                # Notify tool start
-                await websocket.send_json(
-                    {
-                        "type": "tool_start",
-                        "tool": {
-                            "id": tool_call.id,
-                            "tool_name": tool_call.tool_name,
-                            "tool_input": tool_call.tool_input,
-                            "status": "pending",
-                        },
-                    }
-                )
-
-                # Small delay to allow UI to update
-                await asyncio.sleep(0.1)
-
-                # Send running status
-                await websocket.send_json(
-                    {
-                        "type": "tool_progress",
-                        "tool_id": tool_call.id,
-                        "status": "running",
-                    }
-                )
-
-                try:
-                    # Execute the tool
-                    result = await agent_service._execute_tool(tool_call, user.id, db)
-                    tool_results.append(result)
-
-                    # Check for user action requirements
-                    if (
-                        result.tool_name == "request_file_upload"
-                        and result.status == "completed"
-                    ):
-                        requires_user_action = True
-                        action_type = "upload_file"
-
-                    # Send tool completion
-                    await websocket.send_json(
-                        {
-                            "type": "tool_complete",
-                            "tool": {
-                                "id": result.id,
-                                "tool_name": result.tool_name,
-                                "tool_input": result.tool_input,
-                                "tool_output": result.tool_output,
-                                "status": result.status,
-                                "execution_time_ms": result.execution_time_ms,
-                            },
-                        }
-                    )
-
-                except Exception as e:
-                    logger.error(f"Tool execution error: {e}")
-                    tool_call.status = "failed"
-                    tool_call.error = str(e)
-                    tool_results.append(tool_call)
-
-                    await websocket.send_json(
-                        {"type": "tool_error", "tool_id": tool_call.id, "error": str(e)}
-                    )
-
-            # Step 3: Generate response
-            await websocket.send_json(
-                {"type": "generating", "message": "Generating response..."}
-            )
-
-            response_content = await agent_service._generate_response(
-                message, tool_results, history, user_settings
-            )
-
-            # Create response message
-            response_message = AgentMessage(
-                role="assistant",
-                content=response_content,
-                tool_calls=tool_results if tool_results else None,
-                created_at=datetime.utcnow(),
-            )
+            response_message = response.message
+            tool_results = response.tool_results or []
+            requires_user_action = bool(response.requires_user_action)
+            action_type = response.action_type
+            routing = response.routing_info
 
             # Send final response
             await websocket.send_json(
@@ -1871,7 +1809,7 @@ async def _process_message_with_streaming(
                                 "error": tc.error,
                                 "execution_time_ms": tc.execution_time_ms,
                             }
-                            for tc in (tool_results or [])
+                            for tc in tool_results
                         ]
                         if tool_results
                         else None,
@@ -1884,12 +1822,25 @@ async def _process_message_with_streaming(
                             "status": tc.status,
                             "execution_time_ms": tc.execution_time_ms,
                         }
-                        for tc in (tool_results or [])
+                        for tc in tool_results
                     ]
                     if tool_results
                     else None,
                     "requires_user_action": requires_user_action,
                     "action_type": action_type,
+                    # The client already reads this; the old handler never
+                    # sent it, because it never routed.
+                    "routing_info": (
+                        {
+                            "agent_id": str(routing.agent_id),
+                            "agent_name": routing.agent_name,
+                            "agent_display_name": routing.agent_display_name,
+                            "routing_reason": routing.routing_reason,
+                            "handoff_from": routing.handoff_from,
+                        }
+                        if routing
+                        else None
+                    ),
                 }
             )
 

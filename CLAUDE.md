@@ -377,6 +377,16 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   every planning prompt, and 180 of them came back as "Unknown tool". The menu
   is asked of the registry rather than listed, so a provider that starts
   answering in chat is offered there without anyone remembering to say so.
+  **There is one chat turn** (`AgentService.process_message`). The streaming
+  socket the chat widget uses had its own planner and its own responder, so
+  the chat window had no agent routing, no whitelists, no memory and no tool
+  rounds while `POST /agent/chat` had all four — every fix made to one had to
+  be made twice or it reached the endpoint and not the window. The duplicates
+  are deleted; the socket handler calls `process_message` with an `on_event`
+  sink and forwards what it reports (`planning`, `tool_start`,
+  `tool_progress`, `tool_complete`/`tool_error`, `generating`). A sink that
+  fails is ignored: progress is a courtesy. The widget now sends its
+  conversation id, which memory and skill working directories are keyed on.
   **A chat turn plans in rounds** (`AgentService._run_tool_rounds`). It used
   to plan every call before any result existed, which cannot do anything whose
   second step depends on the first: asked to use a sandbox skill, chat planned

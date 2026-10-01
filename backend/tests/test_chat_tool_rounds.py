@@ -263,3 +263,188 @@ async def test_the_answer_may_not_describe_a_run_that_did_not_happen(monkeypatch
     )
     assert "No tools were executed." in seen["query"]
     assert 'Never describe what it "would" or "should" have' in seen["query"]
+
+
+# ------------------------------------------------------ watching a turn happen
+
+
+async def test_a_watcher_is_told_each_step_in_order():
+    scripted = Scripted(
+        [
+            [call("load_sandbox_skill", skill="x")],
+            [call("run_sandbox_skill", skill="x", command="make")],
+            [],
+        ]
+    )
+    events = []
+
+    async def watch(event):
+        events.append(event)
+
+    await scripted.service._run_tool_rounds(
+        message="do it",
+        history=[],
+        agent=agent(),
+        memory_context="",
+        user_settings=None,
+        contributed=None,
+        user_id=uuid4(),
+        db=None,
+        conversation_id=None,
+        on_event=watch,
+    )
+    assert [e["type"] for e in events] == [
+        "planning",
+        "tool_start",
+        "tool_progress",
+        "tool_complete",
+        "planning",
+        "tool_start",
+        "tool_progress",
+        "tool_complete",
+    ]
+    assert [e.get("round") for e in events if e["type"] == "planning"] == [1, 2]
+    assert events[3]["tool"]["tool_name"] == "load_sandbox_skill"
+    assert events[3]["tool"]["tool_output"] == {"ok": "load_sandbox_skill"}
+
+
+async def test_a_turn_with_no_tools_still_says_it_planned():
+    scripted = Scripted([[]])
+    events = []
+
+    async def watch(event):
+        events.append(event)
+
+    await scripted.service._run_tool_rounds(
+        message="hello",
+        history=[],
+        agent=agent(),
+        memory_context="",
+        user_settings=None,
+        contributed=None,
+        user_id=uuid4(),
+        db=None,
+        conversation_id=None,
+        on_event=watch,
+    )
+    assert [(e["type"], e["tool_count"]) for e in events] == [("planning", 0)]
+
+
+async def test_a_failed_tool_is_reported_as_an_error_not_a_completion():
+    scripted = Scripted(
+        [[call("search_documents")], []], statuses={"search_documents": "failed"}
+    )
+    events = []
+
+    async def watch(event):
+        events.append(event)
+
+    await scripted.service._run_tool_rounds(
+        message="x",
+        history=[],
+        agent=agent(),
+        memory_context="",
+        user_settings=None,
+        contributed=None,
+        user_id=uuid4(),
+        db=None,
+        conversation_id=None,
+        on_event=watch,
+    )
+    assert "tool_error" in [e["type"] for e in events]
+    assert "tool_complete" not in [e["type"] for e in events]
+
+
+async def test_a_watcher_that_breaks_does_not_break_the_turn():
+    """Progress is a courtesy; a socket that has gone away must not cost the
+    answer."""
+    scripted = Scripted([[call("search_documents")], []])
+
+    async def broken(_event):
+        raise RuntimeError("socket closed")
+
+    results, _, _ = await scripted.service._run_tool_rounds(
+        message="x",
+        history=[],
+        agent=agent(),
+        memory_context="",
+        user_settings=None,
+        contributed=None,
+        user_id=uuid4(),
+        db=None,
+        conversation_id=None,
+        on_event=broken,
+    )
+    assert [r.tool_name for r in results] == ["search_documents"]
+
+
+class _Socket:
+    def __init__(self):
+        self.sent = []
+
+    async def send_json(self, payload):
+        self.sent.append(payload)
+
+
+async def test_the_chat_window_gets_routing_and_rounds(
+    monkeypatch, db_session, test_user
+):
+    """The streaming handler is what the chat widget uses. It must hand the
+    turn to the shared path and pass on what that path reports -- including
+    which agent answered, which the old handler could not say because it never
+    routed."""
+    from datetime import datetime
+
+    from app.api.endpoints import agent as agent_endpoints
+    from app.schemas.agent import AgentChatResponse, AgentMessage, AgentRoutingInfo
+
+    seen = {}
+    done = call("list_sandbox_skills")
+    done.status = "completed"
+    done.tool_output = {"data": {"skills": []}}
+
+    async def fake_process_message(**kwargs):
+        seen.update(kwargs)
+        await kwargs["on_event"]({"type": "planning", "tool_count": 1, "message": "m"})
+        return AgentChatResponse(
+            message=AgentMessage(
+                role="assistant", content="none active", created_at=datetime.utcnow()
+            ),
+            tool_results=[done],
+            requires_user_action=False,
+            routing_info=AgentRoutingInfo(
+                agent_id=uuid4(),
+                agent_name="compiler_optimization_expert",
+                agent_display_name="Compiler Expert",
+                routing_reason="Matched capabilities: code_analysis",
+            ),
+        )
+
+    class _Session:
+        async def __aenter__(self):
+            return db_session
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(
+        agent_endpoints.agent_service, "process_message", fake_process_message
+    )
+    monkeypatch.setattr(agent_endpoints, "AsyncSessionLocal", lambda: _Session())
+
+    socket = _Socket()
+    conversation = uuid4()
+    await agent_endpoints._process_message_with_streaming(
+        websocket=socket,
+        message="which skills do I have?",
+        conversation_history=[{"role": "user", "content": "hi"}],
+        user=test_user,
+        conversation_id=conversation,
+    )
+
+    assert seen["conversation_id"] == conversation and seen["user_id"] == test_user.id
+    assert [m["type"] for m in socket.sent] == ["thinking", "planning", "response"]
+    final = socket.sent[-1]
+    assert final["message"]["content"] == "none active"
+    assert final["routing_info"]["agent_name"] == "compiler_optimization_expert"
+    assert final["tool_results"][0]["tool_name"] == "list_sandbox_skills"

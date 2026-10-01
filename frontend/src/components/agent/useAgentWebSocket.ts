@@ -603,6 +603,17 @@ export function useAgentWebSocket(): UseAgentWebSocketReturn {
     }
 
     // Ensure connection
+    // Which conversation this turn belongs to. The server keys memory and a
+    // sandbox skill's working directory on it, so without it "build it" and
+    // "now measure it" two messages apart would not find the same files.
+    const conversationFields = () =>
+      conversationIdRef.current
+        ? {
+            conversation_id: conversationIdRef.current,
+            turn_number: turnNumberRef.current
+          }
+        : {};
+
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       connect();
       // Wait a bit for connection
@@ -616,7 +627,8 @@ export function useAgentWebSocket(): UseAgentWebSocketReturn {
           wsRef.current.send(JSON.stringify({
             type: 'message',
             content: content,
-            conversation_history: history
+            conversation_history: history,
+            ...conversationFields()
           }));
         } else {
           setIsLoading(false);
@@ -636,7 +648,8 @@ export function useAgentWebSocket(): UseAgentWebSocketReturn {
     wsRef.current.send(JSON.stringify({
       type: 'message',
       content: content,
-      conversation_history: history
+      conversation_history: history,
+      ...conversationFields()
     }));
   }, [messages, connect]);
 

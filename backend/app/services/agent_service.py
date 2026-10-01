@@ -14,7 +14,7 @@ import hashlib
 import json
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
 from uuid import UUID, uuid4
 
 from fastapi.encoders import jsonable_encoder
@@ -50,16 +50,16 @@ from app.services.agent_tool_dispatch import (
     build_agent_service_workflow_provider,
     build_autonomous_sandbox_skill_provider,
 )
-from app.services.agent_tools import (
-    AGENT_TOOLS,
-    get_tools_description,
-    validate_tool_params,
-)
+from app.services.agent_tools import AGENT_TOOLS, validate_tool_params
 from app.services.arxiv_search_service import ArxivSearchService
 from app.services.document_service import DocumentService
 from app.services.llm_service import LLMService, UserLLMSettings
 from app.services.memory_service import MemoryService
 from app.services.vector_store import VectorStore, vector_store_service
+
+#: Receives progress events during a chat turn: planning, each tool starting
+#: and finishing, and the answer being written.
+ChatEventSink = Callable[[Dict[str, Any]], Awaitable[None]]
 
 
 class AgentService:
@@ -403,6 +403,7 @@ class AgentService:
         conversation_id: Optional[UUID] = None,
         turn_number: int = 0,
         agent_id: Optional[UUID] = None,
+        on_event: Optional[ChatEventSink] = None,
     ) -> AgentChatResponse:
         """
         Process user message through multi-agent loop:
@@ -413,6 +414,13 @@ class AgentService:
         5. Generate response with tool results
         6. Check for agent handoff
         7. Extract memories (async, non-blocking)
+
+        This is the only way a chat turn is processed. The streaming socket
+        used to have its own planner and its own responder, which is how the
+        chat window ended up without agent routing, whitelists, memory or
+        tool rounds while the REST endpoint had all four: the same sentence
+        behaved differently depending on which handler took it. A caller that
+        wants to watch passes ``on_event`` and is told as each step happens.
         """
         history = conversation_history or []
 
@@ -519,6 +527,11 @@ class AgentService:
                 user_id=user_id,
                 db=db,
                 conversation_id=conversation_id,
+                on_event=on_event,
+            )
+
+            await self._emit(
+                on_event, {"type": "generating", "message": "Generating response..."}
             )
 
             # Step 6: Observe & Respond - Generate final response
@@ -644,6 +657,22 @@ class AgentService:
     PRIOR_RESULTS_TOTAL_CHARS = 14000
 
     @staticmethod
+    async def _emit(on_event: Optional["ChatEventSink"], event: Dict[str, Any]) -> None:
+        """Tell whoever is watching what just happened.
+
+        Progress is a courtesy: a watcher that has gone away, or one whose
+        send fails, must not take the turn down with it. The answer is still
+        returned, and a caller that cannot deliver *that* finds out when it
+        tries.
+        """
+        if on_event is None:
+            return
+        try:
+            await on_event(event)
+        except Exception as exc:
+            logger.debug(f"Chat progress event not delivered: {exc}")
+
+    @staticmethod
     def _call_key(call: AgentToolCall) -> str:
         try:
             arguments = json.dumps(call.tool_input, sort_keys=True, default=str)
@@ -687,6 +716,7 @@ class AgentService:
         user_id: UUID,
         db: AsyncSession,
         conversation_id: Optional[UUID],
+        on_event: Optional[ChatEventSink] = None,
     ) -> tuple[List[AgentToolCall], bool, Optional[str]]:
         """Plan and run tool calls until the request can be answered.
 
@@ -723,6 +753,16 @@ class AgentService:
                 prior_results=tool_results if round_number else None,
             )
             fresh = [call for call in planned if self._call_key(call) not in made]
+            if fresh or round_number == 0:
+                await self._emit(
+                    on_event,
+                    {
+                        "type": "planning",
+                        "message": f"Found {len(fresh)} action(s) to perform",
+                        "tool_count": len(fresh),
+                        "round": round_number + 1,
+                    },
+                )
             if not fresh:
                 break
 
@@ -741,7 +781,28 @@ class AgentService:
                     call.status = "failed"
                     call.error = f"Tool '{call.tool_name}' not available for this agent"
                     tool_results.append(call)
+                    await self._emit(
+                        on_event,
+                        {"type": "tool_error", "tool_id": call.id, "error": call.error},
+                    )
                     continue
+
+                await self._emit(
+                    on_event,
+                    {
+                        "type": "tool_start",
+                        "tool": {
+                            "id": call.id,
+                            "tool_name": call.tool_name,
+                            "tool_input": call.tool_input,
+                            "status": "pending",
+                        },
+                    },
+                )
+                await self._emit(
+                    on_event,
+                    {"type": "tool_progress", "tool_id": call.id, "status": "running"},
+                )
 
                 result = await self._execute_tool(
                     call,
@@ -751,6 +812,31 @@ class AgentService:
                     agent_definition_id=agent.id,
                 )
                 tool_results.append(result)
+
+                if result.status == "failed":
+                    await self._emit(
+                        on_event,
+                        {
+                            "type": "tool_error",
+                            "tool_id": result.id,
+                            "error": result.error or "The tool failed.",
+                        },
+                    )
+                else:
+                    await self._emit(
+                        on_event,
+                        {
+                            "type": "tool_complete",
+                            "tool": {
+                                "id": result.id,
+                                "tool_name": result.tool_name,
+                                "tool_input": result.tool_input,
+                                "tool_output": result.tool_output,
+                                "status": result.status,
+                                "execution_time_ms": result.execution_time_ms,
+                            },
+                        },
+                    )
 
                 if result.status == "requires_approval":
                     waiting_on_person = True
@@ -943,69 +1029,6 @@ Your response:"""
         except Exception as e:
             logger.error(f"Error generating response for agent '{agent.name}': {e}")
             return "I apologize, but I encountered an error generating a response. Please try again."
-
-    async def _plan_tool_calls(
-        self,
-        message: str,
-        history: List[AgentMessage],
-        user_settings: Optional[UserLLMSettings] = None,
-        contributed: Optional[Sequence[Dict[str, Any]]] = None,
-    ) -> List[AgentToolCall]:
-        """Use LLM to determine which tools to call based on user message."""
-
-        # Build the planning prompt
-        tools_desc = get_tools_description(contributed, tools=self._chat_tools())
-
-        # Build conversation context
-        context_messages = []
-        for msg in history[-5:]:  # Last 5 messages for context
-            context_messages.append(f"{msg.role.upper()}: {msg.content[:200]}")
-        context_str = (
-            "\n".join(context_messages) if context_messages else "No previous context."
-        )
-
-        planning_prompt = f"""You are an AI assistant that helps users manage documents in a knowledge base.
-Based on the user's message, decide which tools to call to fulfill their request.
-
-Available tools:
-{tools_desc}
-
-Recent conversation:
-{context_str}
-
-User's current message: {message}
-
-Respond ONLY with a JSON array of tool calls. Each tool call should have:
-- "tool_name": name of the tool to call
-- "tool_input": object with the required parameters
-
-If no tools are needed (e.g., just a greeting or general question), respond with an empty array: []
-
-Examples:
-- User: "Find documents about Python" -> [{{"tool_name": "search_documents", "tool_input": {{"query": "Python", "limit": 5}}}}]
-- User: "What is document abc123?" -> [{{"tool_name": "get_document_details", "tool_input": {{"document_id": "abc123"}}}}]
-- User: "Hello!" -> []
-- User: "Delete document xyz789" -> [{{"tool_name": "delete_document", "tool_input": {{"document_id": "xyz789", "confirm": false}}}}]
-- User: "I want to upload a file" -> [{{"tool_name": "request_file_upload", "tool_input": {{}}}}]
-
-Your response (JSON array only):"""
-
-        try:
-            response = await self.llm_service.generate_response(
-                query=planning_prompt,
-                temperature=0.1,  # Low temperature for consistent planning
-                max_tokens=500,
-                user_settings=user_settings,
-                task_type="chat",
-            )
-
-            # Parse the JSON response
-            tool_calls = self._parse_tool_calls(response)
-            return tool_calls
-
-        except Exception as e:
-            logger.error(f"Error planning tool calls: {e}")
-            return []
 
     def _parse_tool_calls(self, response: str) -> List[AgentToolCall]:
         """Parse LLM response to extract tool calls."""
@@ -2178,76 +2201,6 @@ Your response (JSON array only):"""
         except Exception as e:
             logger.error(f"Error searching documents by author: {e}")
             return {"error": f"Search failed: {str(e)}"}
-
-    async def _generate_response(
-        self,
-        user_message: str,
-        tool_results: List[AgentToolCall],
-        history: List[AgentMessage],
-        user_settings: Optional[UserLLMSettings] = None,
-    ) -> str:
-        """Generate final response based on tool results."""
-
-        # Build context from tool results
-        tool_context_parts = []
-        for result in tool_results:
-            if result.status == "completed":
-                output_str = json.dumps(result.tool_output, indent=2, default=str)
-                tool_context_parts.append(
-                    f"Tool '{result.tool_name}' result:\n{output_str}"
-                )
-            elif result.status == "failed":
-                tool_context_parts.append(
-                    f"Tool '{result.tool_name}' failed: {result.error}"
-                )
-
-        tool_context = (
-            "\n\n".join(tool_context_parts)
-            if tool_context_parts
-            else "No tools were executed."
-        )
-
-        # Build response prompt
-        response_prompt = f"""You are a helpful AI assistant for a document knowledge base.
-Based on the user's request and the tool execution results, provide a helpful response.
-
-User's request: {user_message}
-
-Tool execution results:
-{tool_context}
-
-Guidelines:
-- Summarize the results in a natural, conversational way
-- If search results are present, list the most relevant documents with their titles
-- If there were errors, explain what went wrong and suggest alternatives
-- If a confirmation is required (like for deletion), ask the user to confirm
-- Keep the response concise but informative
-- Use markdown formatting for lists and emphasis when appropriate
-
-Your response:"""
-
-        try:
-            response = await self.llm_service.generate_response(
-                query=response_prompt,
-                temperature=0.7,
-                max_tokens=800,
-                user_settings=user_settings,
-                task_type="chat",
-            )
-            return response.strip()
-
-        except Exception as e:
-            logger.error(f"Error generating agent response: {e}")
-            # Fallback to basic response
-            if tool_results:
-                completed = [r for r in tool_results if r.status == "completed"]
-                if completed:
-                    return f"I executed {len(completed)} tool(s). Please check the results above."
-            return "I processed your request. Please let me know if you need anything else."
-
-    # ========================
-    # New Tool Handlers
-    # ========================
 
     async def _tool_create_document_from_text(
         self, params: Dict[str, Any], user_id: UUID, db: AsyncSession

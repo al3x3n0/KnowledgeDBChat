@@ -6,15 +6,7 @@ import re
 from typing import Optional
 from uuid import UUID
 
-from fastapi import (
-    APIRouter,
-    Depends,
-    HTTPException,
-    Query,
-    WebSocket,
-    WebSocketDisconnect,
-    status,
-)
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, status
 from fastapi.responses import Response
 from loguru import logger
 from sqlalchemy import func, select
@@ -416,56 +408,19 @@ async def repo_report_progress(
     if await authorize_owner(websocket, job.user_id) is None:
         return
 
-    import redis.asyncio as redis
+    from app.utils.websocket_progress import TERMINAL_STATUSES, forward_progress
 
-    from app.core.config import settings
-
-    try:
-        # Subscribe to Redis channel for this job
-        redis_client = redis.from_url(settings.REDIS_URL)
-        pubsub = redis_client.pubsub()
-        channel = f"repo_report:{job_id}:progress"
-        await pubsub.subscribe(channel)
-
-        # Send initial status
-        await websocket.send_json(
-            {
-                "type": "progress",
-                "progress": job.progress,
-                "stage": job.current_stage or "pending",
-                "status": job.status,
-            }
-        )
-
-        # If already completed/failed, close immediately
-        if job.status in ("completed", "failed", "cancelled"):
-            await websocket.close()
-            return
-
-        # Listen for updates
-        async for message in pubsub.listen():
-            if message["type"] == "message":
-                import json
-
-                data = json.loads(message["data"])
-                await websocket.send_json(data)
-
-                # Close on completion
-                if data.get("status") in ("completed", "failed", "cancelled"):
-                    break
-
-        await pubsub.unsubscribe(channel)
-        await redis_client.close()
-
-    except WebSocketDisconnect:
-        logger.debug(f"WebSocket disconnected for repo report job {job_id}")
-    except Exception as e:
-        logger.error(f"WebSocket error for repo report job {job_id}: {e}")
-    finally:
-        try:
-            await websocket.close()
-        except Exception:
-            pass
+    await forward_progress(
+        websocket,
+        f"repo_report:{job_id}:progress",
+        initial={
+            "type": "progress",
+            "progress": job.progress,
+            "stage": job.current_stage or "pending",
+            "status": job.status,
+        },
+        already_finished=job.status in TERMINAL_STATUSES,
+    )
 
 
 # =============================================================================

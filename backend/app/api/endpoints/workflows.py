@@ -8,18 +8,10 @@ Provides:
 - WebSocket for real-time execution updates
 """
 
-import json
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import (
-    APIRouter,
-    Depends,
-    HTTPException,
-    Query,
-    WebSocket,
-    WebSocketDisconnect,
-)
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket
 from loguru import logger
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,7 +47,7 @@ from app.services.workflow_synthesis_service import WorkflowSynthesisService
 
 # Try to import redis for WebSocket pub/sub
 try:
-    import redis.asyncio as aioredis
+    import redis.asyncio  # noqa: F401 - only to learn whether it is installed
 
     REDIS_AVAILABLE = True
 except ImportError:
@@ -685,67 +677,30 @@ async def execution_stream(
         await websocket.close()
         return
 
-    try:
-        # Create Redis connection
-        from app.core.config import settings
-        from app.core.database import AsyncSessionLocal
+    from app.utils.websocket_progress import forward_progress
 
-        redis = await aioredis.from_url(
-            settings.REDIS_URL, encoding="utf-8", decode_responses=True
-        )
-
-        pubsub = redis.pubsub()
-        channel = f"workflow:{execution_id}"
-        await pubsub.subscribe(channel)
-
-        # Send initial status
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(
+    async with _Session() as _db:
+        execution = (
+            await _db.execute(
                 select(WorkflowExecution).where(WorkflowExecution.id == execution_id)
             )
-            execution = result.scalar_one_or_none()
+        ).scalar_one_or_none()
 
-        if execution:
-            await websocket.send_json(
-                {
-                    "type": "initial",
-                    "status": execution.status,
-                    "progress": execution.progress,
-                    "current_node_id": execution.current_node_id,
-                }
-            )
-
-        # Listen for updates
-        async for message in pubsub.listen():
-            if message["type"] == "message":
-                try:
-                    data = json.loads(message["data"])
-                    await websocket.send_json(data)
-
-                    # Close on completion or error
-                    if data.get("type") in ["complete", "error"]:
-                        break
-                except json.JSONDecodeError:
-                    pass
-
-    except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected for execution {execution_id}")
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-        try:
-            await websocket.send_json({"type": "error", "message": str(e)})
-        except Exception:
-            pass
-    finally:
-        try:
-            await pubsub.unsubscribe(channel)
-            await redis.close()
-        except Exception:
-            pass
-        try:
-            await websocket.close()
-        except Exception:
-            pass
+    await forward_progress(
+        websocket,
+        f"workflow:{execution_id}",
+        initial=(
+            {
+                "type": "initial",
+                "status": execution.status,
+                "progress": execution.progress,
+                "current_node_id": execution.current_node_id,
+            }
+            if execution
+            else None
+        ),
+        is_terminal=lambda m: m.get("type") in ("complete", "error"),
+    )
 
 
 # =============================================================================

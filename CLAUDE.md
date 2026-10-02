@@ -988,6 +988,21 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   stream about one user's job; a stranger gets 4004, not "forbidden"). This
   covers *whether* a route knows its caller, not whether it checks the row
   belongs to them.
+- **A job's progress reaches a socket through one loop**
+  (`utils/websocket_progress.forward_progress`). Five handlers each had a
+  copy, and each got a different part wrong under conditions a manual test
+  does not create: two released their Redis connection *after* the loop
+  rather than in a `finally`, so a client leaving or a job already finished
+  leaked one; three waited on `pubsub.listen()` alone and could not notice a
+  client leaving, so a socket on a job that never finishes held its handler
+  until restart; and the template stream polled the **blocking** Redis client
+  inside the event loop, stalling every other request for up to a second at a
+  time while anyone watched. The template stream also checked the token and
+  not the job's owner. A handler now decides who may watch and what the first
+  message says; the loop subscribes before sending it, forwards until a
+  terminal message, checks on the client between polls, and releases
+  everything on every exit. The agent-job stream (already built this way,
+  with injected edges) and the per-user notification feed keep their own.
 - **A setting must be read, or admitted inert.** `TRAINING_ENABLED` was the
   documented gate on training and nothing read it; the concurrency limit and
   two dataset limits beside it were the same. They are enforced now (the gate

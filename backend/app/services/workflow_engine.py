@@ -285,6 +285,7 @@ class WorkflowEngine:
                 logger.warning(f"Output key collisions detected: {collision_warnings}")
                 execution.context["_warnings"] = execution.context.get("_warnings", [])
                 execution.context["_warnings"].extend(collision_warnings)
+                self._context_changed(execution)
                 await self.db.commit()
 
             await self._raise_if_cancelled(execution)
@@ -342,6 +343,36 @@ class WorkflowEngine:
         await self.db.refresh(execution)
         if execution.status == "cancelled":
             raise WorkflowCancelledError("Cancelled by user")
+
+    def _context_changed(
+        self, execution: WorkflowExecution, context: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Store what a run has written to its context.
+
+        The column is plain JSON and the engine writes into a dict in place,
+        which SQLAlchemy cannot see. Worse, the dict it writes into stops
+        being the row's: the cancellation check refreshes the execution
+        between nodes, the row gets a new dict loaded from the database, and
+        the chain goes on writing to the one it captured at the start. Later
+        nodes read that same captured dict, so workflows ran correctly -- and
+        stored nothing: an execution finished with every node's output in
+        memory and only the initial context in the database.
+
+        A parallel branch works on its own copy, which is merged into the
+        parent when the branch ends; a branch's copy is not the execution's
+        context and is not stored as if it were.
+        """
+        from sqlalchemy.orm.attributes import flag_modified
+
+        if context is not None and context is not execution.context:
+            if id(context) in getattr(self, "_branch_contexts", ()):
+                return
+            # Diagnostics the engine wrote straight onto the row are kept.
+            for key, value in (execution.context or {}).items():
+                if str(key).startswith("_") and key not in context:
+                    context[key] = value
+            execution.context = context
+        flag_modified(execution, "context")
 
     def _detect_output_key_collisions(self, nodes: List[WorkflowNode]) -> List[str]:
         """
@@ -587,6 +618,7 @@ class WorkflowEngine:
             output_key = node.config.get("output_key", node.node_id)
             context[output_key] = self._trim_for_context(output)
             written_keys.add(output_key)
+            self._context_changed(execution, context)
 
             # Update node execution
             node_execution.status = "completed"
@@ -989,6 +1021,7 @@ class WorkflowEngine:
                 execution.context["_validation_warnings"][
                     node.node_id
                 ] = validation_errors
+                self._context_changed(execution)
 
             # Use validated (potentially coerced) inputs
             input_data = validated_inputs
@@ -1197,6 +1230,9 @@ class WorkflowEngine:
             try:
                 # Use isolated context per branch
                 branch_context = copy.deepcopy(context)
+                if not hasattr(self, "_branch_contexts"):
+                    self._branch_contexts = set()
+                self._branch_contexts.add(id(branch_context))
                 branch_written: Set[str] = set()
 
                 await self._execute_node_chain(

@@ -74,6 +74,7 @@ class MemoryService:
                         tags=memory_data.tags,
                     ),
                     db,
+                    user_id=user_id,
                 )
 
             # Create new memory
@@ -285,12 +286,25 @@ class MemoryService:
             raise
 
     async def update_memory(
-        self, memory_id: UUID, memory_update: MemoryUpdate, db: AsyncSession
+        self,
+        memory_id: UUID,
+        memory_update: MemoryUpdate,
+        db: AsyncSession,
+        *,
+        user_id: UUID,
     ) -> MemoryResponse:
-        """Update an existing memory."""
+        """Update one of `user_id`'s memories.
+
+        The owner is required and part of the lookup. It used to be absent,
+        so `PUT /memory/{id}` let any signed-in user rewrite any memory whose
+        id they had; get and delete beside it were already scoped.
+        """
         try:
             result = await db.execute(
-                select(ConversationMemory).where(ConversationMemory.id == memory_id)
+                select(ConversationMemory).where(
+                    ConversationMemory.id == memory_id,
+                    ConversationMemory.user_id == user_id,
+                )
             )
             memory = result.scalar_one_or_none()
 
@@ -399,7 +413,10 @@ class MemoryService:
         """Generate a summary of user's memories."""
         try:
             # Get memories based on request
-            memories = await self.get_memories(
+            # get_memories returns (memories, total). Taken as one value it
+            # was a tuple that is never empty and whose first item is a list,
+            # so every summary failed on `list.memory_type`.
+            memories, _total = await self.get_memories(
                 user_id=user_id,
                 session_id=summary_request.session_id,
                 memory_types=summary_request.include_types,

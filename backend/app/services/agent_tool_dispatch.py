@@ -3821,17 +3821,54 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
         state["review_requests"] = reviews[-20:]
 
         if review_type == "human":
-            state["approval_checkpoint_pending"] = {
+            # This does not pause the run, and used to say it had: it set
+            # `approval_checkpoint_pending`, which the executor clears before
+            # its next action, and answered "paused_for_human_review". The
+            # request is recorded and the owner is told; the run goes on.
+            request = {
                 "type": "review_request",
                 "content_to_review": content,
                 "review_criteria": criteria,
                 "requested_at": datetime.utcnow().isoformat(),
             }
+            notified = False
+            try:
+                from app.services.notification_service import NotificationService
+
+                async with ctx.db.begin_nested():
+                    notification = await NotificationService().create_notification(
+                        db=ctx.db,
+                        user_id=job.user_id,
+                        notification_type="agent_job_alert",
+                        title=f"Review requested by {job.name or 'an agent run'}"[:200],
+                        message=content[:2000],
+                        priority="high",
+                        related_entity_type="agent_job",
+                        related_entity_id=job.id,
+                        data={
+                            "source_job_id": str(job.id),
+                            "review_criteria": criteria,
+                        },
+                        commit=False,
+                    )
+                notified = notification is not None
+            except Exception:
+                notified = False
             return {
                 "success": True,
                 "data": {
-                    "action": "paused_for_human_review",
-                    "checkpoint": state["approval_checkpoint_pending"],
+                    "action": "human_review_requested",
+                    "paused": False,
+                    "owner_notified": notified,
+                    "request": request,
+                    "note": (
+                        "The request is recorded and the job's owner has been "
+                        "notified. The run is NOT paused: continue with work "
+                        "that does not depend on the review."
+                        if notified
+                        else "The request is recorded but the owner could not "
+                        "be notified, and the run is NOT paused."
+                    ),
                 },
             }
 

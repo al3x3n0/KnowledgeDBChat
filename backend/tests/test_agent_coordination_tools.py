@@ -103,6 +103,15 @@ def queued(monkeypatch):
     return calls
 
 
+@pytest.fixture(autouse=True)
+def no_push(monkeypatch):
+    """A human review notifies the owner; the push to Redis is the one edge
+    of that which leaves the process."""
+    from app.tasks import job_support
+
+    monkeypatch.setattr(job_support, "publish_sync", lambda *_a, **_k: None)
+
+
 @pytest.fixture
 def no_sleep(monkeypatch):
     """Polling waits are counted, not waited for."""
@@ -905,9 +914,15 @@ async def test_a_sibling_can_read_the_findings_shared_with_it(db_session, test_u
 # ---------------------------------------------------------------------------
 
 
-async def test_a_human_review_leaves_a_checkpoint_and_spawns_nothing(
-    db_session, test_user, queued
+async def test_a_human_review_notifies_the_owner_and_says_the_run_goes_on(
+    db_session, test_user, queued, monkeypatch
 ):
+    """It used to set a flag the executor clears before its next action and
+    answer "paused_for_human_review". Nothing paused and nobody was told."""
+    from app.models.notification import Notification
+    from app.tasks import job_support
+
+    monkeypatch.setattr(job_support, "publish_sync", lambda *_a, **_k: None)
     caller = await _job(db_session, test_user, iteration=4)
     state = {}
 
@@ -924,12 +939,20 @@ async def test_a_human_review_leaves_a_checkpoint_and_spawns_nothing(
     )
 
     assert result.get("success") is True, result
-    assert result["data"]["action"] == "paused_for_human_review"
-    checkpoint = state["approval_checkpoint_pending"]
-    assert checkpoint["type"] == "review_request"
-    assert checkpoint["content_to_review"] == "Draft: ISB is inert on L2"
-    assert checkpoint["review_criteria"] == ["accuracy", "completeness"]
-    assert result["data"]["checkpoint"] == checkpoint
+    data = result["data"]
+    assert data["action"] == "human_review_requested"
+    assert data["paused"] is False and "NOT paused" in data["note"]
+    assert data["owner_notified"] is True
+    assert data["request"]["content_to_review"] == "Draft: ISB is inert on L2"
+    assert data["request"]["review_criteria"] == ["accuracy", "completeness"]
+    # No claim of a pending approval the executor would only clear.
+    assert "approval_checkpoint_pending" not in state
+
+    told = (await db_session.execute(select(Notification))).scalars().all()
+    assert [n.user_id for n in told] == [test_user.id]
+    assert "ISB is inert" in told[0].message
+    assert told[0].related_entity_id == caller.id
+
     assert state["review_requests"][0]["type"] == "human"
     assert state["review_requests"][0]["iteration"] == 4
     assert await _other_rows(db_session, caller) == []
@@ -1055,7 +1078,7 @@ async def test_a_human_review_is_still_available_at_the_maximum_depth(
     )
 
     assert result.get("success") is True, result
-    assert state["approval_checkpoint_pending"]["content_to_review"] == "Deep draft"
+    assert result["data"]["request"]["content_to_review"] == "Deep draft"
 
 
 async def test_a_peer_review_counts_against_the_parents_child_budget(
@@ -1099,7 +1122,7 @@ async def test_review_keeps_only_the_latest_twenty_requests_and_ten_criteria(
     state = {}
 
     for index in range(22):
-        await _call(
+        result = await _call(
             "request_review",
             db_session,
             caller,
@@ -1114,7 +1137,7 @@ async def test_review_keeps_only_the_latest_twenty_requests_and_ten_criteria(
     assert len(state["review_requests"]) == 20
     assert state["review_requests"][0]["content"] == "draft 2"
     assert len(state["review_requests"][-1]["criteria"]) == 10
-    assert len(state["approval_checkpoint_pending"]["review_criteria"]) == 10
+    assert len(result["data"]["request"]["review_criteria"]) == 10
 
 
 async def test_a_failed_peer_review_spawn_leaves_the_session_usable(

@@ -211,7 +211,10 @@ async def update_memory(
     """
     try:
         memory = await memory_service.update_memory(
-            memory_id=memory_id, memory_update=memory_update, db=db
+            memory_id=memory_id,
+            memory_update=memory_update,
+            db=db,
+            user_id=current_user.id,
         )
         return memory
     except ValueError as e:

@@ -271,7 +271,7 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="request_review",
-        description="Ask another agent job or a human operator to review the current work. Creates a review checkpoint.",
+        description="Ask for a review of the current work. `peer_agent` starts a reviewer job; `human` notifies the job's owner. Neither pauses this run.",
         parameters={
             "type": "object",
             "properties": {

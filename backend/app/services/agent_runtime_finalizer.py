@@ -569,7 +569,26 @@ async def finalize_job(
         }
     ]
 
+    # What other jobs sent this one. It lives in `results`, written by their
+    # sessions, and replacing `results` wholesale threw it away at the moment
+    # the run ended. Read from the database: the copy in memory predates
+    # anything delivered while the run was going.
+    delivered: Dict[str, Any] = {}
+    try:
+        stored_results = (
+            await db.execute(select(AgentJob.results).where(AgentJob.id == job.id))
+        ).scalar_one_or_none()
+        if isinstance(stored_results, dict):
+            delivered = {
+                key: stored_results[key]
+                for key in ("agent_messages", "shared_findings")
+                if stored_results.get(key)
+            }
+    except Exception:
+        delivered = {}
+
     job.results = {
+        **delivered,
         "findings_count": len(state.get("findings", [])),
         "actions_count": len(state.get("actions_taken", [])),
         "actions": autonomous_rnd_trajectory_adapter.compact_action_ledger(

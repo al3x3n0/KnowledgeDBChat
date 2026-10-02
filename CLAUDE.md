@@ -1160,6 +1160,21 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   drop it), derives its slides and its LaTeX from the same parsed items as the
   DOCX and PDF (`services/markdown_latex.py`), and honours
   `LATEX_COMPILER_ENABLED`, which that branch had never consulted.
+  Following up what those reads had only suspected found four more.
+  **No workflow execution stored its node outputs**: the engine writes into
+  the dict it captured from `execution.context` at the start, and the
+  cancellation check refreshes the row between nodes, giving it a new dict;
+  later nodes read the captured one, so workflows ran correctly and persisted
+  only their initial context (`WorkflowEngine._context_changed` now stores
+  what the run wrote; a parallel branch's copy is left alone until merged).
+  `MemoryService.update_memory` took no owner, so `PUT /memory/{id}` rewrote
+  anyone's memory. `generate_memory_summary` treated `(memories, total)` as
+  the list. The finaliser replaced `job.results` wholesale and with it the
+  messages and shared findings other jobs had delivered. And
+  `request_review` with `human` answered "paused" after setting a flag the
+  executor clears before its next action: it notifies the owner now and says
+  the run continues, because a real pause belongs in the executor's action
+  path and is not built.
 - **A setting must be read, or admitted inert.** `TRAINING_ENABLED` was the
   documented gate on training and nothing read it; the concurrency limit and
   two dataset limits beside it were the same. They are enforced now (the gate

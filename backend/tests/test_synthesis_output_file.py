@@ -54,7 +54,7 @@ def _job(output_format):
 
 @pytest.mark.parametrize(
     "output_format, magic",
-    [("docx", b"PK"), ("pdf", b"%PDF")],
+    [("docx", b"PK"), ("pdf", b"%PDF"), ("pptx", b"PK")],
 )
 async def test_a_file_is_built_and_stored(uploads, output_format, magic):
     job = _job(output_format)
@@ -81,3 +81,27 @@ def test_slides_fit_the_outline_the_builder_takes():
             subtitle=slide.get("subtitle"),
             content=slide.get("bullets") or [],
         )
+
+
+async def test_the_presentation_holds_the_sections_as_slides(uploads):
+    """Built with the real library and opened again: a title slide and one
+    slide per section, with the section's bullets on it."""
+    import io
+
+    pptx = pytest.importorskip("pptx")
+    job = _job("pptx")
+
+    result = await synthesis_service._generate_output_file(job, CONTENT, [])
+
+    data, _mime = uploads[result["file_path"]]
+    deck = pptx.Presentation(io.BytesIO(data))
+    text = [
+        "\n".join(
+            shape.text_frame.text for shape in slide.shapes if shape.has_text_frame
+        )
+        for slide in deck.slides
+    ]
+    assert len(text) == 3
+    assert "Cache study" in text[0]
+    assert "Caches" in text[1] and "The L2 prefetcher helps" in text[1]
+    assert "Next" in text[2] and "quiet host" in text[2]

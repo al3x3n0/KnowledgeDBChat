@@ -496,6 +496,30 @@ class TestSummarizeFindings:
         kept = [f["id"] for f in state["findings"] if f.get("category") != "synthesis"]
         assert kept == ["f2"]
 
+    async def test_consolidating_keeps_the_evidence_a_contract_counts(self):
+        """A finding with a `type` is evidence. Goal contracts count them in
+        this same list, so folding them into one untyped synthesis let a run
+        un-satisfy a contract it had already met."""
+        executor = _executor("One measurement, two remarks.")
+        measured = {
+            "id": "m1",
+            "type": "dynamic_profile",
+            "title": "Profile of kernel A",
+            "content": "62% of cycles in the inner loop",
+            "category": "result",
+        }
+        state = _state(findings=[measured] + _findings())
+
+        result = await _run(
+            "summarize_findings", {"consolidate": True}, state, executor
+        )
+
+        assert result["data"]["findings_summarized"] == 4
+        assert result["data"]["findings_folded"] == 3
+        assert result["data"]["typed_findings_kept"] == 1
+        assert state["findings"] == [measured]
+        assert [f["category"] for f in result["findings"]] == ["synthesis"]
+
     async def test_the_consolidated_finding_is_recorded_once(self):
         executor = _executor("Two themes emerge.")
         state = _state(findings=_findings())

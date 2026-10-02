@@ -3573,6 +3573,10 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
             delegated_ids.append(str(child.id))
             state["delegated_subtask_ids"] = delegated_ids
 
+            # Committed before it is queued: a worker in another process
+            # cannot see a row that has only been flushed, and one that
+            # picked the task up first found no job to run.
+            await ctx.db.commit()
             execute_agent_job_task.delay(str(child.id), str(job.user_id))
 
             result = {
@@ -3913,6 +3917,10 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
             delegated_ids.append(str(child.id))
             state["delegated_subtask_ids"] = delegated_ids
 
+            # Committed before it is queued: a worker in another process
+            # cannot see a row that has only been flushed, and one that
+            # picked the task up first found no job to run.
+            await ctx.db.commit()
             execute_agent_job_task.delay(str(child.id), str(job.user_id))
 
             try:
@@ -8612,12 +8620,17 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                 },
             }
             if consolidate:
-                if cat_filter:
-                    state["findings"] = [
-                        f for f in findings if f.get("category") != cat_filter
-                    ]
-                else:
-                    state["findings"] = []
+                # Only narrative findings are folded into the synthesis. A
+                # finding with a `type` is evidence: goal contracts count
+                # them, bounds are checked on them and later tools cite
+                # them. Replacing them with one untyped summary let a run
+                # un-satisfy a contract it had already met.
+                folded = [f for f in target if not f.get("type")]
+                kept_typed = len(target) - len(folded)
+                folded_ids = {id(f) for f in folded}
+                state["findings"] = [f for f in findings if id(f) not in folded_ids]
+                out["data"]["findings_folded"] = len(folded)
+                out["data"]["typed_findings_kept"] = kept_typed
                 consolidated = {
                     "id": str(uuid.uuid4()),
                     "title": f"Synthesis: {cat_filter or 'all findings'} ({len(target)} items)",
@@ -8758,6 +8771,10 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
                 ctx.db.add(child)
                 await ctx.db.flush()
             state.setdefault("delegated_subtask_ids", []).append(str(child.id))
+            # Committed before it is queued: a worker in another process
+            # cannot see a row that has only been flushed, and one that
+            # picked the task up first found no job to run.
+            await ctx.db.commit()
             execute_agent_job_task.delay(str(child.id), str(job.user_id))
             return {
                 "success": True,

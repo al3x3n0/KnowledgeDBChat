@@ -1175,6 +1175,12 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   executor clears before its next action: it notifies the owner now and says
   the run continues, because a real pause belongs in the executor's action
   path and is not built.
+  `summarize_findings` with `consolidate` folds only **untyped** findings: a
+  finding with a `type` is evidence a goal contract counts in that same list,
+  and replacing them all with one synthesis let a run un-satisfy a contract it
+  had met. A child job is **committed before it is queued** — delegation,
+  peer review and handoff flushed the row and called `.delay`, and a worker
+  in another process cannot see a row that has only been flushed.
 - **A setting must be read, or admitted inert.** `TRAINING_ENABLED` was the
   documented gate on training and nothing read it; the concurrency limit and
   two dataset limits beside it were the same. They are enforced now (the gate
@@ -1254,7 +1260,7 @@ All API endpoints are prefixed with `/api/v1/`. Endpoint groups by domain (see `
 ## Testing Patterns
 
 - Backend tests use **in-memory SQLite** with `aiosqlite` (configured in `tests/conftest.py`)
-- Heavy optional dependencies (pptx, sentence_transformers, bs4, croniter, mammoth, jsonpath_ng) are stubbed in conftest — sentence_transformers is no longer installed at all, so that stub is now the only thing that module means in tests — don't import them at module top-level in code paths tests touch without checking the stubs
+- Heavy optional dependencies (sentence_transformers, bs4, croniter, mammoth, jsonpath_ng) are stubbed in conftest; `pptx` is stubbed **only when it is not installed** — it used to be stubbed whenever nothing had imported it yet, which was always, so no test built a real presentation and two broken PPTX paths passed — — sentence_transformers is no longer installed at all, so that stub is now the only thing that module means in tests — don't import them at module top-level in code paths tests touch without checking the stubs
 - FastAPI dependency overrides replace `get_db` with test session
 - User fixtures: `test_user` (regular) and `admin_user` with real password hashing; `auth_headers` / `admin_headers` via live token creation
 - Async tests use `pytest-asyncio` (auto mode); markers: `unit`, `integration`, `slow`

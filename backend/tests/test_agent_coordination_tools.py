@@ -1161,3 +1161,30 @@ async def test_a_failed_peer_review_spawn_leaves_the_session_usable(
         "request_review", db_session, caller, {"content_to_review": "Draft"}, state
     )
     assert retry.get("success") is True, retry
+
+
+@pytest.mark.parametrize(
+    "tool, params",
+    [
+        ("delegate_subtask", {"name": "Sub", "goal": "Check the L2 numbers"}),
+        ("request_review", {"content_to_review": "Draft to check"}),
+    ],
+)
+async def test_a_child_is_committed_before_it_is_queued(
+    db_session, test_user, monkeypatch, tool, params
+):
+    """The worker is another process with its own connection. A child that
+    had only been flushed when its task was queued did not exist yet as far
+    as that worker could tell."""
+    caller = await _job(db_session, test_user)
+    open_transaction_at_enqueue = []
+
+    def _delay(*_args, **_kwargs):
+        open_transaction_at_enqueue.append(db_session.in_transaction())
+
+    monkeypatch.setattr(execute_agent_job_task, "delay", _delay)
+
+    result = await _call(tool, db_session, caller, params, {})
+
+    assert result.get("success") is True, result
+    assert open_transaction_at_enqueue == [False]

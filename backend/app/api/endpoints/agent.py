@@ -1048,7 +1048,6 @@ async def create_agent(
         _validate_agent_definition_fields(
             capabilities=request.capabilities,
             tool_whitelist=request.tool_whitelist,
-            routing_defaults=getattr(request, "routing_defaults", None),
         )
 
         # Check if name already exists
@@ -1069,6 +1068,7 @@ async def create_agent(
             system_prompt=request.system_prompt,
             capabilities=request.capabilities,
             tool_whitelist=request.tool_whitelist,
+            routing_defaults=request.routing_defaults,
             priority=request.priority,
             is_active=request.is_active,
             is_system=False,  # User-created agents are never system agents

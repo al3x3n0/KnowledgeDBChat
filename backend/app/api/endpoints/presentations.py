@@ -274,7 +274,7 @@ async def create_research_presentation(
     await db.refresh(job)
 
     # Queue generation task
-    generate_presentation_task.delay(str(job.id))
+    generate_presentation_task.delay(str(job.id), str(current_user.id))
 
     logger.info(
         f"Created research presentation job {job.id} with {len(source_document_ids)} source documents"

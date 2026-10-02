@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 from loguru import logger
 
-from app.services.llm_service import llm_service
+from app.services.llm_service import LLMService
 from app.services.mermaid_renderer import MermaidRenderError, get_mermaid_renderer
 
 
@@ -99,25 +99,30 @@ class GitLabArchitectureService:
     ]
 
     def __init__(self):
-        self._client: Optional[httpx.AsyncClient] = None
+        # Keyed by token: this service is a process-wide singleton, and a
+        # client carries its Authorization header. A single cached client
+        # sent the first caller's token with every later caller's requests.
+        self._clients: Dict[str, httpx.AsyncClient] = {}
 
     async def _get_client(self, gitlab_url: str, token: str) -> httpx.AsyncClient:
-        """Get or create HTTP client for GitLab API."""
-        if self._client is None:
-            self._client = httpx.AsyncClient(
+        """Get or create the HTTP client that authenticates as ``token``."""
+        client = self._clients.get(token)
+        if client is None:
+            client = httpx.AsyncClient(
                 headers={
                     "Authorization": f"Bearer {token}",
                     "Content-Type": "application/json",
                 },
                 timeout=30.0,
             )
-        return self._client
+            self._clients[token] = client
+        return client
 
     async def close(self):
-        """Close the HTTP client."""
-        if self._client:
-            await self._client.aclose()
-            self._client = None
+        """Close every HTTP client."""
+        clients, self._clients = list(self._clients.values()), {}
+        for client in clients:
+            await client.aclose()
 
     async def analyze_repository(
         self,
@@ -637,8 +642,8 @@ Generate the Mermaid diagram:"""
     async def _generate_mermaid_with_llm(self, prompt: str) -> str:
         """Generate Mermaid code using LLM."""
         try:
-            response = await llm_service.generate(
-                prompt=prompt,
+            response = await LLMService().generate_response(
+                query=prompt,
                 max_tokens=2000,
                 temperature=0.3,
             )

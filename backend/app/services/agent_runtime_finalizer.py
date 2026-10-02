@@ -1641,7 +1641,7 @@ async def finalize_job(
         try:
             from app.services.data_sandbox_service import sandbox_manager
 
-            sandbox_manager.cleanup(job_id_str)
+            sandbox_manager.remove(job_id_str)
         except Exception as e:
             logger.warning(f"Failed to cleanup data sandbox for job {job.id}: {e}")
         del executor._data_analysis_tools[job_id_str]

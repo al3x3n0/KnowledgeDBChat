@@ -2688,39 +2688,52 @@ Text:
         artifacts: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
         """Generate output file (DOCX, PDF, PPTX)."""
-        from app.services.docx_builder import docx_builder
-        from app.services.pdf_builder import pdf_builder
+        from app.services.docx_builder import DOCXBuilder, markdown_to_content_items
+        from app.services.pdf_builder import PDFBuilder
         from app.services.storage_service import storage_service
 
         try:
             if job.output_format == "docx":
                 # Build DOCX
-                content_items = self._content_to_docx_items(content, job.title)
-                file_bytes = docx_builder.build(
+                content_items = markdown_to_content_items(content)
+                file_bytes = DOCXBuilder(style=job.output_style).build(
                     title=job.title,
                     content_items=content_items,
-                    style=job.output_style,
                 )
                 ext = "docx"
                 mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
             elif job.output_format == "pdf":
                 # Build PDF via DOCX conversion
-                content_items = self._content_to_docx_items(content, job.title)
-                file_bytes = pdf_builder.build(
+                content_items = markdown_to_content_items(content)
+                file_bytes = PDFBuilder(style=job.output_style).build(
                     title=job.title,
                     content_items=content_items,
-                    style=job.output_style,
                 )
                 ext = "pdf"
                 mime = "application/pdf"
 
             elif job.output_format == "pptx":
                 # Build PPTX - simplified for synthesis
-                from app.services.pptx_builder import pptx_builder
+                from app.schemas.presentation import PresentationOutline, SlideContent
+                from app.services.pptx_builder import PPTXBuilder
 
-                slides = self._content_to_slides(content, job.title)
-                file_bytes = pptx_builder.build(slides, style=job.output_style)
+                outline = PresentationOutline(
+                    title=job.title,
+                    slides=[
+                        SlideContent(
+                            slide_number=number,
+                            slide_type=slide["type"],
+                            title=slide["title"],
+                            subtitle=slide.get("subtitle"),
+                            content=slide.get("bullets") or [],
+                        )
+                        for number, slide in enumerate(
+                            self._content_to_slides(content, job.title), start=1
+                        )
+                    ],
+                )
+                file_bytes = PPTXBuilder(style=job.output_style).build(outline)
                 ext = "pptx"
                 mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
@@ -2742,31 +2755,6 @@ Text:
         except Exception as e:
             logger.error(f"Failed to generate output file: {e}")
             return {}
-
-    def _content_to_docx_items(self, content: str, title: str) -> List[Dict[str, Any]]:
-        """Convert markdown content to DOCX content items."""
-        items = []
-        lines = content.split("\n")
-
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-
-            if line.startswith("# "):
-                items.append({"type": "heading", "level": 1, "text": line[2:]})
-            elif line.startswith("## "):
-                items.append({"type": "heading", "level": 2, "text": line[3:]})
-            elif line.startswith("### "):
-                items.append({"type": "heading", "level": 3, "text": line[4:]})
-            elif line.startswith("- ") or line.startswith("* "):
-                items.append({"type": "bullet", "text": line[2:]})
-            elif line.startswith("1. ") or line.startswith("2. "):
-                items.append({"type": "numbered", "text": line[3:]})
-            else:
-                items.append({"type": "paragraph", "text": line})
-
-        return items
 
     def _content_to_slides(self, content: str, title: str) -> List[Dict[str, Any]]:
         """Convert content to presentation slides."""

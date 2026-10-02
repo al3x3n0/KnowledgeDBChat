@@ -2581,9 +2581,9 @@ Your response:"""
                     continue
 
                 # Queue for summarization (use Celery task)
-                from app.tasks.summarization_tasks import summarize_document_task
+                from app.tasks.summarization_tasks import summarize_document
 
-                summarize_document_task.delay(str(doc_uuid), force=force_regenerate)
+                summarize_document.delay(str(doc_uuid), force=force_regenerate)
 
                 queued.append({"id": doc_id, "title": document.title})
 
@@ -4440,18 +4440,31 @@ Include relevant information from the knowledge base when applicable.
                     t for t in chat_tools if t["name"] != "delegate_to_agent"
                 ]
 
-            # Generate response from the delegated agent
-            response = await self.llm_service.generate_chat_response(
-                messages=messages, tools=allowed_tools, max_tokens=4096
-            )
+            # Generate response from the delegated agent. Native tool calling:
+            # the completion carries the calls, so nothing is parsed out of
+            # prose here.
+            user_settings = await load_user_llm_settings(db, user_id)
+
+            async def _ask(tools: Optional[List[Dict[str, Any]]]):
+                return await self.llm_service.generate_structured(
+                    messages=messages,
+                    tools=tools or None,
+                    max_tokens=4096,
+                    user_settings=user_settings,
+                    task_type="chat",
+                    user_id=user_id,
+                    db=db,
+                )
+
+            response = await _ask(allowed_tools)
 
             # If the agent wants to call tools, execute them
             tool_results = []
-            if response.get("tool_calls"):
-                for tc in response["tool_calls"]:
+            if response.tool_calls:
+                for tc in response.tool_calls:
                     tool_call = AgentToolCall(
-                        tool_name=tc["function"]["name"],
-                        tool_input=tc["function"].get("arguments", {}),
+                        tool_name=tc.name,
+                        tool_input=tc.arguments or {},
                     )
                     executed = await self._execute_tool(tool_call, user_id, db)
                     tool_results.append(
@@ -4467,23 +4480,17 @@ Include relevant information from the knowledge base when applicable.
                     tool_message = "Tool results:\n" + "\n".join(
                         [f"- {tr['tool']}: {tr['result']}" for tr in tool_results]
                     )
-                    messages.append(
-                        {"role": "assistant", "content": response.get("content", "")}
-                    )
+                    if response.text:
+                        messages.append({"role": "assistant", "content": response.text})
                     messages.append({"role": "user", "content": tool_message})
 
-                    final_response = await self.llm_service.generate_chat_response(
-                        messages=messages,
-                        tools=None,  # No more tool calls
-                        max_tokens=4096,
-                    )
-                    response = final_response
+                    response = await _ask(None)  # No more tool calls
 
             return {
                 "delegated_to": target_name,
                 "agent_display_name": target_agent.display_name,
                 "task": task_description,
-                "result": response.get("content", "No response generated"),
+                "result": response.text or "No response generated",
                 "tools_used": [tr["tool"] for tr in tool_results]
                 if tool_results
                 else [],
@@ -4829,7 +4836,9 @@ Include relevant information from the knowledge base when applicable.
         self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
         """Generate architecture diagram from a GitLab repository."""
-        from app.models.data_source import DataSource
+        from app.models.document import DocumentSource
+        from app.models.user import User
+        from app.services.auth_service import is_admin
         from app.services.gitlab_architecture_service import (
             get_gitlab_architecture_service,
         )
@@ -4844,12 +4853,21 @@ Include relevant information from the knowledge base when applicable.
         detail_level = params.get("detail_level", "medium")
 
         # Find GitLab data source to get credentials
-        query = select(DataSource).where(
-            DataSource.source_type == "gitlab",
-            DataSource.is_active.is_(True),
+        # The same rule the /git endpoints apply: a source carries a token,
+        # so it is usable by an admin or by whoever requested it.
+        user = await db.get(User, user_id)
+        query = select(DocumentSource).where(
+            DocumentSource.source_type == "gitlab",
+            DocumentSource.is_active.is_(True),
         )
-        result = await db.execute(query)
-        gitlab_source = result.scalars().first()
+        gitlab_source = None
+        for candidate in (await db.execute(query)).scalars():
+            requested_by = (candidate.config or {}).get("requested_by") or (
+                candidate.config or {}
+            ).get("requestedBy")
+            if is_admin(user) or (user is not None and requested_by == user.username):
+                gitlab_source = candidate
+                break
 
         if not gitlab_source:
             return {

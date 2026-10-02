@@ -965,6 +965,17 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
 ### Multi-Tenancy / User Scoping
 - All resources filtered by `user_id` foreign key in database queries
 - Auth chain: `get_current_user` (validates JWT) → `get_current_active_user` (checks is_active)
+- **Whether a user is an admin is decided in one place:**
+  `auth_service.is_admin(user)` (None-safe), with `ensure_admin(user, detail)`
+  for a handler that has one admin-only branch and `Depends(require_admin)`
+  for a route that is admin-only throughout. It used to be decided in about a
+  dozen ways — the model's method, raw role-string comparisons, three private
+  helpers, a second `require_admin` — and one variant named the method
+  without calling it, which is always truthy and left three pipeline routes
+  open to any signed-in user. `tests/test_one_admin_check.py` refuses the
+  other forms, including the uncalled method. `get_current_user` is imported
+  from `auth_service`; `get_current_active_user` (in `endpoints/auth.py`) is
+  a documented alias of it and is left alone.
 - **A route with no auth dependency is public, and nothing fails.** Twelve
   knowledge-graph routes and the document editor's read *and write* declared
   no user: `GET /kg/stats` answered anyone, and `PUT /documents/{id}/edit`

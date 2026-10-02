@@ -21,6 +21,7 @@ from starlette.datastructures import Headers
 
 from app.models.document import Document, DocumentSource
 from app.models.user import User
+from app.services.auth_service import is_admin
 from app.services.document_service import DocumentService
 from app.services.web_scraper_service import WebScraperService
 
@@ -86,7 +87,7 @@ class UrlIngestionService:
 
         allow_private_effective = False
         if allow_private_networks:
-            if user.role == "admin":
+            if is_admin(user):
                 allow_private_effective = True
             elif is_allowlisted:
                 allow_private_effective = True

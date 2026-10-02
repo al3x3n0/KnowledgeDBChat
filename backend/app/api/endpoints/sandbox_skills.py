@@ -40,6 +40,7 @@ from app.services import (
     sandbox_skill_manifest,
     sandbox_skill_service,
 )
+from app.services.auth_service import ensure_admin, is_admin
 from app.services.sandbox_skill_image_service import ImageError
 from app.services.sandbox_skill_manifest import SkillError
 
@@ -210,7 +211,7 @@ async def list_images(
 ):
     """Built images, your own proposals, and -- for an admin -- everything."""
     images = await sandbox_skill_image_service.list_images(
-        db, user_id=current_user.id, is_admin=current_user.is_admin()
+        db, user_id=current_user.id, is_admin=is_admin(current_user)
     )
     return SandboxSkillImageListResponse(
         items=[SandboxSkillImageResponse.model_validate(i) for i in images],
@@ -244,11 +245,7 @@ async def propose_image(
 
 
 def _require_admin(user: User) -> None:
-    if not user.is_admin():
-        raise HTTPException(
-            status_code=403,
-            detail="Only an administrator may build or reject a skill image.",
-        )
+    ensure_admin(user, "Only an administrator may build or reject a skill image.")
 
 
 @router.post("/images/{image_id}/build", response_model=SandboxSkillImageResponse)

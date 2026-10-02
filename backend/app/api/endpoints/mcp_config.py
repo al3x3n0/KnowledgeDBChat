@@ -13,12 +13,12 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.endpoints.users import get_current_user
 from app.core.database import get_db
 from app.models.api_key import APIKey
 from app.models.document import DocumentSource
 from app.models.mcp_config import MCP_TOOLS, MCPSourceAccess, MCPToolConfig
 from app.models.user import User
+from app.services.auth_service import get_current_user
 
 router = APIRouter()
 

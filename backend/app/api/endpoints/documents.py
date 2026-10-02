@@ -52,7 +52,7 @@ from app.schemas.document import (
     InstantArxivIngestRequest,
     InstantArxivIngestResponse,
 )
-from app.services.auth_service import get_current_user
+from app.services.auth_service import ensure_admin, get_current_user
 from app.services.document_folder_service import FolderError, document_folder_service
 from app.services.document_service import DocumentService
 from app.services.storage_service import storage_service
@@ -1479,8 +1479,7 @@ async def summarize_missing_documents(
 ):
     """Admin: queue summaries for processed documents lacking a summary."""
     try:
-        if not current_user.is_admin():
-            raise HTTPException(status_code=403, detail="Admin privileges required")
+        ensure_admin(current_user)
         from app.core.config import settings as _settings
 
         if not _settings.SUMMARIZATION_ENABLED:
@@ -1788,8 +1787,7 @@ async def create_document_source(
     """Create a new document source."""
     try:
         # Check admin privileges for creating sources
-        if not current_user.is_admin():
-            raise HTTPException(status_code=403, detail="Admin privileges required")
+        ensure_admin(current_user)
 
         source = await document_service.create_document_source(
             name=source_data.name,
@@ -2338,8 +2336,7 @@ async def update_document_source(
 ):
     """Update a document source."""
     try:
-        if not current_user.is_admin():
-            raise HTTPException(status_code=403, detail="Admin privileges required")
+        ensure_admin(current_user)
 
         source = await document_service.update_document_source(
             source_id=source_id,
@@ -2369,8 +2366,7 @@ async def sync_document_source(
 ):
     """Trigger synchronization for a document source."""
     try:
-        if not current_user.is_admin():
-            raise HTTPException(status_code=403, detail="Admin privileges required")
+        ensure_admin(current_user)
 
         success = await document_service.sync_document_source(source_id, db)
         if not success:
@@ -2393,8 +2389,7 @@ async def delete_document_source(
 ):
     """Delete a document source."""
     try:
-        if not current_user.is_admin():
-            raise HTTPException(status_code=403, detail="Admin privileges required")
+        ensure_admin(current_user)
 
         success = await document_service.delete_document_source(source_id, db)
         if not success:

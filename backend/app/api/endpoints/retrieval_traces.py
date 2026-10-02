@@ -11,16 +11,9 @@ from app.core.database import get_db
 from app.models.retrieval_trace import RetrievalTrace
 from app.models.user import User
 from app.schemas.retrieval_trace import RetrievalTraceResponse
-from app.services.auth_service import get_current_user
+from app.services.auth_service import get_current_user, is_admin
 
 router = APIRouter()
-
-
-def _is_admin(user: User) -> bool:
-    try:
-        return bool(user.is_admin())
-    except Exception:
-        return str(getattr(user, "role", "") or "").lower() == "admin"
 
 
 @router.get("/{trace_id}", response_model=RetrievalTraceResponse)
@@ -32,6 +25,6 @@ async def get_retrieval_trace(
     trace = await db.get(RetrievalTrace, trace_id)
     if not trace:
         raise HTTPException(status_code=404, detail="Not found")
-    if trace.user_id != current_user.id and not _is_admin(current_user):
+    if trace.user_id != current_user.id and not is_admin(current_user):
         raise HTTPException(status_code=404, detail="Not found")
     return RetrievalTraceResponse.model_validate(trace)

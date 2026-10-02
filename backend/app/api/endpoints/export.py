@@ -10,7 +10,6 @@ from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.endpoints.users import get_current_user
 from app.core.database import get_db
 from app.models.chat import ChatSession
 from app.models.document import Document
@@ -25,6 +24,7 @@ from app.schemas.export import (
     ExportJobResponse,
     ExportJobStatusResponse,
 )
+from app.services.auth_service import get_current_user
 from app.services.export_service import export_service
 
 router = APIRouter()

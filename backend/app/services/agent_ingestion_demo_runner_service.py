@@ -17,6 +17,7 @@ from app.models.agent_job import AgentJob, AgentJobStatus
 from app.models.user import User
 from app.services import agent_sandbox_runtime
 from app.services.agent_artifact_paths import safe_relpath
+from app.services.auth_service import is_admin as auth_service_is_admin
 
 
 class AgentIngestionDemoRunnerService:
@@ -506,7 +507,7 @@ class AgentIngestionDemoRunnerService:
 
         # Access control: admin or requested_by_user_id matches.
         user = await db.get(User, job.user_id)
-        is_admin = bool(user and getattr(user, "role", None) == "admin")
+        is_admin = auth_service_is_admin(user)
         requested_by_user_id = str(
             (source.config or {}).get("requested_by_user_id") or ""
         ).strip()

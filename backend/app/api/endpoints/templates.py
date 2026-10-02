@@ -28,7 +28,7 @@ from app.core.database import get_db
 from app.models.template import TemplateJob
 from app.models.user import User
 from app.schemas.template import TemplateJobListResponse, TemplateJobResponse
-from app.services.auth_service import get_current_user
+from app.services.auth_service import get_current_user, is_admin
 from app.services.storage_service import storage_service
 from app.tasks.template_tasks import fill_template
 
@@ -173,7 +173,7 @@ async def get_template_job(
     if not job:
         raise HTTPException(status_code=404, detail="Template job not found")
 
-    if job.user_id != current_user.id and current_user.role != "admin":
+    if job.user_id != current_user.id and not is_admin(current_user):
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Generate download URL if completed
@@ -224,7 +224,7 @@ async def download_filled_template(
     if not job:
         raise HTTPException(status_code=404, detail="Template job not found")
 
-    if job.user_id != current_user.id and current_user.role != "admin":
+    if job.user_id != current_user.id and not is_admin(current_user):
         raise HTTPException(status_code=403, detail="Access denied")
 
     if job.status != "completed" or not job.filled_file_path:
@@ -340,7 +340,7 @@ async def delete_template_job(
     if not job:
         raise HTTPException(status_code=404, detail="Template job not found")
 
-    if job.user_id != current_user.id and current_user.role != "admin":
+    if job.user_id != current_user.id and not is_admin(current_user):
         raise HTTPException(status_code=403, detail="Access denied")
 
     try:

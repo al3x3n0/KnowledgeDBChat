@@ -40,7 +40,7 @@ from app.schemas.agent import (
 )
 from app.services.agent_service import AgentService
 from app.services.agent_tools import AGENT_TOOLS
-from app.services.auth_service import get_current_user
+from app.services.auth_service import ensure_admin, get_current_user
 from app.services.llm_routing import (
     coerce_routing_config,
     compute_attempt_tiers,
@@ -784,13 +784,6 @@ from app.schemas.agent import (
 from app.services.agent_router import CAPABILITY_KEYWORDS
 
 
-def require_admin(user: User) -> User:
-    """Check if user is admin."""
-    if user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return user
-
-
 def _validate_agent_definition_fields(
     *,
     capabilities: Optional[List[str]] = None,
@@ -1039,7 +1032,7 @@ async def draft_agent(
     two attempts to name a capability the router recognises is a draft worth a
     second look, even though what comes back validates either way.
     """
-    require_admin(current_user)
+    ensure_admin(current_user)
 
     from app.services import agent_definition_author_service
 
@@ -1060,7 +1053,7 @@ async def create_agent(
     """
     Create a new agent definition (admin only).
     """
-    require_admin(current_user)
+    ensure_admin(current_user)
 
     try:
         _validate_agent_definition_fields(
@@ -1138,7 +1131,7 @@ async def update_agent(
     Update an agent definition (admin only).
     System agents can only have is_active and priority modified.
     """
-    require_admin(current_user)
+    ensure_admin(current_user)
 
     try:
         result = await db.execute(
@@ -1249,7 +1242,7 @@ async def delete_agent(
     Delete an agent definition (admin only).
     System agents cannot be deleted.
     """
-    require_admin(current_user)
+    ensure_admin(current_user)
 
     try:
         result = await db.execute(
@@ -1290,7 +1283,7 @@ async def duplicate_agent(
     """
     Duplicate an existing agent with a new name (admin only).
     """
-    require_admin(current_user)
+    ensure_admin(current_user)
 
     try:
         result = await db.execute(

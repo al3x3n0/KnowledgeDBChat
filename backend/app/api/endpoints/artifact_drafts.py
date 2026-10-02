@@ -23,7 +23,7 @@ from app.schemas.artifact_draft import (
     ArtifactDraftResponse,
     ArtifactDraftSubmitRequest,
 )
-from app.services.auth_service import get_current_user
+from app.services.auth_service import get_current_user, is_admin
 from app.services.storage_service import StorageService
 
 router = APIRouter()
@@ -31,13 +31,6 @@ router = APIRouter()
 
 def _now_iso() -> str:
     return datetime.utcnow().isoformat()
-
-
-def _is_admin(user: User) -> bool:
-    try:
-        return bool(user.is_admin())
-    except Exception:
-        return str(getattr(user, "role", "") or "").lower() == "admin"
 
 
 @router.get("", response_model=ArtifactDraftListResponse)
@@ -50,7 +43,7 @@ async def list_artifact_drafts(
     db: AsyncSession = Depends(get_db),
 ):
     stmt = select(ArtifactDraft)
-    if not _is_admin(current_user):
+    if not is_admin(current_user):
         stmt = stmt.where(ArtifactDraft.user_id == current_user.id)
     if artifact_type:
         stmt = stmt.where(ArtifactDraft.artifact_type == str(artifact_type).strip())
@@ -79,7 +72,7 @@ async def get_artifact_draft(
     db: AsyncSession = Depends(get_db),
 ):
     draft = await db.get(ArtifactDraft, draft_id)
-    if not draft or (draft.user_id != current_user.id and not _is_admin(current_user)):
+    if not draft or (draft.user_id != current_user.id and not is_admin(current_user)):
         raise HTTPException(status_code=404, detail="Not found")
     return ArtifactDraftResponse.model_validate(draft)
 
@@ -95,7 +88,7 @@ async def create_draft_from_presentation(
     db: AsyncSession = Depends(get_db),
 ):
     job = await db.get(PresentationJob, job_id)
-    if not job or (job.user_id != current_user.id and not _is_admin(current_user)):
+    if not job or (job.user_id != current_user.id and not is_admin(current_user)):
         raise HTTPException(status_code=404, detail="Presentation job not found")
     if job.status != "completed":
         raise HTTPException(status_code=422, detail="Presentation is not completed")
@@ -150,7 +143,7 @@ async def create_draft_from_repo_report(
     db: AsyncSession = Depends(get_db),
 ):
     job = await db.get(RepoReportJob, job_id)
-    if not job or (job.user_id != current_user.id and not _is_admin(current_user)):
+    if not job or (job.user_id != current_user.id and not is_admin(current_user)):
         raise HTTPException(status_code=404, detail="Repo report job not found")
     if job.status != "completed":
         raise HTTPException(status_code=422, detail="Repo report is not completed")
@@ -236,7 +229,7 @@ async def approve_draft(
     role: Optional[str] = None
     if draft.user_id == current_user.id:
         role = "owner"
-    elif _is_admin(current_user):
+    elif is_admin(current_user):
         role = "admin"
 
     if not role:
@@ -255,7 +248,7 @@ async def approve_draft(
 
     owner_ok = any(a.get("role") == "owner" for a in approvals)
     admin_ok = any(a.get("role") == "admin" for a in approvals) or (
-        role == "owner" and _is_admin(current_user)
+        role == "owner" and is_admin(current_user)
     )
     if owner_ok and admin_ok and draft.status in {"draft", "in_review"}:
         draft.status = "approved"
@@ -272,7 +265,7 @@ async def publish_draft(
     db: AsyncSession = Depends(get_db),
 ):
     draft = await db.get(ArtifactDraft, draft_id)
-    if not draft or (draft.user_id != current_user.id and not _is_admin(current_user)):
+    if not draft or (draft.user_id != current_user.id and not is_admin(current_user)):
         raise HTTPException(status_code=404, detail="Not found")
 
     if draft.status != "approved":
@@ -296,7 +289,7 @@ async def download_published_artifact(
     db: AsyncSession = Depends(get_db),
 ):
     draft = await db.get(ArtifactDraft, draft_id)
-    if not draft or (draft.user_id != current_user.id and not _is_admin(current_user)):
+    if not draft or (draft.user_id != current_user.id and not is_admin(current_user)):
         raise HTTPException(status_code=404, detail="Not found")
 
     if draft.status not in {"approved", "published"}:

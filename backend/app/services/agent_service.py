@@ -52,6 +52,7 @@ from app.services.agent_tool_dispatch import (
 )
 from app.services.agent_tools import AGENT_TOOLS, validate_tool_params
 from app.services.arxiv_search_service import ArxivSearchService
+from app.services.auth_service import is_admin
 from app.services.document_service import DocumentService
 from app.services.llm_service import LLMService, UserLLMSettings
 from app.services.memory_service import MemoryService
@@ -1857,7 +1858,7 @@ Your response:"""
 
             user_result = await db.execute(select(User).where(User.id == user_id))
             user = user_result.scalar_one_or_none()
-            if user and user.role == "admin":
+            if is_admin(user):
                 allow_private_effective = True
             elif is_allowlisted:
                 allow_private_effective = True
@@ -3543,7 +3544,7 @@ Answer:"""
         from app.models.user import User
 
         user = await db.get(User, user_id)
-        if not user or user.role != "admin":
+        if not is_admin(user):
             return {"error": "Admin privileges required for this tool"}
         return None
 

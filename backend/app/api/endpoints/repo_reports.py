@@ -20,7 +20,6 @@ from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.endpoints.users import get_current_user
 from app.core.database import get_db
 from app.models.document import DocumentSource
 from app.models.repo_report import RepoReportJob
@@ -32,6 +31,7 @@ from app.schemas.repo_report import (
     RepoReportJobListResponse,
     RepoReportJobResponse,
 )
+from app.services.auth_service import get_current_user
 from app.services.storage_service import StorageService
 
 router = APIRouter()

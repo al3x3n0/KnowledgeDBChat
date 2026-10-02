@@ -27,7 +27,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import NO_VALUE
 
-from app.api.endpoints.users import get_current_user
 from app.core.database import get_db
 from app.models.presentation import PresentationJob, PresentationTemplate
 from app.models.user import User
@@ -38,6 +37,7 @@ from app.schemas.presentation import (
     PresentationTemplateResponse,
     PresentationTemplateUpdate,
 )
+from app.services.auth_service import get_current_user
 from app.services.storage_service import StorageService
 
 router = APIRouter()

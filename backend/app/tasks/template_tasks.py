@@ -3,18 +3,16 @@ Background tasks for template filling.
 """
 
 import asyncio
-import json
 from typing import Any, Dict
 from uuid import UUID
 
-import redis
 from loguru import logger
 
 from app.core.celery import celery_app
-from app.core.config import settings
 from app.core.database import create_celery_session
 from app.models.template import TemplateJob
 from app.services.template_fill_service import TemplateFillService
+from app.tasks import job_support
 
 
 @celery_app.task(bind=True, name="app.tasks.template_tasks.fill_template")
@@ -85,64 +83,25 @@ async def _async_fill_template(task, job_id: str) -> Dict[str, Any]:
             return {"success": False, "job_id": job_id, "error": str(e)}
 
 
-def _get_redis_client():
-    """Get Redis client for publishing progress."""
-    try:
-        return redis.from_url(settings.REDIS_URL, decode_responses=True)
-    except Exception as e:
-        logger.warning(f"Failed to connect to Redis for template progress: {e}")
-        return None
-
-
 def _publish_progress(job_id: str, progress: dict):
     """Publish progress update via Redis."""
-    try:
-        client = _get_redis_client()
-        if client:
-            channel = f"template_progress:{job_id}"
-            msg = json.dumps(
-                {
-                    "type": "progress",
-                    "job_id": job_id,
-                    "data": progress,
-                }
-            )
-            client.publish(channel, msg)
-    except Exception as e:
-        logger.debug(f"Failed to publish template progress: {e}")
+    job_support.publish_sync(
+        f"template_progress:{job_id}",
+        {"type": "progress", "job_id": job_id, "data": progress},
+    )
 
 
 def _publish_complete(job_id: str, result: dict):
     """Publish completion event via Redis."""
-    try:
-        client = _get_redis_client()
-        if client:
-            channel = f"template_progress:{job_id}"
-            msg = json.dumps(
-                {
-                    "type": "complete",
-                    "job_id": job_id,
-                    "result": result,
-                }
-            )
-            client.publish(channel, msg)
-    except Exception as e:
-        logger.debug(f"Failed to publish template complete: {e}")
+    job_support.publish_sync(
+        f"template_progress:{job_id}",
+        {"type": "complete", "job_id": job_id, "result": result},
+    )
 
 
 def _publish_error(job_id: str, error: str):
     """Publish error event via Redis."""
-    try:
-        client = _get_redis_client()
-        if client:
-            channel = f"template_progress:{job_id}"
-            msg = json.dumps(
-                {
-                    "type": "error",
-                    "job_id": job_id,
-                    "error": error,
-                }
-            )
-            client.publish(channel, msg)
-    except Exception as e:
-        logger.debug(f"Failed to publish template error: {e}")
+    job_support.publish_sync(
+        f"template_progress:{job_id}",
+        {"type": "error", "job_id": job_id, "error": error},
+    )

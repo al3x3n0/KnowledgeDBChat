@@ -5,6 +5,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Dict, List, Mapping
 
+from app.services.config_values import positive_int as _positive_int
+
 
 class AutonomousRnDEvidenceVerifier:
     """Promote external evidence only through explicit, locally grounded links."""
@@ -261,14 +263,6 @@ def _string_list(value: Any) -> List[str]:
     if not isinstance(value, list):
         return []
     return [str(item).strip() for item in value if str(item).strip()]
-
-
-def _positive_int(value: Any, default: int) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return parsed if parsed > 0 else default
 
 
 autonomous_rnd_evidence_verifier = AutonomousRnDEvidenceVerifier()

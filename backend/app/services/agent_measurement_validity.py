@@ -40,6 +40,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from app.services import agent_evidence_map
+from app.services.config_values import as_number as _as_number
 
 #: Every boolean predicate a contract may declare. This is the ONE place they
 #: are registered: the job-config normaliser imports it rather than keeping its
@@ -87,15 +88,6 @@ def _findings(state: Mapping[str, Any]) -> List[Dict[str, Any]]:
 def _actions(state: Mapping[str, Any]) -> List[Dict[str, Any]]:
     raw = state.get("actions_taken")
     return [a for a in raw if isinstance(a, dict)] if isinstance(raw, list) else []
-
-
-def _as_number(value: Any) -> Optional[float]:
-    if isinstance(value, bool):
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _find_number(finding: Mapping[str, Any], field: str) -> Optional[float]:

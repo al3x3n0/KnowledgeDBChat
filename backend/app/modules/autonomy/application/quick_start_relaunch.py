@@ -11,16 +11,13 @@ from app.schemas.agent_job import (
     AgentJobQuickStartDomainResearchRequest,
     AgentJobQuickStartRoleWorkflowRequest,
 )
+from app.services.agent_job_queue_helpers import extract_launch_mode as _launch_mode
 from app.services.agent_scope_service import normalize_scope_config
 
 
 def _job_config(job: Any) -> dict[str, Any]:
     config = getattr(job, "config", None)
     return normalize_scope_config(config if isinstance(config, dict) else {}) or {}
-
-
-def _launch_mode(config: dict[str, Any]) -> str:
-    return str(config.get("launch_mode") or "").strip().lower()
 
 
 def _source_id(config: dict[str, Any]) -> str:

@@ -18,6 +18,7 @@ import random
 import re
 from copy import deepcopy
 from datetime import datetime, timedelta
+from functools import partial
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from uuid import UUID
 
@@ -36,7 +37,6 @@ from app.models.agent_job import (
     ChainTriggerCondition,
 )
 from app.models.agent_tool_prior import AgentToolPrior
-from app.models.memory import UserPreferences
 from app.services import (
     agent_decision_parser,
     agent_evidence_map,
@@ -131,8 +131,9 @@ from app.services.agent_tool_dispatch import (
 )
 from app.services.agent_tools import AGENT_TOOLS
 from app.services.arxiv_search_service import ArxivSearchService
+from app.services.config_values import clamped_float, clamped_int, string_list
 from app.services.data_analysis_tools import DataAnalysisTools
-from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.llm_service import LLMService, UserLLMSettings, load_user_llm_settings
 from app.services.project_profile_service import (
     build_project_profile,
     format_project_profile_for_prompt,
@@ -3983,12 +3984,7 @@ class AutonomousAgentExecutor:
         """Get normalized source-scope guard settings."""
         cfg = job.config if isinstance(job.config, dict) else {}
 
-        def _as_list(value: Any) -> List[str]:
-            if isinstance(value, list):
-                return [str(x).strip() for x in value if str(x).strip()]
-            if isinstance(value, str):
-                return [str(x).strip() for x in value.split(",") if str(x).strip()]
-            return []
+        _as_list = string_list
 
         default_write_tools = [
             "create_synthesis_document",
@@ -5125,19 +5121,9 @@ class AutonomousAgentExecutor:
         """Get normalized critic-pass settings."""
         cfg = job.config if isinstance(job.config, dict) else {}
 
-        def _as_int(key: str, default: int, lo: int, hi: int) -> int:
-            try:
-                val = int(cfg.get(key, default))
-            except Exception:
-                val = default
-            return max(lo, min(val, hi))
+        _as_int = partial(clamped_int, cfg)
 
-        def _as_float(key: str, default: float, lo: float, hi: float) -> float:
-            try:
-                val = float(cfg.get(key, default))
-            except Exception:
-                val = default
-            return max(lo, min(val, hi))
+        _as_float = partial(clamped_float, cfg)
 
         return {
             "enabled": bool(cfg.get("critic_enabled", True)),
@@ -6328,12 +6314,7 @@ class AutonomousAgentExecutor:
         """Get forced exploration settings used during stall recovery."""
         cfg = job.config if isinstance(job.config, dict) else {}
 
-        def _as_int(key: str, default: int, lo: int, hi: int) -> int:
-            try:
-                val = int(cfg.get(key, default))
-            except Exception:
-                val = default
-            return max(lo, min(val, hi))
+        _as_int = partial(clamped_int, cfg)
 
         tools = cfg.get("tool_selection_forced_exploration_tools")
         if isinstance(tools, str):
@@ -6375,12 +6356,7 @@ class AutonomousAgentExecutor:
         """Get post-recovery tool cooldown settings."""
         cfg = job.config if isinstance(job.config, dict) else {}
 
-        def _as_int(key: str, default: int, lo: int, hi: int) -> int:
-            try:
-                val = int(cfg.get(key, default))
-            except Exception:
-                val = default
-            return max(lo, min(val, hi))
+        _as_int = partial(clamped_int, cfg)
 
         return {
             "enabled": bool(cfg.get("tool_selection_cooldown_enabled", True)),
@@ -6707,12 +6683,7 @@ class AutonomousAgentExecutor:
         """Get decay configuration for persistent tool priors."""
         cfg = job.config if isinstance(job.config, dict) else {}
 
-        def _as_float(key: str, default: float, lo: float, hi: float) -> float:
-            try:
-                val = float(cfg.get(key, default))
-            except Exception:
-                val = default
-            return max(lo, min(val, hi))
+        _as_float = partial(clamped_float, cfg)
 
         return {
             "enabled": bool(cfg.get("tool_prior_decay_enabled", True)),
@@ -7378,12 +7349,7 @@ class AutonomousAgentExecutor:
         """Get normalized plan->act->verify->summarize settings."""
         cfg = job.config if isinstance(job.config, dict) else {}
 
-        def _as_list(value: Any) -> List[str]:
-            if isinstance(value, list):
-                return [str(x).strip() for x in value if str(x).strip()]
-            if isinstance(value, str):
-                return [str(x).strip() for x in value.split(",") if str(x).strip()]
-            return []
+        _as_list = string_list
 
         verify_tools_default = [
             "create_synthesis_document",
@@ -8479,12 +8445,7 @@ RESPONSE FORMAT:
         """Get normalized stall-detection settings from job config."""
         cfg = job.config if isinstance(job.config, dict) else {}
 
-        def _as_int(key: str, default: int, lo: int, hi: int) -> int:
-            try:
-                val = int(cfg.get(key, default))
-            except Exception:
-                val = default
-            return max(lo, min(val, hi))
+        _as_int = partial(clamped_int, cfg)
 
         return {
             "enabled": bool(cfg.get("stall_detection_enabled", True)),
@@ -9534,16 +9495,7 @@ RESPONSE FORMAT:
         db: AsyncSession,
     ) -> Optional[UserLLMSettings]:
         """Load user LLM settings."""
-        try:
-            result = await db.execute(
-                select(UserPreferences).where(UserPreferences.user_id == user_id)
-            )
-            prefs = result.scalar_one_or_none()
-            if prefs:
-                return UserLLMSettings.from_preferences(prefs)
-        except Exception as e:
-            logger.warning(f"Failed to load user settings: {e}")
-        return None
+        return await load_user_llm_settings(db, user_id)
 
     async def pause_job(self, job_id: UUID, db: AsyncSession) -> bool:
         """Pause a running job."""

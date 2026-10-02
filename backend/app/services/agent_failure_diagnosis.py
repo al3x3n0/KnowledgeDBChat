@@ -196,12 +196,13 @@ def classify_error(text: Any) -> str:
     return "unknown"
 
 
-def _canonical_params(params: Any) -> str:
+def _canonical_params(params: Any, ignored: Any = IGNORED_PARAMS) -> str:
+    """``ignored`` is the caller's own: which params say nothing about what was
+    asked differs between a failure and a success (see agent_repeated_success).
+    """
     if not isinstance(params, Mapping):
         return ""
-    salient = {
-        key: value for key, value in params.items() if str(key) not in IGNORED_PARAMS
-    }
+    salient = {key: value for key, value in params.items() if str(key) not in ignored}
     try:
         return json.dumps(salient, sort_keys=True, default=str)
     except Exception:  # pragma: no cover - defensive

@@ -3,7 +3,6 @@ Document service for managing documents and document sources.
 """
 
 import hashlib
-import json
 import os
 import tempfile
 from datetime import datetime
@@ -11,7 +10,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-import redis
 from fastapi import UploadFile
 from loguru import logger
 from sqlalchemy import and_, or_, select
@@ -28,6 +26,7 @@ from app.services.persona_service import persona_service
 from app.services.storage_service import storage_service
 from app.services.text_processor import TextProcessor
 from app.services.vector_store import vector_store_service
+from app.tasks import job_support
 
 
 class DocumentService:
@@ -993,19 +992,14 @@ class DocumentService:
 
         # Helper to publish summarization progress to Redis (for WebSocket bridge)
         def _publish_sum_progress(progress: dict):
-            try:
-                client = redis.from_url(settings.REDIS_URL, decode_responses=True)
-                channel = f"summarization_progress:{str(document_id)}"
-                msg = json.dumps(
-                    {
-                        "type": "progress",
-                        "document_id": str(document_id),
-                        "progress": progress,
-                    }
-                )
-                client.publish(channel, msg)
-            except Exception as e:
-                logger.debug(f"Failed to publish summarization progress to Redis: {e}")
+            job_support.publish_sync(
+                f"summarization_progress:{str(document_id)}",
+                {
+                    "type": "progress",
+                    "document_id": str(document_id),
+                    "progress": progress,
+                },
+            )
 
         # Track which model was actually used
         actual_model_used = None

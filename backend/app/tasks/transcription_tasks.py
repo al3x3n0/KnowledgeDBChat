@@ -4,7 +4,6 @@ Background tasks for video/audio transcription.
 
 import asyncio
 import hashlib
-import json
 import os
 import tempfile
 import traceback
@@ -12,7 +11,6 @@ from pathlib import Path
 from typing import Any, Dict
 from uuid import UUID
 
-import redis
 from celery import Task
 from loguru import logger
 from sqlalchemy import select
@@ -29,6 +27,7 @@ from app.services.transcription_service import (
     get_transcription_service,
     set_transcription_runtime_config,
 )
+from app.tasks import job_support
 
 
 def _format_timecode(seconds: float) -> str:
@@ -581,88 +580,41 @@ async def _async_transcribe_document(task, document_id: str) -> Dict[str, Any]:
             return {"document_id": document_id, "success": False, "error": str(e)}
 
 
-def _get_redis_client():
-    """Get Redis client for pub/sub."""
-    try:
-        return redis.from_url(settings.REDIS_URL, decode_responses=True)
-    except Exception as e:
-        logger.warning(f"Failed to connect to Redis for progress updates: {e}")
-        return None
-
-
 def _publish_progress(document_id: str, progress: dict):
     """Publish transcription progress to Redis."""
-    try:
-        redis_client = _get_redis_client()
-        if redis_client:
-            channel = f"transcription_progress:{document_id}"
-            message = json.dumps(
-                {"type": "progress", "document_id": document_id, "progress": progress}
-            )
-            redis_client.publish(channel, message)
-    except Exception as e:
-        logger.warning(f"Failed to publish progress: {e}")
+    job_support.publish_sync(
+        f"transcription_progress:{document_id}",
+        {"type": "progress", "document_id": document_id, "progress": progress},
+    )
 
 
 def _publish_complete(document_id: str, result: dict):
     """Publish transcription completion to Redis."""
-    try:
-        redis_client = _get_redis_client()
-        if redis_client:
-            channel = f"transcription_progress:{document_id}"
-            message = json.dumps(
-                {"type": "complete", "document_id": document_id, "result": result}
-            )
-            redis_client.publish(channel, message)
-    except Exception as e:
-        logger.warning(f"Failed to publish completion: {e}")
+    job_support.publish_sync(
+        f"transcription_progress:{document_id}",
+        {"type": "complete", "document_id": document_id, "result": result},
+    )
 
 
 def _publish_status(document_id: str, status: dict):
     """Publish document status flags via Redis (for WebSocket)."""
-    try:
-        redis_client = _get_redis_client()
-        if redis_client:
-            channel = f"transcription_progress:{document_id}"
-            message = json.dumps(
-                {
-                    "type": "status",
-                    "document_id": document_id,
-                    "status": status,
-                }
-            )
-            redis_client.publish(channel, message)
-    except Exception as e:
-        logger.warning(f"Failed to publish status: {e}")
+    job_support.publish_sync(
+        f"transcription_progress:{document_id}",
+        {"type": "status", "document_id": document_id, "status": status},
+    )
 
 
 def _publish_segment(document_id: str, segment: dict):
     """Publish a partial transcription segment to Redis."""
-    try:
-        redis_client = _get_redis_client()
-        if redis_client:
-            channel = f"transcription_progress:{document_id}"
-            message = json.dumps(
-                {
-                    "type": "segment",
-                    "document_id": document_id,
-                    "segment": segment,
-                }
-            )
-            redis_client.publish(channel, message)
-    except Exception as e:
-        logger.warning(f"Failed to publish segment: {e}")
+    job_support.publish_sync(
+        f"transcription_progress:{document_id}",
+        {"type": "segment", "document_id": document_id, "segment": segment},
+    )
 
 
 def _publish_error(document_id: str, error: str):
     """Publish transcription error to Redis."""
-    try:
-        redis_client = _get_redis_client()
-        if redis_client:
-            channel = f"transcription_progress:{document_id}"
-            message = json.dumps(
-                {"type": "error", "document_id": document_id, "error": error}
-            )
-            redis_client.publish(channel, message)
-    except Exception as e:
-        logger.warning(f"Failed to publish error: {e}")
+    job_support.publish_sync(
+        f"transcription_progress:{document_id}",
+        {"type": "error", "document_id": document_id, "error": error},
+    )

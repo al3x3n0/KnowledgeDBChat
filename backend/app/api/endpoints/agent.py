@@ -48,7 +48,7 @@ from app.services.llm_routing import (
     resolve_feature_default_model,
     resolve_tier_overrides,
 )
-from app.services.llm_service import UserLLMSettings
+from app.services.llm_service import UserLLMSettings, load_user_llm_settings
 
 router = APIRouter()
 agent_service = AgentService()
@@ -83,18 +83,7 @@ async def agent_chat(
     """
     try:
         # Load user LLM preferences
-        user_settings = None
-        try:
-            prefs_result = await db.execute(
-                select(UserPreferences).where(
-                    UserPreferences.user_id == current_user.id
-                )
-            )
-            user_prefs = prefs_result.scalar_one_or_none()
-            if user_prefs:
-                user_settings = UserLLMSettings.from_preferences(user_prefs)
-        except Exception as e:
-            logger.warning(f"Failed to load user preferences: {e}")
+        user_settings = await load_user_llm_settings(db, current_user.id)
 
         response = await agent_service.process_message(
             message=request.message,
@@ -1726,16 +1715,7 @@ async def _process_message_with_streaming(
     async with AsyncSessionLocal() as db:
         try:
             # Load user settings
-            user_settings = None
-            try:
-                prefs_result = await db.execute(
-                    select(UserPreferences).where(UserPreferences.user_id == user.id)
-                )
-                user_prefs = prefs_result.scalar_one_or_none()
-                if user_prefs:
-                    user_settings = UserLLMSettings.from_preferences(user_prefs)
-            except Exception as e:
-                logger.warning(f"Failed to load user preferences: {e}")
+            user_settings = await load_user_llm_settings(db, user.id)
 
             # Create agent service with streaming callback
             # Reuse shared service to avoid re-initializing models per message

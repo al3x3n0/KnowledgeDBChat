@@ -16,12 +16,11 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.memory import UserPreferences
 from app.models.workflow import UserTool
 from app.schemas.workflow import WorkflowCreate
 from app.services import llm_json
 from app.services.agent_tools import AGENT_TOOLS
-from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.llm_service import LLMService, UserLLMSettings, load_user_llm_settings
 
 ALLOWED_NODE_TYPES = {"start", "end", "tool", "condition", "parallel", "loop", "wait"}
 
@@ -203,16 +202,7 @@ class WorkflowSynthesisService:
     async def _load_user_settings(
         self, db: AsyncSession, user_id
     ) -> Optional[UserLLMSettings]:
-        try:
-            prefs_result = await db.execute(
-                select(UserPreferences).where(UserPreferences.user_id == user_id)
-            )
-            user_prefs = prefs_result.scalar_one_or_none()
-            if user_prefs:
-                return UserLLMSettings.from_preferences(user_prefs)
-        except Exception as exc:
-            logger.warning(f"Could not load user LLM preferences: {exc}")
-        return None
+        return await load_user_llm_settings(db, user_id)
 
     async def _load_tool_catalog(self, db: AsyncSession, user_id) -> ToolCatalog:
         result = await db.execute(select(UserTool).where(UserTool.user_id == user_id))

@@ -483,18 +483,9 @@ class TrainingDatasetService:
         total_tokens = 0
 
         # Apply per-user LLM settings (provider/model/api_url/etc.) for dataset generation.
-        user_settings = None
-        try:
-            from app.models.memory import UserPreferences
-            from app.services.llm_service import UserLLMSettings
+        from app.services.llm_service import load_user_llm_settings
 
-            prefs_res = await db.execute(
-                select(UserPreferences).where(UserPreferences.user_id == user_id)
-            )
-            prefs = prefs_res.scalar_one_or_none()
-            user_settings = UserLLMSettings.from_preferences(prefs) if prefs else None
-        except Exception:
-            user_settings = None
+        user_settings = await load_user_llm_settings(db, user_id)
 
         for doc in documents:
             # Generate samples from document

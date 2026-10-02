@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.models.document import Document
 from app.models.template import TemplateJob
-from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.llm_service import LLMService, UserLLMSettings, load_user_llm_settings
 from app.services.storage_service import storage_service
 from app.services.vector_store import vector_store_service
 from app.utils.template_parser import TemplateParser
@@ -259,23 +259,7 @@ Write the content for "{section_title}":"""
         temp_output = None
 
         # Load user LLM settings
-        user_settings = None
-        try:
-            from app.models.memory import UserPreferences
-
-            result = await db.execute(
-                select(UserPreferences).where(UserPreferences.user_id == job.user_id)
-            )
-            user_prefs = result.scalar_one_or_none()
-            if user_prefs:
-                user_settings = UserLLMSettings.from_preferences(user_prefs)
-                logger.info(
-                    f"Loaded user LLM settings for template job: provider={user_settings.provider}, model={user_settings.model}"
-                )
-        except Exception as e:
-            logger.warning(
-                f"Failed to load user LLM settings for template job, using defaults: {e}"
-            )
+        user_settings = await load_user_llm_settings(db, job.user_id)
 
         try:
             # Update job status

@@ -23,10 +23,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.memory import UserPreferences
 from app.models.user import User
 from app.models.workflow import UserTool, Workflow
-from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.llm_service import LLMService, load_user_llm_settings
 
 
 class ToolExecutionError(Exception):
@@ -467,16 +466,7 @@ class CustomToolService:
         rendered_prompt = self._render_template(user_prompt, inputs)
 
         # Load user's LLM settings
-        user_settings = None
-        try:
-            prefs_result = await db.execute(
-                select(UserPreferences).where(UserPreferences.user_id == user.id)
-            )
-            user_prefs = prefs_result.scalar_one_or_none()
-            if user_prefs:
-                user_settings = UserLLMSettings.from_preferences(user_prefs)
-        except Exception as e:
-            logger.warning(f"Could not load user LLM preferences: {e}")
+        user_settings = await load_user_llm_settings(db, user.id)
 
         # Apply overrides
         if user_settings and model_override:

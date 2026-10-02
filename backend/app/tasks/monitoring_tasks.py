@@ -2,7 +2,6 @@
 Monitoring and maintenance tasks.
 """
 
-import asyncio
 from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import Any, Dict
@@ -26,6 +25,7 @@ from app.models.notification import (
 from app.models.research_inbox import ResearchInboxItem
 from app.models.research_note import ResearchNote
 from app.models.synthesis_job import SynthesisJob
+from app.services.citation_lines import is_line_citable as _is_line_citable
 from app.services.llm_service import LLMService
 from app.services.notification_service import notification_service
 from app.services.operator_interventions import (
@@ -35,49 +35,40 @@ from app.services.research_monitor_profile_service import (
     research_monitor_profile_service,
 )
 from app.services.vector_store import vector_store_service
+from app.tasks import job_support
+from app.utils.datetimes import parse_iso_naive as _parse_ts
 
 # Note: cleanup_old_data has been moved to app.tasks.maintenance_tasks
-
-
-def _run_async(coro):
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    if loop.is_running():
-        return asyncio.run(coro)
-    return loop.run_until_complete(coro)
 
 
 @celery_app.task(name="app.tasks.monitoring_tasks.health_check")
 def health_check() -> Dict[str, Any]:
     """Perform comprehensive health check of all services."""
-    return _run_async(_async_health_check())
+    return job_support.run_async(_async_health_check())
 
 
 @celery_app.task(name="app.tasks.monitoring_tasks.generate_stats")
 def generate_stats() -> Dict[str, Any]:
     """Generate system statistics."""
-    return _run_async(_async_generate_stats())
+    return job_support.run_async(_async_generate_stats())
 
 
 @celery_app.task(name="app.tasks.monitoring_tasks.lint_recent_research_notes_citations")
 def lint_recent_research_notes_citations() -> Dict[str, Any]:
     """Periodically lint citations in recently-updated research notes (no LLM)."""
-    return _run_async(_async_lint_recent_research_notes_citations())
+    return job_support.run_async(_async_lint_recent_research_notes_citations())
 
 
 @celery_app.task(name="app.tasks.monitoring_tasks.sync_experiment_runs")
 def sync_experiment_runs() -> Dict[str, Any]:
     """Periodically sync ExperimentRun status/results from linked AgentJobs."""
-    return _run_async(_async_sync_experiment_runs())
+    return job_support.run_async(_async_sync_experiment_runs())
 
 
 @celery_app.task(name="app.tasks.monitoring_tasks.emit_queue_urgency_alerts")
 def emit_queue_urgency_alerts() -> Dict[str, Any]:
     """Emit notifications for urgent queue items and overdue reminders."""
-    return _run_async(_async_emit_queue_urgency_alerts())
+    return job_support.run_async(_async_emit_queue_urgency_alerts())
 
 
 def _summarize_experiment_run_notification(
@@ -694,26 +685,6 @@ async def _async_lint_recent_research_notes_citations() -> Dict[str, Any]:
                 logger.warning(
                     f"Failed to load notification preferences for citation lint task: {exc}"
                 )
-
-        def _parse_ts(v: str | None) -> datetime | None:
-            if not v:
-                return None
-            try:
-                return datetime.fromisoformat(v.replace("Z", "+00:00")).replace(
-                    tzinfo=None
-                )
-            except Exception:
-                return None
-
-        def _is_line_citable(line: str) -> bool:
-            s = (line or "").strip()
-            if not s:
-                return False
-            if s.startswith("#"):
-                return False
-            if s.startswith("```") or s.startswith(">"):
-                return False
-            return bool(re.search(r"[A-Za-z0-9]", s))
 
         for i, note in enumerate(notes, start=1):
             processed += 1

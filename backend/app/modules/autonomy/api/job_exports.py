@@ -14,6 +14,7 @@ from app.api.endpoints.auth import get_current_active_user
 from app.core.database import get_db
 from app.models.agent_job import AgentJob
 from app.models.user import User
+from app.services.llm_service import load_user_llm_settings
 
 ExporterFactory = Callable[..., Any]
 UserSettingsLoader = Callable[..., Awaitable[Any]]
@@ -42,17 +43,7 @@ def _default_exporter_factory(*, style: str) -> Any:
 
 
 async def _load_user_settings(*, db: AsyncSession, user_id: UUID) -> Any:
-    try:
-        from app.models.memory import UserPreferences
-        from app.services.llm_service import UserLLMSettings
-
-        result = await db.execute(
-            select(UserPreferences).where(UserPreferences.user_id == user_id)
-        )
-        preferences = result.scalar_one_or_none()
-        return UserLLMSettings.from_preferences(preferences) if preferences else None
-    except Exception:
-        return None
+    return await load_user_llm_settings(db, user_id)
 
 
 async def _load_tool_log(*, db: AsyncSession, job_id: UUID) -> list:

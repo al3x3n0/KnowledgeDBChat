@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.services.config_values import unique_strings
+
 
 def _normalize_string(value: Any) -> Optional[str]:
     text = str(value or "").strip()
@@ -12,19 +14,7 @@ def _normalize_string(value: Any) -> Optional[str]:
 
 
 def _normalize_string_list(value: Any, *, limit: int = 24) -> List[str]:
-    if not isinstance(value, list):
-        return []
-    out: List[str] = []
-    seen: set[str] = set()
-    for item in value:
-        text = str(item or "").strip()
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        out.append(text)
-        if len(out) >= limit:
-            break
-    return out
+    return unique_strings(value, limit)
 
 
 class ScientificSandboxProfileResponse(BaseModel):

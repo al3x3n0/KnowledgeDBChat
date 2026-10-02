@@ -11,6 +11,7 @@ from app.schemas.agent_job import (
 )
 from app.services.agent_scope_service import normalize_scope_config
 from app.services.autonomy_service import resolve_domain_profile_automation_contract
+from app.services.config_values import coerce_bool  # noqa: F401
 
 
 def build_claude_backend_config(
@@ -253,21 +254,6 @@ def build_repo_bug_triage_config(
     if isinstance(request.config_overrides, dict):
         config.update(normalize_scope_config(request.config_overrides) or {})
     return normalize_scope_config(config)
-
-
-def coerce_bool(value: Any, default: bool = False) -> bool:
-    """Coerce common boolean representations used by stored quick-start state."""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"true", "1", "yes", "y", "on"}:
-            return True
-        if lowered in {"false", "0", "no", "n", "off"}:
-            return False
-    return default
 
 
 def normalize_swarm_roles(roles: Any, *, max_roles: int = 12) -> list[str]:

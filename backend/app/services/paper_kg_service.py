@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document, DocumentSource
 from app.models.knowledge_graph import Entity, EntityMention, Relationship
+from app.services.paper_enrichment_service import _arxiv_id_from_source_identifier
 
 REL_USES_METHOD = "uses_method"
 REL_EVALUATED_ON = "evaluated_on"
@@ -44,16 +45,6 @@ def _normalize_list(values: Any) -> list[str]:
         seen.add(key)
         uniq.append(s)
     return uniq
-
-
-def _arxiv_id_from_source_identifier(source_identifier: Optional[str]) -> Optional[str]:
-    if not source_identifier:
-        return None
-    parts = source_identifier.strip().rstrip("/").split("/")
-    if not parts:
-        return None
-    last = parts[-1]
-    return last or None
 
 
 class PaperKnowledgeGraphService:

@@ -3,39 +3,22 @@ Background task to summarize a document.
 """
 
 import asyncio
-import json
 from typing import Any, Dict, Optional
 from uuid import UUID
 
-import redis
 from loguru import logger
 
 from app.core.celery import celery_app
-from app.core.config import settings
 from app.core.database import create_celery_session
 from app.services import llm_json
 from app.services.document_service import DocumentService
-from app.services.llm_service import UserLLMSettings
+from app.services.llm_service import UserLLMSettings, load_user_llm_settings
+from app.tasks import job_support
 
 
 async def _load_user_settings(db, user_id: Optional[str]) -> Optional[UserLLMSettings]:
     """Load user LLM settings from preferences."""
-    if not user_id:
-        return None
-    try:
-        from sqlalchemy import select
-
-        from app.models.memory import UserPreferences
-
-        result = await db.execute(
-            select(UserPreferences).where(UserPreferences.user_id == UUID(user_id))
-        )
-        user_prefs = result.scalar_one_or_none()
-        if user_prefs:
-            return UserLLMSettings.from_preferences(user_prefs)
-    except Exception as e:
-        logger.debug(f"Could not load user preferences for summarization task: {e}")
-    return None
+    return await load_user_llm_settings(db, user_id)
 
 
 @celery_app.task(bind=True, name="app.tasks.summarization_tasks.summarize_document")
@@ -205,77 +188,29 @@ async def _extract_paper_insights(
         return None
 
 
-def _get_redis_client():
-    try:
-        return redis.from_url(settings.REDIS_URL, decode_responses=True)
-    except Exception as e:
-        logger.warning(f"Failed to connect to Redis for summarization progress: {e}")
-        return None
-
-
 def _publish_sum_progress(document_id: str, progress: dict):
-    try:
-        client = _get_redis_client()
-        if client:
-            channel = f"summarization_progress:{document_id}"
-            msg = json.dumps(
-                {
-                    "type": "progress",
-                    "document_id": document_id,
-                    "progress": progress,
-                }
-            )
-            client.publish(channel, msg)
-    except Exception as e:
-        logger.debug(f"Failed to publish summarization progress: {e}")
+    job_support.publish_sync(
+        f"summarization_progress:{document_id}",
+        {"type": "progress", "document_id": document_id, "progress": progress},
+    )
 
 
 def _publish_sum_complete(document_id: str, result: dict):
-    try:
-        client = _get_redis_client()
-        if client:
-            channel = f"summarization_progress:{document_id}"
-            msg = json.dumps(
-                {
-                    "type": "complete",
-                    "document_id": document_id,
-                    "result": result,
-                }
-            )
-            client.publish(channel, msg)
-    except Exception as e:
-        logger.debug(f"Failed to publish summarization complete: {e}")
+    job_support.publish_sync(
+        f"summarization_progress:{document_id}",
+        {"type": "complete", "document_id": document_id, "result": result},
+    )
 
 
 def _publish_sum_error(document_id: str, error: str):
-    try:
-        client = _get_redis_client()
-        if client:
-            channel = f"summarization_progress:{document_id}"
-            msg = json.dumps(
-                {
-                    "type": "error",
-                    "document_id": document_id,
-                    "error": error,
-                }
-            )
-            client.publish(channel, msg)
-    except Exception as e:
-        logger.debug(f"Failed to publish summarization error: {e}")
+    job_support.publish_sync(
+        f"summarization_progress:{document_id}",
+        {"type": "error", "document_id": document_id, "error": error},
+    )
 
 
 def _publish_sum_status(document_id: str, status: dict):
-    try:
-        client = _get_redis_client()
-        if client:
-            channel = f"summarization_progress:{document_id}"
-            msg = json.dumps(
-                {
-                    "type": "status",
-                    "document_id": document_id,
-                    "status": status,
-                }
-            )
-            client.publish(channel, msg)
-    except Exception as e:
-        logger.debug(f"Failed to publish summarization status: {e}")
+    job_support.publish_sync(
+        f"summarization_progress:{document_id}",
+        {"type": "status", "document_id": document_id, "status": status},
+    )

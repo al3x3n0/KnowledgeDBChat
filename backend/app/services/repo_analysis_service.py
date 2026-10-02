@@ -27,7 +27,37 @@ from app.schemas.repo_report import (
 )
 from app.services.connectors.github_connector import GitHubConnector
 from app.services.connectors.gitlab_connector import GitLabConnector
-from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.llm_service import LLMService, load_user_llm_settings
+
+
+def parse_repo_url(url: str) -> tuple[str, str, str]:
+    """
+    Parse a repository URL to extract type, owner, and repo name.
+
+    Returns:
+        Tuple of (repo_type, owner, repo_name)
+    """
+    # GitHub patterns
+    github_patterns = [
+        r"github\.com[:/]([^/]+)/([^/?#\s]+)",
+        r"api\.github\.com/repos/([^/]+)/([^/?#\s]+)",
+    ]
+    for pattern in github_patterns:
+        match = re.search(pattern, url)
+        if match:
+            return ("github", match.group(1), match.group(2).removesuffix(".git"))
+
+    # GitLab patterns
+    gitlab_patterns = [
+        r"gitlab\.com[:/]([^/]+)/([^/?#\s]+)",
+        r"gitlab\.[^/]+[:/]([^/]+)/([^/?#\s]+)",
+    ]
+    for pattern in gitlab_patterns:
+        match = re.search(pattern, url)
+        if match:
+            return ("gitlab", match.group(1), match.group(2).removesuffix(".git"))
+
+    raise ValueError(f"Could not parse repository URL: {url}")
 
 
 class RepoAnalysisService:
@@ -149,33 +179,8 @@ class RepoAnalysisService:
             )
 
     def _parse_repo_url(self, url: str) -> tuple[str, str, str]:
-        """
-        Parse a repository URL to extract type, owner, and repo name.
-
-        Returns:
-            Tuple of (repo_type, owner, repo_name)
-        """
-        # GitHub patterns
-        github_patterns = [
-            r"github\.com[:/]([^/]+)/([^/?#\s]+)",
-            r"api\.github\.com/repos/([^/]+)/([^/?#\s]+)",
-        ]
-        for pattern in github_patterns:
-            match = re.search(pattern, url)
-            if match:
-                return ("github", match.group(1), match.group(2).removesuffix(".git"))
-
-        # GitLab patterns
-        gitlab_patterns = [
-            r"gitlab\.com[:/]([^/]+)/([^/?#\s]+)",
-            r"gitlab\.[^/]+[:/]([^/]+)/([^/?#\s]+)",
-        ]
-        for pattern in gitlab_patterns:
-            match = re.search(pattern, url)
-            if match:
-                return ("gitlab", match.group(1), match.group(2).removesuffix(".git"))
-
-        raise ValueError(f"Could not parse repository URL: {url}")
+        """See :func:`parse_repo_url`."""
+        return parse_repo_url(url)
 
     def _extract_gitlab_base(self, url: str) -> str:
         """Extract GitLab instance base URL."""
@@ -580,20 +585,7 @@ class RepoAnalysisService:
         insights = RepoInsights()
 
         # Load user LLM settings
-        user_settings = None
-        if user_id and db:
-            try:
-                from app.models.memory import UserPreferences
-
-                result = await db.execute(
-                    select(UserPreferences).where(UserPreferences.user_id == user_id)
-                )
-                user_prefs = result.scalar_one_or_none()
-                if user_prefs:
-                    user_settings = UserLLMSettings.from_preferences(user_prefs)
-                    logger.info(f"Loaded user LLM settings for user {user_id}")
-            except Exception as e:
-                logger.warning(f"Failed to load user LLM settings: {e}")
+        user_settings = await load_user_llm_settings(db, user_id)
 
         # Build context
         context_parts = [

@@ -29,6 +29,7 @@ from app.services.agent_execution_lease_service import (
 )
 from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 from app.services.research_inbox_follow_up_service import sync_follow_up_outcome_for_job
+from app.tasks import job_support
 
 #: Phases that mean a run is waiting for a human, not idling. The stalled-job
 #: sweep must leave these alone: resuming a job paused for approval is not
@@ -262,39 +263,25 @@ async def _publish_job_progress(
     scope_observability_runtime: Optional[dict] = None,
 ):
     """Publish job progress update to Redis for WebSocket subscribers."""
-    import redis.asyncio as redis
+    message = {
+        "type": "progress",
+        "job_id": job_id,
+        "progress": progress,
+        "phase": phase,
+        "status": status,
+        "iteration": iteration,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+    if phase_details:
+        message["phase_details"] = phase_details
+    if error:
+        message["error"] = error
+    if isinstance(execution_graph_runtime, dict) and execution_graph_runtime:
+        message["execution_graph_runtime"] = execution_graph_runtime
+    if isinstance(scope_observability_runtime, dict) and scope_observability_runtime:
+        message["scope_observability_runtime"] = scope_observability_runtime
 
-    from app.core.config import settings
-
-    try:
-        redis_client = redis.from_url(settings.REDIS_URL)
-        channel = f"agent_job:{job_id}:progress"
-
-        message = {
-            "type": "progress",
-            "job_id": job_id,
-            "progress": progress,
-            "phase": phase,
-            "status": status,
-            "iteration": iteration,
-            "timestamp": datetime.utcnow().isoformat(),
-        }
-        if phase_details:
-            message["phase_details"] = phase_details
-        if error:
-            message["error"] = error
-        if isinstance(execution_graph_runtime, dict) and execution_graph_runtime:
-            message["execution_graph_runtime"] = execution_graph_runtime
-        if (
-            isinstance(scope_observability_runtime, dict)
-            and scope_observability_runtime
-        ):
-            message["scope_observability_runtime"] = scope_observability_runtime
-
-        await redis_client.publish(channel, json.dumps(message))
-        await redis_client.close()
-    except Exception as e:
-        logger.warning(f"Failed to publish progress for agent job {job_id}: {e}")
+    await job_support.publish_message(f"agent_job:{job_id}:progress", message)
 
 
 async def _execute_agent_job_async(
@@ -1153,8 +1140,7 @@ def generate_job_summary(job_id: str):
     logger.info(f"Generating summary for agent job {job_id}")
 
     async def _generate_summary():
-        from app.models.memory import UserPreferences
-        from app.services.llm_service import LLMService, UserLLMSettings
+        from app.services.llm_service import LLMService, load_user_llm_settings
 
         job_uuid = UUID(job_id)
         session_factory = create_celery_session()
@@ -1170,19 +1156,7 @@ def generate_job_summary(job_id: str):
             # Generate summary using LLM
             llm_service = LLMService()
             # Best-effort: apply per-user LLM settings (provider/model/custom URL, etc.)
-            user_settings = None
-            try:
-                prefs_res = await db.execute(
-                    select(UserPreferences).where(
-                        UserPreferences.user_id == job.user_id
-                    )
-                )
-                prefs = prefs_res.scalar_one_or_none()
-                user_settings = (
-                    UserLLMSettings.from_preferences(prefs) if prefs else None
-                )
-            except Exception:
-                user_settings = None
+            user_settings = await load_user_llm_settings(db, job.user_id)
 
             summary_prompt = f"""Generate a concise summary of this completed autonomous agent job:
 

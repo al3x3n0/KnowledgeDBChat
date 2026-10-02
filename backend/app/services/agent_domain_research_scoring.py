@@ -18,6 +18,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from app.services.config_values import safe_float  # noqa: F401
+
 #: Keywords that mark a paper or idea as belonging to a track, and the
 #: instruction that goes to the model alongside them. Track-specific, because
 #: "relevant" means something different for a compiler question than for a
@@ -85,14 +87,6 @@ _GENERIC_PROMPT = (
 #: How many clusters a signal list may produce, and how long a label may be.
 MAX_SIGNAL_CLUSTERS = 8
 MAX_CLUSTER_LABEL_CHARS = 180
-
-
-def safe_float(value: Any, default: float = 0.0) -> float:
-    """A float, or the default -- never an exception."""
-    try:
-        return float(value)
-    except Exception:
-        return default
 
 
 def normalize_key(value: Any) -> str:

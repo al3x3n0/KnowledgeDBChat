@@ -15,12 +15,10 @@ from uuid import UUID
 
 from loguru import logger
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.feature_flags import get_flag as get_feature_flag
-from app.models.memory import UserPreferences
 from app.schemas.langgraph_issue_pr import (
     ChecklistItem,
     EventLogItem,
@@ -37,7 +35,7 @@ from app.schemas.langgraph_issue_pr import (
     ReviewFailure,
 )
 from app.services import llm_json
-from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.llm_service import LLMService, UserLLMSettings, load_user_llm_settings
 from app.services.repo_symbol_index_service import RepoSymbolIndexService
 
 try:
@@ -200,20 +198,7 @@ class LangGraphIssuePrService:
     async def _load_user_settings(
         self, *, db: Optional[AsyncSession], user_id: Optional[UUID]
     ) -> Optional[UserLLMSettings]:
-        if db is None or user_id is None:
-            return None
-        try:
-            result = await db.execute(
-                select(UserPreferences).where(UserPreferences.user_id == user_id)
-            )
-            prefs = result.scalar_one_or_none()
-            if prefs:
-                return UserLLMSettings.from_preferences(prefs)
-        except Exception as exc:
-            logger.warning(
-                f"Failed to load user LLM settings for issue-pr orchestration: {exc}"
-            )
-        return None
+        return await load_user_llm_settings(db, user_id)
 
     async def _resolve_use_symbol_retrieval(
         self, request: LangGraphIssuePrRequest

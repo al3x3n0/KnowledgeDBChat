@@ -8,7 +8,6 @@ Handles background execution of training jobs, including:
 """
 
 import asyncio
-import json
 import os
 import tempfile
 from datetime import datetime
@@ -25,25 +24,7 @@ from app.core.config import settings
 from app.core.database import create_celery_session
 from app.models.training_job import TrainingJob, TrainingJobStatus
 from app.services.trainers.base_trainer import TrainingProgress
-
-
-def _run_async(coroutine):
-    """Run async coroutine in sync context."""
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    if loop.is_running():
-        # Create new loop for this thread
-        new_loop = asyncio.new_event_loop()
-        try:
-            return new_loop.run_until_complete(coroutine)
-        finally:
-            new_loop.close()
-    else:
-        return loop.run_until_complete(coroutine)
+from app.tasks import job_support
 
 
 async def _publish_training_progress(
@@ -60,41 +41,32 @@ async def _publish_training_progress(
     error: Optional[str] = None,
 ):
     """Publish training progress update to Redis for WebSocket subscribers."""
-    import redis.asyncio as redis
+    message = {
+        "type": "progress",
+        "job_id": job_id,
+        "progress": progress,
+        "status": status,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
 
-    try:
-        redis_client = redis.from_url(settings.REDIS_URL)
-        channel = f"training_job:{job_id}:progress"
+    if current_step is not None:
+        message["current_step"] = current_step
+    if total_steps is not None:
+        message["total_steps"] = total_steps
+    if current_epoch is not None:
+        message["current_epoch"] = current_epoch
+    if total_epochs is not None:
+        message["total_epochs"] = total_epochs
+    if current_loss is not None:
+        message["current_loss"] = current_loss
+    if learning_rate is not None:
+        message["learning_rate"] = learning_rate
+    if eta_seconds is not None:
+        message["eta_seconds"] = eta_seconds
+    if error:
+        message["error"] = error
 
-        message = {
-            "type": "progress",
-            "job_id": job_id,
-            "progress": progress,
-            "status": status,
-            "timestamp": datetime.utcnow().isoformat(),
-        }
-
-        if current_step is not None:
-            message["current_step"] = current_step
-        if total_steps is not None:
-            message["total_steps"] = total_steps
-        if current_epoch is not None:
-            message["current_epoch"] = current_epoch
-        if total_epochs is not None:
-            message["total_epochs"] = total_epochs
-        if current_loss is not None:
-            message["current_loss"] = current_loss
-        if learning_rate is not None:
-            message["learning_rate"] = learning_rate
-        if eta_seconds is not None:
-            message["eta_seconds"] = eta_seconds
-        if error:
-            message["error"] = error
-
-        await redis_client.publish(channel, json.dumps(message))
-        await redis_client.close()
-    except Exception as e:
-        logger.warning(f"Failed to publish training progress for job {job_id}: {e}")
+    await job_support.publish_message(f"training_job:{job_id}:progress", message)
 
 
 async def _execute_training_async(job_id: str, user_id: str):
@@ -255,11 +227,7 @@ async def _execute_training_async(job_id: str, user_id: str):
 
             # Define cancellation check
             def cancel_check() -> bool:
-                # Check Redis for cancellation signal
-                import redis
-
-                r = redis.from_url(settings.REDIS_URL)
-                return r.get(f"training_job:{job_id}:cancel") is not None
+                return job_support.flag_is_set(f"training_job:{job_id}:cancel")
 
             # Get hyperparameters
             hyperparameters = job.get_hyperparameters()
@@ -383,7 +351,7 @@ def execute_training_job_task(self, job_id: str, user_id: str):
     logger.info(f"Starting training job execution for {job_id}")
 
     try:
-        _run_async(_execute_training_async(job_id, user_id))
+        job_support.run_async(_execute_training_async(job_id, user_id))
     except Exception as e:
         logger.exception(f"Training task failed for job {job_id}: {e}")
         raise
@@ -405,7 +373,7 @@ def validate_dataset_task(dataset_id: str, user_id: str):
             logger.info(f"Dataset {dataset_id} validation: valid={result.is_valid}")
             return result.is_valid
 
-    return _run_async(_validate())
+    return job_support.run_async(_validate())
 
 
 @celery_app.task(name="app.tasks.training_tasks.generate_dataset_from_documents")
@@ -444,7 +412,7 @@ def generate_dataset_from_documents_task(
             )
             return str(dataset.id)
 
-    return _run_async(_generate())
+    return job_support.run_async(_generate())
 
 
 @celery_app.task(name="app.tasks.training_tasks.cleanup_old_checkpoints")
@@ -483,7 +451,7 @@ def cleanup_old_checkpoints_task(job_id: str, keep_last: int = 3):
             logger.info(f"Cleaned up {deleted} old checkpoints for job {job_id}")
             return deleted
 
-    return _run_async(_cleanup())
+    return job_support.run_async(_cleanup())
 
 
 @celery_app.task(name="app.tasks.training_tasks.export_dataset")
@@ -502,4 +470,4 @@ def export_dataset_task(dataset_id: str, user_id: str):
             logger.info(f"Exported dataset {dataset_id} to {file_path}")
             return file_path
 
-    return _run_async(_export())
+    return job_support.run_async(_export())

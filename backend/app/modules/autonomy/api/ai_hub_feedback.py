@@ -10,9 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.endpoints.auth import get_current_active_user
 from app.core.database import get_db
 from app.core.feature_flags import get_str as get_feature_str
-from app.models.agent_job import AgentJob
 from app.models.ai_hub_recommendation_feedback import AIHubRecommendationFeedback
 from app.models.user import User
+from app.modules.autonomy.api.owned_job import get_owned_job as _require_owned_job
 from app.schemas.ai_hub_recommendation_feedback import (
     AIHubRecommendationFeedbackCreate,
     AIHubRecommendationFeedbackListResponse,
@@ -21,19 +21,6 @@ from app.schemas.ai_hub_recommendation_feedback import (
 from app.schemas.customer_profile import CustomerProfile
 
 router = APIRouter()
-
-
-async def _require_owned_job(
-    *,
-    job_id: UUID,
-    user_id: UUID,
-    db: AsyncSession,
-) -> None:
-    result = await db.execute(
-        select(AgentJob).where(and_(AgentJob.id == job_id, AgentJob.user_id == user_id))
-    )
-    if result.scalar_one_or_none() is None:
-        raise HTTPException(status_code=404, detail="Agent job not found")
 
 
 @router.get(

@@ -23,6 +23,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
+from app.services.agent_repeated_success import succeeded as _succeeded
+
 logger = logging.getLogger(__name__)
 
 #: Successful non-producing calls in a row before the run is told.
@@ -38,14 +40,6 @@ DIRECTIVE_AT = 6
 CONTRACT_SATISFYING_TOOLS = frozenset(
     {"set_output_schema", "format_as_table", "format_as_report"}
 )
-
-
-def _succeeded(result: Any) -> bool:
-    if not isinstance(result, Mapping):
-        return False
-    if result.get("error"):
-        return False
-    return bool(result.get("success", True))
 
 
 def _identities(result: Any) -> set:

@@ -13,8 +13,7 @@ from app.core.celery import celery_app
 from app.core.config import settings
 from app.core.database import create_celery_session
 from app.models.chat import ChatMessage, ChatSession
-from app.models.memory import UserPreferences
-from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.llm_service import LLMService, load_user_llm_settings
 
 
 @celery_app.task(bind=True, name="app.tasks.chat_tasks.generate_chat_title")
@@ -97,20 +96,7 @@ async def _async_generate_chat_title(task, session_id: str) -> Dict[str, Any]:
             )
 
             # Load user preferences for task-specific model selection
-            user_settings = None
-            try:
-                prefs_result = await db.execute(
-                    select(UserPreferences).where(
-                        UserPreferences.user_id == session.user_id
-                    )
-                )
-                user_prefs = prefs_result.scalar_one_or_none()
-                if user_prefs:
-                    user_settings = UserLLMSettings.from_preferences(user_prefs)
-            except Exception as e:
-                logger.warning(
-                    f"Failed to load user preferences for title generation: {e}"
-                )
+            user_settings = await load_user_llm_settings(db, session.user_id)
 
             # Generate title using LLM
             llm_service = LLMService()

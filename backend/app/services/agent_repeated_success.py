@@ -22,8 +22,9 @@ asked this before, and here is when.
 from __future__ import annotations
 
 import hashlib
-import json
 from typing import Any, Dict, List, Mapping, Optional
+
+from app.services.agent_failure_diagnosis import _canonical_params
 
 #: Params that vary between otherwise identical calls and say nothing about
 #: what was asked.
@@ -34,25 +35,15 @@ IGNORED_PARAMS = {"label", "reason", "purpose"}
 FIRST_NOTE_AT = 2
 
 
-def _canonical_params(params: Any) -> str:
-    if not isinstance(params, Mapping):
-        return ""
-    salient = {
-        key: value for key, value in params.items() if str(key) not in IGNORED_PARAMS
-    }
-    try:
-        return json.dumps(salient, sort_keys=True, default=str)
-    except Exception:  # pragma: no cover - defensive
-        return str(sorted(salient))
-
-
 def signature(tool: str, params: Any) -> str:
     """Identify a call by what was asked, not by what came back."""
-    digest = hashlib.sha256(_canonical_params(params).encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256(
+        _canonical_params(params, IGNORED_PARAMS).encode("utf-8")
+    ).hexdigest()[:16]
     return f"{str(tool or '').strip()}:{digest}"
 
 
-def _succeeded(result: Any) -> bool:
+def succeeded(result: Any) -> bool:
     if not isinstance(result, Mapping):
         return False
     if result.get("error"):
@@ -80,7 +71,7 @@ def prior_successes(
             continue
         if signature(action.get("tool"), action.get("params")) != wanted:
             continue
-        if not _succeeded(entry.get("result")):
+        if not succeeded(entry.get("result")):
             continue
         iteration = entry.get("iteration")
         seen.append(int(iteration) if isinstance(iteration, int) else -1)
@@ -97,7 +88,7 @@ def analyze(
     None when this is the first time, when the call failed, or when the
     earlier ones failed -- a retry after a failure is progress, not a loop.
     """
-    if not isinstance(action, dict) or not _succeeded(result):
+    if not isinstance(action, dict) or not succeeded(result):
         return None
 
     tool = str(action.get("tool") or "").strip()

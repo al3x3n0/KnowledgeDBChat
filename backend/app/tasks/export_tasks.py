@@ -3,7 +3,6 @@ Celery tasks for DOCX/PDF export generation.
 """
 
 import asyncio
-import json
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
@@ -15,33 +14,16 @@ from app.core.celery import celery_app
 from app.core.database import create_celery_session
 from app.models.export_job import ExportJob
 from app.services.export_service import export_service
+from app.tasks import job_support
 
 
 async def _publish_progress(
     job_id: str, progress: int, stage: str, status: str, error: Optional[str] = None
 ):
     """Publish progress update to Redis for WebSocket subscribers."""
-    import redis.asyncio as redis
-
-    from app.core.config import settings
-
-    try:
-        redis_client = redis.from_url(settings.REDIS_URL)
-        channel = f"export:{job_id}:progress"
-
-        message = {
-            "type": "progress",
-            "progress": progress,
-            "stage": stage,
-            "status": status,
-        }
-        if error:
-            message["error"] = error
-
-        await redis_client.publish(channel, json.dumps(message))
-        await redis_client.close()
-    except Exception as e:
-        logger.warning(f"Failed to publish progress for export job {job_id}: {e}")
+    await job_support.publish_progress(
+        f"export:{job_id}:progress", progress, stage, status, error
+    )
 
 
 async def _process_export_async(job_id: str):
@@ -123,18 +105,7 @@ def process_export_task(self, job_id: str):
         error_text = str(e)
 
         async def _mark_failed():
-            job_uuid = UUID(job_id)
-            session_factory = create_celery_session()
-            async with session_factory() as db:
-                result = await db.execute(
-                    select(ExportJob).where(ExportJob.id == job_uuid)
-                )
-                job = result.scalar_one_or_none()
-                if job and job.status not in ("completed", "failed", "cancelled"):
-                    job.status = "failed"
-                    job.error = f"Task error: {error_text}"
-                    job.completed_at = datetime.utcnow()
-                    await db.commit()
+            await job_support.mark_job_failed(ExportJob, job_id, error_text)
 
         try:
             asyncio.run(_mark_failed())

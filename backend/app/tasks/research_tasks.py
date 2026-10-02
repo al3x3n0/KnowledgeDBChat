@@ -15,26 +15,13 @@ from app.core.celery import celery_app
 from app.core.database import create_celery_session
 from app.models.document import Document, DocumentSource
 from app.services.document_service import DocumentService
-from app.services.llm_service import UserLLMSettings
+from app.services.llm_service import UserLLMSettings, load_user_llm_settings
 from app.tasks.ingestion_tasks import process_uploaded_document
 
 
 async def _load_user_settings(db, user_id: Optional[str]) -> Optional[UserLLMSettings]:
     """Load user LLM settings from preferences."""
-    if not user_id:
-        return None
-    try:
-        from app.models.memory import UserPreferences
-
-        result = await db.execute(
-            select(UserPreferences).where(UserPreferences.user_id == UUID(user_id))
-        )
-        user_prefs = result.scalar_one_or_none()
-        if user_prefs:
-            return UserLLMSettings.from_preferences(user_prefs)
-    except Exception as e:
-        logger.debug(f"Could not load user preferences for research task: {e}")
-    return None
+    return await load_user_llm_settings(db, user_id)
 
 
 @celery_app.task(bind=True, name="app.tasks.research_tasks.generate_literature_review")

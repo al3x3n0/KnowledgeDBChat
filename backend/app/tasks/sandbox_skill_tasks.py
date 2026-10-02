@@ -14,12 +14,13 @@ worker and the person who proposed it.
 """
 
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from loguru import logger
 
 from app.core.celery import celery_app
 from app.core.database import create_celery_session
+from app.tasks import job_support
 
 DRAFT_SOFT_LIMIT_SECONDS = 600
 DRAFT_HARD_LIMIT_SECONDS = 660
@@ -39,18 +40,7 @@ def draft_sandbox_skill(
 ) -> Dict[str, Any]:
     """Draft a skill for one user, reporting each attempt as it goes."""
 
-    def report(stage: str, attempt: int, notes: List[str]) -> None:
-        self.update_state(
-            state="PROGRESS",
-            meta={
-                # Carried on every update so the polling endpoint can refuse a
-                # draft that is not the caller's.
-                "user_id": str(user_id),
-                "stage": stage,
-                "attempt": attempt,
-                "notes": list(notes),
-            },
-        )
+    report = job_support.attempt_reporter(self, user_id)
 
     async def _run() -> Dict[str, Any]:
         from app.services.sandbox_skill_author_service import draft_skill

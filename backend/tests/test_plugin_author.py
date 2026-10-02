@@ -280,4 +280,6 @@ def test_the_task_carries_its_owner_in_every_state():
     source = inspect.getsource(plugin_tasks.draft_plugin_manifest)
 
     assert '"user_id": str(user_id)' in source
-    assert 'state="PROGRESS"' in source
+    # Progress states get it from the shared reporter, which is tested in
+    # test_job_support; what matters here is that the task hands it the owner.
+    assert "job_support.attempt_reporter(self, user_id)" in source

@@ -63,3 +63,22 @@ def age(value: Any, *, now: datetime | None = None):
     if moment is None:
         return None
     return (as_aware_utc(now) or utc_now()) - moment
+
+
+def parse_iso_naive(value: str | None) -> datetime | None:
+    """An ISO-8601 string (a trailing ``Z`` allowed) as a naive UTC datetime,
+    or None when it is absent or unreadable.
+
+    An offset is converted before it is dropped. The two copies this replaced
+    dropped it unconverted, which is the same thing for the UTC strings this
+    codebase writes and five and a half hours wrong for ``+05:30``.
+    """
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed.replace(tzinfo=None)

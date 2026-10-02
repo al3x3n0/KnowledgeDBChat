@@ -39,7 +39,6 @@ from app.models.document import Document
 from app.models.latex_compile_job import LatexCompileJob
 from app.models.latex_project import LatexProject
 from app.models.latex_project_file import LatexProjectFile
-from app.models.memory import UserPreferences
 from app.models.user import User
 from app.schemas.latex import (
     LatexApplyUnifiedDiffRequest,
@@ -80,9 +79,16 @@ from app.schemas.latex_project_file import (
 )
 from app.services import llm_json
 from app.services.auth_service import get_current_user
+from app.services.bibtex import (
+    _bib_key_from_uuid,
+    _bibtex_month_macro,
+    _escape_bibtex,
+    _extract_arxiv_id,
+    _sanitize_bib_filename,
+)
 from app.services.document_service import DocumentService
 from app.services.latex_compiler_service import LatexSafetyError, latex_compiler_service
-from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.llm_service import LLMService, load_user_llm_settings
 from app.services.search_service import search_service
 from app.services.storage_service import storage_service
 from app.services.unified_diff_service import apply_unified_diff_to_text
@@ -359,16 +365,7 @@ async def latex_copilot_section(
         f"{prompt_text}\n"
     )
 
-    user_settings: Optional[UserLLMSettings] = None
-    try:
-        prefs_result = await db.execute(
-            select(UserPreferences).where(UserPreferences.user_id == current_user.id)
-        )
-        user_prefs = prefs_result.scalar_one_or_none()
-        if user_prefs:
-            user_settings = UserLLMSettings.from_preferences(user_prefs)
-    except Exception as exc:
-        logger.warning(f"Could not load user LLM preferences: {exc}")
+    user_settings = await load_user_llm_settings(db, current_user.id)
 
     llm = LLMService()
     try:
@@ -452,16 +449,7 @@ async def latex_copilot_fix(
         f"{log_trim}\n"
     )
 
-    user_settings: Optional[UserLLMSettings] = None
-    try:
-        prefs_result = await db.execute(
-            select(UserPreferences).where(UserPreferences.user_id == current_user.id)
-        )
-        user_prefs = prefs_result.scalar_one_or_none()
-        if user_prefs:
-            user_settings = UserLLMSettings.from_preferences(user_prefs)
-    except Exception as exc:
-        logger.warning(f"Could not load user LLM preferences: {exc}")
+    user_settings = await load_user_llm_settings(db, current_user.id)
 
     llm = LLMService()
     try:
@@ -640,16 +628,7 @@ async def latex_math_copilot(
     prompt_parts.append(f"{tex_trim}\n")
     prompt = "".join(prompt_parts)
 
-    user_settings: Optional[UserLLMSettings] = None
-    try:
-        prefs_result = await db.execute(
-            select(UserPreferences).where(UserPreferences.user_id == current_user.id)
-        )
-        user_prefs = prefs_result.scalar_one_or_none()
-        if user_prefs:
-            user_settings = UserLLMSettings.from_preferences(user_prefs)
-    except Exception as exc:
-        logger.warning(f"Could not load user LLM preferences: {exc}")
+    user_settings = await load_user_llm_settings(db, current_user.id)
 
     llm = LLMService()
     try:
@@ -717,100 +696,9 @@ async def latex_math_copilot(
     )
 
 
-def _sanitize_bib_filename(name: str) -> str:
-    s = (name or "").strip()
-    if not s:
-        return "refs.bib"
-    if "/" in s or "\\" in s or s.startswith("."):
-        return "refs.bib"
-    if not s.lower().endswith(".bib"):
-        s = s + ".bib"
-    if len(s) > 100:
-        s = s[:100]
-    return s
-
-
 def _bib_stem(name: str) -> str:
     n = _sanitize_bib_filename(name)
     return n[:-4] if n.lower().endswith(".bib") else n
-
-
-def _bib_key_from_uuid(doc_id: UUID) -> str:
-    # Durable, reversible cite key (no guessing/prefix matching needed):
-    # \cite{KDB:<uuid>}
-    return f"KDB:{str(doc_id)}"
-
-
-def _escape_bibtex(s: str) -> str:
-    """
-    Escape user/content strings for safe inclusion inside BibTeX fields / LaTeX text.
-
-    Note: We intentionally do not try to preserve existing LaTeX macros. This endpoint
-    is meant for plain-text metadata pulled from the Knowledge DB.
-    """
-    t = (s or "").strip()
-    if not t:
-        return ""
-    # Collapse whitespace/newlines to keep entries tidy.
-    t = re.sub(r"\s+", " ", t).strip()
-    # LaTeX special chars commonly appearing in titles/authors.
-    t = t.replace("\\", r"\textbackslash{}")
-    t = t.replace("{", r"\{").replace("}", r"\}")
-    t = t.replace("&", r"\&")
-    t = t.replace("%", r"\%")
-    t = t.replace("$", r"\$")
-    t = t.replace("#", r"\#")
-    t = t.replace("_", r"\_")
-    t = t.replace("~", r"\textasciitilde{}")
-    t = t.replace("^", r"\textasciicircum{}")
-    return t
-
-
-def _extract_arxiv_id(url: str) -> Optional[str]:
-    """
-    Extract an arXiv identifier from a URL if present.
-
-    Supports:
-    - https://arxiv.org/abs/1234.56789
-    - https://arxiv.org/abs/1234.56789v2
-    - https://arxiv.org/pdf/1234.56789.pdf
-    - https://arxiv.org/pdf/1234.56789v2.pdf
-    """
-    u = (url or "").strip()
-    if not u:
-        return None
-    m = re.search(
-        r"arxiv\.org/(abs|pdf)/(?P<id>\d{4}\.\d{4,5}(v\d+)?)(?:\.pdf)?", u, flags=re.I
-    )
-    if not m:
-        return None
-    return (m.group("id") or "").strip() or None
-
-
-def _bibtex_month_macro(dt: Optional[datetime]) -> Optional[str]:
-    if not dt:
-        return None
-    try:
-        month = int(dt.month)
-    except Exception:
-        return None
-    months = [
-        "jan",
-        "feb",
-        "mar",
-        "apr",
-        "may",
-        "jun",
-        "jul",
-        "aug",
-        "sep",
-        "oct",
-        "nov",
-        "dec",
-    ]
-    if 1 <= month <= 12:
-        return months[month - 1]
-    return None
 
 
 @router.post("/citations/from-documents", response_model=LatexCitationsResponse)

@@ -179,6 +179,39 @@ class UserLLMSettings:
         return self.provider
 
 
+async def load_user_llm_settings(db: Any, user_id: Any) -> Optional["UserLLMSettings"]:
+    """This user's LLM preferences, or None if they have none.
+
+    Ten modules each had a `_load_user_settings`, and another twenty sites
+    wrote the lookup out inline. They agreed on the result, which is why
+    nothing broke, and differed in everything a caller could trip on: some
+    took a UUID and some a string, some the session first and some the user,
+    some logged a failure and some swallowed it. One returned an empty
+    settings object where the rest returned None.
+
+    Never raises: preferences are a refinement, and a turn that cannot read
+    them should run on the defaults rather than fail. ``user_id`` may be a
+    UUID, its string form, or None.
+    """
+    if db is None or not user_id:
+        return None
+    try:
+        from sqlalchemy import select
+
+        from app.models.memory import UserPreferences
+
+        key = user_id if isinstance(user_id, UUID) else UUID(str(user_id))
+        prefs = (
+            await db.execute(
+                select(UserPreferences).where(UserPreferences.user_id == key)
+            )
+        ).scalar_one_or_none()
+        return UserLLMSettings.from_preferences(prefs) if prefs else None
+    except Exception as exc:
+        logger.warning(f"Could not load LLM preferences for user {user_id}: {exc}")
+        return None
+
+
 def _meta_from_completion(
     data: Dict[str, Any], fallback_model: Optional[str] = None
 ) -> Dict[str, Any]:

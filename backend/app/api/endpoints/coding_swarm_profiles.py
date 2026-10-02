@@ -21,6 +21,7 @@ from app.services.collaboration_service import (
     build_collaboration_summary,
     list_collaboration_user_ids,
 )
+from app.services.config_values import uuid_list
 
 router = APIRouter()
 
@@ -42,22 +43,7 @@ def _normalize_str_list(values: object, limit: int) -> list[str]:
 
 
 def _normalize_uuid_list(values: object, limit: int = 50) -> list[str]:
-    if not isinstance(values, list):
-        return []
-    out: list[str] = []
-    seen: set[str] = set()
-    for raw in values:
-        try:
-            text = str(UUID(str(raw))).strip()
-        except Exception:
-            continue
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        out.append(text)
-        if len(out) >= limit:
-            break
-    return out
+    return uuid_list(values, limit)
 
 
 def _normalize_visibility(value: object) -> str:

@@ -2,7 +2,6 @@
 API endpoints for repository report and presentation generation.
 """
 
-import re
 from typing import Optional
 from uuid import UUID
 
@@ -24,39 +23,10 @@ from app.schemas.repo_report import (
     RepoReportJobResponse,
 )
 from app.services.auth_service import get_current_user
+from app.services.repo_analysis_service import parse_repo_url as _parse_repo_url
 from app.services.storage_service import StorageService
 
 router = APIRouter()
-
-
-def _parse_repo_url(url: str) -> tuple[str, str, str]:
-    """
-    Parse a repository URL to extract type, owner, and repo name.
-
-    Returns:
-        Tuple of (repo_type, owner, repo_name)
-    """
-    # GitHub patterns
-    github_patterns = [
-        r"github\.com[:/]([^/]+)/([^/?#\s]+)",
-        r"api\.github\.com/repos/([^/]+)/([^/?#\s]+)",
-    ]
-    for pattern in github_patterns:
-        match = re.search(pattern, url)
-        if match:
-            return ("github", match.group(1), match.group(2).removesuffix(".git"))
-
-    # GitLab patterns
-    gitlab_patterns = [
-        r"gitlab\.com[:/]([^/]+)/([^/?#\s]+)",
-        r"gitlab\.[^/]+[:/]([^/]+)/([^/?#\s]+)",
-    ]
-    for pattern in gitlab_patterns:
-        match = re.search(pattern, url)
-        if match:
-            return ("gitlab", match.group(1), match.group(2).removesuffix(".git"))
-
-    raise ValueError(f"Could not parse repository URL: {url}")
 
 
 @router.get("/sections", response_model=AvailableSectionsResponse)

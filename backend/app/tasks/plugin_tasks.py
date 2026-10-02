@@ -19,7 +19,7 @@ Celery's own result backend already holds exactly this shape of state, and
 """
 
 import asyncio
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from loguru import logger
 from sqlalchemy import select
@@ -27,6 +27,7 @@ from sqlalchemy import select
 from app.core.celery import celery_app
 from app.core.database import create_celery_session
 from app.models.user import User
+from app.tasks import job_support
 
 #: Drafting makes up to MAX_ATTEMPTS model calls and runs the tools it writes.
 #: The ceiling is generous against the two minutes observed, and finite so a
@@ -44,19 +45,7 @@ HARD_LIMIT_SECONDS = 360
 def draft_plugin_manifest(self, description: str, user_id: str) -> Dict[str, Any]:
     """Draft a manifest for one user, reporting each attempt as it goes."""
 
-    def report(stage: str, attempt: int, notes: List[str]) -> None:
-        self.update_state(
-            state="PROGRESS",
-            meta={
-                # Carried on every update so the polling endpoint can refuse a
-                # draft that is not the caller's. A task id is unguessable, but
-                # unguessable is not the same as checked.
-                "user_id": str(user_id),
-                "stage": stage,
-                "attempt": attempt,
-                "notes": list(notes),
-            },
-        )
+    report = job_support.attempt_reporter(self, user_id)
 
     async def _run() -> Dict[str, Any]:
         from app.services.plugin_author_service import draft_manifest

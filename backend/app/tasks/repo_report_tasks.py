@@ -3,7 +3,6 @@ Celery tasks for repository report and presentation generation.
 """
 
 import asyncio
-import json
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
@@ -18,6 +17,7 @@ from app.services.repo_analysis_service import RepoAnalysisService
 from app.services.repo_presentation_generator import RepoPresentationGenerator
 from app.services.repo_report_generator import RepoReportGenerator
 from app.services.storage_service import StorageService
+from app.tasks import job_support
 
 
 class RepoReportGenerationError(Exception):
@@ -28,27 +28,9 @@ async def _publish_progress(
     job_id: str, progress: int, stage: str, status: str, error: Optional[str] = None
 ):
     """Publish progress update to Redis for WebSocket subscribers."""
-    import redis.asyncio as redis
-
-    from app.core.config import settings
-
-    try:
-        redis_client = redis.from_url(settings.REDIS_URL)
-        channel = f"repo_report:{job_id}:progress"
-
-        message = {
-            "type": "progress",
-            "progress": progress,
-            "stage": stage,
-            "status": status,
-        }
-        if error:
-            message["error"] = error
-
-        await redis_client.publish(channel, json.dumps(message))
-        await redis_client.close()
-    except Exception as e:
-        logger.warning(f"Failed to publish progress for job {job_id}: {e}")
+    await job_support.publish_progress(
+        f"repo_report:{job_id}:progress", progress, stage, status, error
+    )
 
 
 async def _generate_repo_report_async(job_id: str, user_id: str):
@@ -254,18 +236,7 @@ def generate_repo_report_task(self, job_id: str, user_id: str):
         error_text = str(e)
 
         async def _mark_failed():
-            job_uuid = UUID(job_id)
-            session_factory = create_celery_session()
-            async with session_factory() as db:
-                result = await db.execute(
-                    select(RepoReportJob).where(RepoReportJob.id == job_uuid)
-                )
-                job = result.scalar_one_or_none()
-                if job and job.status not in ("completed", "failed", "cancelled"):
-                    job.status = "failed"
-                    job.error = f"Task error: {error_text}"
-                    job.completed_at = datetime.utcnow()
-                    await db.commit()
+            await job_support.mark_job_failed(RepoReportJob, job_id, error_text)
 
         try:
             asyncio.run(_mark_failed())

@@ -19,6 +19,9 @@ from app.services.autonomy_service import (
     current_domain_profile_policy_snapshot,
     resolve_domain_profile_automation_contract,
 )
+from app.services.config_values import safe_float as _safe_float
+from app.services.config_values import safe_int as _safe_int
+from app.services.config_values import unique_strings
 from app.services.research_opportunity_service import (
     collect_research_opportunity_linked_ids,
     compute_research_opportunity_evidence_revision,
@@ -36,30 +39,8 @@ def _text(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return default
-
-
-def _safe_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except Exception:
-        return default
-
-
 def _string_list(value: Any, *, limit: int = 12) -> list[str]:
-    rows = value if isinstance(value, list) else []
-    out: list[str] = []
-    for row in rows:
-        text = _text(row)
-        if text and text not in out:
-            out.append(text)
-        if len(out) >= limit:
-            break
-    return out
+    return unique_strings(value, limit)
 
 
 def _dict_list(value: Any, *, limit: int = 12) -> list[dict[str, Any]]:

@@ -7,6 +7,7 @@ job type and its config, so they are unit-tested directly.
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Any, Dict, List, Optional, Sequence
 
 from loguru import logger
@@ -14,6 +15,7 @@ from loguru import logger
 from app.agent_core import tool_specs
 from app.agent_core.tool_specs.spec import ToolSpec
 from app.models.agent_job import AgentJob
+from app.services.config_values import clamped_float, clamped_int, string_list
 
 
 def get_tools_for_job_type(
@@ -60,12 +62,7 @@ def get_tools_for_job_type(
 
     cfg = config if isinstance(config, dict) else {}
 
-    def _as_list(value: Any) -> List[str]:
-        if isinstance(value, list):
-            return [str(x).strip() for x in value if str(x).strip()]
-        if isinstance(value, str):
-            return [str(x).strip() for x in value.split(",") if str(x).strip()]
-        return []
+    _as_list = string_list
 
     allowlist = set(_as_list(cfg.get("allowed_tools") or cfg.get("tool_allowlist")))
     denylist = set(_as_list(cfg.get("blocked_tools") or cfg.get("tool_denylist")))
@@ -118,19 +115,9 @@ def get_tool_selection_config(job: AgentJob) -> Dict[str, Any]:
     """Get adaptive selection settings for tool ranking."""
     cfg = job.config if isinstance(job.config, dict) else {}
 
-    def _as_float(key: str, default: float, lo: float, hi: float) -> float:
-        try:
-            val = float(cfg.get(key, default))
-        except Exception:
-            val = default
-        return max(lo, min(val, hi))
+    _as_float = partial(clamped_float, cfg)
 
-    def _as_int(key: str, default: int, lo: int, hi: int) -> int:
-        try:
-            val = int(cfg.get(key, default))
-        except Exception:
-            val = default
-        return max(lo, min(val, hi))
+    _as_int = partial(clamped_int, cfg)
 
     def _as_mode(key: str, default: str) -> str:
         val = str(cfg.get(key, default) or default).strip().lower()

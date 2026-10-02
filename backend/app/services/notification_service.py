@@ -2,23 +2,21 @@
 Notification service for creating and managing user notifications.
 """
 
-import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
-import redis
 from loguru import logger
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.models.notification import (
     Notification,
     NotificationPreferences,
     NotificationType,
 )
 from app.models.user import User
+from app.tasks import job_support
 
 
 class NotificationService:
@@ -51,14 +49,6 @@ class NotificationService:
         NotificationType.COLLABORATION_SHARE: "notify_shares",
         NotificationType.COLLABORATION_COMMENT: "notify_comments",
     }
-
-    def _get_redis_client(self):
-        """Get a Redis client for publishing notifications."""
-        try:
-            return redis.from_url(settings.REDIS_URL, decode_responses=True)
-        except Exception as e:
-            logger.warning(f"Failed to create Redis client: {e}")
-            return None
 
     async def create_notification(
         self,
@@ -381,10 +371,6 @@ class NotificationService:
     def _push_notification(self, user_id: UUID, notification: Notification) -> None:
         """Push notification to user via Redis pub/sub."""
         try:
-            client = self._get_redis_client()
-            if not client:
-                return
-
             # Publish to user-specific channel
             channel = f"notifications:{user_id}"
             message = {
@@ -407,8 +393,7 @@ class NotificationService:
                     else None,
                 },
             }
-            client.publish(channel, json.dumps(message))
-            logger.debug(f"Pushed notification to channel {channel}")
+            job_support.publish_sync(channel, message)
 
         except Exception as e:
             logger.warning(f"Failed to push notification via Redis: {e}")

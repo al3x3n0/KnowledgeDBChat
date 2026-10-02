@@ -41,6 +41,7 @@ from app.services.autonomy_service import (
     current_domain_profile_policy_snapshot,
     resolve_domain_profile_automation_contract,
 )
+from app.services.bibtex import _bib_key_from_uuid
 from app.services.research_opportunity_service import (
     collect_research_opportunity_linked_ids,
     compute_research_opportunity_evidence_revision,
@@ -1779,9 +1780,6 @@ class AgentResearchRunnerService:
                     "result": details,
                 }
             )
-
-        def _bib_key_from_uuid(doc_id: _UUID) -> str:
-            return f"KDB:{str(doc_id)}"
 
         config = job.config if isinstance(job.config, dict) else {}
         search_query = (

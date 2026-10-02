@@ -54,7 +54,7 @@ from app.services.agent_tools import AGENT_TOOLS, validate_tool_params
 from app.services.arxiv_search_service import ArxivSearchService
 from app.services.auth_service import is_admin
 from app.services.document_service import DocumentService
-from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.llm_service import LLMService, UserLLMSettings, load_user_llm_settings
 from app.services.memory_service import MemoryService
 from app.services.vector_store import VectorStore, vector_store_service
 
@@ -3796,16 +3796,7 @@ Generate the Mermaid diagram code:"""
             llm_service = LLMService()
 
             # Load user settings if available
-            user_settings = None
-            try:
-                prefs_result = await db.execute(
-                    select(UserPreferences).where(UserPreferences.user_id == user_id)
-                )
-                user_prefs = prefs_result.scalar_one_or_none()
-                if user_prefs:
-                    user_settings = UserLLMSettings.from_preferences(user_prefs)
-            except Exception:
-                pass
+            user_settings = await load_user_llm_settings(db, user_id)
 
             response = await llm_service.generate_response(
                 messages=[

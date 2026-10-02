@@ -13,6 +13,8 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
+from app.services.document_styles import FlatThemeMixin
+
 
 def hex_to_rgb(hex_color: str) -> RGBColor:
     """Convert hex color string to RGBColor."""
@@ -23,7 +25,7 @@ def hex_to_rgb(hex_color: str) -> RGBColor:
     return RGBColor(r, g, b)
 
 
-class DOCXBuilder:
+class DOCXBuilder(FlatThemeMixin):
     """
     Builds DOCX documents from structured content.
 
@@ -92,52 +94,6 @@ class DOCXBuilder:
             self.style_config = self._parse_custom_theme(custom_theme)
         else:
             self.style_config = self.STYLES.get(style, self.STYLES["professional"])
-
-    def _parse_custom_theme(self, theme: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Parse custom theme configuration into style config.
-
-        Args:
-            theme: Custom theme dict
-
-        Returns:
-            Style config dict compatible with built-in styles
-        """
-        # Start with professional defaults
-        config = dict(self.STYLES["professional"])
-
-        # Override with custom values
-        for key in theme:
-            if key in config:
-                config[key] = theme[key]
-
-        return config
-
-    @classmethod
-    def get_available_styles(cls) -> Dict[str, Dict[str, str]]:
-        """
-        Get list of available built-in styles with descriptions.
-
-        Returns:
-            Dict mapping style name to description
-        """
-        return {
-            "professional": {
-                "name": "Professional",
-                "description": "Clean, corporate look with dark blue accents",
-                "primary_color": "#1a365d",
-            },
-            "casual": {
-                "name": "Casual",
-                "description": "Friendly and approachable with warm colors",
-                "primary_color": "#4a90d9",
-            },
-            "technical": {
-                "name": "Technical",
-                "description": "Developer-focused with monospace code blocks",
-                "primary_color": "#007acc",
-            },
-        }
 
     def build(
         self,

@@ -29,6 +29,7 @@ from app.schemas.knowledge_graph import (
     KGStats,
     KGTypes,
 )
+from app.services import llm_json
 from app.services.auth_service import require_admin
 from app.services.knowledge_graph_service import KnowledgeGraphService
 
@@ -129,29 +130,12 @@ async def resolve_kg_types(req: KGResolveTypesRequest):
 
     This is for UI filtering and does not mutate the KG.
     """
-    import re as _re
 
     from app.services.llm_service import LLMService
 
     def _parse_json_obj(s: str) -> dict:
-        s = (s or "").strip()
-        if s.startswith("```json"):
-            s = s[7:]
-        elif s.startswith("```"):
-            s = s[3:]
-        if s.endswith("```"):
-            s = s[:-3]
-        s = s.strip()
-        m = _re.search(r"\{.*\}", s, _re.DOTALL)
-        if m:
-            try:
-                return json.loads(m.group(0))
-            except Exception:
-                pass
-        try:
-            return json.loads(s)
-        except Exception:
-            return {}
+        # One parser for every reply shape; see llm_json.
+        return llm_json.extract_json_object(s) or {}
 
     query = (req.query or "").strip()
     if not query:
@@ -516,24 +500,8 @@ async def infer_entity_type(
                     evidence.append(tt[:240])
 
         def _parse_json_obj(s: str) -> dict:
-            s = (s or "").strip()
-            if s.startswith("```json"):
-                s = s[7:]
-            elif s.startswith("```"):
-                s = s[3:]
-            if s.endswith("```"):
-                s = s[:-3]
-            s = s.strip()
-            m = _re.search(r"\{.*\}", s, _re.DOTALL)
-            if m:
-                try:
-                    return json.loads(m.group(0))
-                except Exception:
-                    pass
-            try:
-                return json.loads(s)
-            except Exception:
-                return {}
+            # One parser for every reply shape; see llm_json.
+            return llm_json.extract_json_object(s) or {}
 
         prompt = (
             "You are classifying a knowledge graph entity into one of the allowed entity types.\n\n"

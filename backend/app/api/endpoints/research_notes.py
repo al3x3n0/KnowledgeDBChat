@@ -32,6 +32,7 @@ from app.schemas.research_note import (
     ResearchNotesLintRecentResponse,
     ResearchNoteUpdate,
 )
+from app.services import llm_json
 from app.services.auth_service import get_current_user
 from app.services.llm_service import LLMService, UserLLMSettings
 from app.services.research_note_reevaluation_notification_service import (
@@ -270,18 +271,8 @@ async def _reconcile_pending_reevaluation_status(
 
 
 def _extract_json(text: str) -> Dict[str, Any]:
-    cleaned = (text or "").strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```[a-zA-Z0-9_-]*", "", cleaned).strip()
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3].strip()
-
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("No JSON object found in response")
-    payload = cleaned[start : end + 1]
-    return json.loads(payload)
+    # One parser for every reply shape; see llm_json.
+    return llm_json.require_json_object(text, "No JSON object found in response")
 
 
 async def _build_sources_payload(

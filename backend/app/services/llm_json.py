@@ -19,9 +19,10 @@ which removes the guessing instead of tuning it.
 
 from __future__ import annotations
 
+import functools
 import json
 import re
-from typing import Any
+from typing import Any, Mapping
 
 FENCE_PATTERN = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.IGNORECASE | re.DOTALL)
 
@@ -33,17 +34,17 @@ MAX_SPAN_ATTEMPTS = 200
 # RecursionError as well as a decode error: a reply of thousands of unclosed
 # brackets is not malformed JSON as far as the decoder is concerned until it
 # has recursed into every one of them, and it raises this instead.
-def _loads_object(candidate: str) -> dict[str, Any] | None:
+def _loads_object(candidate: str, strict: bool = True) -> dict[str, Any] | None:
     try:
-        parsed = json.loads(candidate)
+        parsed = json.loads(candidate, strict=strict)
     except (json.JSONDecodeError, ValueError, RecursionError):
         return None
     return parsed if isinstance(parsed, dict) else None
 
 
-def _loads_array(candidate: str) -> list[Any] | None:
+def _loads_array(candidate: str, strict: bool = True) -> list[Any] | None:
     try:
-        parsed = json.loads(candidate)
+        parsed = json.loads(candidate, strict=strict)
     except (json.JSONDecodeError, ValueError, RecursionError):
         return None
     return parsed if isinstance(parsed, list) else None
@@ -95,31 +96,76 @@ def _balanced_spans(
     return None
 
 
-def extract_json_object(value: Any) -> dict[str, Any] | None:
+def extract_json_object(value: Any, *, strict: bool = True) -> dict[str, Any] | None:
     """Return the first JSON object in model output, or None.
 
     Accepts an already-parsed dict and passes it through, so callers that may
     receive either a string or a decoded payload need no special case.
+
+    ``strict=False`` accepts raw newlines and tabs inside strings. A reply that
+    carries a whole source file in a JSON string is written with literal
+    newlines as often as with ``\\n``, and strict JSON rejects those: a
+    4,117-character reply full of usable proposals once parsed as nothing.
     """
     if isinstance(value, dict):
         return value
     if not isinstance(value, str) or not value:
         return None
 
-    direct = _loads_object(value.strip())
+    loads = functools.partial(_loads_object, strict=strict)
+    direct = loads(value.strip())
     if direct is not None:
         return direct
 
     fenced = FENCE_PATTERN.search(value)
     if fenced:
-        parsed = _loads_object(fenced.group(1).strip())
+        parsed = loads(fenced.group(1).strip())
         if parsed is not None:
             return parsed
 
-    return _balanced_spans(value)
+    return _balanced_spans(value, loads=loads)
 
 
-def extract_json_array(value: Any) -> list[Any] | None:
+def require_json_object(
+    value: Any, message: str = "No JSON object found in response"
+) -> dict[str, Any]:
+    """The first JSON object in model output, or a ``ValueError`` saying so.
+
+    For callers that treat an unparseable reply as a failure of the request
+    rather than as an empty answer.
+    """
+    parsed = extract_json_object(value)
+    if parsed is None:
+        raise ValueError(message)
+    return parsed
+
+
+def completion_object(completion: Any, *, strict: bool = True) -> dict[str, Any]:
+    """The object out of a completion, whichever way the provider returned it.
+
+    ``generate_structured`` hands back an ``LLMCompletion``, not a dict:
+    providers with native schema output fill ``.structured``, the rest leave
+    JSON in ``.text``, sometimes inside a fence or a sentence. Treating the
+    completion itself as a mapping is the quiet failure -- every field reads
+    as missing, so the caller sees a model that cannot follow instructions.
+    Measured: a drafter reported "the reply was not JSON" three times against
+    a model that had answered correctly each time.
+
+    Returns ``{}`` when there is no object. Five services each carried a copy
+    of this, differing in which malformed replies they survived.
+    """
+    structured = getattr(completion, "structured", None)
+    if isinstance(structured, Mapping) and structured:
+        return dict(structured)
+    if isinstance(completion, Mapping):
+        return dict(completion)
+    text = getattr(completion, "text", None)
+    if text is None and isinstance(completion, str):
+        text = completion
+    return extract_json_object(str(text or ""), strict=strict) or {}
+
+
+def extract_json_array(value: Any, *, strict: bool = True) -> list[Any] | None:
     """Return the first JSON array in model output, or None.
 
     Separate from ``extract_json_object`` rather than a general "first JSON
@@ -137,14 +183,15 @@ def extract_json_array(value: Any) -> list[Any] | None:
     if not isinstance(value, str) or not value:
         return None
 
-    direct = _loads_array(value.strip())
+    loads = functools.partial(_loads_array, strict=strict)
+    direct = loads(value.strip())
     if direct is not None:
         return direct
 
     fenced = FENCE_PATTERN.search(value)
     if fenced:
-        parsed = _loads_array(fenced.group(1).strip())
+        parsed = loads(fenced.group(1).strip())
         if parsed is not None:
             return parsed
 
-    return _balanced_spans(value, "[", "]", _loads_array)
+    return _balanced_spans(value, "[", "]", loads)

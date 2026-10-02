@@ -5,7 +5,6 @@ Manages training datasets: creation, validation, sample management, and export.
 """
 
 import json
-import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -28,6 +27,7 @@ from app.schemas.training import (
     GenerateDatasetRequest,
     TrainingDatasetCreate,
 )
+from app.services import llm_json
 from app.services.ai_hub_dataset_preset_service import ai_hub_dataset_preset_service
 from app.services.llm_service import LLMService, UserLLMSettings
 from app.services.storage_service import storage_service
@@ -599,9 +599,8 @@ Generate exactly {num_samples} training samples. Output only valid JSON array.""
             )
 
             # Parse JSON from response
-            json_match = re.search(r"\[.*\]", response, re.DOTALL)
-            if json_match:
-                samples = json.loads(json_match.group())
+            samples = llm_json.extract_json_array(response)
+            if samples:
                 return [
                     {
                         "instruction": s.get("instruction", s.get("question", "")),

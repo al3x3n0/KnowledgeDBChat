@@ -17,6 +17,7 @@ import httpx
 from loguru import logger
 
 from app.core.config import settings
+from app.services import llm_json
 
 
 @dataclass(frozen=True)
@@ -141,10 +142,8 @@ class AIHubEvalService:
             notes = None
             try:
                 # best-effort JSON parsing
-                start = judge_raw.find("{")
-                end = judge_raw.rfind("}")
-                if start != -1 and end != -1 and end > start:
-                    payload = json.loads(judge_raw[start : end + 1])
+                payload = llm_json.extract_json_object(judge_raw)
+                if payload is not None:
                     score = int(payload.get("score"))
                     notes = payload.get("notes")
             except Exception:

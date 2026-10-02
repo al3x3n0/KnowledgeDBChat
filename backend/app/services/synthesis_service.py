@@ -25,6 +25,7 @@ from app.models.experiment import ExperimentPlan, ExperimentRun
 from app.models.research_note import ResearchNote
 from app.models.research_paper import ResearchPaper
 from app.models.synthesis_job import SynthesisJob, SynthesisJobStatus, SynthesisJobType
+from app.services import llm_json
 from app.services.diagram_service import diagram_service
 from app.services.llm_service import LLMService, UserLLMSettings
 from app.services.research_note_reevaluation_notification_service import (
@@ -2631,15 +2632,9 @@ Text:
                 user_settings=user_settings,
             )
 
-            # Parse JSON array
-            import json
-
-            start = response.find("[")
-            end = response.rfind("]")
-            if start != -1 and end != -1:
-                themes = json.loads(response[start : end + 1])
-                if isinstance(themes, list):
-                    return [str(t) for t in themes[:15]]
+            themes = llm_json.extract_json_array(response)
+            if themes is not None:
+                return [str(t) for t in themes[:15]]
         except Exception as e:
             logger.debug(f"Failed to extract themes: {e}")
 
@@ -2667,14 +2662,9 @@ Text:
                 user_settings=user_settings,
             )
 
-            import json
-
-            start = response.find("[")
-            end = response.rfind("]")
-            if start != -1 and end != -1:
-                findings = json.loads(response[start : end + 1])
-                if isinstance(findings, list):
-                    return [str(f) for f in findings[:10]]
+            findings = llm_json.extract_json_array(response)
+            if findings is not None:
+                return [str(f) for f in findings[:10]]
         except Exception as e:
             logger.debug(f"Failed to extract key findings: {e}")
 
@@ -2682,22 +2672,7 @@ Text:
 
     def _parse_json_object(self, raw: str) -> Dict[str, Any]:
         """Best-effort extraction of a JSON object from model output."""
-        stripped = (raw or "").strip()
-        try:
-            parsed = json.loads(stripped)
-            return parsed if isinstance(parsed, dict) else {}
-        except Exception:
-            pass
-
-        match = re.search(r"\{.*\}", stripped, re.DOTALL)
-        if not match:
-            return {}
-
-        try:
-            parsed = json.loads(match.group(0))
-            return parsed if isinstance(parsed, dict) else {}
-        except Exception:
-            return {}
+        return llm_json.extract_json_object(raw) or {}
 
     def _first_nonempty_line(self, text: str) -> str:
         for line in (text or "").splitlines():

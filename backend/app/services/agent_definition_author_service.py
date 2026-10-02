@@ -31,6 +31,8 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from pydantic import ValidationError
 from sqlalchemy import select
 
+from app.services import llm_json
+
 logger = logging.getLogger(__name__)
 
 #: Three attempts: enough for the model to act on a refusal and on a second
@@ -92,42 +94,8 @@ def _system_prompt() -> str:
 
 
 def _payload(completion: Any) -> Dict[str, Any]:
-    """The object out of a completion, whichever way the provider returned it.
-
-    ``generate_structured`` hands back an ``LLMCompletion``, not a dict:
-    providers with native schema output fill ``.structured``, the rest leave
-    JSON in ``.text``, sometimes inside a fence. Treating the completion itself
-    as a mapping is the quiet failure -- every field reads as missing, so the
-    draft looks like a model that cannot follow instructions. Measured: the
-    first live run of this drafter reported "the reply was not JSON" three
-    times against a model that had answered correctly each time.
-    """
-    structured = getattr(completion, "structured", None)
-    if isinstance(structured, Mapping) and structured:
-        return dict(structured)
-    if isinstance(completion, Mapping):
-        return dict(completion)
-
-    text = str(getattr(completion, "text", "") or completion or "").strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text[:4].lower() == "json":
-            text = text[4:]
-    text = text.strip()
-    if not text:
-        return {}
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        # A model that wrapped the object in a sentence still answered.
-        start_brace, end_brace = text.find("{"), text.rfind("}")
-        if start_brace < 0 or end_brace <= start_brace:
-            return {}
-        try:
-            parsed = json.loads(text[start_brace : end_brace + 1])
-        except json.JSONDecodeError:
-            return {}
-    return dict(parsed) if isinstance(parsed, dict) else {}
+    """The object out of a completion; see ``llm_json.completion_object``."""
+    return llm_json.completion_object(completion)
 
 
 def check(payload: Mapping[str, Any]) -> Tuple[Optional[Dict[str, Any]], List[str]]:

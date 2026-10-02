@@ -13,6 +13,7 @@ from loguru import logger
 from app.core.celery import celery_app
 from app.core.config import settings
 from app.core.database import create_celery_session
+from app.services import llm_json
 from app.services.document_service import DocumentService
 from app.services.llm_service import UserLLMSettings
 
@@ -198,14 +199,7 @@ async def _extract_paper_insights(
             user_settings=user_settings,
         )
         # best-effort parse (allow surrounding text)
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            return None
-        payload = json.loads(raw[start : end + 1])
-        if not isinstance(payload, dict):
-            return None
-        return payload
+        return llm_json.extract_json_object(raw)
     except Exception as e:
         logger.debug(f"Failed to extract paper insights: {e}")
         return None

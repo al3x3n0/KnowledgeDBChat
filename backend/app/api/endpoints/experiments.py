@@ -44,6 +44,7 @@ from app.schemas.experiment import (
     ExperimentRunUpdateRequest,
 )
 from app.schemas.research_note import ResearchNoteResponse
+from app.services import llm_json
 from app.services.agent_job_scheduler_state import (
     extract_scheduler_state as _extract_scheduler_state,
 )
@@ -2754,22 +2755,13 @@ async def generate_experiment_plan(
         logger.warning(f"Experiment plan generation failed: {exc}")
         raise HTTPException(status_code=500, detail="Experiment plan generation failed")
 
-    parsed: Dict[str, Any]
-    try:
-        parsed = json.loads(raw) if isinstance(raw, str) else dict(raw)
-        if not isinstance(parsed, dict):
-            raise ValueError("Plan must be an object")
-    except Exception:
-        # Try to salvage JSON from code fences or extra text
-        try:
-            m = re.search(r"\{.*\}", raw, flags=re.DOTALL)
-            if not m:
-                raise ValueError("No JSON object found")
-            parsed = json.loads(m.group(0))
-        except Exception:
-            raise HTTPException(
-                status_code=422, detail="Model did not return valid JSON"
-            )
+    # Whole reply, fenced block, or an object inside prose: see llm_json.
+    salvaged = llm_json.extract_json_object(
+        raw if isinstance(raw, (str, dict)) else str(raw or "")
+    )
+    if salvaged is None:
+        raise HTTPException(status_code=422, detail="Model did not return valid JSON")
+    parsed: Dict[str, Any] = dict(salvaged)
 
     parsed["plan_scope"] = plan_mode
     parsed["selected_hypothesis_ids"] = (structured_context or {}).get(

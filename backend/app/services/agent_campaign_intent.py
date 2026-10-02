@@ -25,11 +25,12 @@ feature. The model is the judge.
 
 from __future__ import annotations
 
-import json
 import re
 from typing import Any, Dict, Mapping, Optional
 
 from loguru import logger
+
+from app.services import llm_json
 
 #: Verbs that propose work rather than ask about it.
 _START = r"(?:start|launch|run|kick\s*off|set\s*up|create|begin|spin\s*up)"
@@ -111,32 +112,8 @@ If the message gestures at research but names nothing to settle, answer false: a
 
 
 def _payload(completion: Any) -> Dict[str, Any]:
-    """The object out of a completion, whichever way the provider returned it.
-
-    `generate_structured` hands back an LLMCompletion, not a dict: providers
-    with native schema output fill `.structured`, the rest leave JSON in
-    `.text`, sometimes fenced. Treating the completion itself as a mapping is
-    the quiet failure -- every field reads as missing and the draft silently
-    becomes None.
-    """
-    structured = getattr(completion, "structured", None)
-    if isinstance(structured, Mapping) and structured:
-        return dict(structured)
-    if isinstance(completion, Mapping):
-        return dict(completion)
-    text = str(getattr(completion, "text", "") or "").strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text[:4].lower() == "json":
-            text = text[4:]
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
-        return {}
-    try:
-        parsed = json.loads(text[start : end + 1])
-    except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+    """The object out of a completion; see ``llm_json.completion_object``."""
+    return llm_json.completion_object(completion)
 
 
 def _clean(draft: Mapping[str, Any], fallback_name: str) -> Optional[Dict[str, Any]]:

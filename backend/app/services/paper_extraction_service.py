@@ -4,8 +4,6 @@ Services for extracting structured paper data from arXiv-backed documents.
 
 from __future__ import annotations
 
-import json
-import re
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 from uuid import UUID
@@ -16,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.document import Document
 from app.models.research_note import ResearchNote
 from app.models.research_paper import PaperClaim, PaperExtractionJob, ResearchPaper
+from app.services import llm_json
 from app.services.llm_service import LLMService
 
 
@@ -331,23 +330,9 @@ class PaperExtractionService:
         )
 
     def _parse_json(self, raw: Any) -> Dict[str, Any]:
-        if isinstance(raw, dict):
-            data = raw
-        else:
-            text = str(raw or "").strip()
-            if text.startswith("```"):
-                text = re.sub(r"^```[a-zA-Z0-9_-]*", "", text).strip()
-                if text.endswith("```"):
-                    text = text[:-3].strip()
-            try:
-                data = json.loads(text)
-            except Exception:
-                match = re.search(r"\{.*\}", text, flags=re.DOTALL)
-                if not match:
-                    raise ValueError("Model did not return valid JSON")
-                data = json.loads(match.group(0))
-        if not isinstance(data, dict):
-            raise ValueError("Model did not return an object")
+        data = llm_json.extract_json_object(raw)
+        if data is None:
+            raise ValueError("Model did not return valid JSON")
         if not isinstance(data.get("claims"), list) or not data["claims"]:
             raise ValueError("Extraction did not include claims")
         return data

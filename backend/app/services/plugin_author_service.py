@@ -32,12 +32,12 @@ sentence into a box.
 
 from __future__ import annotations
 
-import json
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from loguru import logger
 
 from app.agent_core.plugin_specs import EXECUTOR_GOVERNANCE
+from app.services import llm_json
 from app.services.custom_tool_types import allowed_custom_tool_types
 from app.services.plugin_manifest import (
     ManifestError,
@@ -154,38 +154,8 @@ only, no prose and no code fences."""
 
 
 def _payload(completion: Any) -> Dict[str, Any]:
-    """The object out of a completion, whichever way the provider returned it.
-
-    `generate_structured` hands back an LLMCompletion, not a dict: providers
-    with native schema output fill `.structured`, the rest leave JSON in
-    `.text`, sometimes fenced. Treating the completion itself as a mapping is
-    the quiet failure -- every field reads as missing and the draft silently
-    becomes empty.
-    """
-    structured = getattr(completion, "structured", None)
-    if isinstance(structured, Mapping) and structured:
-        return dict(structured)
-    if isinstance(completion, Mapping):
-        return dict(completion)
-    text = str(getattr(completion, "text", "") or "").strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text[:4].lower() == "json":
-            text = text[4:]
-    text = text.strip()
-    if not text:
-        return {}
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        start, end = text.find("{"), text.rfind("}")
-        if start < 0 or end <= start:
-            return {}
-        try:
-            parsed = json.loads(text[start : end + 1])
-        except json.JSONDecodeError:
-            return {}
-    return dict(parsed) if isinstance(parsed, dict) else {}
+    """The object out of a completion; see ``llm_json.completion_object``."""
+    return llm_json.completion_object(completion)
 
 
 def _resolve(data: Any, path: str) -> Tuple[bool, str]:

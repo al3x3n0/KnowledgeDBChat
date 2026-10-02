@@ -41,7 +41,7 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
-from app.services import agent_sandbox_runtime
+from app.services import agent_sandbox_runtime, llm_json
 from app.services.agent_binary_rewrite import (
     ABI_NOTE,
     disassemble_symbol,
@@ -192,10 +192,8 @@ def _binary_system_prompt() -> str:
 
 
 def _payload(completion: Any) -> Dict[str, Any]:
-    # One parser for every provider shape; see plugin_author_service._payload.
-    from app.services.plugin_author_service import _payload as parse
-
-    return parse(completion)
+    """The object out of a completion; see ``llm_json.completion_object``."""
+    return llm_json.completion_object(completion, strict=False)
 
 
 def _lenient_json(text: str) -> Dict[str, Any]:
@@ -207,21 +205,7 @@ def _lenient_json(text: str) -> Dict[str, Any]:
     usable proposals parsed as nothing. `strict=False` accepts them and
     nothing else.
     """
-    import json
-
-    body = text.strip()
-    if body.startswith("```"):
-        body = body.strip("`")
-        if body[:4].lower() == "json":
-            body = body[4:]
-    start, end = body.find("{"), body.rfind("}")
-    if start < 0 or end <= start:
-        return {}
-    try:
-        parsed = json.loads(body[start : end + 1], strict=False)
-    except ValueError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+    return llm_json.extract_json_object(text, strict=False) or {}
 
 
 def _json_error(text: str) -> str:

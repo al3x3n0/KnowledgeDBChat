@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob, AgentJobStatus
-from app.services import agent_sandbox_runtime
+from app.services import agent_sandbox_runtime, llm_json
 from app.services.agent_artifact_paths import insert_before_end_document, safe_relpath
 from app.services.llm_service import LLMService
 from app.services.project_profile_service import build_project_profile
@@ -167,18 +167,14 @@ class AgentExperimentRunnerService:
             db=db,
         )
 
-        try:
-            parsed = json.loads(raw) if isinstance(raw, str) else dict(raw)
-            if not isinstance(parsed, dict):
-                raise ValueError("Plan must be an object")
-        except Exception:
-            m = re.search(r"\{.*\}", str(raw), flags=re.DOTALL)
-            if not m:
-                job.status = AgentJobStatus.FAILED.value
-                job.error = "Model did not return valid JSON"
-                await db.commit()
-                return {"status": "failed", "error": job.error}
-            parsed = json.loads(m.group(0))
+        parsed = llm_json.extract_json_object(
+            raw if isinstance(raw, (str, dict)) else str(raw or "")
+        )
+        if parsed is None:
+            job.status = AgentJobStatus.FAILED.value
+            job.error = "Model did not return valid JSON"
+            await db.commit()
+            return {"status": "failed", "error": job.error}
 
         plan = ExperimentPlan(
             user_id=job.user_id,
@@ -459,11 +455,7 @@ class AgentExperimentRunnerService:
                 user_id=job.user_id,
                 db=db,
             )
-            try:
-                payload = json.loads(raw)
-            except Exception:
-                m = re.search(r"\{.*\}", str(raw), flags=re.DOTALL)
-                payload = json.loads(m.group(0)) if m else {}
+            payload = llm_json.extract_json_object(str(raw or "")) or {}
             if isinstance(payload, dict):
                 rn = str(payload.get("run_name") or "").strip()
                 cmds = payload.get("commands")

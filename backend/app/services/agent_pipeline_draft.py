@@ -36,6 +36,7 @@ from app.services import (
     agent_pipeline_binding,
     agent_pipeline_spec,
     agent_pipeline_vocabulary,
+    llm_json,
 )
 
 
@@ -159,24 +160,12 @@ a distinct kind of evidence, not a subdivision of the same work."""
 
 def _extract(completion: Any) -> Dict[str, Any]:
     """The spec out of a completion, whichever way the provider returned it."""
-    structured = getattr(completion, "structured", None)
-    if isinstance(structured, dict) and structured:
-        return structured
-    text = str(getattr(completion, "text", "") or "").strip()
-    if not text:
+    spec = llm_json.completion_object(completion)
+    if spec:
+        return spec
+    if not str(getattr(completion, "text", "") or "").strip():
         raise PipelineDraftError("The model returned nothing.")
-    # Providers without native schema output fence their JSON.
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text[:4].lower() == "json":
-            text = text[4:]
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
-        raise PipelineDraftError("The model did not return a pipeline.")
-    try:
-        return json.loads(text[start : end + 1])
-    except json.JSONDecodeError as error:
-        raise PipelineDraftError(f"The model returned invalid JSON: {error}")
+    raise PipelineDraftError("The model did not return a pipeline.")
 
 
 def tidy(spec: Dict[str, Any], description: str) -> Dict[str, Any]:

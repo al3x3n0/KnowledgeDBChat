@@ -36,6 +36,7 @@ from app.schemas.langgraph_issue_pr import (
     ReviewerOutput,
     ReviewFailure,
 )
+from app.services import llm_json
 from app.services.llm_service import LLMService, UserLLMSettings
 from app.services.repo_symbol_index_service import RepoSymbolIndexService
 
@@ -297,16 +298,10 @@ class LangGraphIssuePrService:
         )
 
     def _extract_json(self, text: str) -> Dict[str, Any]:
-        cleaned = (text or "").strip()
-        if cleaned.startswith("```"):
-            cleaned = re.sub(r"^```[a-zA-Z0-9_-]*", "", cleaned).strip()
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3].strip()
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            raise ValueError("No JSON object found in LLM response")
-        return json.loads(cleaned[start : end + 1])
+        # One parser for every reply shape; see llm_json.
+        return llm_json.require_json_object(
+            text, "No JSON object found in LLM response"
+        )
 
     def _append_event(
         self,

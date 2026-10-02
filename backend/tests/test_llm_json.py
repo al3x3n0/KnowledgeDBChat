@@ -168,3 +168,112 @@ def test_deep_nesting_is_unparseable_not_a_crash():
     not a ValueError: a hostile or runaway reply took the caller down."""
     assert llm_json.extract_json_array("[" * 28000 + "]" * 28000) is None
     assert extract_json_object('{"a":' * 28000 + "1" + "}" * 28000) is None
+
+
+# ------------------------------------------------- one parser, used everywhere
+
+
+def test_nothing_else_digs_json_out_of_a_reply_by_hand():
+    """About twenty places found the JSON in a model's reply themselves, with
+    `text.find("{")` to `text.rfind("}")` or a greedy `\\{.*\\}`. They did not
+    agree: a reply holding two objects parsed in one service and failed in
+    another, a fenced reply was handled by some and not others, and one of
+    them needed raw newlines accepted and so was the only one that did.
+
+    The idiom is refused here, so the next parser is this one.
+    """
+    import re
+    from pathlib import Path
+
+    app = Path(__file__).resolve().parents[1] / "app"
+    idioms = re.compile(r"""rfind\(\s*["'][}\]]["']\s*\)|\\\{\.\*\\\}|\\\[\.\*\\\]""")
+    offenders = []
+    for path in sorted(app.rglob("*.py")):
+        if path.name == "llm_json.py":
+            continue
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if idioms.search(line):
+                offenders.append(
+                    f"{path.relative_to(app)}:{number}: {line.strip()[:70]}"
+                )
+    assert not offenders, (
+        "Use llm_json.extract_json_object / extract_json_array / "
+        "completion_object instead:\n" + "\n".join(offenders)
+    )
+
+
+class _Completion:
+    def __init__(self, text="", structured=None):
+        self.text = text
+        self.structured = structured
+
+
+class TestTheObjectOutOfACompletion:
+    def test_native_structured_output_wins(self):
+        completion = _Completion(text='{"a": 2}', structured={"a": 1})
+        assert llm_json.completion_object(completion) == {"a": 1}
+
+    def test_json_left_in_the_text_is_found(self):
+        assert llm_json.completion_object(_Completion('{"a": 1}')) == {"a": 1}
+        assert llm_json.completion_object(_Completion('```json\n{"a": 1}\n```')) == {
+            "a": 1
+        }
+        assert llm_json.completion_object(_Completion('Sure: {"a": 1}. Done.')) == {
+            "a": 1
+        }
+
+    def test_a_mapping_and_a_bare_string_are_accepted(self):
+        assert llm_json.completion_object({"a": 1}) == {"a": 1}
+        assert llm_json.completion_object('{"a": 1}') == {"a": 1}
+
+    def test_nothing_usable_is_an_empty_object_not_an_error(self):
+        assert llm_json.completion_object(_Completion("not json at all")) == {}
+        assert llm_json.completion_object(_Completion("")) == {}
+        assert llm_json.completion_object(None) == {}
+        # An array is not an object.
+        assert llm_json.completion_object(_Completion("[1, 2]")) == {}
+
+    def test_an_empty_structured_falls_back_to_the_text(self):
+        """Providers without schema output leave `structured` empty."""
+        completion = _Completion(text='{"a": 1}', structured={})
+        assert llm_json.completion_object(completion) == {"a": 1}
+
+
+def test_raw_newlines_in_a_string_need_strict_false():
+    """A reply carrying a source file in a JSON string is written with literal
+    newlines as often as with an escape. Strict JSON rejects them."""
+    reply = '{"code": "int f() {\n\treturn 1;\n}"}'
+    assert extract_json_object(reply) is None
+    assert extract_json_object(reply, strict=False) == {
+        "code": "int f() {\n\treturn 1;\n}"
+    }
+    assert llm_json.extract_json_array('["a\nb"]', strict=False) == ["a\nb"]
+
+
+def test_require_raises_with_the_callers_own_message():
+    import pytest
+
+    assert llm_json.require_json_object('x {"a": 1} y') == {"a": 1}
+    with pytest.raises(ValueError, match="No JSON object found in LLM response"):
+        llm_json.require_json_object("nothing", "No JSON object found in LLM response")
+
+
+def test_every_drafter_parses_through_the_shared_helper():
+    """Four drafters each carried a copy of `_payload`. A fix to one -- an
+    empty `structured`, a reply wrapped in a sentence -- did not reach the
+    others."""
+    from app.services import (
+        agent_campaign_intent,
+        agent_definition_author_service,
+        agent_restructure_proposer,
+        plugin_author_service,
+    )
+
+    completion = _Completion('Here you go: {"name": "x"}', structured={})
+    for module in (
+        agent_campaign_intent,
+        agent_definition_author_service,
+        agent_restructure_proposer,
+        plugin_author_service,
+    ):
+        assert module._payload(completion) == {"name": "x"}, module.__name__

@@ -419,6 +419,18 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   `docker_execute`: the image is allowlisted, there is no network, and only a
   skill whose control has passed can run at all.
 
+  **`llm_json` is the only place JSON is dug out of a model's reply.** About
+  twenty sites did it by hand (`find("{")`..`rfind("}")`, or a greedy
+  `\{.*\}`), and they disagreed: a reply holding two objects parsed in one
+  service and failed in another, some handled a fenced reply and some did
+  not, and exactly one accepted raw newlines inside a string because it had
+  been bitten. Four drafters each carried a copy of `_payload`. All of them
+  now call `extract_json_object`, `extract_json_array`, `require_json_object`
+  (raises) or `completion_object` (takes an `LLMCompletion`, a mapping or a
+  string; returns `{}`), with `strict=False` for replies that carry source
+  code. `test_nothing_else_digs_json_out_of_a_reply_by_hand` refuses the
+  idiom anywhere else.
+
   **`llm_json` must define every helper a caller uses.** `extract_json_array`
   was deleted on 2026-08-06 while the chat planner and the presentation
   generator still called it. Both wrap the call in `except Exception`, so

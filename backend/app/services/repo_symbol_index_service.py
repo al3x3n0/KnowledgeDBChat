@@ -50,7 +50,9 @@ class RepoSymbolIndexService:
             if not file_path.is_file() or ".git" in file_path.parts:
                 continue
             ext = file_path.suffix.lower()
-            if ext not in parsers.ALL_EXTS or not parsers.parser_available(file_path.name):
+            if ext not in parsers.ALL_EXTS or not parsers.parser_available(
+                file_path.name
+            ):
                 continue
             rel_path = file_path.relative_to(repo_root).as_posix()
             if include_prefixes and not any(

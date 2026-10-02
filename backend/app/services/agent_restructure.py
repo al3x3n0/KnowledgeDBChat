@@ -40,8 +40,8 @@ result, and the result says it was checked on N inputs rather than proved.
 from __future__ import annotations
 
 import asyncio
-import shutil
 import re
+import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path

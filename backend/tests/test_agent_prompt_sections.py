@@ -256,39 +256,68 @@ class TestTheRunIsToldWhatItStillOwes:
     """
 
     def test_an_unmet_contract_names_what_is_missing(self):
-        text = sections.format_unmet_contract({
-            "goal_contract_last": {
-                "enabled": True, "satisfied": False,
-                "missing": ["result_key:structured_output",
-                            "finding_type:dynamic_profile"],
+        text = sections.format_unmet_contract(
+            {
+                "goal_contract_last": {
+                    "enabled": True,
+                    "satisfied": False,
+                    "missing": [
+                        "result_key:structured_output",
+                        "finding_type:dynamic_profile",
+                    ],
+                }
             }
-        })
+        )
         assert "CONTRACT NOT YET SATISFIED" in text
         assert "result_key:structured_output" in text
         assert "finding_type:dynamic_profile" in text
 
     def test_it_names_the_remedy_not_only_the_gap(self):
         """A requirement a run cannot act on is the same as one it cannot see."""
-        text = sections.format_unmet_contract({
-            "goal_contract_last": {
-                "enabled": True, "satisfied": False,
-                "missing": ["result_key:structured_output"],
+        text = sections.format_unmet_contract(
+            {
+                "goal_contract_last": {
+                    "enabled": True,
+                    "satisfied": False,
+                    "missing": ["result_key:structured_output"],
+                }
             }
-        })
+        )
         assert "set_output_schema" in text
 
     def test_a_satisfied_contract_says_nothing(self):
-        assert sections.format_unmet_contract({
-            "goal_contract_last": {"enabled": True, "satisfied": True, "missing": []}
-        }) == ""
+        assert (
+            sections.format_unmet_contract(
+                {
+                    "goal_contract_last": {
+                        "enabled": True,
+                        "satisfied": True,
+                        "missing": [],
+                    }
+                }
+            )
+            == ""
+        )
 
     def test_a_disabled_contract_says_nothing(self):
-        assert sections.format_unmet_contract({
-            "goal_contract_last": {"enabled": False, "satisfied": False,
-                                   "missing": ["result_key:x"]}
-        }) == ""
+        assert (
+            sections.format_unmet_contract(
+                {
+                    "goal_contract_last": {
+                        "enabled": False,
+                        "satisfied": False,
+                        "missing": ["result_key:x"],
+                    }
+                }
+            )
+            == ""
+        )
 
     def test_malformed_state_is_tolerated(self):
-        for bad in ({}, {"goal_contract_last": None}, {"goal_contract_last": "x"},
-                    {"goal_contract_last": {"enabled": True, "missing": "nope"}}):
+        for bad in (
+            {},
+            {"goal_contract_last": None},
+            {"goal_contract_last": "x"},
+            {"goal_contract_last": {"enabled": True, "missing": "nope"}},
+        ):
             assert sections.format_unmet_contract(bad) == ""

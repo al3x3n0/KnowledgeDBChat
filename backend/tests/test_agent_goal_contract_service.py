@@ -300,8 +300,11 @@ class TestAContractRequirementTheRunCanSee:
 
     def test_a_key_with_no_staging_slot_is_not_invented(self):
         """Only keys something actually writes can be satisfied from state."""
-        assert not self._present({}, {"fraction_removed": 0.179}, key="fraction_removed")
+        assert not self._present(
+            {}, {"fraction_removed": 0.179}, key="fraction_removed"
+        )
 
     def test_formatted_outputs_is_staged_too(self):
-        assert self._present({}, {"formatted_outputs": [{"table": "x"}]},
-                             key="formatted_outputs")
+        assert self._present(
+            {}, {"formatted_outputs": [{"table": "x"}]}, key="formatted_outputs"
+        )

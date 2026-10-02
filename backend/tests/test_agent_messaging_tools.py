@@ -145,15 +145,6 @@ async def test_send_to_another_users_job_is_refused_and_writes_nothing(
     assert await _stored_messages(db_session, theirs) == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "agent_tool_dispatch.py _send_message_to_agent never compares the "
-        "target with ctx.job, so a job can address a message to itself and is "
-        "told delivered=True. A message to yourself coordinates nothing; the "
-        "call should be refused the way a missing target is."
-    ),
-)
 async def test_a_job_cannot_send_a_message_to_itself(db_session, test_user):
     sender = await _job(db_session, test_user)
 
@@ -277,17 +268,6 @@ async def test_an_inbox_keeps_only_the_newest_hundred_messages(db_session, test_
     assert stored[-1]["message"] == "msg-104"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "agent_tool_dispatch.py _send_message_to_agent caps the inbox "
-        "at 100 with agent_msgs[-100:] but reports message_index as "
-        "len(agent_msgs) - 1 computed BEFORE the cap, so once an inbox is full "
-        "every send returns index 100, one past the end. The same trimming "
-        "shifts every index a reader holds, so read_agent_messages(since_index) "
-        "silently skips messages: indices are positions in a list that slides."
-    ),
-)
 async def test_the_index_a_send_returns_finds_that_message_in_a_full_inbox(
     db_session, test_user
 ):
@@ -347,19 +327,6 @@ async def test_the_recipient_reads_what_was_sent_to_it(db_session, test_user):
     assert data["messages"][0]["category"] == "request"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "agent_tool_dispatch.py _read_agent_messages reads ctx.job.results, "
-        "the object the recipient's own session loaded when the job started. "
-        "Sessions are created with expire_on_commit=False (core/database.py:36, "
-        ":223) and nothing in the run loop refreshes the job, so a message "
-        "another job's worker committed after that is never seen: the sender is "
-        "told delivered=True and the running recipient reads an empty inbox. "
-        "The handler should read the row (refresh, or select the column) "
-        "instead of the in-memory copy."
-    ),
-)
 async def test_a_running_recipient_sees_a_message_sent_from_another_session(
     db_session, test_user
 ):
@@ -402,6 +369,7 @@ async def test_reading_an_empty_inbox_is_a_success_with_nothing_in_it(
         "total": 0,
         "since_index": 0,
         "shared_findings_count": 0,
+        "shared_findings": [],
     }
 
 

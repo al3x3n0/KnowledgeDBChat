@@ -151,22 +151,12 @@ class TestReflect:
         assert state["reflections"][0]["topic"] == "topic 5"
         assert state["reflections"][-1]["topic"] == "topic 54"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="reflect ignores its required parameters: an empty call is "
-        "recorded as a reflection with blank topic and assessment",
-    )
     async def test_a_reflection_without_topic_or_assessment_is_refused(self, executor):
         result, state = await _call(executor, "reflect", {})
         assert _spec("reflect").parameters["required"] == ["topic", "assessment"]
         assert _refused(result)
         assert not state.get("reflections")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="state['reflections'] is written and never read: no prompt, "
-        "result or transcript shows a reflection again",
-    )
     async def test_a_reflection_is_available_for_future_reference(self, executor):
         _, state = await _call(
             executor,
@@ -284,11 +274,6 @@ class TestHypothesize:
         assert len(state["hypotheses"]) == 30
         assert state["hypotheses"][-1]["hypothesis"] == "claim 32"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="hypothesize derives a new id from the list length, which stops "
-        "growing at the 30-entry cap: every hypothesis after the 30th is 'h-31'",
-    )
     async def test_ids_stay_unique_past_the_cap(self, executor):
         state = {}
         for i in range(33):
@@ -296,22 +281,12 @@ class TestHypothesize:
         ids = [h["id"] for h in state["hypotheses"]]
         assert len(set(ids)) == len(ids)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="hypothesize ignores its required parameter: with no hypothesis "
-        "it stores an empty one and reports success",
-    )
     async def test_a_hypothesis_without_a_statement_is_refused(self, executor):
         result, state = await _call(executor, "hypothesize", {"rationale": "why"})
         assert _spec("hypothesize").parameters["required"] == ["hypothesis"]
         assert _refused(result)
         assert not state.get("hypotheses")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="an update that names no status resets the hypothesis to "
-        "'proposed', discarding a supported/refuted verdict",
-    )
     async def test_an_update_without_a_status_keeps_the_status(self, executor):
         state = {}
         await _call(
@@ -329,11 +304,6 @@ class TestHypothesize:
         assert state["hypotheses"][0]["rationale"] == "more"
         assert state["hypotheses"][0]["status"] == "supported"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="a status outside the declared enum is silently replaced by "
-        "'proposed' and written, instead of being refused",
-    )
     async def test_an_unknown_status_is_refused(self, executor):
         state = {}
         await _call(
@@ -351,11 +321,6 @@ class TestHypothesize:
         assert _refused(result)
         assert state["hypotheses"][0]["status"] == "refuted"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="state['hypotheses'] is written and never read: the model is "
-        "never shown its tracked hypotheses or their ids again",
-    )
     async def test_tracked_hypotheses_are_shown_to_the_next_step(self, executor):
         _, state = await _call(
             executor,
@@ -491,22 +456,12 @@ class TestWeighEvidence:
         assert result["data"]["ledger_size"] == 100
         assert state["evidence_ledger"][0]["claim"] == "claim 3"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="weigh_evidence ignores its required parameters: with no claim "
-        "and no verdict it records a blank 'neutral' entry and reports success",
-    )
     async def test_evidence_without_claim_or_verdict_is_refused(self, executor):
         result, state = await _call(executor, "weigh_evidence", {})
         assert _spec("weigh_evidence").parameters["required"] == ["claim", "verdict"]
         assert _refused(result)
         assert not state.get("evidence_ledger")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="a verdict outside the declared enum is silently recorded as "
-        "'neutral', so the linked hypothesis is never settled and nothing says so",
-    )
     async def test_an_unknown_verdict_is_refused(self, executor):
         state = {}
         await _call(executor, "hypothesize", {"hypothesis": "h"}, state)
@@ -518,11 +473,6 @@ class TestWeighEvidence:
         )
         assert _refused(result)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="a non-numeric strength makes the handler raise ValueError from "
-        "float() instead of answering with an error or the default",
-    )
     async def test_a_non_numeric_strength_does_not_crash_the_tool(self, executor):
         result, _ = await _call(
             executor,
@@ -535,11 +485,6 @@ class TestWeighEvidence:
         )
         assert isinstance(result, dict)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="evidence linked to a hypothesis id that does not exist is "
-        "accepted without a word, where hypothesize refuses the same id",
-    )
     async def test_evidence_for_an_unknown_hypothesis_is_flagged(self, executor):
         state = {}
         await _call(executor, "hypothesize", {"hypothesis": "h"}, state)
@@ -551,11 +496,6 @@ class TestWeighEvidence:
         )
         assert "h-99" in str(result.get("error") or result.get("warning") or "")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="state['evidence_ledger'] is written and never read: the "
-        "'running ledger' is not shown to the model or kept in the results",
-    )
     async def test_the_ledger_is_shown_to_the_next_step(self, executor):
         _, state = await _call(
             executor,
@@ -675,11 +615,6 @@ class TestCritiquePlan:
         assert result["data"]["critiques_count"] == 20
         assert state["plan_critiques"][0]["plan_summary"] == "plan 3"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="critique_plan ignores its required parameters: an empty call "
-        "is recorded as a critique with no plan and no weaknesses",
-    )
     async def test_a_critique_without_plan_or_weaknesses_is_refused(self, executor):
         result, state = await _call(executor, "critique_plan", {})
         assert _spec("critique_plan").parameters["required"] == [
@@ -689,11 +624,6 @@ class TestCritiquePlan:
         assert _refused(result)
         assert not state.get("plan_critiques")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="a severity outside the declared enum is silently recorded as "
-        "'moderate', so a critique meant as severe never reaches the critic",
-    )
     async def test_an_unknown_severity_is_refused(self, executor):
         result, _ = await _call(
             executor,
@@ -702,11 +632,6 @@ class TestCritiquePlan:
         )
         assert _refused(result)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="state['plan_critiques'] is written and never read: a minor or "
-        "moderate critique, and every missing step, is shown to nobody",
-    )
     async def test_a_moderate_critique_is_shown_to_the_next_step(self, executor):
         _, state = await _call(
             executor,

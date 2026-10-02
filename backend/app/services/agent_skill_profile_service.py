@@ -35,7 +35,18 @@ class AgentSkillProfileService:
                 if isinstance(state, dict)
                 else ""
             )
+            # A role the run switched to comes first. This is resolved again
+            # whenever a run starts or resumes, and the configured role used
+            # to outrank it there, so a resumed run -- every swarm job has a
+            # configured role -- silently lost its switch.
+            switches = (state or {}).get("strategy_switches") if state else None
+            switched_role = ""
+            if isinstance(switches, list) and switches:
+                last = switches[-1]
+                if isinstance(last, dict):
+                    switched_role = executor._normalize_role_token(last.get("to"))
             role_candidates = [
+                switched_role,
                 executor._normalize_role_token(cfg.get("agent_role")),
                 executor._normalize_role_token(cfg.get("swarm_role")),
                 executor._normalize_role_token(cfg.get("role")),

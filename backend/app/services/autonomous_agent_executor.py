@@ -8303,6 +8303,10 @@ RESPONSE FORMAT:
         if focus_directive:
             parts.append(f"FOCUS DIRECTIVE (set by agent):\n{focus_directive}")
 
+        reasoning_notes = agent_prompt_sections.format_reasoning_notes(state)
+        if reasoning_notes:
+            parts.append(reasoning_notes)
+
         # The exact finding types this run has produced. Tools that ask what a
         # claim derives from -- record_prediction, record_method -- check the
         # citation against these and refuse an invented one, and a model

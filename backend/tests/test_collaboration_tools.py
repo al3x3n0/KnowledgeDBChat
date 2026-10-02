@@ -325,16 +325,6 @@ async def test_handoff_caps_the_childs_budget(executor, db_session, test_user):
     assert child.max_runtime_minutes == 12
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "agent_tool_dispatch.py _create_handoff computes "
-        "min(int(params.get('max_iterations', 10) or 10), 20) with no lower "
-        "bound, so max_iterations=-5 creates and queues a child with "
-        "max_iterations=-5, max_tool_calls=-25 and max_llm_calls=-15. Clamp to "
-        "at least 1 (the same expression is in _delegate_subtask)."
-    ),
-)
 async def test_handoff_never_creates_a_child_with_a_negative_budget(
     executor, db_session, test_user
 ):
@@ -414,7 +404,8 @@ async def test_handoff_passes_the_parents_latest_findings_to_the_child(
     assert result.get("success") is True, result
     assert result["data"]["findings_shared"] is True
     child = (await _other_rows(db_session, caller))[0]
-    assert child.config["inherited_findings"] == findings[-20:]
+    # Under the key the child's prompt reads.
+    assert child.config["inherited_data"]["parent_findings"] == findings[-20:]
 
 
 async def test_handoff_withholds_the_findings_when_asked_to(
@@ -434,23 +425,9 @@ async def test_handoff_withholds_the_findings_when_asked_to(
     assert result.get("success") is True, result
     assert result["data"]["findings_shared"] is False
     child = (await _other_rows(db_session, caller))[0]
-    assert "inherited_findings" not in child.config
+    assert "inherited_data" not in child.config
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Data written where nothing reads it. _create_handoff (and "
-        "_delegate_subtask) in agent_tool_dispatch.py put the parent's "
-        "findings in the child's config['inherited_findings'] and report "
-        "findings_shared=True, and that key is read nowhere in backend/app: "
-        "not by _build_thinking_prompt_stable (which does read "
-        "handoff_contract from the same config), not by the initial state in "
-        "agent_runtime_state_service, not by _inherit_assumed_findings (which "
-        "reads pipeline_assumes). The child starts without them. Seed the "
-        "child's state or prompt from the key."
-    ),
-)
 async def test_the_child_is_told_the_findings_its_parent_shared(
     executor, db_session, test_user
 ):
@@ -509,19 +486,6 @@ async def test_a_grandchild_handoff_records_its_depth_and_the_root(
     assert child.root_job_id == root.id
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "agent_tool_dispatch.py _create_handoff catches the failed flush and "
-        "returns {'error': ...} without undoing it. The session it borrowed "
-        "from the executor is left with a failed transaction: the next "
-        "statement on it raises PendingRollbackError, so one refused child "
-        "insert takes the parent job down from somewhere unrelated. A plain "
-        "rollback() is not the fix either (it expires the executor's job "
-        "object: MissingGreenlet); insert inside `async with "
-        "ctx.db.begin_nested()` so only the savepoint is undone."
-    ),
-)
 async def test_a_failed_handoff_leaves_the_session_usable(
     executor, db_session, test_user, queued
 ):

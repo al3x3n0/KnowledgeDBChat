@@ -3228,10 +3228,14 @@ def build_autonomous_reasoning_provider(executor: Any) -> FunctionToolProvider:
         reflections = state.get("reflections")
         if not isinstance(reflections, list):
             reflections = []
+        topic = str(params.get("topic") or "").strip()
+        assessment = str(params.get("assessment") or "").strip()
+        if not topic or not assessment:
+            return {"error": "topic and assessment are required"}
         entry = {
             "iteration": int(job.iteration or 0),
-            "topic": str(params.get("topic", ""))[:300],
-            "assessment": str(params.get("assessment", ""))[:500],
+            "topic": topic[:300],
+            "assessment": assessment[:500],
             "blind_spots": [
                 str(b)[:200]
                 for b in (params.get("blind_spots") or [])
@@ -3261,21 +3265,27 @@ def build_autonomous_reasoning_provider(executor: Any) -> FunctionToolProvider:
         if not isinstance(hypotheses, list):
             hypotheses = []
         hyp_id = str(params.get("hypothesis_id") or "").strip()
-        status = str(params.get("status") or "proposed").strip()
-        if status not in {
-            "proposed",
-            "testing",
-            "supported",
-            "refuted",
-            "inconclusive",
-        }:
-            status = "proposed"
+        valid_statuses = {"proposed", "testing", "supported", "refuted", "inconclusive"}
+        given_status = str(params.get("status") or "").strip()
+        if given_status and given_status not in valid_statuses:
+            # Refused, not coerced: an unknown status used to become
+            # "proposed" and overwrite a hypothesis already settled.
+            return {
+                "error": f"status must be one of {sorted(valid_statuses)}, "
+                f"not {given_status!r}"
+            }
+        status = given_status or "proposed"
+        if not hyp_id and not str(params.get("hypothesis") or "").strip():
+            return {"error": "hypothesis is required"}
         result: Dict[str, Any] = {}
         if hyp_id:
             updated = False
             for hypothesis in hypotheses:
                 if isinstance(hypothesis, dict) and hypothesis.get("id") == hyp_id:
-                    hypothesis["status"] = status
+                    # Only when given: adding a rationale must not demote a
+                    # supported hypothesis back to "proposed".
+                    if given_status:
+                        hypothesis["status"] = status
                     if params.get("rationale"):
                         hypothesis["rationale"] = str(params["rationale"])[:400]
                     if params.get("testable_predictions"):
@@ -3294,7 +3304,11 @@ def build_autonomous_reasoning_provider(executor: Any) -> FunctionToolProvider:
                     ]
                 }
         else:
-            hyp_id = f"h-{len(hypotheses) + 1}"
+            # A counter, not the list length: the list is capped at 30, so
+            # every hypothesis after the thirtieth was "h-31".
+            counter = int(state.get("hypothesis_counter") or len(hypotheses)) + 1
+            state["hypothesis_counter"] = counter
+            hyp_id = f"h-{counter}"
             entry = {
                 "id": hyp_id,
                 "hypothesis": str(params.get("hypothesis", ""))[:500],
@@ -3320,25 +3334,51 @@ def build_autonomous_reasoning_provider(executor: Any) -> FunctionToolProvider:
         ledger = state.get("evidence_ledger")
         if not isinstance(ledger, list):
             ledger = []
-        verdict = str(params.get("verdict") or "neutral").strip()
-        if verdict not in {
+        claim = str(params.get("claim") or "").strip()
+        verdict = str(params.get("verdict") or "").strip()
+        valid_verdicts = {
             "strongly_supported",
             "weakly_supported",
             "neutral",
             "weakly_refuted",
             "strongly_refuted",
-        }:
-            verdict = "neutral"
+        }
+        if not claim or not verdict:
+            return {"error": "claim and verdict are required"}
+        if verdict not in valid_verdicts:
+            return {
+                "error": f"verdict must be one of {sorted(valid_verdicts)}, "
+                f"not {verdict!r}"
+            }
+        linked_id = str(params.get("hypothesis_id") or "").strip()
+        known_ids = {
+            h.get("id") for h in state.get("hypotheses") or [] if isinstance(h, dict)
+        }
+        if linked_id and linked_id not in known_ids:
+            return {
+                "error": f"Hypothesis {linked_id} not found",
+                "data": {"available_ids": sorted(str(i) for i in known_ids)},
+            }
+
+        def _strength(item: Dict[str, Any]) -> float:
+            try:
+                value = float(item.get("strength", 0.5))
+            except (TypeError, ValueError):
+                return 0.5
+            if value != value:  # NaN compares unequal to itself
+                return 0.5
+            return max(0.0, min(1.0, value))
+
         ev_for = params.get("evidence_for") or []
         ev_against = params.get("evidence_against") or []
         entry = {
-            "claim": str(params.get("claim", ""))[:500],
+            "claim": claim[:500],
             "hypothesis_id": str(params.get("hypothesis_id") or "").strip() or None,
             "evidence_for": [
                 {
                     "statement": str(e.get("statement", ""))[:300],
                     "source_document_id": str(e.get("source_document_id") or ""),
-                    "strength": max(0.0, min(1.0, float(e.get("strength", 0.5)))),
+                    "strength": _strength(e),
                 }
                 for e in ev_for
                 if isinstance(e, dict)
@@ -3347,7 +3387,7 @@ def build_autonomous_reasoning_provider(executor: Any) -> FunctionToolProvider:
                 {
                     "statement": str(e.get("statement", ""))[:300],
                     "source_document_id": str(e.get("source_document_id") or ""),
-                    "strength": max(0.0, min(1.0, float(e.get("strength", 0.5)))),
+                    "strength": _strength(e),
                 }
                 for e in ev_against
                 if isinstance(e, dict)
@@ -3394,10 +3434,15 @@ def build_autonomous_reasoning_provider(executor: Any) -> FunctionToolProvider:
             critiques = []
         severity = str(params.get("severity") or "moderate").strip()
         if severity not in {"minor", "moderate", "major"}:
-            severity = "moderate"
+            return {
+                "error": f"severity must be minor, moderate or major, not {severity!r}"
+            }
+        plan_summary = str(params.get("plan_summary") or "").strip()
+        if not plan_summary or not params.get("weaknesses"):
+            return {"error": "plan_summary and weaknesses are required"}
         entry = {
             "iteration": int(job.iteration or 0),
-            "plan_summary": str(params.get("plan_summary", ""))[:500],
+            "plan_summary": plan_summary[:500],
             "weaknesses": [
                 str(w)[:200]
                 for w in (params.get("weaknesses") or [])
@@ -3474,22 +3519,34 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
         if len(delegated_ids) >= 5:
             return {"error": "Maximum child job budget (5) reached for this parent"}
 
-        child_name = str(params.get("name", "Subtask"))[:200]
-        child_goal = str(params.get("goal", ""))[:2000]
+        child_name = str(params.get("name") or "Subtask")[:200]
+        child_goal = str(params.get("goal") or "").strip()[:2000]
+        if not child_goal:
+            return {"error": "goal is required"}
         child_type = str(params.get("job_type", "custom")).strip()
         if child_type not in {"research", "analysis", "synthesis", "custom"}:
             child_type = "custom"
+        # A copy: the caller's dict is not this handler's to change.
         child_config = (
-            params.get("config") if isinstance(params.get("config"), dict) else {}
+            dict(params["config"]) if isinstance(params.get("config"), dict) else {}
         )
         share = params.get("share_findings", True)
         if not isinstance(share, bool):
             share = True
         remaining_iters = max(1, (job.max_iterations or 100) - (job.iteration or 0))
-        child_max = min(int(params.get("max_iterations", 30) or 30), remaining_iters)
+        try:
+            requested_iters = int(params.get("max_iterations", 30) or 30)
+        except (TypeError, ValueError):
+            return {"error": "max_iterations must be a number"}
+        child_max = max(1, min(requested_iters, remaining_iters))
 
         if share:
-            child_config["inherited_findings"] = (state.get("findings") or [])[-20:]
+            # Under the key the child's prompt reads. These went to
+            # `inherited_findings`, which nothing reads, so a child told
+            # "findings shared" started blind.
+            child_config.setdefault("inherited_data", {})["parent_findings"] = (
+                state.get("findings") or []
+            )[-20:]
 
         try:
             child = AgentJob(
@@ -3508,8 +3565,11 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                 max_llm_calls=min(child_max * 3, job.max_llm_calls or 200),
                 max_runtime_minutes=min(30, job.max_runtime_minutes or 60),
             )
-            ctx.db.add(child)
-            await ctx.db.flush()
+            # A savepoint: this session is the run's, and a refused insert
+            # would otherwise leave it unusable for every later tool.
+            async with ctx.db.begin_nested():
+                ctx.db.add(child)
+                await ctx.db.flush()
             delegated_ids.append(str(child.id))
             state["delegated_subtask_ids"] = delegated_ids
 
@@ -3544,6 +3604,12 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                         state.setdefault("delegated_subtask_results", {})[
                             str(child.id)
                         ] = result["data"]["results"]
+                        state.setdefault("delegated_subtask_final", {})[
+                            str(child.id)
+                        ] = {
+                            "status": child.status,
+                            "results": result["data"]["results"],
+                        }
                         break
                 else:
                     result["data"]["status"] = child.status
@@ -3576,11 +3642,18 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
         if subtask_id not in delegated_ids:
             return {"error": f"Job {subtask_id} is not a delegated subtask of this job"}
 
-        cached = (state.get("delegated_subtask_results") or {}).get(subtask_id)
-        if cached:
+        # Only a child that has ended is cached, with the status it ended
+        # in. Caching whatever was there replayed a child still running as
+        # "completed", with stale results, and never looked at it again.
+        cached = (state.get("delegated_subtask_final") or {}).get(subtask_id)
+        if isinstance(cached, dict):
             return {
                 "success": True,
-                "data": {"status": "completed", "results": cached, "source": "cache"},
+                "data": {
+                    "status": cached.get("status"),
+                    "results": cached.get("results") or {},
+                    "source": "cache",
+                },
             }
 
         timeout = min(int(params.get("timeout_seconds", 30) or 30), 120)
@@ -3606,9 +3679,15 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                 waited += 3
                 await ctx.db.refresh(child)
             child_results = child.results if isinstance(child.results, dict) else {}
-            state.setdefault("delegated_subtask_results", {})[
-                subtask_id
-            ] = child_results
+            if child.status in [
+                AgentJobStatus.COMPLETED.value,
+                AgentJobStatus.FAILED.value,
+                AgentJobStatus.CANCELLED.value,
+            ]:
+                state.setdefault("delegated_subtask_final", {})[subtask_id] = {
+                    "status": child.status,
+                    "results": child_results,
+                }
             return {
                 "success": True,
                 "data": {
@@ -3648,7 +3727,10 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
             target_ids = []
         try:
             query = select(AgentJob).where(
-                AgentJob.parent_job_id == job.parent_job_id, AgentJob.id != job.id
+                AgentJob.parent_job_id == job.parent_job_id,
+                AgentJob.id != job.id,
+                # The caller's own jobs only, as the other sibling tools do.
+                AgentJob.user_id == job.user_id,
             )
             if target_ids:
                 target_uuids = []
@@ -3657,8 +3739,14 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                         target_uuids.append(uuid.UUID(str(tid)))
                     except (ValueError, AttributeError):
                         pass
-                if target_uuids:
-                    query = query.where(AgentJob.id.in_(target_uuids))
+                if not target_uuids:
+                    # Addressed to somebody, and none of the addresses could
+                    # be read: that is nobody, not everybody.
+                    return {
+                        "error": "None of target_job_ids is a job id; "
+                        "nothing was shared"
+                    }
+                query = query.where(AgentJob.id.in_(target_uuids))
             siblings_result = await ctx.db.execute(query)
             siblings = siblings_result.scalars().all()
             shared_count = 0
@@ -3710,7 +3798,9 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
         job = ctx.job
         state = ctx.state if isinstance(ctx.state, dict) else {}
         review_type = str(params.get("review_type") or "peer_agent").strip()
-        content = str(params.get("content_to_review", ""))[:3000]
+        content = str(params.get("content_to_review") or "").strip()[:3000]
+        if not content:
+            return {"error": "content_to_review is required"}
         criteria = [
             str(c)[:200]
             for c in (params.get("review_criteria") or [])
@@ -3750,6 +3840,10 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
             return {
                 "error": "Cannot spawn peer review: maximum delegation depth reached"
             }
+        # A reviewer is a child job like any other and counts as one.
+        already = state.get("delegated_subtask_ids")
+        if isinstance(already, list) and len(already) >= 5:
+            return {"error": "Maximum child job budget (5) reached for this parent"}
 
         try:
             review_goal = f"Review the following content and provide feedback:\n\n{content[:1500]}"
@@ -3773,8 +3867,9 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                 max_llm_calls=15,
                 max_runtime_minutes=15,
             )
-            ctx.db.add(child)
-            await ctx.db.flush()
+            async with ctx.db.begin_nested():
+                ctx.db.add(child)
+                await ctx.db.flush()
             delegated_ids = state.get("delegated_subtask_ids")
             if not isinstance(delegated_ids, list):
                 delegated_ids = []
@@ -3820,6 +3915,8 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                 return {"error": f"Target job {target_job_id_str} not found"}
             if str(target_job.user_id) != str(job.user_id):
                 return {"error": "Cannot send messages to jobs owned by other users"}
+            if str(target_job.id) == str(job.id):
+                return {"error": "A job cannot send a message to itself"}
             target_results = (
                 target_job.results if isinstance(target_job.results, dict) else {}
             )
@@ -3836,7 +3933,8 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                     "sent_at": datetime.utcnow().isoformat(),
                 }
             )
-            target_results["agent_messages"] = agent_msgs[-100:]
+            agent_msgs = agent_msgs[-100:]
+            target_results["agent_messages"] = agent_msgs
             target_job.results = target_results
             flag_modified(target_job, "results")
             await ctx.db.flush()
@@ -3845,6 +3943,7 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                 "data": {
                     "delivered": True,
                     "target_job_id": target_job_id_str,
+                    # Where it is now, after the inbox was trimmed.
                     "message_index": len(agent_msgs) - 1,
                 },
             }
@@ -3856,7 +3955,20 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
     ) -> Any:
         job = ctx.job
         try:
+            # Read from the database. Another job's session wrote the message;
+            # the copy of this job held in memory since the run began does not
+            # have it, so a running job never saw anything it was sent.
             job_results = job.results if isinstance(job.results, dict) else {}
+            if ctx.db is not None and getattr(job, "id", None) is not None:
+                from app.models.agent_job import AgentJob as _AgentJob
+
+                stored = (
+                    await ctx.db.execute(
+                        select(_AgentJob.results).where(_AgentJob.id == job.id)
+                    )
+                ).scalar_one_or_none()
+                if isinstance(stored, dict):
+                    job_results = stored
             agent_msgs = job_results.get("agent_messages", [])
             if not isinstance(agent_msgs, list):
                 agent_msgs = []
@@ -3871,6 +3983,9 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                     "total": len(agent_msgs),
                     "since_index": since,
                     "shared_findings_count": len(shared),
+                    # The findings themselves; the count alone told a job it
+                    # had been sent something it had no way to read.
+                    "shared_findings": shared[-20:],
                 },
             }
         except Exception as exc:
@@ -7020,6 +7135,40 @@ def build_autonomous_symbol_retrieval_provider(executor: Any) -> FunctionToolPro
 def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolProvider:
     """Document authoring tools for AutonomousAgentExecutor."""
 
+    def _rebuild_citations(doc_ws: Dict[str, Any]) -> None:
+        """The references are whatever the sections cite now."""
+        registry: Dict[str, Any] = {}
+        for section in doc_ws["plan"]["sections"]:
+            for citation in section.get("citations") or []:
+                registry[citation["ref_id"]] = {
+                    "document_id": str(citation.get("document_id", "")),
+                    "title": str(citation.get("title", ""))[:200],
+                    "excerpt": str(citation.get("excerpt", ""))[:500],
+                }
+        doc_ws["citations_registry"] = registry
+
+    def _figure_markdown(figure: Dict[str, Any]) -> str:
+        """A figure as it appears in the document: its data as a table when
+        it has some, its diagram source when it has that, and its caption."""
+        parts = []
+        data = figure.get("data")
+        if isinstance(data, dict):
+            headers = data.get("headers") or data.get("columns")
+            rows = data.get("rows")
+            if isinstance(headers, list) and isinstance(rows, list):
+                parts.append("| " + " | ".join(str(h) for h in headers) + " |")
+                parts.append("| " + " | ".join("---" for _ in headers) + " |")
+                for row in rows[:100]:
+                    cells = row if isinstance(row, list) else [row]
+                    parts.append("| " + " | ".join(str(c) for c in cells) + " |")
+            else:
+                for key, value in list(data.items())[:50]:
+                    parts.append(f"- {key}: {value}")
+        if figure.get("diagram_spec"):
+            parts.append("```\n" + str(figure["diagram_spec"]) + "\n```")
+        parts.append(f"*[Figure: {figure.get('caption', '')}]*")
+        return "\n".join(parts)
+
     async def _plan_document(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -7031,13 +7180,26 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
         if not isinstance(sections, list) or not sections:
             return {"error": "At least one section is required"}
 
+        usable = [section for section in sections if isinstance(section, dict)]
+        if not usable:
+            return {"error": "No usable sections: each section must be an object"}
+        max_sections = 30
+        sections_dropped = max(0, len(usable) - max_sections)
+        usable = usable[:max_sections]
         plan_sections = []
-        for section in sections[:30]:
-            if not isinstance(section, dict):
-                continue
+        seen_ids = set()
+        for section in usable:
+            # Stored stripped, because it is looked up stripped: an id with
+            # padding could be planned and then never written.
+            section_key = (
+                str(section.get("id") or "").strip() or f"s-{len(plan_sections)+1}"
+            )
+            if section_key in seen_ids:
+                return {"error": f"Two sections share the id '{section_key}'"}
+            seen_ids.add(section_key)
             plan_sections.append(
                 {
-                    "id": str(section.get("id") or f"s-{len(plan_sections)+1}"),
+                    "id": section_key,
                     "title": str(section.get("title", ""))[:200],
                     "description": str(section.get("description", ""))[:500],
                     "content": None,
@@ -7065,6 +7227,9 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
                 "title": title[:300],
                 "sections_count": len(plan_sections),
                 "section_ids": [section["id"] for section in plan_sections],
+                # Said, not silent: sections past the cap are not planned.
+                "max_sections": max_sections,
+                "sections_dropped": sections_dropped,
             },
         }
 
@@ -7089,16 +7254,17 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
             return {"error": f"Section '{section_id}' not found in document plan"}
 
         section["content"] = content
+        # Writing a section replaces what it cites. Appending meant a
+        # rewrite counted its citations twice and a dropped source stayed
+        # in the references.
+        section["citations"] = []
         citations = params.get("citations") or []
         if isinstance(citations, list):
             for citation in citations[:20]:
                 if isinstance(citation, dict) and citation.get("ref_id"):
                     section["citations"].append(citation)
-                    doc_ws["citations_registry"][citation["ref_id"]] = {
-                        "document_id": str(citation.get("document_id", "")),
-                        "title": str(citation.get("title", ""))[:200],
-                        "excerpt": str(citation.get("excerpt", ""))[:500],
-                    }
+        _rebuild_citations(doc_ws)
+        doc_ws["assembled_markdown"] = None
         return {
             "success": True,
             "data": {
@@ -7133,11 +7299,10 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
         for citation in params.get("additional_citations") or []:
             if isinstance(citation, dict) and citation.get("ref_id"):
                 section["citations"].append(citation)
-                doc_ws["citations_registry"][citation["ref_id"]] = {
-                    "document_id": str(citation.get("document_id", "")),
-                    "title": str(citation.get("title", ""))[:200],
-                    "excerpt": str(citation.get("excerpt", ""))[:500],
-                }
+        _rebuild_citations(doc_ws)
+        # The assembled text is a snapshot; without this an export after a
+        # revision shipped the text from before it.
+        doc_ws["assembled_markdown"] = None
         return {
             "success": True,
             "data": {
@@ -7181,11 +7346,23 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
         written = 0
         skipped = 0
         for section in sections:
+            # Figures are rendered here, from the plan. They used to be a
+            # line appended to the section's text, which lost a figure
+            # inserted before the section was written, lost every figure on
+            # a revision, and never showed a table's data at all.
+            figures = "".join(
+                "\n" + _figure_markdown(figure) + "\n"
+                for figure in section.get("figures") or []
+            )
             if section.get("content"):
-                parts.append(f"## {section['title']}\n\n{section['content']}\n")
+                parts.append(
+                    f"## {section['title']}\n\n{section['content']}\n{figures}"
+                )
                 written += 1
             else:
-                parts.append(f"## {section['title']}\n\n*[Section not yet written]*\n")
+                parts.append(
+                    f"## {section['title']}\n\n*[Section not yet written]*\n{figures}"
+                )
                 skipped += 1
 
         if include_refs and doc_ws.get("citations_registry"):
@@ -7211,7 +7388,6 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
         import hashlib
-        import re as _re
 
         from loguru import logger
 
@@ -7260,34 +7436,55 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
                 file_bytes = builder.build(title=title, content_items=content_items)
                 mime_type = "application/pdf"
             elif fmt == "pptx":
+                from app.services.docx_builder import (
+                    markdown_to_content_items as md_items_for_slides,
+                )
                 from app.services.pptx_builder import PPTXBuilder
 
+                # Slides are cut from the same parsed items the DOCX and PDF
+                # are built from. Splitting the raw text on "## " made bullets
+                # of code fences and rule lines, and kept only the first ten
+                # lines of a section, dropping the rest without a word.
+                per_slide = 10
                 slides = []
-                sections = _re.split(r"^##\s+", markdown, flags=_re.MULTILINE)
-                slide_num = 1
-                for section in sections:
-                    section = section.strip()
-                    if not section:
-                        continue
-                    lines = section.split("\n", 1)
-                    slide_title = lines[0].strip().lstrip("#").strip()
-                    body = lines[1].strip() if len(lines) > 1 else ""
-                    bullets = []
-                    for body_line in body.split("\n"):
-                        body_line = body_line.strip()
-                        if body_line.startswith(("- ", "* ", "+ ")):
-                            bullets.append(body_line[2:].strip())
-                        elif body_line and not body_line.startswith("#"):
-                            bullets.append(body_line)
-                    slides.append(
-                        SlideContent(
-                            slide_number=slide_num,
-                            slide_type="content",
-                            title=slide_title,
-                            content=bullets[:10],
+                current_title, current_lines = title, []
+
+                def _flush() -> None:
+                    chunks = [
+                        current_lines[k : k + per_slide]
+                        for k in range(0, len(current_lines), per_slide)
+                    ]
+                    for index, chunk in enumerate(chunks):
+                        slides.append(
+                            SlideContent(
+                                slide_number=len(slides) + 1,
+                                slide_type="content",
+                                title=current_title
+                                if index == 0
+                                else f"{current_title} (cont.)",
+                                content=chunk,
+                            )
                         )
-                    )
-                    slide_num += 1
+
+                for item in md_items_for_slides(markdown):
+                    kind = item.get("type")
+                    if kind == "heading" and int(item.get("level") or 2) <= 2:
+                        _flush()
+                        current_title, current_lines = str(item.get("text") or ""), []
+                    elif kind in ("bullet_list", "numbered_list"):
+                        current_lines.extend(str(x) for x in item.get("items") or [])
+                    elif kind == "code_block":
+                        current_lines.extend(
+                            line
+                            for line in str(item.get("code") or "").split("\n")
+                            if line.strip()
+                        )
+                    elif kind == "table":
+                        for row in item.get("rows") or []:
+                            current_lines.append(" | ".join(str(c) for c in row))
+                    elif item.get("text"):
+                        current_lines.append(str(item["text"]))
+                _flush()
                 if not slides:
                     slides.append(
                         SlideContent(
@@ -7302,10 +7499,20 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
                 file_bytes = builder.build(outline=outline)
                 mime_type = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
             elif fmt == "latex":
+                from app.core.config import settings as _settings
                 from app.services.latex_compiler_service import LatexCompilerService
+                from app.services.markdown_latex import markdown_to_latex
 
-                compile_result = LatexCompilerService.compile_to_pdf(
-                    tex_source=markdown,
+                # The same switch that gates compilation everywhere else. This
+                # branch never consulted it -- and never worked either: it
+                # called the method on the class, and gave it markdown.
+                if not getattr(_settings, "LATEX_COMPILER_ENABLED", False):
+                    return {
+                        "error": "LaTeX compilation is disabled on this "
+                        "deployment; export as pdf or docx instead"
+                    }
+                compile_result = LatexCompilerService().compile_to_pdf(
+                    tex_source=markdown_to_latex(markdown, title),
                     timeout_seconds=60,
                     max_source_chars=500000,
                 )
@@ -7324,29 +7531,70 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
                 "size_bytes": len(file_bytes),
                 "mime_type": mime_type,
             }
+            # Keep the file. It used to be built, measured and dropped: the
+            # result named a size and a type and nothing that could be opened.
+            extension = "pdf" if fmt == "latex" else fmt
+            try:
+                import uuid as _uuid
+
+                from app.services.storage_service import storage_service
+
+                object_path = (
+                    f"agent_artifacts/{job.id}/exports/{_uuid.uuid4()}.{extension}"
+                )
+                await storage_service.initialize()
+                await storage_service.upload_to_path(object_path, file_bytes, mime_type)
+                artifact["object_path"] = object_path
+                artifact["url"] = await storage_service.get_presigned_download_url(
+                    object_path
+                )
+            except Exception as exc:
+                logger.warning(f"Failed to store exported document: {exc}")
+                artifact["stored"] = False
+                artifact["storage_error"] = str(exc)[:300]
             doc_ws.setdefault("export_artifacts", []).append(artifact)
 
             if params.get("persist_to_kb"):
                 try:
-                    from app.models.document import Document
+                    import uuid as _uuid
 
+                    from app.models.document import Document
+                    from app.services.document_service import DocumentService
+
+                    notes_source = (
+                        await DocumentService()._get_or_create_agent_notes_source(
+                            ctx.db
+                        )
+                    )
                     doc = Document(
-                        title=f"{title} ({fmt.upper()})",
+                        title=f"{title} ({fmt.upper()})"[:500],
                         content=markdown[:100000],
                         content_hash=hashlib.sha256(markdown.encode()).hexdigest(),
-                        file_type=mime_type,
-                        file_size=len(file_bytes),
+                        # The column holds 50 characters; the DOCX media
+                        # type is 71.
+                        file_type="text/markdown",
+                        file_size=len(markdown.encode("utf-8")),
+                        file_path=artifact.get("object_path"),
+                        source_id=notes_source.id,
+                        source_identifier=f"agent_export:{_uuid.uuid4().hex}",
+                        tags=["autonomous_job", "export"],
                         extra_metadata={
                             "origin": "document_author",
                             "job_id": str(job.id),
                             "format": fmt,
+                            "export_mime_type": mime_type,
                         },
                     )
-                    ctx.db.add(doc)
-                    await ctx.db.flush()
+                    # A savepoint, so a refused insert costs only itself.
+                    async with ctx.db.begin_nested():
+                        ctx.db.add(doc)
+                        await ctx.db.flush()
                     artifact["document_id"] = str(doc.id)
+                    artifact["persisted"] = True
                 except Exception as exc:
                     logger.warning(f"Failed to persist exported doc to KB: {exc}")
+                    artifact["persisted"] = False
+                    artifact["persist_error"] = str(exc)[:300]
 
             return {"success": True, "data": artifact}
         except Exception as exc:
@@ -7363,9 +7611,16 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
 
         section_id = str(params.get("section_id", "")).strip()
         figure_type = str(params.get("figure_type", "")).strip()
-        caption = str(params.get("caption", ""))[:300]
+        caption = str(params.get("caption") or "").strip()[:300]
         if not section_id or not figure_type:
             return {"error": "section_id and figure_type are required"}
+        if figure_type not in {"chart", "table", "diagram", "flowchart"}:
+            return {
+                "error": f"figure_type must be chart, table, diagram or flowchart, "
+                f"not {figure_type!r}"
+            }
+        if not caption:
+            return {"error": "caption is required"}
 
         section = None
         for section_row in doc_ws["plan"]["sections"]:
@@ -7385,9 +7640,7 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
             "position": str(params.get("position", "inline")),
         }
         section.setdefault("figures", []).append(figure_entry)
-        fig_md = f"\n\n*[Figure: {caption}]*\n"
-        if section.get("content"):
-            section["content"] += fig_md
+        doc_ws["assembled_markdown"] = None
         return {
             "success": True,
             "data": {
@@ -8424,7 +8677,7 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
             child_type = str(params.get("job_type", "research")).strip()
             if child_type not in {"research", "analysis", "synthesis", "custom"}:
                 child_type = "research"
-            child_max = min(int(params.get("max_iterations", 10) or 10), 20)
+            child_max = max(1, min(int(params.get("max_iterations", 10) or 10), 20))
             share = params.get("share_findings", True)
             if share is None:
                 share = True
@@ -8437,7 +8690,12 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
                 },
             }
             if share:
-                child_config["inherited_findings"] = (state.get("findings") or [])[-20:]
+                # Under the key the child's prompt reads. These went to
+                # `inherited_findings`, which nothing reads, so a child told
+                # "findings shared" started blind.
+                child_config.setdefault("inherited_data", {})["parent_findings"] = (
+                    state.get("findings") or []
+                )[-20:]
             source_scope_id = executor._resolve_default_source_scope(job)
             if source_scope_id:
                 child_config["default_source_id"] = source_scope_id
@@ -8459,8 +8717,9 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
                 max_runtime_minutes=min(30, job.max_runtime_minutes or 60),
                 results={},
             )
-            ctx.db.add(child)
-            await ctx.db.flush()
+            async with ctx.db.begin_nested():
+                ctx.db.add(child)
+                await ctx.db.flush()
             state.setdefault("delegated_subtask_ids", []).append(str(child.id))
             execute_agent_job_task.delay(str(child.id), str(job.user_id))
             return {
@@ -8628,13 +8887,21 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
     ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         try:
-            directive = str(params.get("directive", "")).strip()[:1000]
+            directive = str(params.get("directive") or "").strip()[:1000]
             if not directive:
                 return {"error": "directive parameter is required"}
             append = bool(params.get("append", False))
             if append:
-                existing = str(state.get("focus_directive", ""))
-                state["focus_directive"] = (existing + "\n" + directive).strip()[:2000]
+                existing = str(state.get("focus_directive") or "")
+                combined = (existing + "\n" + directive).strip()
+                if len(combined) > 2000:
+                    # Cutting the tail dropped the new text and still
+                    # answered "appended".
+                    return {
+                        "error": "The focus directive is full (2000 characters). "
+                        "Replace it instead of appending."
+                    }
+                state["focus_directive"] = combined
             else:
                 state["focus_directive"] = directive
             return {

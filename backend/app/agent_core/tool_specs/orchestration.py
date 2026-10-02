@@ -289,10 +289,6 @@ SPECS: tuple[ToolSpec, ...] = (
                     "items": {"type": "string"},
                     "description": "Criteria for the reviewer to evaluate",
                 },
-                "reviewer_job_id": {
-                    "type": "string",
-                    "description": "Specific sibling job to request review from (for peer_agent type)",
-                },
             },
             "required": ["content_to_review"],
         },

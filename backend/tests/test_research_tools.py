@@ -14,8 +14,6 @@ Three edges are replaced, and nothing else:
 * the resolver: `socket.getaddrinfo` answers from a table, so the scraper's
   private-address check runs for real against addresses the test chose;
 * the model: `generate_response` records what it was given.
-
-Tests marked xfail(strict) record a defect in the handlers.
 """
 
 import socket

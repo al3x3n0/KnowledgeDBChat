@@ -1133,8 +1133,33 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   snapshots were all stamped iteration 0, since the iteration is the job's and
   not in runtime state. A run may now leave at most
   `MAX_SCHEDULED_JOBS_PER_RUN` (10) scheduled jobs and
-  `MAX_NOTIFICATIONS_PER_RUN` (20) notifications behind it. The remaining
-  hollow files are listed in the `hollow-tests` memory.
+  `MAX_NOTIFICATIONS_PER_RUN` (20) notifications behind it. The last thirteen
+  files followed and all found something too. The shapes worth remembering:
+  - **A check made after the act.** The web fetcher let its HTTP client follow
+    redirects and validated only the final address, once the body had been
+    read: a public URL redirecting to `169.254.169.254` withheld the content
+    and still sent the request. Redirects are followed one hop at a time and
+    each is checked first.
+  - **State written "for future reference" that nothing reads.** Reflections,
+    hypotheses, the evidence ledger and plan critiques are now rendered into
+    the volatile prompt (`agent_prompt_sections.format_reasoning_notes`);
+    findings shared with a child went to `inherited_findings`, a key no code
+    read, instead of `inherited_data.parent_findings`, which the child's
+    prompt does.
+  - **A snapshot nobody invalidates.** `assembled_markdown` survived a
+    revision, so an export shipped the text from before it.
+  - **A search that ignores its query.** Memory search sorted by importance
+    alone; it is lexical now and says so (`relevance` on each result), not
+    semantic.
+  - **`x or default` eats zero.** Importance 0.0 became 0.5, confidence 0.0
+    became 0.8, threshold 0 became 1, `keep_last` 0 became 5.
+  - **A parameter declared and never read** is removed rather than left:
+    `write_section.search_query`, `export_document.latex_project_id`,
+    `request_review.reviewer_job_id`, `transcribe_document.language`.
+  `export_document` now stores the file it builds (it used to measure it and
+  drop it), derives its slides and its LaTeX from the same parsed items as the
+  DOCX and PDF (`services/markdown_latex.py`), and honours
+  `LATEX_COMPILER_ENABLED`, which that branch had never consulted.
 - **A setting must be read, or admitted inert.** `TRAINING_ENABLED` was the
   documented gate on training and nothing read it; the concurrency limit and
   two dataset limits beside it were the same. They are enforced now (the gate

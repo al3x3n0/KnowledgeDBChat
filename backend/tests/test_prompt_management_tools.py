@@ -163,12 +163,6 @@ class TestSwitchStrategy:
         assert first["iteration"] == 7
         datetime.fromisoformat(first["timestamp"])
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="run start re-resolves the profile with the job's configured "
-        "role ranked above the switched one, so a resumed run with "
-        "agent_role/swarm_role set silently reverts switch_strategy",
-    )
     async def test_a_switch_survives_the_run_being_resumed(self, executor):
         job = _job(config={"swarm_role": "researcher"})
         state = _started_state(executor, job)
@@ -260,14 +254,10 @@ class TestSetFocusDirective:
                 {"directive": letter * 900, "append": True},
                 state,
             )
-        assert len(state["focus_directive"]) == 2000
-        assert state["focus_directive"].startswith("A" * 900 + "\n" + "B" * 900)
+        # The third does not fit and is refused whole, not cut to fill the gap.
+        assert state["focus_directive"] == "A" * 900 + "\n" + "B" * 900
+        assert len(state["focus_directive"]) <= 2000
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="once 2000 characters are stored, an appended directive is "
-        "truncated away entirely and the call still answers success/'appended'",
-    )
     async def test_an_append_that_does_not_fit_is_not_reported_as_done(self, executor):
         state = {"focus_directive": "A" * 2000}
         result, _ = await _call(
@@ -279,11 +269,6 @@ class TestSetFocusDirective:
         stored = "Stop reading surveys" in state["focus_directive"]
         assert stored or (result.get("error") and not result.get("success"))
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="a null directive is stringified: the focus directive becomes "
-        "the literal text 'None' instead of the call being refused",
-    )
     async def test_a_null_directive_is_refused(self, executor):
         state = {"focus_directive": "Keep me"}
         result, _ = await _call(

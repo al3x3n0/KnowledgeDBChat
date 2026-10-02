@@ -172,17 +172,6 @@ async def test_delegate_creates_a_runnable_child_and_queues_it(
     assert queued == [((str(child.id), str(test_user.id)), {})]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "agent_tool_dispatch.py _delegate_subtask reads the goal as "
-        "str(params.get('goal', ''))[:2000] and never checks it, though the "
-        "ToolSpec declares goal required. A call without one inserts a child "
-        "whose goal is the empty string (NOT NULL is satisfied by '') and "
-        "queues it: a job with nothing to do, charged against the 5-child "
-        "budget. Refuse an empty goal before building the row."
-    ),
-)
 @pytest.mark.parametrize(
     "params",
     [{"name": "Subtask"}, {"name": "Subtask", "goal": "   "}],
@@ -246,16 +235,6 @@ async def test_delegate_gives_the_child_no_more_budget_than_the_parent_has_left(
     assert child.max_runtime_minutes == 12
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "agent_tool_dispatch.py _delegate_subtask computes "
-        "min(int(params.get('max_iterations', 30) or 30), remaining) with no "
-        "lower bound, so max_iterations=-5 creates and queues a child with "
-        "max_iterations=-5, max_tool_calls=-25 and max_llm_calls=-15. Clamp to "
-        "at least 1 (the same expression is in _create_handoff)."
-    ),
-)
 async def test_delegate_never_creates_a_child_with_a_negative_budget(
     db_session, test_user
 ):
@@ -276,16 +255,6 @@ async def test_delegate_never_creates_a_child_with_a_negative_budget(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "agent_tool_dispatch.py _delegate_subtask calls "
-        "int(params.get('max_iterations', 30) or 30) OUTSIDE its try block "
-        "so a non-numeric value raises ValueError out "
-        "of the handler instead of returning {'error': ...} like every other "
-        "bad input. Move the parsing inside the try or validate it."
-    ),
-)
 async def test_delegate_refuses_a_max_iterations_that_is_not_a_number(
     db_session, test_user, queued
 ):
@@ -388,7 +357,7 @@ async def test_delegate_passes_config_and_the_parents_findings_to_the_child(
     child = (await _other_rows(db_session, caller))[0]
     assert child.config["source_id"] == "repo-1"
     # The most recent twenty.
-    assert child.config["inherited_findings"] == findings[-20:]
+    assert child.config["inherited_data"]["parent_findings"] == findings[-20:]
 
 
 async def test_delegate_withholds_the_findings_when_asked_to(db_session, test_user):
@@ -404,23 +373,9 @@ async def test_delegate_withholds_the_findings_when_asked_to(db_session, test_us
 
     assert result.get("success") is True, result
     child = (await _other_rows(db_session, caller))[0]
-    assert "inherited_findings" not in (child.config or {})
+    assert "inherited_data" not in (child.config or {})
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Data written where nothing reads it. _delegate_subtask "
-        "(agent_tool_dispatch.py) and _create_handoff put the "
-        "parent's findings in the child's config['inherited_findings'], and "
-        "that key is read nowhere in backend/app: not by the prompt builders, "
-        "not by agent_runtime_state_service's initial state, not by "
-        "_inherit_assumed_findings (which reads inherited_data.parent_results). "
-        "share_findings=true therefore shares nothing; the child starts blind. "
-        "Either seed the child's state/prompt from the key or write the "
-        "findings where the existing inheritance path reads them."
-    ),
-)
 async def test_the_child_is_told_the_findings_its_parent_shared(db_session, test_user):
     from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 
@@ -487,19 +442,6 @@ async def test_delegate_with_wait_gives_up_after_a_minute_and_says_so(
     assert sum(no_sleep) <= 60
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "agent_tool_dispatch.py _delegate_subtask catches the failed flush and returns "
-        "{'error': ...} without rolling anything back. The session it borrowed "
-        "from the executor is left with a failed transaction: the next "
-        "statement on it raises PendingRollbackError, so one refused child "
-        "insert takes the parent job down from somewhere unrelated. A plain "
-        "rollback() is not the fix either (it expires the executor's job "
-        "object: MissingGreenlet); insert inside `async with "
-        "ctx.db.begin_nested()` so only the savepoint is undone."
-    ),
-)
 async def test_a_failed_delegation_leaves_the_session_usable(
     db_session, test_user, queued
 ):
@@ -579,7 +521,8 @@ async def test_wait_reports_a_finished_child_and_its_results(
     assert result["data"]["results"]["summary"] == "ok"
     assert result["data"]["findings_count"] == 2
     assert no_sleep == []
-    assert state["delegated_subtask_results"][str(child.id)]["summary"] == "ok"
+    final = state["delegated_subtask_final"][str(child.id)]
+    assert final["status"] == "completed" and final["results"]["summary"] == "ok"
 
 
 async def test_wait_reports_a_failed_child_as_failed(db_session, test_user, no_sleep):
@@ -649,19 +592,6 @@ async def test_wait_sees_the_child_finish_while_it_is_polling(
     assert result["data"]["findings_count"] == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "agent_tool_dispatch.py _wait_for_subtask stores the child's "
-        "results in state['delegated_subtask_results'] whatever the child's "
-        "status, and answers any later call from that cache with a "
-        "hard-coded status 'completed'. A child that had partial results when "
-        "a wait timed out is reported as completed on the next call, with the "
-        "stale partial results, and is never polled again; a failed child with "
-        "results is likewise re-reported as completed. Cache only terminal "
-        "children, and cache the status with the results."
-    ),
-)
 async def test_waiting_again_on_a_child_still_running_does_not_call_it_completed(
     db_session, test_user, no_sleep
 ):
@@ -883,17 +813,6 @@ async def test_share_addressed_to_a_job_that_is_not_a_sibling_reaches_nobody(
         assert "shared_findings" not in await _stored(db_session, job)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "agent_tool_dispatch.py _share_findings silently drops every "
-        "target id that is not a UUID and applies the filter only "
-        "`if target_uuids:`. When none of the named targets parses, the filter "
-        "is skipped and the findings go to EVERY sibling: a call addressed to "
-        "one (mistyped) job is broadcast to all. A non-empty target list that "
-        "resolves to nothing should reach nobody, or be refused."
-    ),
-)
 async def test_share_addressed_only_to_unreadable_ids_is_not_sent_to_everyone(
     db_session, test_user
 ):
@@ -911,17 +830,6 @@ async def test_share_addressed_only_to_unreadable_ids_is_not_sent_to_everyone(
     assert "shared_findings" not in await _stored(db_session, sibling_b)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "agent_tool_dispatch.py _share_findings selects siblings by "
-        "parent_job_id alone. _get_sibling_status and "
-        "_broadcast_to_siblings both add AgentJob.user_id == "
-        "job.user_id; this query does not, so a job of another user under the "
-        "same parent has the caller's findings written into its results. Add "
-        "the same user_id filter."
-    ),
-)
 async def test_share_does_not_write_into_another_users_job(
     db_session, test_user, admin_user
 ):
@@ -979,19 +887,6 @@ async def test_a_sibling_keeps_only_the_newest_fifty_shared_findings(
     assert shared[-1]["title"] == "5-9"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Data written where nothing reads it. _share_findings "
-        "(agent_tool_dispatch.py) writes results['shared_findings'] on "
-        "each sibling; the only reader in backend/app is _read_agent_messages "
-        "which returns len(shared) as shared_findings_count and "
-        "never the findings. No prompt builder, observation or state seeding "
-        "reads the key, so a sibling can learn that N findings were shared "
-        "with it and has no tool that will show it one. Return the findings "
-        "from read_agent_messages (or inject them into the sibling's context)."
-    ),
-)
 async def test_a_sibling_can_read_the_findings_shared_with_it(db_session, test_user):
     parent, (caller, sibling_a, _b) = await _family(db_session, test_user)
     await _call("share_findings", db_session, caller, {"findings": [FINDING]})
@@ -1112,18 +1007,6 @@ async def test_the_requester_can_collect_the_peer_reviewers_verdict(
     assert result["data"]["results"] == {"summary": "baseline is unfair"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "agent_tool_dispatch.py _request_review reads content_to_review "
-        "as str(params.get('content_to_review', ''))[:3000] and never checks "
-        "it, though the ToolSpec declares it required. With nothing to review "
-        "a human request still parks an approval checkpoint whose content is "
-        "'' and a peer request creates and queues a reviewer whose goal is "
-        "'Review the following content and provide feedback:' followed by "
-        "nothing. Refuse empty content before recording anything."
-    ),
-)
 @pytest.mark.parametrize("review_type", ["human", "peer_agent"])
 async def test_request_review_refuses_a_request_with_nothing_to_review(
     db_session, test_user, queued, review_type
@@ -1175,17 +1058,6 @@ async def test_a_human_review_is_still_available_at_the_maximum_depth(
     assert state["approval_checkpoint_pending"]["content_to_review"] == "Deep draft"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "agent_tool_dispatch.py _request_review spawns a child job "
-        "and appends it to state['delegated_subtask_ids'], but unlike "
-        "_delegate_subtask and _create_handoff it never checks "
-        "that list against the 5-child budget. A parent that has spent its "
-        "budget can keep spawning jobs by calling them reviews. Apply the same "
-        "len(delegated_ids) >= 5 refusal."
-    ),
-)
 async def test_a_peer_review_counts_against_the_parents_child_budget(
     db_session, test_user, queued
 ):
@@ -1210,35 +1082,14 @@ async def test_a_peer_review_counts_against_the_parents_child_budget(
     assert len(queued) == 5
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Declared parameter ignored. The request_review ToolSpec "
-        "(agent_core/tool_specs/orchestration.py) offers reviewer_job_id, "
-        "'Specific sibling job to request review from', and _request_review "
-        "(agent_tool_dispatch.py) never reads it: the named sibling "
-        "is told nothing and a brand-new reviewer job is spawned and queued "
-        "instead. Either deliver the request to that sibling (and validate it "
-        "is a sibling of the same user) or remove the parameter."
-    ),
-)
-async def test_a_peer_review_addressed_to_a_sibling_reaches_that_sibling(
-    db_session, test_user, queued
-):
-    parent, (caller, sibling_a, _b) = await _family(db_session, test_user)
+def test_request_review_offers_no_reviewer_job_id():
+    """It was declared as "specific sibling job to request review from" and
+    never read: the named sibling was told nothing and a new reviewer was
+    spawned instead. To reach a particular job, send it a message."""
+    from app.services.agent_tools import get_tool_by_name
 
-    result = await _call(
-        "request_review",
-        db_session,
-        caller,
-        {
-            "content_to_review": "ZEBRA-DRAFT for a named reviewer",
-            "reviewer_job_id": str(sibling_a.id),
-        },
-    )
-
-    assert result.get("success") is True, result
-    assert "ZEBRA-DRAFT" in str(await _stored(db_session, sibling_a))
+    tool = get_tool_by_name("request_review")
+    assert "reviewer_job_id" not in tool["parameters"]["properties"]
 
 
 async def test_review_keeps_only_the_latest_twenty_requests_and_ten_criteria(
@@ -1266,19 +1117,6 @@ async def test_review_keeps_only_the_latest_twenty_requests_and_ten_criteria(
     assert len(state["approval_checkpoint_pending"]["review_criteria"]) == 10
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "agent_tool_dispatch.py _request_review catches the failed flush and returns "
-        "{'error': ...} without rolling anything back. The session it borrowed "
-        "from the executor is left with a failed transaction: the next "
-        "statement on it raises PendingRollbackError, so one refused child "
-        "insert takes the parent job down from somewhere unrelated. A plain "
-        "rollback() is not the fix either (it expires the executor's job "
-        "object: MissingGreenlet); insert inside `async with "
-        "ctx.db.begin_nested()` so only the savepoint is undone."
-    ),
-)
 async def test_a_failed_peer_review_spawn_leaves_the_session_usable(
     db_session, test_user, queued
 ):

@@ -531,7 +531,7 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="write_section",
-        description="Write content for a specific document section, optionally using RAG search for KB context and citations.",
+        description="Write content for a specific document section, with the citations it relies on.",
         parameters={
             "type": "object",
             "properties": {
@@ -542,10 +542,6 @@ SPECS: tuple[ToolSpec, ...] = (
                 "content": {
                     "type": "string",
                     "description": "Section content in markdown",
-                },
-                "search_query": {
-                    "type": "string",
-                    "description": "Optional query to search KB for relevant context before writing",
                 },
                 "citations": {
                     "type": "array",
@@ -654,10 +650,6 @@ SPECS: tuple[ToolSpec, ...] = (
                     "type": "boolean",
                     "description": "Also save the document to the knowledge base (default false)",
                     "default": False,
-                },
-                "latex_project_id": {
-                    "type": "string",
-                    "description": "Existing LaTeX project to export into (latex format only)",
                 },
             },
             "required": ["format"],

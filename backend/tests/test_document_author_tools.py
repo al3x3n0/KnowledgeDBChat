@@ -12,7 +12,7 @@ twenty-three tests passed without a handler being imported.
 
 Nothing is faked except the LaTeX compiler (a subprocess) and, where the
 bytes are inspected, a spy that calls the real builder and keeps what it
-returned. Tests marked xfail(strict) record a defect in the handler.
+returned.
 """
 
 import io
@@ -53,6 +53,43 @@ class _Recorder:
     def __getattr__(self, name):
         self.touched.append(name)
         return SimpleNamespace()
+
+
+@pytest.fixture(autouse=True)
+def uploads(monkeypatch):
+    """Object storage, recording anything stored. Autouse: an export stores
+    its file, and nothing here should reach a real object store."""
+    from app.services.storage_service import storage_service
+
+    stored = []
+
+    async def initialize():
+        return None
+
+    async def upload_to_path(object_path, content, content_type=None):
+        stored.append(
+            {"path": object_path, "content": content, "content_type": content_type}
+        )
+        return object_path
+
+    async def get_presigned_download_url(object_path, expiry=None):
+        return f"https://storage.test/{object_path}?signed=1"
+
+    monkeypatch.setattr(storage_service, "initialize", initialize)
+    monkeypatch.setattr(storage_service, "upload_to_path", upload_to_path)
+    monkeypatch.setattr(
+        storage_service, "get_presigned_download_url", get_presigned_download_url
+    )
+    return stored
+
+
+@pytest.fixture(autouse=True)
+def latex_enabled(monkeypatch):
+    """LaTeX compilation is off by default; the LaTeX tests here are about
+    what happens when a deployment has turned it on."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "LATEX_COMPILER_ENABLED", True)
 
 
 class _Session:
@@ -200,6 +237,8 @@ async def test_plan_stores_the_outline_the_model_gave():
         "title": "Prefetcher Study",
         "sections_count": 3,
         "section_ids": ["intro", "methods", "results"],
+        "max_sections": 30,
+        "sections_dropped": 0,
     }
     plan = session.workspace["plan"]
     assert plan["title"] == "Prefetcher Study"
@@ -265,14 +304,6 @@ async def test_plan_caps_sections_and_field_lengths():
     assert all(len(s["title"]) == 200 for s in plan["sections"])
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "plan_document slices sections[:30] and reports sections_count=30 with "
-        "no word that ten were dropped; the model then writes to 's35' and is "
-        "told it is 'not found in document plan'"
-    ),
-)
 async def test_plan_says_when_it_dropped_sections_over_the_cap():
     session = _Session()
     many = [{"id": f"s{i}", "title": f"Section {i}"} for i in range(40)]
@@ -289,14 +320,6 @@ async def test_plan_says_when_it_dropped_sections_over_the_cap():
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "plan_document skips every non-dict section and still reports success: "
-        "sections=['Intro','Methods'] yields a plan with zero sections that "
-        "nothing can be written into"
-    ),
-)
 async def test_plan_refuses_when_no_section_is_usable():
     session = _Session()
 
@@ -307,14 +330,6 @@ async def test_plan_refuses_when_no_section_is_usable():
     _refused(result)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "plan_document accepts duplicate section ids; write_section matches the "
-        "first, so the second section of that id can never be written and the "
-        "assembled document carries '[Section not yet written]' for it"
-    ),
-)
 async def test_plan_does_not_accept_two_sections_with_one_id():
     session = _Session()
 
@@ -333,13 +348,6 @@ async def test_plan_does_not_accept_two_sections_with_one_id():
     assert "error" in result or len(set(ids)) == 2
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "plan_document stores the id unstripped while write_section strips the "
-        "id it is given, so a section planned as ' intro ' is unreachable"
-    ),
-)
 async def test_a_planned_section_id_with_padding_can_still_be_written():
     session = _Session()
     await session.call(
@@ -527,14 +535,6 @@ async def test_at_most_twenty_citations_are_kept_per_call():
     assert len(session.workspace["citations_registry"]) == 20
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "write_section appends citations and never clears them: writing the "
-        "same section twice with the same citation reports citations_count=2, "
-        "and a citation dropped by the rewrite stays in the References"
-    ),
-)
 async def test_rewriting_a_section_replaces_its_citations():
     session = _Session()
     await session.plan()
@@ -554,33 +554,15 @@ async def test_rewriting_a_section_replaces_its_citations():
     assert "Withdrawn Paper" not in await session.assembled()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "write_section declares search_query ('query to search KB for relevant "
-        "context before writing') and its description promises RAG context; "
-        "the handler never reads the parameter and touches no service"
-    ),
-)
-async def test_search_query_searches_the_knowledge_base():
-    executor = _Recorder()
-    session = _Session(executor=executor)
-    await session.plan()
+def test_write_section_offers_no_search_query():
+    """It was declared, with a description promising knowledge-base context,
+    and nothing read it. The run searches with the search tools and passes
+    what it found as `citations`."""
+    from app.services.agent_tools import get_tool_by_name
 
-    result = await session.call(
-        "write_section",
-        {
-            "section_id": "methods",
-            "content": BODY["methods"],
-            "search_query": "stride prefetcher L2",
-        },
-    )
-
-    assert executor.touched or set(result.get("data", {})) - {
-        "section_id",
-        "content_length",
-        "citations_count",
-    }
+    tool = get_tool_by_name("write_section")
+    assert "search_query" not in tool["parameters"]["properties"]
+    assert "RAG" not in tool["description"]
 
 
 # --------------------------------------------------------------------------
@@ -666,14 +648,6 @@ async def test_a_revision_replaces_the_text_in_the_final_document():
     assert "Kernel Suite" in markdown
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "assemble_document stores a snapshot and revise_section does not "
-        "invalidate it, so export_document after a revision exports the text "
-        "from before the revision and reports success"
-    ),
-)
 async def test_export_after_a_revision_does_not_ship_the_old_text(monkeypatch):
     from app.services.docx_builder import DOCXBuilder
 
@@ -729,13 +703,6 @@ async def test_figure_refuses_without_section_and_type(params):
     assert all(s["figures"] == [] for s in session.workspace["plan"]["sections"])
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "the spec requires caption, but insert_figure only checks section_id "
-        "and figure_type; a figure with no caption is inserted as '*[Figure: ]*'"
-    ),
-)
 async def test_figure_refuses_without_a_caption():
     session = _Session()
     await session.plan()
@@ -748,13 +715,6 @@ async def test_figure_refuses_without_a_caption():
     _refused(result)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "the spec's figure_type enum is chart/table/diagram/flowchart; "
-        "insert_figure accepts any string"
-    ),
-)
 async def test_figure_refuses_a_type_outside_the_declared_set():
     session = _Session()
     await session.plan()
@@ -822,15 +782,6 @@ async def test_a_figure_in_a_written_section_reaches_the_document():
     assert _in_order(markdown, "## Methods", "## Results", "Speedup per kernel")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "insert_figure only appends its marker to content that already exists "
-        "and assemble_document never reads section['figures']: a figure added "
-        "before the section is written is reported inserted (figures_count=1) "
-        "and is absent from the document"
-    ),
-)
 async def test_a_figure_inserted_before_the_section_is_written_is_not_lost():
     session = _Session()
     await session.plan()
@@ -849,14 +800,6 @@ async def test_a_figure_inserted_before_the_section_is_written_is_not_lost():
     assert "Speedup per kernel" in await session.assembled()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "the figure lives only as a marker appended to section content, so "
-        "revise_section (which replaces the content) silently removes every "
-        "figure in the section while section['figures'] still lists it"
-    ),
-)
 async def test_a_figure_survives_a_revision_of_its_section():
     session = _Session()
     await session.plan()
@@ -877,14 +820,6 @@ async def test_a_figure_survives_a_revision_of_its_section():
     assert "Speedup per kernel" in await session.assembled()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "insert_figure stores data and diagram_spec and nothing renders them: "
-        "a table's cells and a diagram's source never reach the assembled "
-        "document, which gets only '*[Figure: <caption>]*'"
-    ),
-)
 async def test_a_table_figure_puts_its_data_in_the_document():
     session = _Session()
     await session.plan()
@@ -1170,14 +1105,6 @@ async def test_pptx_export_has_a_slide_per_section_in_order(monkeypatch):
     assert calls[0]["bytes"][:2] == b"PK"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "the pptx branch turns a section into one slide and keeps bullets[:10]: "
-        "every line of a section past its tenth is dropped from the deck "
-        "without a word, and the export reports success"
-    ),
-)
 async def test_pptx_export_keeps_all_of_a_long_section(monkeypatch):
     from app.services.pptx_builder import PPTXBuilder
 
@@ -1199,14 +1126,6 @@ async def test_pptx_export_keeps_all_of_a_long_section(monkeypatch):
     assert "finding number 15" in shown
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "the latex branch calls LatexCompilerService.compile_to_pdf on the "
-        "class; it is an instance method, so every latex export fails with "
-        "\"missing 1 required positional argument: 'self'\""
-    ),
-)
 async def test_latex_export_reaches_the_compiler(monkeypatch):
     from app.services import latex_compiler_service as module
 
@@ -1231,14 +1150,6 @@ async def test_latex_export_reaches_the_compiler(monkeypatch):
     assert BODY["methods"] in seen[0]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "the latex branch hands the assembled *markdown* to the LaTeX compiler "
-        "as tex_source: no \\documentclass, '# Title' headings and '---' "
-        "rules, so even with the call fixed nothing compilable is produced"
-    ),
-)
 async def test_latex_export_compiles_latex_not_markdown(monkeypatch):
     from app.services import latex_compiler_service as module
 
@@ -1316,15 +1227,6 @@ async def test_export_without_persist_writes_no_document_row(db_session, test_us
     assert (await db_session.execute(select(Document))).scalars().all() == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "persist_to_kb builds Document without source_id or source_identifier "
-        "(both NOT NULL), so the flush raises IntegrityError; the handler "
-        "swallows it and returns success with no document_id -- nothing is "
-        "ever saved to the knowledge base"
-    ),
-)
 async def test_persist_to_kb_stores_the_whole_document(db_session, test_user):
     session = await _ready(db_session, test_user)
 
@@ -1346,14 +1248,6 @@ async def test_persist_to_kb_stores_the_whole_document(db_session, test_user):
     assert row.extra_metadata["job_id"] == str(session.job.id)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "when the persist_to_kb insert fails the handler reports plain success: "
-        "the caller asked for the document to be saved and is not told it was "
-        "not (no error, no warning, no document_id)"
-    ),
-)
 async def test_a_failed_persist_is_not_reported_as_plain_success(test_user):
     class _BrokenDb:
         def add(self, obj):
@@ -1375,14 +1269,6 @@ async def test_a_failed_persist_is_not_reported_as_plain_success(test_user):
     assert said_so
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "export_document builds the file, records len(file_bytes) and discards "
-        "the bytes: nothing is written to object storage or the workspace, so "
-        "the artifact names a DOCX nobody can download"
-    ),
-)
 async def test_the_exported_file_can_be_found_afterwards(db_session, test_user):
     session = await _ready(db_session, test_user)
 

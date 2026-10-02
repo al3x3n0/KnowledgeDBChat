@@ -124,7 +124,16 @@ def pptx(monkeypatch):
     return seen
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
+def latex_enabled(monkeypatch):
+    """LaTeX compilation is off by default; the LaTeX tests here are about
+    what happens when a deployment has turned it on."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "LATEX_COMPILER_ENABLED", True)
+
+
+@pytest.fixture(autouse=True)
 def uploads(monkeypatch):
     """Object storage, recording anything stored."""
     stored = []
@@ -461,15 +470,6 @@ class TestExportPptx:
 
         assert all(len(s.content) <= 10 for s in pptx.outlines[0].slides)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "The PPTX path keeps `bullets[:10]` per section and discards the "
-            "rest: a section with 20 bullets exports 10 of them, with no "
-            "continuation slide and nothing in the result saying content was "
-            "dropped."
-        ),
-    )
     async def test_a_long_section_loses_no_content(self, export, pptx):
         markdown = "## Big Section\n\n" + "\n".join(f"- Item {i}" for i in range(20))
 
@@ -478,14 +478,6 @@ class TestExportPptx:
         exported = [line for s in pptx.outlines[0].slides for line in s.content]
         assert exported == [f"Item {i}" for i in range(20)]
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "The PPTX path treats every non-heading line as a bullet, so the "
-            "fence lines of a code block ('```python', '```') are exported "
-            "as slide bullets. The DOCX/PDF paths parse the fence."
-        ),
-    )
     async def test_code_fence_markers_are_not_slide_bullets(self, export, pptx):
         await export({"format": "pptx"}, {"document_workspace": _workspace()})
 
@@ -522,16 +514,6 @@ class TestExportPptx:
 
 
 class TestExportLatex:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "export_document calls LatexCompilerService.compile_to_pdf(...) "
-            "on the class, but it is an instance method: every latex export "
-            "fails with \"missing 1 required positional argument: 'self'\" "
-            "and is reported as 'Export failed'. The advertised latex format "
-            "has never worked."
-        ),
-    )
     async def test_latex_export_compiles_and_returns_the_pdf(self, export, monkeypatch):
         compiled = []
 
@@ -585,15 +567,6 @@ class TestExportLatex:
 
 
 class TestExportIsDelivered:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "export_document builds the file and discards it: the bytes are "
-            "never uploaded to storage, never written anywhere and not "
-            "returned. The result carries only a size and a MIME type, so "
-            "there is nothing a person or a later tool can download."
-        ),
-    )
     async def test_the_exported_file_can_be_retrieved(self, export, built, uploads):
         state = {"document_workspace": _workspace()}
 
@@ -616,16 +589,6 @@ class TestExportIsDelivered:
         assert "document_id" not in result["data"]
         assert (await db_session.execute(select(Document))).scalars().all() == []
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "persist_to_kb builds Document(...) without source_id and "
-            "source_identifier, both NOT NULL, so the flush fails. The "
-            "failure is caught and logged, and the tool still answers "
-            "success -- with no document_id and nothing in the knowledge "
-            "base."
-        ),
-    )
     async def test_persist_to_kb_stores_a_document(self, export, built, db_session):
         state = {"document_workspace": _workspace()}
 
@@ -645,15 +608,7 @@ class TestExportIsDelivered:
         finally:
             await db_session.rollback()
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "The export_document spec declares `latex_project_id` ('Existing "
-            "LaTeX project to export into') and the handler never reads it: "
-            "the name does not appear in the document-authoring provider."
-        ),
-    )
-    def test_latex_project_id_is_read_by_the_handler(self):
+    def test_every_declared_parameter_is_read_by_the_handler(self):
         import inspect
 
         from app.services import agent_tool_dispatch
@@ -663,7 +618,8 @@ class TestExportIsDelivered:
             agent_tool_dispatch.build_autonomous_document_authoring_provider
         )
         declared = get_tool_by_name("export_document")["parameters"]["properties"]
-        assert "latex_project_id" in declared
+        # `latex_project_id` was declared and never read; it is gone.
+        assert "latex_project_id" not in declared
         for param in declared:
             assert f'"{param}"' in source, f"export_document never reads {param}"
 

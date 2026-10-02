@@ -1268,35 +1268,6 @@ async def import_workflow_template(
 
     return {
         "message": f"Template '{template['name']}' imported successfully",
-        "workflow": WorkflowResponse(
-            id=workflow.id,
-            name=workflow.name,
-            description=workflow.description,
-            is_active=workflow.is_active,
-            trigger_config=workflow.trigger_config,
-            created_at=workflow.created_at,
-            updated_at=workflow.updated_at,
-            nodes=[
-                {
-                    "node_id": n.node_id,
-                    "node_type": n.node_type,
-                    "tool_id": n.tool_id,
-                    "builtin_tool": n.builtin_tool,
-                    "config": n.config,
-                    "position_x": n.position_x,
-                    "position_y": n.position_y,
-                }
-                for n in workflow.nodes
-            ],
-            edges=[
-                {
-                    "source_node_id": e.source_node_id,
-                    "target_node_id": e.target_node_id,
-                    "source_handle": e.source_handle,
-                    "condition": e.condition,
-                }
-                for e in workflow.edges
-            ],
-        ),
+        "workflow": WorkflowResponse.model_validate(workflow),
         "template_id": template_id,
     }

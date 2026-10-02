@@ -1015,6 +1015,82 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   terminal message, checks on the client between polls, and releases
   everything on every exit. The agent-job stream (already built this way,
   with injected edges) and the per-user notification feed keep their own.
+- **A job task reports and fails through `tasks/job_support.py`.** Some
+  thirty publishers across twelve task modules each opened a Redis client per
+  message; the synchronous ones never closed it and the async ones closed it
+  on the line after `publish` rather than in a `finally`. `publish_sync` and
+  `publish_message` take the message whole (a module keeps its `_publish_*`
+  wrappers, which only name the channel and payload); `publish_progress` is
+  the plain progress shape; `mark_job_failed` records a dead task without
+  rewriting a job that already ended. The agent-job task keeps its own
+  failure write, because that one must respect the execution lease.
+  A user's LLM preferences are likewise read in one place,
+  `llm_service.load_user_llm_settings(db, user_id)` (never raises; UUID or
+  string). The inline lookups left are counted in
+  `tests/test_load_user_llm_settings.py` and may only decrease.
+  **A shared helper does not mean a shared constant**: `_canonical_params` is
+  one function, but a failure and a repeated success ignore different params,
+  so each caller passes its own set. Sharing the set made two successful
+  calls differing only in `title` count as a repeat.
+  The same reason keeps `agent_decision_parser.coerce_bool` (a model's
+  output: true/yes/1/y) apart from `config_values.coerce_bool` (a person's
+  config, which also accepts on/off), and `workflow_tasks.run_async` (a fresh
+  loop per call, closed after) apart from `job_support.run_async`.
+- **A backlog item's `decomposition` is edited through
+  `services/coding_backlog_decomposition.py`.** The operator endpoint and the
+  backlog orchestrator write the same JSON document, and the orchestrator
+  carried its own nested copies of the eight helpers that append to it — so
+  the history caps (100 backlog events, 60 per slice, 40 artifacts, 12
+  decisions) were stated twice. **The two `_normalize_decomposition` functions
+  are still separate and do differ**: the runner's rebuilds every slice and
+  reads the legacy `slices_planned` key, the endpoint's keeps unknown slice
+  fields. Merging them is a behaviour decision, not a cleanup.
+  `services/config_values.py` holds the clamped config readers the executor
+  and two policy modules each redefined as closures over `cfg`
+  (`clamped_int`, `clamped_float`, `string_list`) plus the never-raising
+  number readers a dozen services each had (`safe_float`, `safe_int`,
+  `positive_int`, `as_number`, `uuid_list`), and
+  `connectors/repo_tree.RepoTreeMixin` what the GitHub and GitLab connectors
+  both do with a tree. Three autonomy route modules shared a copied ownership
+  query; it is `modules/autonomy/api/owned_job.get_owned_job` now, since that
+  query is the whole of those routes' ownership check.
+  `tests/test_shared_helpers_have_one_definition.py`
+  names the one module allowed to define each.
+- **An import inside a function, under `except Exception`, can name
+  nothing and nobody finds out.** Four did: synthesis output files imported
+  three builder singletons that never existed, so every DOCX/PDF/PPTX
+  synthesis completed with no file; bulk summarisation queued a task under a
+  name it never had; and the GitLab architecture tool imported a model module
+  that does not exist from a service that could not itself be imported, which
+  also took four `/git` routes with it. `tests/test_imports_resolve.py` checks
+  every `from app.x import name` against the source of `app.x` — from source
+  rather than by importing, so a missing optional dependency cannot hide a
+  module. The same file checks one step further on — that a method called on
+  an imported singleton, or on a service held as `self.x = X()`, exists on
+  that class — which found agent delegation calling
+  `LLMService.generate_chat_response` (never defined; every
+  `delegate_to_agent` answered "Delegation failed") and job finalisation
+  calling `DataSandboxManager.cleanup` (never defined; no data sandbox was
+  released at job end). It asserts it examined more than 500 uses, since a
+  check that examines nothing passes for ever.
+  `tests/test_calls_fit_signatures.py` is the third of the kind: a call passes
+  arguments its callee can take. Python checks that when the call happens,
+  which is too late inside `except Exception` and too late for `.delay()`,
+  where the TypeError is raised in a worker after the caller answered 200.
+  `POST /agent/agents` passed a keyword its validator lacks, so no agent could
+  be created through the API (and `routing_defaults` was never stored); the
+  research presentation route queued its task without `user_id`, leaving the
+  job pending for ever. All three tests skip any target that is rebound,
+  shadowed or decorated rather than guess. Two things found while
+  repairing those: the GitLab service is a
+  singleton that cached one HTTP client **with the first caller's token** (now
+  one client per token), and the agent tool picked the first active GitLab
+  source for anyone (now the `/git` endpoints' rule: an admin, or whoever
+  requested the source). The synthesis PPTX path is repaired but only
+  shape-tested, since `pptx` is stubbed in tests.
+  A task polls Redis for "cancel" through `job_support.flag_is_set`, and clears
+  its keys through `delete_keys`; ingestion opened a client per document and
+  training one per step, closing none.
 - **A setting must be read, or admitted inert.** `TRAINING_ENABLED` was the
   documented gate on training and nothing read it; the concurrency limit and
   two dataset limits beside it were the same. They are enforced now (the gate

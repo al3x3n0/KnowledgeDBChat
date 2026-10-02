@@ -1035,6 +1035,10 @@ class KnowledgeGraphService:
 
         # Normalize relation type
         relation_type = relation_type.lower().replace(" ", "_").replace("-", "_")
+        if not relation_type or len(relation_type) > 64:
+            # The column holds 64 characters. SQLite does not enforce that
+            # and Postgres does, with an error that names no field.
+            raise ValueError("relation_type must be between 1 and 64 characters")
 
         # Check for existing relationship (manual relationships have document_id=None)
         existing = await db.execute(

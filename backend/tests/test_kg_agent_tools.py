@@ -710,3 +710,19 @@ class TestKgToolRegistry:
             meta = get_tool_metadata(tool_name)
             assert meta is not None
             assert meta.cost_tier == "low"
+
+
+async def test_the_service_refuses_a_relation_type_the_column_cannot_hold(db_session):
+    """Checked on Postgres: 65 characters is refused by the database with an
+    error naming no field. SQLite, which these tests run on, would accept it."""
+    from app.services.knowledge_graph_service import KnowledgeGraphService
+
+    a = Entity(canonical_name="A", entity_type="concept")
+    b = Entity(canonical_name="B", entity_type="concept")
+    db_session.add_all([a, b])
+    await db_session.commit()
+
+    with pytest.raises(ValueError, match="64 characters"):
+        await KnowledgeGraphService().create_relationship(
+            db_session, str(a.id), str(b.id), "x" * 65
+        )

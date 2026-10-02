@@ -1362,13 +1362,53 @@ def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
     async def _monitor_arxiv_topic(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        topic = params.get("topic")
+        from datetime import datetime, timedelta, timezone
+
+        from app.services.config_values import bounded_int
+
+        topic = str(params.get("topic") or "").strip()
+        query = str(params.get("query") or "").strip()
+        if not topic and not query:
+            # Without either this searched arXiv for the literal "all:None".
+            return {"error": "topic (or query) is required"}
+        query = query or f"all:{topic}"
+
+        # `categories` and `since_days` were declared and never read.
+        categories = params.get("categories")
+        if isinstance(categories, str):
+            categories = [categories]
+        categories = [str(c).strip() for c in (categories or []) if str(c).strip()]
+        if categories:
+            query = (
+                f"({query}) AND (" + " OR ".join(f"cat:{c}" for c in categories) + ")"
+            )
+
         papers = await _arxiv_search(
-            query=params.get("query") or f"all:{topic}",
-            max_results=params.get("max_results", 20),
+            query=query,
+            max_results=bounded_int(params.get("max_results"), 20, 1, 100),
             sort_by="submittedDate",
             sort_order="descending",
         )
+
+        since_days = params.get("since_days")
+        if since_days is not None:
+            cutoff = datetime.now(timezone.utc) - timedelta(
+                days=bounded_int(since_days, 7, 1, 3650)
+            )
+
+            def _recent(paper: Dict[str, Any]) -> bool:
+                try:
+                    published = datetime.fromisoformat(
+                        str(paper.get("published")).replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    return True  # undated: not provably old
+                if published.tzinfo is None:
+                    published = published.replace(tzinfo=timezone.utc)
+                return published >= cutoff
+
+            papers = [p for p in papers if _recent(p)]
+
         return {
             "success": True,
             "data": papers,
@@ -1386,29 +1426,119 @@ def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
     async def _find_related_papers(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        from uuid import UUID
-
         from app.models.document import Document
+        from app.services.config_values import bounded_int, parse_uuid
 
-        query = ""
+        relation = str(params.get("relation_type") or "semantic").strip()
+        if relation not in {
+            "semantic",
+            "citations",
+            "shared_authors",
+            "shared_topics",
+            "all",
+        }:
+            return {"error": f"Unknown relation_type: {relation}"}
+        limit = bounded_int(params.get("limit"), 10, 1, 50)
+
+        title, author, reference_arxiv_id, reference_doc_id = "", "", "", None
         doc_id = params.get("document_id")
-        arxiv_id = params.get("arxiv_id")
+        arxiv_id = str(params.get("arxiv_id") or "").strip()
         if doc_id:
-            doc_result = await ctx.db.execute(
-                select(Document).where(Document.id == UUID(doc_id))
-            )
-            doc = doc_result.scalar_one_or_none()
+            doc_uuid = parse_uuid(str(doc_id))
+            if doc_uuid is None:
+                return {"error": f"Invalid document_id: {doc_id}"}
+            doc = (
+                await ctx.db.execute(select(Document).where(Document.id == doc_uuid))
+            ).scalar_one_or_none()
             if doc:
-                query = doc.title
+                title, author, reference_doc_id = (
+                    doc.title or "",
+                    doc.author or "",
+                    doc.id,
+                )
         elif arxiv_id:
             papers = await _arxiv_search(query=f"id:{arxiv_id}", max_results=1)
             if papers:
-                query = papers[0].get("title", "")
+                title = papers[0].get("title", "")
+                reference_arxiv_id = str(papers[0].get("id") or arxiv_id)
+                authors = papers[0].get("authors") or []
+                author = str(authors[0]) if authors else ""
 
-        if not query or not params.get("search_external", True):
-            return {"error": "No query could be built"}
+        if not title:
+            return {
+                "error": "No query could be built: the reference paper was not found"
+            }
 
-        related = await _arxiv_search(query=query, max_results=params.get("limit", 10))
+        # What "related" means decides what is asked. It was declared and
+        # ignored: every relation ran the same title search.
+        if relation == "shared_authors":
+            if not author:
+                return {"error": "The reference paper has no author to match on"}
+            query = f'au:"{author}"'
+        elif relation == "citations":
+            query = f'all:"{title}"'
+        else:
+            query = title
+
+        if not params.get("search_external", True):
+            # The knowledge base, not arXiv. This branch used to answer "No
+            # query could be built" although one had been.
+            # By the words of the title, in the database: no index and no
+            # network are needed to say what else here is about the same thing.
+            import re as _re
+
+            from sqlalchemy import or_ as _or
+
+            from app.services.config_values import like_literal
+
+            words = [w for w in _re.findall(r"[A-Za-z0-9]{4,}", title)][:8]
+            related = []
+            if words:
+                rows = await ctx.db.execute(
+                    select(Document)
+                    .where(
+                        Document.id != reference_doc_id,
+                        _or(
+                            *[
+                                Document.title.ilike(
+                                    f"%{like_literal(w)}%", escape="\\"
+                                )
+                                for w in words
+                            ]
+                        ),
+                    )
+                    .order_by(Document.updated_at.desc())
+                    .limit(limit)
+                )
+                related = [
+                    {"id": str(d.id), "title": d.title, "source": "knowledge_base"}
+                    for d in rows.scalars().all()
+                ]
+            return {
+                "success": True,
+                "data": related,
+                "findings": [
+                    {
+                        "type": "related_paper_set",
+                        "title": paper.get("title"),
+                        "document_id": paper.get("id"),
+                    }
+                    for paper in related
+                ],
+            }
+
+        found = await _arxiv_search(query=query, max_results=limit + 1)
+        # A paper is not related to itself.
+        related = [
+            paper
+            for paper in found
+            if not (
+                reference_arxiv_id
+                and str(paper.get("id") or "").split("v")[0]
+                == reference_arxiv_id.split("v")[0]
+            )
+            and str(paper.get("title") or "").strip().lower() != title.strip().lower()
+        ][:limit]
         return {
             "success": True,
             "data": related,
@@ -11306,26 +11436,40 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
         from collections import Counter
-        from uuid import UUID
 
         from sqlalchemy import desc, func
 
         from app.models.document import Document, DocumentSource
+        from app.services.config_values import bounded_int, parse_uuid
+        from app.services.document_tags import clean_tags
 
-        limit = int(params.get("recent_limit", 25) or 25)
-        limit = max(1, min(limit, 100))
+        limit = bounded_int(params.get("recent_limit"), 25, 1, 100)
         source_id_raw = str(params.get("source_id") or "").strip()
         source_uuid = None
         if source_id_raw:
-            try:
-                source_uuid = UUID(source_id_raw)
-            except Exception:
-                source_uuid = None
+            # Refused, not ignored: a source id that could not be read gave
+            # whole-knowledge-base figures presented as that source's.
+            source_uuid = parse_uuid(source_id_raw)
+            if source_uuid is None:
+                return {"error": f"Invalid source_id: {source_id_raw}"}
+            if await ctx.db.get(DocumentSource, source_uuid) is None:
+                return {"error": f"Source not found: {source_id_raw}"}
 
-        docs_count_query = select(func.count()).select_from(Document)
-        if source_uuid:
-            docs_count_query = docs_count_query.where(Document.source_id == source_uuid)
-        total_docs = int((await ctx.db.execute(docs_count_query)).scalar() or 0)
+        def scoped(query):
+            return (
+                query.where(Document.source_id == source_uuid) if source_uuid else query
+            )
+
+        async def scalar(query) -> int:
+            return int((await ctx.db.execute(scoped(query))).scalar() or 0)
+
+        total_docs = await scalar(select(func.count(Document.id)))
+        processed_docs = await scalar(
+            select(func.count(Document.id)).where(Document.is_processed.is_(True))
+        )
+        total_size = await scalar(
+            select(func.coalesce(func.sum(Document.file_size), 0))
+        )
         total_sources = (
             1
             if source_uuid
@@ -11339,28 +11483,35 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
             )
         )
 
-        recent_query = (
-            select(Document.id, Document.title, Document.created_at, Document.tags)
+        recent_query = scoped(
+            select(Document.id, Document.title, Document.created_at)
             .order_by(desc(Document.created_at))
             .limit(limit)
         )
-        if source_uuid:
-            recent_query = recent_query.where(Document.source_id == source_uuid)
         rows = (await ctx.db.execute(recent_query)).all()
+
+        # Over every document, like the totals beside it. Counted over the
+        # `recent_limit` newest rows only, "top tags" was the top tags of the
+        # last twenty-five documents.
         tag_counter: Counter[str] = Counter()
-        for _, _, _, tags in rows:
-            if isinstance(tags, list):
-                tag_counter.update([str(tag).lower() for tag in tags if tag])
+        tag_rows = await ctx.db.execute(
+            scoped(select(Document.tags).where(Document.tags.isnot(None)))
+        )
+        for (tags,) in tag_rows.all():
+            tag_counter.update(list(dict.fromkeys(t.lower() for t in clean_tags(tags))))
 
         return {
             "success": True,
             "data": {
                 "documents_total": total_docs,
+                "processed_documents": processed_docs,
+                "pending_processing": total_docs - processed_docs,
+                "total_storage_bytes": total_size,
                 "sources_total": total_sources,
                 "source_id": str(source_uuid) if source_uuid else None,
                 "recent_documents": [
                     {"id": str(doc_id), "title": title, "created_at": str(created_at)}
-                    for doc_id, title, created_at, _ in rows
+                    for doc_id, title, created_at in rows
                 ],
                 "top_tags": [
                     {"tag": tag, "count": count}

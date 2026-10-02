@@ -1185,9 +1185,9 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   220 autonomous handlers were named in no test. Four new files cover 62 of
   them (`test_chat_document_read_tools.py`, `test_chat_document_write_tools.py`,
   `test_chat_tags_stats_kg_tools.py`, `test_generation_and_template_tools.py`),
-  and 34 tests in them are `xfail(strict)` with the defect as the reason: that
-  is the list of what is known and not yet fixed, and a fix turns the mark
-  into a failure until it is removed. What they found, by shape:
+  and the defects they found are fixed. Three `xfail(strict)` tests remain
+  there, and each is a decision rather than a bug (below, and source
+  ownership for `generate_slides_for_source`). What they found, by shape:
   - `search_by_tags` called `.overlap()` on a plain JSON column and had never
     returned a document; it and `list_documents_by_tag` now share
     `services/document_tags.py`. `generate_diagram` passed `messages=` to
@@ -1210,6 +1210,11 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
     allowlist lookup, which existed twice, is `internal_scrape_allowed_hosts`.
   - A text shorter than 50 characters produced no chunks, was marked
     processed and reported created: saved and unfindable.
+  Tags are compared **without regard to case** everywhere (search and both
+  counters): the two counters disagreed, one lower-casing and one not.
+  Faceted search takes its results, total and facets from one sample of
+  documents and applies all five declared filters; it says when the sample
+  was full (`sampled`).
   Left as decisions, each an xfail: `POST /agent/confirm-delete/{id}` deletes
   for any signed-in user without the approval gate chat applies to the same
   tool; and a delete reports success when vectors or the stored file could

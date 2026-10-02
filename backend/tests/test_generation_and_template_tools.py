@@ -469,14 +469,6 @@ class TestDraftEmail:
         )
         assert content_llm.attempts == 0
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "ContentGenerationService.draft_email reports "
-            "documents_referenced as len(document_ids), counting ids that "
-            "matched no document."
-        ),
-    )
     async def test_a_document_that_does_not_exist_is_not_counted_as_referenced(
         self, db_session, content_llm
     ):
@@ -1075,14 +1067,6 @@ class TestGenerateChartData:
 
         assert result["labels"] == ["arxiv"]
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "AnalyticsService.generate_chart_data applies `limit` to "
-            "every grouping except group_by='date', whose query has no "
-            ".limit()."
-        ),
-    )
     async def test_the_limit_bounds_a_time_series_too(self, db_session, corpus):
         result = await _chat(
             "generate_chart_data",
@@ -1112,26 +1096,34 @@ class TestGenerateChartData:
 
         assert "colour" in message
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "AnalyticsService.generate_chart_data falls back to "
-            "count(Document.id) for a metric it does not know and labels "
-            "the result with the name it was given: 'word_count' (which "
-            "its own docstring advertises) returns document counts titled "
-            "'Word Count'."
-        ),
-    )
     async def test_an_unknown_metric_is_not_charted_as_a_document_count(
         self, db_session, corpus
     ):
+        """It used to fall back to a document count labelled with whatever
+        name was asked for."""
         await _refusal(
             _chat(
                 "generate_chart_data",
-                {"metric": "word_count", "group_by": "source_type"},
+                {"metric": "happiness", "group_by": "source_type"},
                 db_session,
             )
         )
+
+    async def test_word_count_is_a_metric_of_its_own(self, db_session, corpus):
+        """The service's docstring advertises it; it used to be an "unknown
+        metric" and so a document count under the title "Word Count"."""
+        words = await _chat(
+            "generate_chart_data",
+            {"metric": "word_count", "group_by": "source_type"},
+            db_session,
+        )
+        counts = await _chat(
+            "generate_chart_data",
+            {"metric": "document_count", "group_by": "source_type"},
+            db_session,
+        )
+        assert "error" not in words
+        assert words["datasets"][0]["data"] != counts["datasets"][0]["data"]
 
     async def test_an_unreadable_date_is_not_silently_dropped(self, db_session, corpus):
         await _refusal(
@@ -2376,14 +2368,6 @@ class TestFindRelatedPapers:
         assert arxiv.queries == ["id:2401.00001", "Stride Prefetching Revisited"]
         assert result["success"] is True
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "_find_related_papers searches arXiv for the reference "
-            "paper's own title and returns every hit, so the paper is "
-            "recorded as a related_paper_set finding for itself."
-        ),
-    )
     async def test_the_reference_paper_is_not_related_to_itself(
         self, db_session, research_job, monkeypatch
     ):
@@ -2412,17 +2396,10 @@ class TestFindRelatedPapers:
             research_job,
         )
 
-        assert arxiv.requests[0]["max_results"] == "3"
+        # One more than asked for: the reference paper is dropped from the
+        # answer, which must still be able to hold the limit.
+        assert arxiv.requests[0]["max_results"] == "4"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "search_external=false returns {'error': 'No query could be "
-            "built'} although a query was built. The tool never searches "
-            "the knowledge base, so the declared option can only produce "
-            "an error."
-        ),
-    )
     async def test_without_external_search_arxiv_is_not_called_and_nothing_fails(
         self, db_session, research_job, monkeypatch
     ):
@@ -2440,14 +2417,6 @@ class TestFindRelatedPapers:
         assert arxiv.requests == []
         assert "error" not in result, result
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "The declared `relation_type` parameter is never read by "
-            "_find_related_papers: every value runs the same arXiv title "
-            "search."
-        ),
-    )
     async def test_the_relation_type_changes_what_is_looked_for(
         self, db_session, research_job, monkeypatch
     ):
@@ -2584,14 +2553,6 @@ class TestMonitorArxivTopic:
 
         assert arxiv.requests[0]["max_results"] == "5"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "The spec requires `topic`; with none, _monitor_arxiv_topic "
-            "searches arXiv for the literal query 'all:None' and reports "
-            "success."
-        ),
-    )
     async def test_a_topic_is_required(self, db_session, research_job, monkeypatch):
         arxiv = FakeArxiv(monkeypatch)
 
@@ -2599,13 +2560,6 @@ class TestMonitorArxivTopic:
 
         assert arxiv.requests == []
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "The declared `categories` parameter is never read by "
-            "_monitor_arxiv_topic."
-        ),
-    )
     async def test_categories_narrow_the_search(
         self, db_session, research_job, monkeypatch
     ):
@@ -2620,14 +2574,6 @@ class TestMonitorArxivTopic:
 
         assert "cs.AR" in arxiv.queries[0]
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "The declared `since_days` parameter is never read by "
-            "_monitor_arxiv_topic: papers of any age are returned as "
-            "new_paper findings."
-        ),
-    )
     async def test_since_days_leaves_out_older_papers(
         self, db_session, research_job, monkeypatch
     ):
@@ -2814,15 +2760,6 @@ class TestProposeWorkflowFromDescription:
 
         assert result["workflow"]["name"] == "Monday digest"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "WorkflowSynthesisService._normalize_workflow takes is_active "
-            "from the model's reply and uses the caller's value only when "
-            "the reply has none. The prompt asks for the field and never "
-            "states the caller's choice, so is_active=false is ignored."
-        ),
-    )
     async def test_asking_for_an_inactive_workflow_gives_an_inactive_draft(
         self, db_session, test_user, monkeypatch
     ):
@@ -2902,16 +2839,6 @@ class TestProposeWorkflowFromDescription:
         assert with_runner["workflow_tool"]["name"] == "run_digest"
         assert with_runner["workflow_tool"]["tool_type"] == "workflow_runner"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "The two tools disagree: _normalize_workflow_tool prefers the "
-            "model's name over workflow_tool_name, while "
-            "_tool_create_workflow_from_description prefers "
-            "workflow_tool_name. The proposal shows a different tool name "
-            "than the one that would be saved."
-        ),
-    )
     async def test_the_runner_draft_carries_the_name_that_was_asked_for(
         self, db_session, test_user, monkeypatch
     ):
@@ -2988,14 +2915,6 @@ class TestCreateWorkflowFromDescription:
 
         assert (await _all(db_session, Workflow))[0].trigger_config == trigger
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "WorkflowSynthesisService._normalize_workflow lets the "
-            "model's is_active override the caller's: a workflow asked "
-            "for as inactive is saved active."
-        ),
-    )
     async def test_asking_for_an_inactive_workflow_saves_an_inactive_one(
         self, db_session, test_user, monkeypatch
     ):

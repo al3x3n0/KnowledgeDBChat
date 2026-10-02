@@ -374,9 +374,14 @@ class WorkflowSynthesisService:
             if t.get("name")
         }
 
-        is_active = data.get("is_active")
+        # What the caller asked for wins. The model's value came first, and
+        # the prompt never told it the caller's choice, so asking for an
+        # inactive workflow saved an active one.
+        is_active = fallback_is_active
         if is_active is None:
-            is_active = fallback_is_active if fallback_is_active is not None else True
+            is_active = data.get("is_active")
+        if is_active is None:
+            is_active = True
 
         normalized: Dict[str, Any] = {
             "name": (data.get("name") or fallback_name or "Generated Workflow").strip(),
@@ -590,8 +595,10 @@ class WorkflowSynthesisService:
             return None
 
         draft = item if isinstance(item, dict) else {}
+        # The caller's name first, as the create path does: the proposal
+        # showed one tool name and the saved workflow had another.
         name = str(
-            draft.get("name") or workflow_tool_name or f"Run {workflow_name}"
+            workflow_tool_name or draft.get("name") or f"Run {workflow_name}"
         ).strip()
         if not name:
             name = "Run Workflow"

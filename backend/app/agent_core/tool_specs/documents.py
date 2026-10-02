@@ -402,7 +402,20 @@ SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="get_knowledge_base_stats",
         description="Get statistics about the knowledge base including document counts, storage usage, and processing status.",
-        parameters={"type": "object", "properties": {}, "required": []},
+        parameters={
+            "type": "object",
+            "properties": {
+                "source_id": {
+                    "type": "string",
+                    "description": "Limit the statistics to one document source (autonomous jobs)",
+                },
+                "recent_limit": {
+                    "type": "integer",
+                    "description": "How many recent documents to list (default 25, max 100; autonomous jobs)",
+                },
+            },
+            "required": [],
+        },
         job_types=("research", "monitor", "knowledge_expansion"),
     ),
     ToolSpec(

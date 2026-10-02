@@ -11,6 +11,7 @@ from sqlalchemy import and_, asc, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document
+from app.services.config_values import like_literal
 from app.services.vector_store import vector_store_service
 
 
@@ -164,35 +165,33 @@ class SearchService:
         paginated = deduped_results[start_idx:end_idx]
 
         # Transform to response format
-        results = []
-        for item in paginated:
-            metadata = item.get("metadata", {})
-            content = item.get("content") or item.get("page_content", "")
-
-            results.append(
-                {
-                    "id": metadata.get("document_id", item.get("id")),
-                    "title": metadata.get("title", "Unknown"),
-                    "source": metadata.get(
-                        "source_name", metadata.get("source", "Unknown")
-                    ),
-                    "source_id": metadata.get("source_id"),
-                    "source_type": metadata.get(
-                        "source_type", metadata.get("source", "unknown")
-                    ),
-                    "file_type": metadata.get("file_type"),
-                    "author": metadata.get("author"),
-                    "snippet": content[:300] if content else "",
-                    "relevance_score": item.get("score", 0.0),
-                    "created_at": metadata.get("created_at", ""),
-                    "updated_at": metadata.get("updated_at", ""),
-                    "url": metadata.get("url"),
-                    "download_url": None,
-                    "chunk_id": metadata.get("chunk_id"),
-                }
-            )
+        results = [self._format_hit(item) for item in paginated]
 
         return results, total
+
+    @staticmethod
+    def _format_hit(item: Dict[str, Any]) -> Dict[str, Any]:
+        """One vector-store hit as a search result."""
+        metadata = item.get("metadata", {})
+        content = item.get("content") or item.get("page_content", "")
+        return {
+            "id": metadata.get("document_id", item.get("id")),
+            "title": metadata.get("title", "Unknown"),
+            "source": metadata.get("source_name", metadata.get("source", "Unknown")),
+            "source_id": metadata.get("source_id"),
+            "source_type": metadata.get(
+                "source_type", metadata.get("source", "unknown")
+            ),
+            "file_type": metadata.get("file_type"),
+            "author": metadata.get("author"),
+            "snippet": content[:300] if content else "",
+            "relevance_score": item.get("score", 0.0),
+            "created_at": metadata.get("created_at", ""),
+            "updated_at": metadata.get("updated_at", ""),
+            "url": metadata.get("url"),
+            "download_url": None,
+            "chunk_id": metadata.get("chunk_id"),
+        }
 
     async def _exact_search(
         self,
@@ -299,6 +298,9 @@ class SearchService:
 
         return results, total
 
+    #: How many chunks a faceted search reads to build its figures.
+    FACET_SAMPLE = 500
+
     async def faceted_search(
         self,
         query: str,
@@ -320,36 +322,90 @@ class SearchService:
         Returns:
             Search results with facet aggregations
         """
+        import time
         from collections import Counter
+        from datetime import datetime
 
-        # Apply filters
-        source_id = None
-        file_type = None
+        started = time.time()
+        filters = filters if isinstance(filters, dict) else {}
 
-        if filters:
-            if filters.get("source_id"):
-                source_id = filters["source_id"]
-            if filters.get("file_type"):
-                file_type = filters["file_type"]
-
-        # Execute search
-        results, total, took_ms = await self.search(
-            query=query,
-            mode="smart",
-            page=page,
-            page_size=page_size,
-            source_id=source_id,
-            file_type=file_type,
-            db=db,
-        )
-
-        # Get all matching documents for facet computation (limited sample)
+        # One search, one set of documents: the results, the total and the
+        # facets are all taken from it. They used to come from two searches
+        # -- a filtered page and an unfiltered sample -- so the facets
+        # described documents the results excluded, counted chunks where the
+        # results counted documents, and the total was the size of the page
+        # window. Bounded by the sample, which the result says.
         await self._ensure_initialized()
-        all_results = await self.vector_store.search(
-            query=query,
-            limit=500,  # Sample for facets
-            apply_postprocessing=False,
+        sample = await self.vector_store.search(
+            query=query, limit=self.FACET_SAMPLE, apply_postprocessing=False
         )
+
+        best: Dict[str, Dict[str, Any]] = {}
+        for item in sample:
+            doc_id = item.get("metadata", {}).get("document_id", item.get("id"))
+            if doc_id not in best or item.get("score", 0) > best[doc_id].get(
+                "score", 0
+            ):
+                best[doc_id] = item
+
+        def _when(value: Any) -> Optional[datetime]:
+            try:
+                if isinstance(value, datetime):
+                    return value.replace(tzinfo=None)
+                text = str(value).replace("Z", "+00:00")
+                return datetime.fromisoformat(text).replace(tzinfo=None)
+            except Exception:
+                return None
+
+        wanted_tags = filters.get("tags")
+        if isinstance(wanted_tags, str):
+            wanted_tags = [wanted_tags]
+        date_range = filters.get("date_range")
+        date_range = date_range if isinstance(date_range, dict) else {}
+        date_from = _when(date_range["from"]) if date_range.get("from") else None
+        date_to = _when(date_range["to"]) if date_range.get("to") else None
+        if date_to is not None and len(str(date_range.get("to"))) <= 10:
+            date_to = date_to.replace(hour=23, minute=59, second=59)
+
+        def _matches(metadata: Dict[str, Any]) -> bool:
+            if filters.get("source_id") and str(metadata.get("source_id")) != str(
+                filters["source_id"]
+            ):
+                return False
+            if (
+                filters.get("file_type")
+                and metadata.get("file_type") != filters["file_type"]
+            ):
+                return False
+            if (
+                filters.get("author")
+                and str(metadata.get("author") or "").lower()
+                != str(filters["author"]).lower()
+            ):
+                return False
+            if wanted_tags and not set(wanted_tags) <= set(metadata.get("tags") or []):
+                return False
+            if date_from or date_to:
+                created = _when(metadata.get("created_at"))
+                if created is None:
+                    return False
+                if date_from and created < date_from:
+                    return False
+                if date_to and created > date_to:
+                    return False
+            return True
+
+        documents = sorted(
+            (item for item in best.values() if _matches(item.get("metadata", {}))),
+            key=lambda item: item.get("score", 0),
+            reverse=True,
+        )
+        total = len(documents)
+        start = (page - 1) * page_size
+        results = [
+            self._format_hit(item) for item in documents[start : start + page_size]
+        ]
+        took_ms = int((time.time() - started) * 1000)
 
         # Compute facets
         source_types = Counter()
@@ -358,7 +414,7 @@ class SearchService:
         tags = Counter()
         date_buckets = Counter()
 
-        for item in all_results:
+        for item in documents:
             metadata = item.get("metadata", {})
 
             source_type = metadata.get("source_type")
@@ -373,24 +429,12 @@ class SearchService:
             if author:
                 authors[author] += 1
 
-            item_tags = metadata.get("tags", [])
-            if item_tags:
-                for tag in item_tags:
-                    tags[tag] += 1
+            for tag in metadata.get("tags") or []:
+                tags[tag] += 1
 
-            created_at = metadata.get("created_at")
-            if created_at:
-                try:
-                    from datetime import datetime
-
-                    if isinstance(created_at, str):
-                        dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                    else:
-                        dt = created_at
-                    year_month = dt.strftime("%Y-%m")
-                    date_buckets[year_month] += 1
-                except Exception:
-                    pass
+            created = _when(metadata.get("created_at"))
+            if created is not None:
+                date_buckets[created.strftime("%Y-%m")] += 1
 
         return {
             "query": query,
@@ -407,6 +451,9 @@ class SearchService:
                 "date": dict(sorted(date_buckets.items(), reverse=True)[:12]),
             },
             "filters_applied": filters or {},
+            # The figures cover the best-matching chunks sampled, not the
+            # whole index, when the sample was filled.
+            "sampled": len(sample) >= self.FACET_SAMPLE,
         }
 
     async def get_search_suggestions(
@@ -438,7 +485,10 @@ class SearchService:
             .where(
                 and_(
                     Document.is_processed.is_(True),
-                    Document.title.ilike(f"%{partial_query}%"),
+                    # Text to find, not a pattern: "a_c" matched "abc".
+                    Document.title.ilike(
+                        f"%{like_literal(partial_query)}%", escape="\\"
+                    ),
                 )
             )
             .limit(limit * 2)
@@ -456,21 +506,23 @@ class SearchService:
             )
 
         # Search in tags
-        tag_query = (
-            select(Document.tags)
-            .where(and_(Document.is_processed.is_(True), Document.tags.is_not(None)))
-            .limit(100)
+        # Every tagged document: the first hundred rows were scanned and
+        # filtered afterwards, so a tag used only on document 101 was never
+        # suggested. Sorted, so which tags survive the limit is not chance.
+        from app.services.document_tags import clean_tags
+
+        tag_query = select(Document.tags).where(
+            and_(Document.is_processed.is_(True), Document.tags.is_not(None))
         )
         tag_result = await db.execute(tag_query)
 
         all_tags = set()
         for row in tag_result.fetchall():
-            if row[0]:
-                for tag in row[0]:
-                    if partial_lower in tag.lower():
-                        all_tags.add(tag)
+            for tag in clean_tags(row[0]):
+                if partial_lower in tag.lower():
+                    all_tags.add(tag)
 
-        for tag in list(all_tags)[: limit - len(suggestions)]:
+        for tag in sorted(all_tags)[: max(0, limit - len(suggestions))]:
             suggestions.append(
                 {
                     "type": "tag",
@@ -486,7 +538,9 @@ class SearchService:
                 and_(
                     Document.is_processed.is_(True),
                     Document.author.is_not(None),
-                    Document.author.ilike(f"%{partial_query}%"),
+                    Document.author.ilike(
+                        f"%{like_literal(partial_query)}%", escape="\\"
+                    ),
                 )
             )
             .limit(limit)
@@ -494,7 +548,7 @@ class SearchService:
         author_result = await db.execute(author_query)
         authors = [row[0] for row in author_result.fetchall() if row[0]]
 
-        for author in authors[: limit - len(suggestions)]:
+        for author in authors[: max(0, limit - len(suggestions))]:
             suggestions.append(
                 {
                     "type": "author",
@@ -503,7 +557,7 @@ class SearchService:
                 }
             )
 
-        return suggestions[:limit]
+        return suggestions[: max(0, limit)]
 
     async def get_related_searches(
         self,
@@ -538,7 +592,9 @@ class SearchService:
         import re
         from collections import Counter
 
-        query_words = set(query.lower().split())
+        # Words, without the punctuation around them: split on whitespace,
+        # "kubernetes," was not "kubernetes" and came back as "related".
+        query_words = set(re.findall(r"[a-z0-9]+", query.lower()))
         term_counter = Counter()
 
         for item in results:

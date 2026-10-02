@@ -2728,7 +2728,7 @@ Your response:"""
 
             for row in result.fetchall():
                 # A string is one tag; iterating it counted its letters.
-                for tag in clean_tags(row[0]):
+                for tag in dict.fromkeys(t.lower() for t in clean_tags(row[0])):
                     all_tags.add(tag)
                     tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
@@ -4703,15 +4703,19 @@ Include relevant information from the knowledge base when applicable.
         except ValueError as exc:
             return {"error": f"date_from and date_to must be ISO dates ({exc})"}
 
-        return await analytics_service.generate_chart_data(
-            db=db,
-            chart_type=chart_type,
-            metric=metric,
-            group_by=group_by,
-            date_from=date_from,
-            date_to=date_to,
-            limit=limit,
-        )
+        try:
+            return await analytics_service.generate_chart_data(
+                db=db,
+                chart_type=chart_type,
+                metric=metric,
+                group_by=group_by,
+                date_from=date_from,
+                date_to=date_to,
+                limit=limit,
+            )
+        except ValueError as exc:
+            # An unknown metric or grouping is the tool's answer.
+            return {"error": str(exc)}
 
     async def _tool_export_data(
         self, params: Dict[str, Any], db: AsyncSession
@@ -4761,7 +4765,9 @@ Include relevant information from the knowledge base when applicable.
         """Execute faceted search with aggregations."""
         from app.services.search_service import search_service
 
-        query = params.get("query", "")
+        query = str(params.get("query") or "").strip()
+        if not query:
+            return {"error": "query is required"}
         page = bounded_int(params.get("page"), 1, 1, 100000)
         page_size = bounded_int(params.get("page_size"), 10, 1, 100)
         filters = params.get("filters")
@@ -4780,7 +4786,9 @@ Include relevant information from the knowledge base when applicable.
         """Get search suggestions and autocomplete."""
         from app.services.search_service import search_service
 
-        partial_query = params.get("partial_query", "")
+        partial_query = str(params.get("partial_query") or "").strip()
+        if not partial_query:
+            return {"error": "partial_query is required"}
         limit = bounded_int(params.get("limit"), 5, 0, 1000)
 
         suggestions = await search_service.get_search_suggestions(
@@ -4796,7 +4804,9 @@ Include relevant information from the knowledge base when applicable.
         """Get related search queries."""
         from app.services.search_service import search_service
 
-        query = params.get("query", "")
+        query = str(params.get("query") or "").strip()
+        if not query:
+            return {"error": "query is required"}
         limit = bounded_int(params.get("limit"), 5, 0, 1000)
 
         related = await search_service.get_related_searches(

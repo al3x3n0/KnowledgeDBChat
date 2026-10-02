@@ -537,15 +537,6 @@ async def test_list_all_tags_does_not_split_a_string_into_characters(db_session)
     assert "cache" in names
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Two tag counters disagree about what a tag is. Chat's list_all_tags "
-        "(agent_service.py:2664) counts 'ML' and 'ml' as two tags; the "
-        "autonomous get_knowledge_base_stats (agent_tool_dispatch.py:11323) "
-        "lower-cases and counts one."
-    ),
-)
 async def test_the_two_tag_counters_agree_on_case(db_session):
     source = await _source(db_session)
     await _doc(db_session, source, "a", tags=["ML"])
@@ -736,15 +727,6 @@ async def test_autonomous_stats_cap_the_listing_at_one_hundred(db_session):
     assert result["data"]["documents_total"] == 105
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "agent_tool_dispatch.py:11312-11323: `top_tags` is counted over the "
-        "`recent_limit` newest rows only, not over the knowledge base, so the "
-        "'top' tags are whatever the last page happens to carry (default 25 "
-        "documents) while documents_total beside it counts everything."
-    ),
-)
 async def test_autonomous_top_tags_cover_the_whole_knowledge_base(db_session):
     source = await _source(db_session)
     await _doc(db_session, source, "newest", tags=["rare"], age_days=1)
@@ -757,14 +739,6 @@ async def test_autonomous_top_tags_cover_the_whole_knowledge_base(db_session):
     assert result["data"]["top_tags"][0] == {"tag": "common", "count": 4}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "agent_tool_dispatch.py:11285: `int(params.get('recent_limit', 25) or "
-        "25)` is unguarded, so a non-numeric value raises ValueError out of "
-        "the handler."
-    ),
-)
 async def test_autonomous_stats_non_numeric_limit_is_an_error_result(db_session):
     result = await _autonomous_stats({"recent_limit": "lots"}, db_session)
 
@@ -772,15 +746,6 @@ async def test_autonomous_stats_non_numeric_limit_is_an_error_result(db_session)
     assert isinstance(result, (dict, list))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "agent_tool_dispatch.py:11289-11293: a source_id that is not a UUID "
-        "is swallowed (`except Exception: source_uuid = None`) and the run is "
-        "handed the statistics of the whole knowledge base as though they "
-        "were the source's."
-    ),
-)
 async def test_autonomous_stats_refuse_a_malformed_source_id(db_session):
     source = await _source(db_session)
     await _doc(db_session, source, "a")
@@ -790,14 +755,6 @@ async def test_autonomous_stats_refuse_a_malformed_source_id(db_session):
     assert _is_refusal(result)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "agent_tool_dispatch.py:11299-11301: `sources_total` is the literal 1 "
-        "whenever a source_id parses, so a source that does not exist is "
-        "reported as one source holding zero documents."
-    ),
-)
 async def test_autonomous_stats_do_not_invent_a_source(db_session):
     source = await _source(db_session)
     await _doc(db_session, source, "a")
@@ -807,17 +764,6 @@ async def test_autonomous_stats_do_not_invent_a_source(db_session):
     assert _is_refusal(result) or result["data"]["sources_total"] == 0
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Two implementations of one tool disagree. The spec "
-        "(tool_specs/documents.py:403) promises 'document counts, storage "
-        "usage, and processing status' and chat returns them "
-        "(agent_service.py:2465); the autonomous handler "
-        "(agent_tool_dispatch.py:11325) returns neither storage nor "
-        "processing status, under different key names."
-    ),
-)
 async def test_autonomous_stats_report_what_the_spec_promises(db_session):
     await _stats_corpus(db_session)
 
@@ -963,14 +909,6 @@ async def test_collection_statistics_filtered_to_one_source(db_session):
     assert result["filters_applied"]["source_id"] == str(files.id)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "analytics_service.py:151-158: `processing_status` is counted without "
-        "the filters every other figure uses, so statistics for one source "
-        "report the pending documents of every other source."
-    ),
-)
 async def test_collection_processing_status_respects_the_source_filter(db_session):
     files, _web = await _collection(db_session)
 
@@ -1003,16 +941,6 @@ async def test_collection_statistics_malformed_source_id_is_an_error_result(
     assert _is_refusal(result)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "analytics_service.py:66: `Document.tags.contains([tag])` on a JSON "
-        "column compiles to `tags LIKE '%' || '[\"ml\"]' || '%'`: on SQLite "
-        "a substring match on the serialised list, which only finds "
-        "documents whose *whole* tag list is that one tag (1 of the 2 here); "
-        "on PostgreSQL `json LIKE ...` has no operator and the tool raises."
-    ),
-)
 async def test_collection_statistics_filtered_to_one_tag(db_session):
     await _collection(db_session)
 
@@ -1022,16 +950,6 @@ async def test_collection_statistics_filtered_to_one_tag(db_session):
     assert result["filters_applied"]["tag"] == "ml"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "analytics_service.py:63-68: the tag filter is applied to "
-        "`total_documents` alone (and that query is itself wrong). Sizes, "
-        "chunks, file types, authors, tags and the timeline are computed "
-        "without it, so every other figure would describe the unfiltered "
-        "collection."
-    ),
-)
 async def test_collection_tag_filter_applies_to_every_figure(db_session):
     await _collection(db_session)
 
@@ -1311,15 +1229,6 @@ async def test_faceted_search_buckets_dates_by_month_newest_first(
     ]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "search_service.py:346-374: facets are counted per vector-store hit "
-        "(chunk), while `results` and `total` are per document. A document "
-        "indexed as three chunks counts three times in every facet, so the "
-        "facet counts exceed `total`."
-    ),
-)
 async def test_faceted_search_facets_count_documents_not_chunks(
     db_session, search_store
 ):
@@ -1350,15 +1259,6 @@ async def test_faceted_search_pages_through_the_results(db_session, search_store
     assert second["page"] == 2
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "search_service.py:118-161: `total` is the number of distinct "
-        "documents among the `page*page_size + page_size` hits fetched for "
-        "this page, not the number that match. It is capped at two pages and "
-        "grows as the caller pages forward."
-    ),
-)
 async def test_faceted_search_total_is_not_capped_by_the_page_size(
     db_session, search_store
 ):
@@ -1394,15 +1294,6 @@ async def test_faceted_search_applies_source_and_file_type_filters(
     assert result["filters_applied"] == filters
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "search_service.py:324-331: the spec declares filters {source_id, "
-        "file_type, author, tags, date_range} but only source_id and "
-        "file_type are read. author, tags and date_range change nothing, and "
-        "the result still echoes them under `filters_applied`."
-    ),
-)
 @pytest.mark.parametrize(
     "filters, expected",
     [
@@ -1423,14 +1314,6 @@ async def test_faceted_search_applies_every_declared_filter(
     assert [r["id"] for r in result["results"]] == expected
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "search_service.py:345-350: the facet sample is a second, unfiltered "
-        "search, so with a filter applied the facets describe documents the "
-        "results exclude."
-    ),
-)
 async def test_faceted_search_facets_describe_the_filtered_results(
     db_session, search_store
 ):
@@ -1447,14 +1330,6 @@ async def test_faceted_search_facets_describe_the_filtered_results(
     assert set(result["facets"]["file_type"]) == {"html"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "agent_service.py:4655 / search_service.py:302: `query` is required "
-        "by the spec, but a missing or blank one is searched for as the "
-        "empty string instead of being refused."
-    ),
-)
 @pytest.mark.parametrize("params", [{}, {"query": ""}, {"query": "   "}])
 async def test_faceted_search_refuses_without_a_query(db_session, search_store, params):
     store = search_store(_facet_hits())
@@ -1587,28 +1462,12 @@ async def test_suggestions_for_a_single_character_are_empty(db_session):
     assert result == {"suggestions": [], "query": "c"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "agent_service.py:4674: `partial_query` is required by the spec, but "
-        "a missing one becomes '' and is answered with an empty suggestion "
-        "list -- indistinguishable from a query nothing matched."
-    ),
-)
 async def test_suggestions_refuse_without_a_partial_query(db_session):
     result = await _chat("get_search_suggestions", {}, db_session)
 
     assert _is_refusal(result)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "search_service.py:455-459: the tag scan takes the first 100 "
-        "processed documents (`.limit(100)`) and filters afterwards, so a "
-        "matching tag on any later document is never suggested."
-    ),
-)
 async def test_suggestions_find_a_tag_beyond_the_first_hundred_documents(db_session):
     source = await _source(db_session)
     for index in range(100):
@@ -1630,14 +1489,6 @@ async def test_suggestions_find_a_tag_beyond_the_first_hundred_documents(db_sess
     assert [item["text"] for item in result["suggestions"]] == ["tag:zebra"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "search_service.py:441, 485: the partial query is interpolated into "
-        "an ILIKE pattern without escaping, so `_` and `%` typed by the user "
-        "act as wildcards: 'a_c' suggests the title 'abc'."
-    ),
-)
 async def test_suggestions_treat_like_wildcards_literally(db_session):
     source = await _source(db_session)
     await _doc(db_session, source, "abc handbook")
@@ -1761,14 +1612,6 @@ async def test_related_searches_negative_limit_returns_nothing(
     assert _is_refusal(result) or result["related_searches"] == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "agent_service.py:4690: `query` is required by the spec, but a "
-        "missing one becomes '' and is sent to the vector store; the reply "
-        "is a list of bare terms presented as searches related to nothing."
-    ),
-)
 async def test_related_searches_refuse_without_a_query(db_session, search_store):
     store = search_store(_related_hits())
 
@@ -1791,15 +1634,6 @@ async def test_related_searches_non_numeric_limit_is_an_error_result(
     assert isinstance(result, (dict, list))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "search_service.py:540-565: the query is split on whitespace only, "
-        "so punctuation hides a query word from the exclusion set and "
-        "'kubernetes, networking?' is 'related' to itself: "
-        "'kubernetes, networking? kubernetes'."
-    ),
-)
 async def test_related_searches_exclude_query_words_despite_punctuation(
     db_session, search_store
 ):

@@ -130,7 +130,10 @@ Generate the email draft with:
                 "tone": tone,
                 "length": length,
                 "recipient": recipient,
-                "documents_referenced": len(document_ids) if document_ids else 0,
+                # The documents that were found, not the ids that were given.
+                "documents_referenced": doc_context.count("[Document: ")
+                if document_ids
+                else 0,
                 "generated_at": datetime.utcnow().isoformat(),
             }
 
@@ -537,7 +540,10 @@ Format with proper markdown headings and structure."""
                 "content": response,
                 "sections": report_sections,
                 "word_count": len(response.split()),
-                "documents_referenced": len(document_ids) if document_ids else 0,
+                # The documents that were found, not the ids that were given.
+                "documents_referenced": doc_context.count("[Document: ")
+                if document_ids
+                else 0,
                 "generated_at": datetime.utcnow().isoformat(),
             }
 

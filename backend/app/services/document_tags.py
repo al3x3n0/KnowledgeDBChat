@@ -48,7 +48,9 @@ async def documents_with_tags(
 ) -> List[Document]:
     """Newest first (by `newest_by`), a page at a time, until `limit` match."""
     order_column = getattr(Document, newest_by)
-    wanted = set(tags)
+    # Tags are compared without regard to case, here and in the counters:
+    # "ML" and "ml" are one tag to the person who typed them.
+    wanted = {tag.lower() for tag in tags}
     matched: List[Document] = []
     if not wanted or limit < 1:
         return matched
@@ -68,7 +70,7 @@ async def documents_with_tags(
             .all()
         )
         for document in rows:
-            have = set(document_tags(document))
+            have = {tag.lower() for tag in document_tags(document)}
             if wanted.issubset(have) if match_all else wanted & have:
                 matched.append(document)
         if len(rows) < PAGE_SIZE:

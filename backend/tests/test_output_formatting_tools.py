@@ -1,387 +1,317 @@
-"""Tests for agent output formatting tools (format_as_table, format_as_report, set_output_schema)."""
+"""The output formatting tools: format_as_table, format_as_report, set_output_schema.
 
-import uuid
+These call the real handlers. The file used to restate each handler's logic
+inline and assert on the restatement -- `title = str(params.get("title",
+"")).strip(); assert not title` -- so forty-four tests passed whatever the
+tools did, including while `format_as_report` could not persist anything.
+"""
 
+from types import SimpleNamespace
 
-class TestFormatAsTableCustom:
-    """Tests for format_as_table with custom data."""
+import pytest
 
-    def test_requires_title(self):
-        params = {"columns": ["A"], "rows": [["1"]]}
-        title = str(params.get("title", "")).strip()
-        assert not title
+from app.services.agent_tool_dispatch import (
+    AgentToolExecutionContext,
+    build_autonomous_output_state_provider,
+)
 
-    def test_requires_columns_for_custom(self):
-        params = {"title": "Test Table", "rows": [["1"]]}
-        columns = params.get("columns", [])
-        assert not columns
-
-    def test_requires_rows_for_custom(self):
-        params = {"title": "Test Table", "columns": ["A"]}
-        rows = params.get("rows", [])
-        assert not rows
-
-    def test_generates_markdown_table(self):
-        columns = ["Name", "Score"]
-        rows = [["Alice", "95"], ["Bob", "87"]]
-        md = "## Test Table\n\n"
-        md += "| " + " | ".join(columns) + " |\n"
-        md += "| " + " | ".join("---" for _ in columns) + " |\n"
-        for row in rows:
-            cells = [str(c).replace("|", "\\|")[:200] for c in row]
-            md += "| " + " | ".join(cells) + " |\n"
-        assert "| Name | Score |" in md
-        assert "| --- | --- |" in md
-        assert "| Alice | 95 |" in md
-        assert "| Bob | 87 |" in md
-
-    def test_pipes_in_cells_escaped(self):
-        cell = "value|with|pipes"
-        escaped = cell.replace("|", "\\|")
-        assert "\\|" in escaped
-
-    def test_rows_capped_at_100(self):
-        rows = [[f"r{i}"] for i in range(150)]
-        capped = rows[:100]
-        assert len(capped) == 100
-
-    def test_cells_truncated_to_200(self):
-        long_cell = "X" * 300
-        truncated = long_cell[:200]
-        assert len(truncated) == 200
-
-    def test_short_rows_padded(self):
-        columns = ["A", "B", "C"]
-        row = ["1"]
-        cells = list(row)
-        while len(cells) < len(columns):
-            cells.append("")
-        assert len(cells) == 3
-        assert cells[1] == ""
-        assert cells[2] == ""
-
-    def test_long_rows_trimmed(self):
-        columns = ["A", "B"]
-        row = ["1", "2", "3", "4"]
-        cells = row[: len(columns)]
-        assert len(cells) == 2
+pytestmark = pytest.mark.unit
 
 
-class TestFormatAsTableFindings:
-    """Tests for format_as_table with source=findings."""
-
-    def test_auto_extract_findings(self):
-        findings = [
-            {"title": "Finding A", "category": "key_insight", "confidence": 0.9},
-            {"title": "Finding B", "category": "methodology", "confidence": 0.7},
-        ]
-        fields = ["title", "category", "confidence"]
-        rows = []
-        for f in findings:
-            row = [str(f.get(field, ""))[:200] for field in fields]
-            rows.append(row)
-        assert len(rows) == 2
-        assert rows[0][0] == "Finding A"
-        assert rows[1][1] == "methodology"
-
-    def test_custom_finding_fields(self):
-        findings = [{"title": "A", "content": "Content A", "tags": "['ml']"}]
-        fields = ["title", "content"]
-        rows = []
-        for f in findings:
-            row = [str(f.get(field, ""))[:200] for field in fields]
-            rows.append(row)
-        assert rows[0][1] == "Content A"
-
-    def test_default_finding_fields(self):
-        params = {"title": "Findings", "source": "findings"}
-        fields = params.get("finding_fields", ["title", "category", "confidence"])
-        assert fields == ["title", "category", "confidence"]
-
-    def test_finding_fields_capped_at_10(self):
-        fields = [f"field_{i}" for i in range(15)]
-        capped = [str(f).strip() for f in fields if str(f).strip()][:10]
-        assert len(capped) == 10
-
-    def test_empty_findings(self):
-        findings = []
-        rows = []
-        for f in findings:
-            rows.append([])
-        assert len(rows) == 0
+def _call(tool, params, state=None):
+    """Run one handler against a state dict; returns (result, state)."""
+    state = {} if state is None else state
+    provider = build_autonomous_output_state_provider(SimpleNamespace())
+    ctx = AgentToolExecutionContext(
+        mode="autonomous",
+        db=None,
+        service=None,
+        user_id="u",
+        job=SimpleNamespace(id="job-1", user_id="u", goal="g", config={}),
+        state=state,
+    )
+    return provider._handlers[tool](params, ctx), state
 
 
-class TestFormatAsTableState:
-    """Tests for format_as_table state integration."""
+async def _run(tool, params, state=None):
+    pending, state = _call(tool, params, state)
+    return await pending, state
 
-    def test_stored_in_formatted_outputs(self):
-        state: dict = {}
-        state.setdefault("formatted_outputs", []).append(
-            {
-                "type": "table",
-                "title": "My Table",
-                "markdown": "| A |\n| --- |\n| 1 |",
-                "columns": ["A"],
-                "row_count": 1,
-            }
+
+class TestFormatAsTable:
+    async def test_a_title_is_required(self):
+        result, state = await _run(
+            "format_as_table", {"columns": ["A"], "rows": [["1"]]}
         )
-        assert len(state["formatted_outputs"]) == 1
-        assert state["formatted_outputs"][0]["type"] == "table"
+        assert result == {"error": "title parameter is required"}
+        assert "formatted_outputs" not in state
 
-    def test_result_format(self):
-        result = {
-            "markdown": "| A | B |\n| --- | --- |\n| 1 | 2 |",
-            "row_count": 1,
-            "columns": 2,
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {"title": "T", "rows": [["1"]]},
+            {"title": "T", "columns": ["A"]},
+            {"title": "T", "columns": "A", "rows": [["1"]]},
+        ],
+    )
+    async def test_a_custom_table_needs_columns_and_rows(self, params):
+        result, _ = await _run("format_as_table", params)
+        assert "columns and rows are required" in result["error"]
+
+    async def test_it_renders_a_markdown_table(self):
+        result, state = await _run(
+            "format_as_table",
+            {
+                "title": "Scores",
+                "columns": ["Name", "Score"],
+                "rows": [["Alice", 95], ["Bob", 87]],
+            },
+        )
+
+        assert result["success"] is True
+        assert result["data"]["row_count"] == 2 and result["data"]["columns"] == 2
+        assert result["data"]["markdown"].splitlines() == [
+            "## Scores",
+            "",
+            "| Name | Score |",
+            "| --- | --- |",
+            "| Alice | 95 |",
+            "| Bob | 87 |",
+        ]
+        assert result["artifacts"] == [{"type": "formatted_table", "title": "Scores"}]
+        stored = state["formatted_outputs"][0]
+        assert stored["type"] == "table" and stored["row_count"] == 2
+        assert stored["columns"] == ["Name", "Score"]
+
+    async def test_cells_cannot_break_the_table(self):
+        result, _ = await _run(
+            "format_as_table",
+            {
+                "title": "T",
+                "columns": ["A", "B"],
+                "rows": [["a|b"], ["1", "2", "3"], "not a row", ["x" * 500, ""]],
+            },
+        )
+        lines = result["data"]["markdown"].splitlines()[4:]
+
+        assert lines[0] == "| a\\|b |  |"  # pipe escaped, short row padded
+        assert lines[1] == "| 1 | 2 |"  # long row trimmed
+        assert lines[2] == "|  |  |"  # a row that is not a list is empty
+        assert lines[3] == "| " + "x" * 200 + " |  |"  # cell truncated
+
+    async def test_rows_are_capped_at_100(self):
+        result, _ = await _run(
+            "format_as_table",
+            {"title": "T", "columns": ["n"], "rows": [[i] for i in range(150)]},
+        )
+        assert result["data"]["row_count"] == 100
+
+    async def test_findings_become_rows(self):
+        state = {
+            "findings": [
+                {"title": "F1", "category": "perf", "confidence": 0.9},
+                "not a finding",
+                {"title": "F2"},
+            ]
         }
-        assert "markdown" in result
-        assert result["row_count"] == 1
+        result, _ = await _run(
+            "format_as_table", {"title": "T", "source": "findings"}, state
+        )
+        lines = result["data"]["markdown"].splitlines()
+
+        assert lines[2] == "| title | category | confidence |"
+        assert lines[4:] == ["| F1 | perf | 0.9 |", "| F2 |  |  |"]
+
+    async def test_finding_fields_can_be_chosen_and_are_capped(self):
+        state = {"findings": [{"title": "F1", "content": "c"}]}
+        result, _ = await _run(
+            "format_as_table",
+            {
+                "title": "T",
+                "source": "findings",
+                "finding_fields": ["content", " ", "title"],
+            },
+            state,
+        )
+        assert "| content | title |" in result["data"]["markdown"]
+
+        result, _ = await _run(
+            "format_as_table",
+            {
+                "title": "T",
+                "source": "findings",
+                "finding_fields": [f"f{i}" for i in range(15)],
+            },
+            state,
+        )
+        assert result["data"]["columns"] == 10
+
+    async def test_no_findings_is_an_empty_table_not_an_error(self):
+        result, _ = await _run("format_as_table", {"title": "T", "source": "findings"})
+        assert result["success"] is True and result["data"]["row_count"] == 0
 
 
 class TestFormatAsReport:
-    """Tests for format_as_report tool logic."""
+    async def test_a_title_is_required(self):
+        result, state = await _run("format_as_report", {})
+        assert result == {"error": "title parameter is required"}
+        assert "formatted_outputs" not in state
 
-    def test_requires_title(self):
-        params = {}
-        title = str(params.get("title", "")).strip()
-        assert not title
+    async def test_a_bare_report_is_its_title(self):
+        result, state = await _run("format_as_report", {"title": "Study"})
 
-    def test_basic_report(self):
-        title = "Research Report"
-        md = f"# {title}\n\n"
-        assert md.startswith("# Research Report")
-
-    def test_executive_summary(self):
-        md = ""
-        exec_summary = "This report covers transformer architectures."
-        md += f"## Executive Summary\n\n{exec_summary}\n\n"
-        assert "Executive Summary" in md
-        assert "transformer" in md
-
-    def test_executive_summary_truncated(self):
-        long_summary = "S" * 5000
-        truncated = long_summary[:3000]
-        assert len(truncated) == 3000
-
-    def test_custom_sections(self):
-        sections = [
-            {"heading": "Background", "content": "Background content here"},
-            {"heading": "Methods", "content": "Methods description"},
-        ]
-        md = ""
-        for sec in sections[:20]:
-            heading = str(sec.get("heading", "Section"))[:200]
-            content = str(sec.get("content", ""))[:5000]
-            md += f"## {heading}\n\n{content}\n\n"
-        assert "## Background" in md
-        assert "## Methods" in md
-
-    def test_sections_capped_at_20(self):
-        sections = [{"heading": f"S{i}", "content": f"C{i}"} for i in range(25)]
-        capped = sections[:20]
-        assert len(capped) == 20
-
-    def test_findings_included_by_default(self):
-        params = {"title": "Report"}
-        include_findings = params.get("include_findings", True)
-        if include_findings is None:
-            include_findings = True
-        assert include_findings is True
-
-    def test_findings_rendering(self):
-        findings = [
-            {
-                "title": "Finding A",
-                "content": "Content A",
-                "category": "key_insight",
-                "confidence": 0.9,
-            },
-        ]
-        md = "## Findings\n\n"
-        for i, f in enumerate(findings[:30], 1):
-            md += f"### {i}. {f.get('title', 'Untitled')}\n\n"
-            md += f"{str(f.get('content', ''))[:1000]}\n\n"
-            meta = []
-            if f.get("category"):
-                meta.append(f"Category: {f['category']}")
-            if f.get("confidence"):
-                meta.append(f"Confidence: {f['confidence']}")
-            if meta:
-                md += f"*{' | '.join(meta)}*\n\n"
-        assert "### 1. Finding A" in md
-        assert "Content A" in md
-        assert "Category: key_insight | Confidence: 0.9" in md
-
-    def test_findings_capped_at_30(self):
-        findings = [{"title": f"F{i}"} for i in range(50)]
-        rendered = findings[:30]
-        assert len(rendered) == 30
-
-    def test_progress_reports_included(self):
-        reports = [
-            {"iteration": 5, "summary": "Searched for papers"},
-            {"iteration": 10, "summary": "Analyzed results"},
-        ]
-        md = "## Progress History\n\n"
-        for r in reports[-5:]:
-            md += f"### Iteration {r.get('iteration', '?')}\n\n"
-            if r.get("summary"):
-                md += f"{r['summary']}\n\n"
-        assert "Iteration 5" in md
-        assert "Searched for papers" in md
-
-    def test_total_length_capped_at_50000(self):
-        long_md = "M" * 60000
-        capped = long_md[:50000]
-        assert len(capped) == 50000
-
-    def test_persist_defaults_false(self):
-        params = {"title": "Report"}
-        persist = params.get("persist", False)
-        assert persist is False
-
-    def test_result_format(self):
-        result = {
-            "markdown": "# Report\n\n...",
-            "length": 500,
+        assert result["success"] is True
+        assert result["data"] == {
+            "markdown": "# Study\n\n",
+            "length": len("# Study\n\n"),
             "document_id": None,
         }
-        assert "markdown" in result
-        assert "length" in result
-        assert result["document_id"] is None
+        assert result["artifacts"] == [{"type": "formatted_report", "title": "Study"}]
+        assert state["formatted_outputs"] == [
+            {"type": "report", "title": "Study", "markdown": "# Study\n\n"}
+        ]
 
-    def test_result_with_persist(self):
-        result = {
-            "markdown": "# Report\n\n...",
-            "length": 500,
-            "document_id": str(uuid.uuid4()),
+    async def test_summary_and_sections_in_order(self):
+        result, _ = await _run(
+            "format_as_report",
+            {
+                "title": "Study",
+                "executive_summary": "S" * 5000,
+                "sections": [
+                    {"heading": "Method", "content": "m"},
+                    "not a section",
+                    {"content": "untitled"},
+                ],
+            },
+        )
+        md = result["data"]["markdown"]
+
+        assert "## Executive Summary\n\n" + "S" * 3000 + "\n\n" in md
+        assert "S" * 3001 not in md
+        assert md.index("## Executive Summary") < md.index("## Method\n\nm")
+        assert "## Section\n\nuntitled" in md
+
+    async def test_sections_are_capped_at_20(self):
+        result, _ = await _run(
+            "format_as_report",
+            {
+                "title": "T",
+                "sections": [{"heading": f"H{i}", "content": "c"} for i in range(25)],
+            },
+        )
+        assert "## H19\n" in result["data"]["markdown"]
+        assert "## H20\n" not in result["data"]["markdown"]
+
+    async def test_findings_are_included_unless_declined(self):
+        state = {
+            "findings": [
+                {
+                    "title": "F1",
+                    "content": "body",
+                    "category": "perf",
+                    "confidence": 0.9,
+                },
+                {"content": "no title"},
+            ]
         }
-        assert result["document_id"] is not None
+        result, _ = await _run("format_as_report", {"title": "T"}, state)
+        md = result["data"]["markdown"]
+
+        assert "### 1. F1\n\nbody\n\n*Category: perf | Confidence: 0.9*" in md
+        assert "### 2. Untitled\n\nno title" in md
+
+        # An explicit null means the default, not "no".
+        result, _ = await _run(
+            "format_as_report", {"title": "T", "include_findings": None}, state
+        )
+        assert "## Findings" in result["data"]["markdown"]
+
+        result, _ = await _run(
+            "format_as_report", {"title": "T", "include_findings": False}, state
+        )
+        assert "## Findings" not in result["data"]["markdown"]
+
+    async def test_findings_are_capped_at_30(self):
+        state = {"findings": [{"title": f"F{i}"} for i in range(40)]}
+        result, _ = await _run("format_as_report", {"title": "T"}, state)
+        assert "### 30. F29" in result["data"]["markdown"]
+        assert "### 31." not in result["data"]["markdown"]
+
+    async def test_only_the_last_five_progress_reports(self):
+        state = {
+            "progress_reports": [
+                {"iteration": i, "summary": f"did {i}"} for i in range(1, 9)
+            ]
+        }
+        result, _ = await _run("format_as_report", {"title": "T"}, state)
+        md = result["data"]["markdown"]
+
+        assert "### Iteration 4\n\ndid 4" in md and "### Iteration 8" in md
+        assert "### Iteration 3" not in md
+
+        result, _ = await _run(
+            "format_as_report", {"title": "T", "include_progress": False}, state
+        )
+        assert "Progress History" not in result["data"]["markdown"]
+
+    async def test_the_whole_report_is_capped(self):
+        result, _ = await _run(
+            "format_as_report",
+            {
+                "title": "T",
+                "sections": [
+                    {"heading": "H", "content": "x" * 5000} for _ in range(20)
+                ],
+            },
+        )
+        assert result["data"]["length"] == 50000
+
+    # Persisting is covered against a real database in
+    # tests/test_format_as_report_persists.py.
 
 
 class TestSetOutputSchema:
-    """Tests for set_output_schema tool logic."""
+    @pytest.mark.parametrize("schema", [None, {}, "summary", ["summary"]])
+    async def test_a_schema_must_be_a_non_empty_object(self, schema):
+        result, state = await _run("set_output_schema", {"schema": schema})
+        assert result == {"error": "schema must be a non-empty object"}
+        assert "output_schema" not in state
 
-    def test_requires_schema(self):
-        params = {}
-        schema = params.get("schema")
-        assert not isinstance(schema, dict) or not schema
+    async def test_it_merges_by_default(self):
+        state = {"output_schema": {"summary": "old", "kept": 1}}
+        result, state = await _run(
+            "set_output_schema", {"schema": {"summary": "new", "added": 2}}, state
+        )
 
-    def test_empty_schema_rejected(self):
-        params = {"schema": {}}
-        schema = params.get("schema")
-        assert not schema
-
-    def test_non_dict_schema_rejected(self):
-        params = {"schema": "not a dict"}
-        schema = params.get("schema")
-        assert not isinstance(schema, dict)
-
-    def test_merge_mode(self):
-        state = {"output_schema": {"summary": "Initial summary"}}
-        new_schema = {"recommendations": ["Use BERT"]}
-        state["output_schema"].update(new_schema)
-        assert "summary" in state["output_schema"]
-        assert "recommendations" in state["output_schema"]
-
-    def test_replace_mode(self):
-        state = {"output_schema": {"old_key": "old_value"}}
-        new_schema = {"new_key": "new_value"}
-        state["output_schema"] = dict(new_schema)
-        assert "old_key" not in state["output_schema"]
-        assert "new_key" in state["output_schema"]
-
-    def test_merge_defaults_true(self):
-        params = {"schema": {"key": "val"}}
-        merge = params.get("merge", True)
-        if merge is None:
-            merge = True
-        assert merge is True
-
-    def test_progressive_building(self):
-        state: dict = {"output_schema": {}}
-        state["output_schema"]["title"] = "Research Report"
-        state["output_schema"]["key_findings"] = []
-        state["output_schema"]["key_findings"].append("Finding 1")
-        state["output_schema"]["key_findings"].append("Finding 2")
-        assert len(state["output_schema"]["key_findings"]) == 2
-
-    def test_result_format(self):
-        result = {
-            "schema_keys": ["summary", "recommendations", "next_steps"],
+        assert state["output_schema"] == {"summary": "new", "kept": 1, "added": 2}
+        assert result["data"] == {
+            "schema_keys": ["summary", "kept", "added"],
             "total_keys": 3,
             "mode": "merged",
         }
-        assert result["total_keys"] == 3
-        assert result["mode"] == "merged"
 
-    def test_complex_schema(self):
-        schema = {
-            "title": "Transformer Analysis",
-            "executive_summary": "Transformers are...",
-            "key_findings": [
-                {"title": "Attention is all you need", "confidence": 0.95},
-            ],
-            "recommendations": ["Use pre-trained models", "Fine-tune on domain data"],
-            "metadata": {"papers_analyzed": 15, "sources_used": 8},
-        }
-        assert isinstance(schema, dict)
-        assert len(schema) == 5
+    async def test_an_explicit_null_merge_still_merges(self):
+        state = {"output_schema": {"kept": 1}}
+        _, state = await _run(
+            "set_output_schema", {"schema": {"a": 1}, "merge": None}, state
+        )
+        assert state["output_schema"] == {"kept": 1, "a": 1}
 
+    async def test_it_can_replace(self):
+        schema = {"only": 1}
+        state = {"output_schema": {"old": 1}}
+        result, state = await _run(
+            "set_output_schema", {"schema": schema, "merge": False}, state
+        )
 
-class TestFinalizationIntegration:
-    """Tests for output formatting integration with job results finalization."""
+        assert state["output_schema"] == {"only": 1}
+        assert state["output_schema"] is not schema  # a copy, not the caller's dict
+        assert result["data"]["mode"] == "replaced"
 
-    def test_structured_output_in_results(self):
-        state = {"output_schema": {"summary": "Test", "findings": []}}
-        results: dict = {}
-        output_schema = state.get("output_schema")
-        if isinstance(output_schema, dict) and output_schema:
-            results["structured_output"] = output_schema
-        assert "structured_output" in results
-        assert results["structured_output"]["summary"] == "Test"
-
-    def test_no_schema_no_structured_output(self):
-        state = {}
-        results: dict = {}
-        output_schema = state.get("output_schema")
-        if isinstance(output_schema, dict) and output_schema:
-            results["structured_output"] = output_schema
-        assert "structured_output" not in results
-
-    def test_formatted_outputs_in_results(self):
-        state = {
-            "formatted_outputs": [
-                {"type": "table", "title": "Table 1"},
-                {"type": "report", "title": "Report 1"},
-            ]
-        }
-        results: dict = {}
-        formatted = state.get("formatted_outputs", [])
-        if isinstance(formatted, list) and formatted:
-            results["formatted_outputs"] = formatted[-20:]
-        assert "formatted_outputs" in results
-        assert len(results["formatted_outputs"]) == 2
-
-    def test_formatted_outputs_capped_at_20(self):
-        state = {
-            "formatted_outputs": [
-                {"type": "table", "title": f"T{i}"} for i in range(25)
-            ]
-        }
-        results: dict = {}
-        formatted = state.get("formatted_outputs", [])
-        if isinstance(formatted, list) and formatted:
-            results["formatted_outputs"] = formatted[-20:]
-        assert len(results["formatted_outputs"]) == 20
-
-    def test_no_formatted_outputs_no_key(self):
-        state = {}
-        results: dict = {}
-        formatted = state.get("formatted_outputs", [])
-        if isinstance(formatted, list) and formatted:
-            results["formatted_outputs"] = formatted[-20:]
-        assert "formatted_outputs" not in results
+    async def test_a_corrupt_existing_schema_is_replaced_not_crashed_on(self):
+        state = {"output_schema": "garbage"}
+        result, state = await _run("set_output_schema", {"schema": {"a": 1}}, state)
+        assert result["success"] is True and state["output_schema"] == {"a": 1}
 
 
 class TestOutputFormattingSchemas:

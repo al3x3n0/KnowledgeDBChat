@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Protocol
 
@@ -4285,7 +4287,11 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         from app.services.custom_tool_service import CustomToolService
 
         state = ctx.state if isinstance(ctx.state, dict) else {}
-        script_name = str(params.get("script_name", "script.py"))[:100]
+        # The name becomes a file in the container's working directory, so it
+        # is a bare file name and nothing else.
+        script_name = os.path.basename(str(params.get("script_name") or "script.py"))
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", script_name):
+            script_name = "script.py"
         script_content = str(params.get("script_content", ""))
         timeout = min(int(params.get("timeout_seconds", 120) or 120), 300)
         input_data = (
@@ -4295,32 +4301,8 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         )
         requirements = params.get("requirements") or []
         arguments = params.get("arguments") or []
-        if not isinstance(requirements, list):
-            requirements = []
         if not isinstance(arguments, list):
             arguments = []
-
-        safe_packages = {
-            "pandas",
-            "numpy",
-            "scipy",
-            "scikit-learn",
-            "matplotlib",
-            "seaborn",
-            "networkx",
-            "requests",
-            "beautifulsoup4",
-            "lxml",
-            "pyyaml",
-            "tabulate",
-            "openpyxl",
-            "xlsxwriter",
-        }
-        requirements = [
-            r
-            for r in requirements
-            if isinstance(r, str) and r.strip().lower() in safe_packages
-        ]
 
         if not script_content.strip():
             return {"error": "No script content provided"}
@@ -4328,29 +4310,44 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             return {
                 "error": "Docker execution is not enabled; write_and_run_script requires Docker"
             }
+        if requirements:
+            # The container has no network, so `pip install` cannot succeed;
+            # it used to be chained in front of the script with `&&`, which
+            # meant asking for a package guaranteed the script never ran.
+            return {
+                "error": (
+                    "requirements cannot be installed: the script runs in a "
+                    "container with no network. Use only the Python standard "
+                    "library, or run it without requirements."
+                )
+            }
         try:
             cts = CustomToolService()
             user = await _resolve_user(ctx)
-            pip_cmd = (
-                f"pip install -q {' '.join(requirements)} && " if requirements else ""
-            )
-            input_cmd = ""
-            if input_data:
-                input_cmd = f"echo '{json.dumps(input_data, default=str)}' > /workspace/input.json && "
-            args_str = " ".join(str(arg) for arg in arguments[:10])
             exec_result = await cts._execute_docker(
                 config={
                     "image": "python:3.11-slim",
+                    # The script arrives as a file and the input as stdin.
+                    # Arguments are passed as argv, never spliced into the
+                    # shell line: an apostrophe in the data used to end the
+                    # quoted string it had been pasted into.
                     "command": [
                         "bash",
                         "-c",
-                        f"{pip_cmd}{input_cmd}python /workspace/{script_name} {args_str}",
+                        'cat > /workspace/input.json; exec python "$0" "$@"',
+                        f"/workspace/{script_name}",
+                        *[str(arg) for arg in arguments[:10]],
                     ],
+                    "input_mode": "both",
+                    "input_file_path": f"/workspace/{script_name}",
                     "timeout_seconds": timeout,
                     "memory_limit": "512m",
                     "network_enabled": False,
                 },
-                inputs={"stdin": script_content},
+                inputs={
+                    "stdin": json.dumps(input_data, default=str),
+                    "input_file_content": script_content,
+                },
                 user=user,
             )
             history = state.get("code_execution_history")

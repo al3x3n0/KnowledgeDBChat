@@ -187,7 +187,7 @@ SPECS: tuple[ToolSpec, ...] = (
                 "requirements": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "pip packages to install from whitelist (pandas, numpy, scipy, etc.)",
+                    "description": "Leave empty. The sandbox has no network, so nothing can be installed; a non-empty list is refused. Only the standard library is available.",
                 },
                 "arguments": {
                     "type": "array",

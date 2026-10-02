@@ -76,10 +76,22 @@ class DockerToolExecutor:
 
             # Write input file if needed
             if config.input_mode in ("file", "both") and execution_input.input_content:
-                input_path = os.path.join(workspace_dir, "input.txt")
+                # Named as the tool configured it, the way the output file
+                # already is. It was always written as input.txt, so a tool
+                # declaring any other input_file_path read a file that was
+                # not there.
+                input_path = os.path.join(
+                    workspace_dir,
+                    os.path.basename(config.input_file_path or "input.txt"),
+                )
                 with open(input_path, "w") as f:
                     f.write(execution_input.input_content)
                 logger.debug(f"Wrote input file: {input_path}")
+
+            # Prepare stdin data
+            stdin_data = None
+            if config.input_mode in ("stdin", "both") and execution_input.stdin_data:
+                stdin_data = execution_input.stdin_data.encode()
 
             # Build docker run command
             container_name = agent_sandbox_runtime.new_container_name()
@@ -88,14 +100,10 @@ class DockerToolExecutor:
                 workspace_dir=workspace_dir,
                 environment_overrides=execution_input.environment_overrides,
                 container_name=container_name,
+                attach_stdin=stdin_data is not None,
             )
 
             logger.info(f"Executing Docker command: {' '.join(cmd)}")
-
-            # Prepare stdin data
-            stdin_data = None
-            if config.input_mode in ("stdin", "both") and execution_input.stdin_data:
-                stdin_data = execution_input.stdin_data.encode()
 
             # Execute the container
             try:
@@ -204,6 +212,7 @@ class DockerToolExecutor:
         workspace_dir: str,
         environment_overrides: Optional[Dict[str, str]] = None,
         container_name: str = "",
+        attach_stdin: bool = False,
     ) -> List[str]:
         """
         Build the docker run command with all options.
@@ -217,6 +226,12 @@ class DockerToolExecutor:
             List of command arguments
         """
         cmd = ["docker", "run", "--rm"]
+
+        # Without -i the container's stdin is not connected at all: whatever
+        # is written to the `docker run` client goes nowhere, and a tool in
+        # the default "stdin" input mode reads end-of-file.
+        if attach_stdin:
+            cmd.append("-i")
 
         # Named, so a run that outlives its timeout can be removed. Killing
         # the `docker run` client -- which is all a timeout did here -- leaves

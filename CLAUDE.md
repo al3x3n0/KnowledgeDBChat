@@ -1102,6 +1102,23 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   A task polls Redis for "cancel" through `job_support.flag_is_set`, and clears
   its keys through `delete_keys`; ingestion opened a client per document and
   training one per step, closing none.
+- **A test must call the thing it is named after.** About 730 of 4,700
+  backend tests never touched application code: whole `tests/test_*_tools.py`
+  files restated a handler inline (`title = str(params.get("title",
+  "")).strip(); assert not title`) and asserted on the restatement, so they
+  passed whatever the tool did. Two files have been rewritten against the real
+  handlers (`test_output_formatting_tools.py`,
+  `test_agent_code_execution_tools.py`), and the second paid for itself at
+  once: `write_and_run_script` handed its script to the container as stdin and
+  then ran `python /workspace/<name>`, a file nothing had written; chained
+  `pip install` in front with `&&` in a container with no network; and pasted
+  input JSON and arguments into the shell line. Underneath it,
+  `docker_tool_executor` never passed `-i`, so **no custom Docker tool ever
+  received its stdin** — the default input mode — and wrote the input file as
+  `input.txt` whatever `input_file_path` said. To reach a real handler:
+  `build_*_provider(executor)._handlers[name](params, ctx)`. The Docker fixes
+  are tested at the command and file level only; nothing was run against a
+  daemon. The remaining hollow files are listed in the `hollow-tests` memory.
 - **A setting must be read, or admitted inert.** `TRAINING_ENABLED` was the
   documented gate on training and nothing read it; the concurrency limit and
   two dataset limits beside it were the same. They are enforced now (the gate

@@ -1081,7 +1081,18 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   be created through the API (and `routing_defaults` was never stored); the
   research presentation route queued its task without `user_id`, leaving the
   job pending for ever. All three tests skip any target that is rebound,
-  shadowed or decorated rather than guess. Two things found while
+  shadowed or decorated rather than guess.
+  `tests/test_model_fields_exist.py` is the fourth, and its trap is the
+  quietest: **`Model(metadata={...})` never raises.** Every mapped class has a
+  `metadata` attribute (the table registry), so SQLAlchemy accepts the
+  keyword, sets a plain instance attribute and writes NULL. Two models name
+  their JSON column "metadata" in the database and map it as
+  `extra_metadata` / `proposal_metadata`; every code patch proposal lost what
+  it recorded about itself and every document chunk its section title.
+  `format_as_report` with `persist` was dead three ways at once (a service
+  method that does not exist, a keyword `Document` lacks, two required
+  columns missing) and reported success with `document_id: None`.
+  Two things found while
   repairing those: the GitLab service is a
   singleton that cached one HTTP client **with the first caller's token** (now
   one client per token), and the agent tool picked the first active GitLab

@@ -534,7 +534,7 @@ class AgentCodingRunnerService:
             title=title,
             summary=summary,
             diff_unified=diff_unified,
-            metadata={
+            proposal_metadata={
                 "goal": (job.goal or "").strip(),
                 "source_id": str(source.id),
                 "target_source_name": source.name,

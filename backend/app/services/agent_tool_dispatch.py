@@ -8653,17 +8653,25 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
             doc_id = None
             if params.get("persist", False):
                 try:
-                    notes_source = (
-                        await executor.document_service._ensure_agent_notes_source(
-                            ctx.db, job.user_id
-                        )
+                    import hashlib
+                    import uuid
+
+                    notes_source = await executor.document_service._get_or_create_agent_notes_source(
+                        ctx.db
                     )
                     doc = Document(
                         title=title[:500],
                         content=md,
+                        content_hash=hashlib.sha256(md.encode("utf-8")).hexdigest(),
                         file_type="text/markdown",
+                        file_size=len(md.encode("utf-8")),
                         source_id=notes_source.id,
-                        user_id=job.user_id,
+                        source_identifier=f"agent_report:{uuid.uuid4().hex}",
+                        tags=["autonomous_job", "report"],
+                        extra_metadata={
+                            "origin": "autonomous_job",
+                            "job_id": str(job.id),
+                        },
                     )
                     ctx.db.add(doc)
                     await ctx.db.flush()

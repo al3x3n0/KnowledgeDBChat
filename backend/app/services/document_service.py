@@ -597,7 +597,7 @@ class DocumentService:
                     chunk_index=chunk_data["chunk_index"],
                     start_pos=chunk_data.get("start_pos"),
                     end_pos=chunk_data.get("end_pos"),
-                    metadata=chunk_metadata,
+                    extra_metadata=chunk_metadata,
                 )
 
                 document_chunks.append(chunk)

@@ -34,10 +34,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
-from loguru import logger
-
 from app.agent_core.plugin_specs import EXECUTOR_GOVERNANCE
-from app.services import llm_json
+from app.services import draft_repair_loop, llm_json
 from app.services.custom_tool_types import allowed_custom_tool_types
 from app.services.plugin_manifest import (
     ManifestError,
@@ -274,18 +272,6 @@ async def draft_manifest(
     case is the common one whenever a first draft is wrong.
     """
 
-    def _report(stage: str, attempt: int, notes: List[str]) -> None:
-        if on_progress is None:
-            return
-        try:
-            on_progress(stage, attempt, list(notes))
-        except Exception as exc:  # pragma: no cover - defensive
-            # Progress is a courtesy. A caller whose reporting breaks must not
-            # take the draft down with it.
-            logger.warning(f"Draft progress callback failed: {exc}")
-
-    from app.services.llm_service import LLMService
-
     text = str(description or "").strip()
     if not text:
         return {
@@ -294,67 +280,53 @@ async def draft_manifest(
             "attempts": 0,
         }
 
-    llm = LLMService()
-    system = _system_prompt()
-    notes: List[str] = []
-    message = f"Write a plugin manifest for this request:\n\n{text}"
-    manifest: Optional[Dict[str, Any]] = None
-
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        _report("drafting", attempt, notes)
-        try:
-            completion = await llm.generate_structured(
-                system_prompt=system,
-                user_message=message,
-                response_schema=DRAFT_SCHEMA,
-                task_type="balanced",
-                user_id=user_id,
-                db=db,
-            )
-        except Exception as exc:
-            logger.warning(f"Plugin draft call failed on attempt {attempt}: {exc}")
-            notes.append(f"The model could not be reached: {exc}")
-            break
-
-        payload = _payload(completion)
-        if not payload:
-            message = (
-                f"{message}\n\nYour last reply was not a JSON object. Reply with "
-                "one JSON object and nothing else."
-            )
-            notes.append(f"Attempt {attempt}: the reply was not JSON.")
-            continue
-
+    async def judge(
+        payload: Dict[str, Any], _attempt: int
+    ) -> draft_repair_loop.Verdict:
         try:
             manifest = validate_manifest(payload)
         except ManifestError as exc:
             # The refusal names what is wrong and what would be right, which
             # is exactly what the next attempt needs.
-            notes.append(f"Attempt {attempt}: {exc}")
-            message = (
-                f"{message}\n\nYour last manifest was rejected:\n{exc}\n\n"
-                "Fix exactly that and return the whole manifest again."
+            return draft_repair_loop.Verdict(
+                complaint=f"Your last manifest was rejected:\n{exc}",
+                note=str(exc),
+                instruction="Fix exactly that and return the whole manifest again.",
+                discard=True,
             )
-            manifest = None
-            continue
 
         if user is None or db is None:
-            break
+            return draft_repair_loop.Verdict(value=manifest)
 
-        _report("checking", attempt, notes)
         complaints = await _dry_run_paths(manifest, user, db)
         if not complaints:
-            break
-
-        notes.append(f"Attempt {attempt}: " + "; ".join(complaints))
-        message = (
-            f"{message}\n\nThe manifest validates, but running its tools showed:\n"
-            + "\n".join(complaints)
-            + "\n\nFix the paths and return the whole manifest again."
-        )
+            return draft_repair_loop.Verdict(value=manifest)
         # Keep the manifest: a wrong path is a flaw a person can see and fix in
         # review, and handing back nothing would be worse than handing back
         # something imperfect with the flaw written down.
+        return draft_repair_loop.Verdict(
+            value=manifest,
+            complaint=(
+                "The manifest validates, but running its tools showed:\n"
+                + "\n".join(complaints)
+            ),
+            note="; ".join(complaints),
+            instruction="Fix the paths and return the whole manifest again.",
+        )
 
-    _report("done", attempt, notes)
-    return {"manifest": manifest, "notes": notes, "attempts": attempt}
+    outcome = await draft_repair_loop.run(
+        system=_system_prompt(),
+        message=f"Write a plugin manifest for this request:\n\n{text}",
+        schema=DRAFT_SCHEMA,
+        judge=judge,
+        max_attempts=MAX_ATTEMPTS,
+        user_id=user_id,
+        db=db,
+        on_progress=on_progress,
+        what="Plugin draft",
+    )
+    return {
+        "manifest": outcome.value,
+        "notes": outcome.notes,
+        "attempts": outcome.attempts,
+    }

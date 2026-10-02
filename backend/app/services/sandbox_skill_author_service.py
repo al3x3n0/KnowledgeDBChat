@@ -37,14 +37,12 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
-from loguru import logger
-
 from app.services import (
+    draft_repair_loop,
     sandbox_skill_manifest,
     sandbox_skill_runtime,
     sandbox_skill_service,
 )
-from app.services.plugin_author_service import _payload
 from app.services.sandbox_skill_manifest import SkillError
 
 #: The same bound the plugin drafter uses, for the same observed reason: the
@@ -167,18 +165,6 @@ Keep it small: a procedure, at most a few short helper files, a handful of
 result fields. Output JSON only, no prose and no code fences."""
 
 
-def _report_to(on_progress: Optional[Callable[[str, int, List[str]], None]]):
-    def _report(stage: str, attempt: int, notes: List[str]) -> None:
-        if on_progress is None:
-            return
-        try:
-            on_progress(stage, attempt, list(notes))
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning(f"Skill draft progress callback failed: {exc}")
-
-    return _report
-
-
 def _control_complaint(outcome: Mapping[str, Any]) -> str:
     """What the sandbox said, in the form a repair can act on."""
     parts = [f"The control did not pass: {outcome.get('detail')}"]
@@ -206,9 +192,6 @@ async def draft_skill(
     none was attempted -- a draft with ``dry_run.ok`` false is still returned,
     because a flaw a person can see is worth more than nothing.
     """
-    from app.services.llm_service import LLMService
-
-    report = _report_to(on_progress)
     text = str(description or "").strip()
     if not text:
         return {
@@ -224,7 +207,6 @@ async def draft_skill(
     contents = {
         image: await sandbox_skill_runtime.probe_tools(image) for image in images
     }
-    system = _system_prompt(images, contents)
     revising = isinstance(current, Mapping) and bool(current)
     if revising:
         message = (
@@ -235,38 +217,11 @@ async def draft_skill(
     else:
         message = f"Write a sandbox skill for this request:\n\n{text}"
 
-    llm = LLMService()
-    notes: List[str] = []
-    manifest: Optional[Dict[str, Any]] = None
-    outcome: Optional[Dict[str, Any]] = None
-    attempt = 0
+    last_dry_run: Dict[str, Any] = {}
 
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        report("drafting", attempt, notes)
-        try:
-            completion = await llm.generate_structured(
-                system_prompt=system,
-                user_message=message,
-                response_schema=DRAFT_SCHEMA,
-                task_type="balanced",
-                user_id=user_id,
-                db=db,
-                snapshot_context={"phase": "sandbox_skill_draft"},
-            )
-        except Exception as exc:
-            logger.warning(f"Skill draft call failed on attempt {attempt}: {exc}")
-            notes.append(f"The model could not be reached: {exc}")
-            break
-
-        payload = _payload(completion)
-        if not payload:
-            notes.append(f"Attempt {attempt}: the reply was not JSON.")
-            message = (
-                f"{message}\n\nYour last reply was not a JSON object. Reply "
-                "with one JSON object and nothing else."
-            )
-            continue
-
+    async def judge(
+        payload: Dict[str, Any], _attempt: int
+    ) -> draft_repair_loop.Verdict:
         try:
             candidate = sandbox_skill_manifest.validate_skill(
                 payload, known_images=images
@@ -277,42 +232,60 @@ async def draft_skill(
                     f"{candidate['id']!r}; a revision keeps its id"
                 )
         except SkillError as exc:
-            notes.append(f"Attempt {attempt}: {exc}")
-            message = (
-                f"{message}\n\nYour last skill was rejected:\n{exc}\n\n"
-                "Fix exactly that and return the whole skill again."
+            return draft_repair_loop.Verdict(
+                complaint=f"Your last skill was rejected:\n{exc}",
+                note=str(exc),
+                instruction="Fix exactly that and return the whole skill again.",
             )
-            continue
 
-        manifest = candidate
-        report("checking", attempt, notes)
-        outcome = await sandbox_skill_runtime.dry_run(manifest, image_allowed=True)
+        outcome = await sandbox_skill_runtime.dry_run(candidate, image_allowed=True)
+        last_dry_run.clear()
+        last_dry_run.update(outcome)
         if outcome["ok"]:
-            break
+            return draft_repair_loop.Verdict(value=candidate)
         if not outcome.get("ran"):
             # Nothing could be tested, so there is nothing to repair. Say that
             # the draft is unverified and why, and stop spending model calls.
-            notes.append(
-                "The control was not run, so this draft is unverified: "
-                f"{outcome.get('detail')}"
+            return draft_repair_loop.Verdict(
+                value=candidate,
+                complaint="not run",
+                note=(
+                    "The control was not run, so this draft is unverified: "
+                    f"{outcome.get('detail')}"
+                ),
+                stop=True,
             )
-            break
-
-        complaint = _control_complaint(outcome)
-        notes.append(f"Attempt {attempt}: {outcome.get('detail')}")
-        message = (
-            f"{message}\n\nThe skill validates, but running its control in the "
-            f"sandbox showed:\n{complaint}\n\nFix the skill so its control "
-            "passes and return the whole skill again. Remember there is no "
-            "network and only what the image already contains is available."
-        )
         # The manifest is kept: a control that fails is a flaw a person can
         # read and fix, and handing back nothing would be worse.
+        return draft_repair_loop.Verdict(
+            value=candidate,
+            complaint=(
+                "The skill validates, but running its control in the sandbox "
+                f"showed:\n{_control_complaint(outcome)}"
+            ),
+            note=str(outcome.get("detail")),
+            instruction=(
+                "Fix the skill so its control passes and return the whole skill "
+                "again. Remember there is no network and only what the image "
+                "already contains is available."
+            ),
+        )
 
-    report("done", attempt, notes)
+    outcome = await draft_repair_loop.run(
+        system=_system_prompt(images, contents),
+        message=message,
+        schema=DRAFT_SCHEMA,
+        judge=judge,
+        max_attempts=MAX_ATTEMPTS,
+        user_id=user_id,
+        db=db,
+        on_progress=on_progress,
+        snapshot_phase="sandbox_skill_draft",
+        what="Skill draft",
+    )
     return {
-        "manifest": manifest,
-        "notes": notes,
-        "attempts": attempt,
-        "dry_run": outcome,
+        "manifest": outcome.value,
+        "notes": outcome.notes,
+        "attempts": outcome.attempts,
+        "dry_run": dict(last_dry_run) or None,
     }

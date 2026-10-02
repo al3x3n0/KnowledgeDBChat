@@ -31,7 +31,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from pydantic import ValidationError
 from sqlalchemy import select
 
-from app.services import llm_json
+from app.services import draft_repair_loop, llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -213,8 +213,6 @@ async def draft_definition(
     needed two attempts to name a real capability is a draft worth looking at
     twice.
     """
-    from app.services.llm_service import LLMService
-
     text = str(description or "").strip()
     if not text:
         return {
@@ -224,52 +222,22 @@ async def draft_definition(
             ],
         }
 
-    llm = LLMService()
-    system = _system_prompt()
-    message = (
-        _revision_message(text, current)
-        if isinstance(current, Mapping) and current
-        else f"Write an agent definition for this request:\n\n{text}"
-    )
-    notes: List[str] = []
-    definition: Optional[Dict[str, Any]] = None
+    revising = isinstance(current, Mapping) and bool(current)
 
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        try:
-            completion = await llm.generate_structured(
-                system_prompt=system,
-                user_message=message,
-                response_schema=DRAFT_SCHEMA,
-                task_type="balanced",
-                user_id=user_id,
-                db=db,
-            )
-        except Exception as exc:  # pragma: no cover - network/provider failure
-            logger.warning(f"Agent draft call failed on attempt {attempt}: {exc}")
-            notes.append(f"The model could not be reached: {exc}")
-            break
-
-        payload = _payload(completion)
-        if not payload:
-            notes.append(f"Attempt {attempt}: the reply was not JSON.")
-            message = (
-                f"{message}\n\nYour last reply was not a JSON object. Reply "
-                "with one JSON object and nothing else."
-            )
-            continue
-
+    async def judge(
+        payload: Dict[str, Any], _attempt: int
+    ) -> draft_repair_loop.Verdict:
         candidate, complaints = check(payload)
         if complaints:
-            notes.append(f"Attempt {attempt}: " + "; ".join(complaints))
-            message = (
-                f"{message}\n\nYour last definition was rejected:\n"
-                + "\n".join(complaints)
-                + "\n\nFix exactly that and return the whole definition again."
+            return draft_repair_loop.Verdict(
+                complaint="Your last definition was rejected:\n"
+                + "\n".join(complaints),
+                note="; ".join(complaints),
+                instruction="Fix exactly that and return the whole definition again.",
             )
-            continue
 
         keeping_its_own_name = bool(
-            isinstance(current, Mapping)
+            revising
             and candidate
             and candidate["name"] == str(current.get("name") or "")
         )
@@ -283,19 +251,33 @@ async def draft_definition(
             # that collides is refused at the end of the work rather than the
             # start of it.
             taken = candidate["name"]
-            notes.append(f"Attempt {attempt}: the name {taken!r} is already taken.")
-            message = (
-                f"{message}\n\nThe name {taken!r} already exists. Choose a "
-                "different name and return the whole definition again."
+            return draft_repair_loop.Verdict(
+                complaint=f"The name {taken!r} already exists.",
+                note=f"the name {taken!r} is already taken.",
+                instruction=(
+                    "Choose a different name and return the whole definition again."
+                ),
             )
-            continue
+        return draft_repair_loop.Verdict(value=candidate)
 
-        definition = candidate
-        break
-
-    if definition is None and not notes:
+    outcome = await draft_repair_loop.run(
+        system=_system_prompt(),
+        message=(
+            _revision_message(text, current)
+            if revising
+            else f"Write an agent definition for this request:\n\n{text}"
+        ),
+        schema=DRAFT_SCHEMA,
+        judge=judge,
+        max_attempts=MAX_ATTEMPTS,
+        user_id=user_id,
+        db=db,
+        what="Agent draft",
+    )
+    notes = outcome.notes
+    if outcome.value is None and not notes:
         notes.append("No usable definition was produced.")
-    return {"definition": definition, "notes": notes}
+    return {"definition": outcome.value, "notes": notes}
 
 
 __all__ = ["DRAFT_SCHEMA", "check", "draft_definition", "vocabulary"]

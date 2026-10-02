@@ -347,6 +347,18 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   own name skips the collision check — colliding with yourself is not a
   collision.
 
+- **Three drafters share one repair loop** (`services/draft_repair_loop.py`).
+  Plugins, agent definitions and sandbox skills each wrote the same thing:
+  ask for JSON, hand it to the real validator, and when it refuses give the
+  refusal back and ask again. What differs is the judge, so that is all a
+  drafter supplies — a function returning a `Verdict` (the candidate to keep,
+  the complaint for the model, the note for the person, `stop` when the
+  failure is not in the draft, `discard` to forget an earlier candidate). The
+  loop owns the rest: the model call, an unreachable model, a reply that is
+  not JSON, the growing message, the notes and the progress callback. The
+  pipeline drafter is deliberately not on it: one repair round, the whole
+  draft resent, the less-broken version kept — a different procedure.
+
 - **Plugins** — a plugin is one installable unit that contributes tools (and, in
   later slices, flows and UI). `models/plugin.py` holds the manifest;
   `PluginInstallation` holds one user's decision to run it, so a builtin bundle

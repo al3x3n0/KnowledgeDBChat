@@ -107,6 +107,10 @@ Generate the email draft with:
                 max_tokens=1000,
                 user_settings=user_settings,
             )
+            if not str(response or "").strip():
+                # An empty reply is not a draft. Returned as content, it was
+                # reported as a success with nothing in it.
+                return {"error": "The model returned nothing"}
 
             # Parse the response to extract components
             lines = response.strip().split("\n")
@@ -208,6 +212,10 @@ Format action items as:
                 max_tokens=1500,
                 user_settings=user_settings,
             )
+            if not str(response or "").strip():
+                # An empty reply is not a draft. Returned as content, it was
+                # reported as a success with nothing in it.
+                return {"error": "The model returned nothing"}
 
             # Extract action items if present
             action_items = []
@@ -303,6 +311,10 @@ Generate comprehensive documentation suitable for {target_audience}."""
                 max_tokens=2000,
                 user_settings=user_settings,
             )
+            if not str(response or "").strip():
+                # An empty reply is not a draft. Returned as content, it was
+                # reported as a success with nothing in it.
+                return {"error": "The model returned nothing"}
 
             # Extract title from response
             title = topic
@@ -396,12 +408,20 @@ Focus on:
                 max_tokens=800,
                 user_settings=user_settings,
             )
+            if not str(response or "").strip():
+                # An empty reply is not a draft. Returned as content, it was
+                # reported as a success with nothing in it.
+                return {"error": "The model returned nothing"}
 
             # Count key metrics mentioned
             metrics = []
             for line in response.split("\n"):
                 # Simple heuristic: lines with numbers might be metrics
-                if any(char.isdigit() for char in line) and "%" in line or "$" in line:
+                # A number together with a unit sign. Without the brackets
+                # `and` bound first and any line with a "$" was a metric.
+                if any(char.isdigit() for char in line) and (
+                    "%" in line or "$" in line
+                ):
                     metrics.append(line.strip())
 
             return {
@@ -506,6 +526,10 @@ Format with proper markdown headings and structure."""
                 max_tokens=2500,
                 user_settings=user_settings,
             )
+            if not str(response or "").strip():
+                # An empty reply is not a draft. Returned as content, it was
+                # reported as a success with nothing in it.
+                return {"error": "The model returned nothing"}
 
             return {
                 "title": title or f"{report_type.title()} Report",
@@ -541,7 +565,7 @@ Format with proper markdown headings and structure."""
                     content = (
                         doc.content
                         if full_content
-                        else (doc.summary or doc.content[:2000])
+                        else (doc.summary or (doc.content or "")[:2000])
                     )
                     contexts.append(f"[Document: {doc.title}]\n{content}")
 

@@ -6084,6 +6084,35 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         if problem:
             return {"error": problem}
 
+        # The finding has to exist, and be the caller's. Only the shape of
+        # the ref was checked, so a job that does not exist, an index past
+        # the end and another user's job were all "retracted" successfully.
+        job_part, _, index_part = ref.partition("#")
+        from uuid import UUID as _UUID
+
+        from app.models.agent_job import AgentJob as _AgentJob
+
+        owner_id = getattr(ctx.job, "user_id", None) or ctx.user_id
+        try:
+            target = (
+                await ctx.db.execute(
+                    select(_AgentJob).where(
+                        _AgentJob.id == _UUID(job_part.strip()),
+                        _AgentJob.user_id == owner_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            index = int(index_part.strip())
+        except (ValueError, TypeError, AttributeError):
+            return {"error": f"{ref} does not name a finding (expected job_id#index)"}
+        findings = (
+            (target.results or {}).get("findings")
+            if target is not None and isinstance(target.results, dict)
+            else None
+        )
+        if not isinstance(findings, list) or not 0 <= index < len(findings):
+            return {"error": f"No finding {ref} was found among your jobs"}
+
         row = await agent_retraction_service.retract(
             ctx.db,
             user_id=ctx.user_id,
@@ -6091,7 +6120,8 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             ref=ref,
             reason=reason,
             source="; ".join(cited)[:200],
-            source_job_id=getattr(ctx, "job_id", None),
+            # The context has a job, not a job_id: this was always NULL.
+            source_job_id=getattr(ctx.job, "id", None),
         )
         return {
             "success": True,
@@ -11426,8 +11456,6 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
     async def _list_documents_by_tag(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        from app.models.document import Document
-
         tags_param = params.get("tags")
         if not tags_param or not isinstance(tags_param, list) or not tags_param:
             return {"error": "tags is required and must be a non-empty array"}
@@ -11444,27 +11472,15 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
             # match_all a list of blank tags listed everything.
             return {"error": "tags is required and must be a non-empty array"}
 
-        # Newest first, a page at a time, until enough match. One unordered
-        # page of 500 meant a match beyond it was never listed.
-        matched = []
-        page_size, offset = 500, 0
-        while len(matched) < limit:
-            stmt = (
-                select(Document)
-                .where(Document.tags.isnot(None))
-                .order_by(Document.created_at.desc(), Document.id)
-                .offset(offset)
-                .limit(page_size)
-            )
-            docs = (await ctx.db.execute(stmt)).scalars().all()
-            for doc in docs:
-                doc_tags = set(doc.tags or []) if isinstance(doc.tags, list) else set()
-                if tags_set.issubset(doc_tags) if match_all else tags_set & doc_tags:
-                    matched.append(doc)
-            if len(docs) < page_size:
-                break
-            offset += page_size
-        matched = matched[:limit]
+        from app.services.document_tags import documents_with_tags
+
+        matched = await documents_with_tags(
+            ctx.db,
+            list(tags_set),
+            match_all=match_all,
+            limit=limit,
+            newest_by="created_at",
+        )
         return {
             "success": True,
             "data": {

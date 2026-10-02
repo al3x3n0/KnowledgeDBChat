@@ -917,6 +917,15 @@ class DocumentService:
             cache_key = f"document:{document_id}"
             await cache_service.delete(cache_key)
 
+            # Processing records its own failure on the row and does not
+            # raise, so "it returned" is not "it worked".
+            if not document.is_processed:
+                logger.warning(
+                    f"Reprocessing {document_id} did not index it: "
+                    f"{document.processing_error}"
+                )
+                return False
+
             logger.info(f"Reprocessed document: {document_id}")
             return True
 

@@ -53,6 +53,7 @@ from app.services.agent_tool_dispatch import (
 from app.services.agent_tools import AGENT_TOOLS, validate_tool_params
 from app.services.arxiv_search_service import ArxivSearchService
 from app.services.auth_service import is_admin
+from app.services.config_values import bounded_int, like_literal, parse_date, parse_uuid
 from app.services.document_service import DocumentService
 from app.services.llm_service import LLMService, UserLLMSettings, load_user_llm_settings
 from app.services.memory_service import MemoryService
@@ -1320,8 +1321,8 @@ Your response:"""
 
     async def _tool_search_arxiv(self, params: Dict[str, Any]) -> Dict[str, Any]:
         query = (params.get("query") or "").strip()
-        start = int(params.get("start") or 0)
-        max_results = int(params.get("max_results") or 10)
+        start = bounded_int(params.get("start"), 0, 0, 100000)
+        max_results = bounded_int(params.get("max_results"), 10, 0, 100)
         sort_by = params.get("sort_by") or "relevance"
         sort_order = params.get("sort_order") or "descending"
 
@@ -1448,8 +1449,8 @@ Your response:"""
             for c in (params.get("categories") or [])
             if isinstance(c, str) and c.strip()
         ]
-        max_results = int(params.get("max_results") or 25)
-        start = int(params.get("start") or 0)
+        max_results = bounded_int(params.get("max_results"), 25, 0, 100)
+        start = bounded_int(params.get("start"), 0, 0, 100000)
         sort_by = params.get("sort_by") or "submittedDate"
         sort_order = params.get("sort_order") or "descending"
         auto_sync = bool(params.get("auto_sync", True))
@@ -1540,7 +1541,7 @@ Your response:"""
 
         force = bool(params.get("force", False))
         only_missing = bool(params.get("only_missing", True))
-        limit = min(int(params.get("limit", 500) or 500), 2000)
+        limit = bounded_int(params.get("limit"), 500, 0, 2000)
 
         rows = (
             await db.execute(
@@ -1598,7 +1599,7 @@ Your response:"""
                 raise ValueError("Not authorized for this source")
 
         force = bool(params.get("force", False))
-        limit = min(int(params.get("limit", 500) or 500), 5000)
+        limit = bounded_int(params.get("limit"), 500, 0, 5000)
         task = enrich_arxiv_source.delay(str(src.id), force, limit)
         return {
             "source_id": str(src.id),
@@ -1657,7 +1658,7 @@ Your response:"""
             topic = src.config.get("topic")
         topic = topic or src.name
 
-        slide_count = int(params.get("slide_count", 10) or 10)
+        slide_count = bounded_int(params.get("slide_count"), 10, 1, 50)
         slide_count = max(3, min(40, slide_count))
         style = params.get("style") or "professional"
         include_diagrams = bool(params.get("include_diagrams", True))
@@ -1760,14 +1761,20 @@ Your response:"""
         self, params: Dict[str, Any], db: AsyncSession
     ) -> List[Dict[str, Any]]:
         """Execute document search tool."""
-        query = params.get("query", "")
-        limit = min(params.get("limit", 5), 20)
+        query = str(params.get("query") or "").strip()
+        if not query:
+            return {"error": "query is required"}
+        limit = bounded_int(params.get("limit"), 5, 0, 20)
+        if limit == 0:
+            return []
 
         await self._ensure_vector_store_initialized()
 
-        # Perform semantic search
+        # The store returns chunks and this returns documents. With only
+        # twice the limit fetched, one long document whose chunks ranked
+        # first filled the window and hid every other match.
         search_results = await self.vector_store.search(
-            query=query, limit=limit * 2  # Get more to filter
+            query=query, limit=min(max(limit * 10, 50), 200)
         )
 
         # Format results
@@ -1786,7 +1793,9 @@ Your response:"""
                         "title": metadata.get("title", "Untitled"),
                         "content_preview": (result.get("content", "") or "")[:200],
                         "score": round(result.get("score", 0), 3),
-                        "source_type": metadata.get("source", "unknown"),
+                        # `source` is the source's name; this is its type.
+                        "source_type": metadata.get("source_type")
+                        or metadata.get("source", "unknown"),
                     }
                 )
 
@@ -1803,7 +1812,7 @@ Your response:"""
 
         try:
             doc_uuid = UUID(document_id)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, AttributeError):
             return {"error": f"Invalid document ID: {document_id}"}
 
         document = await self.document_service.get_document(doc_uuid, db)
@@ -1843,16 +1852,35 @@ Your response:"""
             return {"error": "Missing required parameter: url"}
 
         follow_links = bool(params.get("follow_links", False))
-        max_pages = int(params.get("max_pages", 1))
-        max_depth = int(params.get("max_depth", 0))
         same_domain_only = bool(params.get("same_domain_only", True))
         include_links = bool(params.get("include_links", True))
         allow_private_networks = bool(params.get("allow_private_networks", False))
-        max_content_chars = int(params.get("max_content_chars", 50_000))
 
+        def _number(key: str, default: int) -> int:
+            # Absent means the default; 0 is a value the scraper refuses,
+            # not a reason to substitute one.
+            value = params.get(key)
+            return default if value is None else int(value)
+
+        try:
+            max_pages = _number("max_pages", 1)
+            max_depth = _number("max_depth", 0)
+            max_content_chars = _number("max_content_chars", 50_000)
+        except (TypeError, ValueError):
+            return {
+                "error": "max_pages, max_depth and max_content_chars must be numbers"
+            }
+
+        from app.services.web_scraper_service import (
+            WebScraperService,
+            internal_scrape_allowed_hosts,
+        )
+
+        # An admin who asks may reach private networks. Anyone else may
+        # reach only the hosts an active web source names -- those hosts,
+        # not whatever a page on one of them links to.
+        allowlisted_hosts = await internal_scrape_allowed_hosts(db)
         allow_private_effective = False
-        is_allowlisted = await self._is_url_allowlisted_for_internal_scrape(url, db)
-
         if allow_private_networks:
             from app.models.user import User
 
@@ -1860,16 +1888,10 @@ Your response:"""
             user = user_result.scalar_one_or_none()
             if is_admin(user):
                 allow_private_effective = True
-            elif is_allowlisted:
-                allow_private_effective = True
-            else:
+            elif not await self._is_url_allowlisted_for_internal_scrape(url, db):
                 return {
                     "error": "allow_private_networks requires admin role (or an active web source allowlist)"
                 }
-        else:
-            allow_private_effective = bool(is_allowlisted)
-
-        from app.services.web_scraper_service import WebScraperService
 
         scraper = WebScraperService(enforce_network_safety=True)
         try:
@@ -1882,57 +1904,30 @@ Your response:"""
                 include_links=include_links,
                 allow_private_networks=allow_private_effective,
                 max_content_chars=max_content_chars,
+                private_hosts=allowlisted_hosts,
             )
+        except ValueError as exc:
+            # A refusal -- a blocked address, a bad scheme, a bound out of
+            # range -- is the tool's answer, not a crash.
+            return {"error": str(exc)}
         finally:
             await scraper.aclose()
 
     async def _is_url_allowlisted_for_internal_scrape(
         self, url: str, db: AsyncSession
     ) -> bool:
-        """
-        Check if a URL's hostname is allowlisted via active web document sources.
-
-        This enables scraping internal portals safely without opening arbitrary private-network access.
-        """
+        """Whether the URL's host is named by an active web source."""
         from urllib.parse import urlparse
 
-        parsed = urlparse(url)
-        host = (parsed.hostname or "").lower()
+        from app.services.web_scraper_service import (
+            host_is_allowlisted,
+            internal_scrape_allowed_hosts,
+        )
+
+        host = (urlparse(url).hostname or "").lower()
         if not host:
             return False
-
-        from app.models.document import DocumentSource
-
-        res = await db.execute(
-            select(DocumentSource).where(
-                DocumentSource.source_type == "web",
-                DocumentSource.is_active.is_(True),
-            )
-        )
-        sources = res.scalars().all()
-
-        def host_matches(allowed: str) -> bool:
-            allowed = (allowed or "").strip().lower()
-            if not allowed:
-                return False
-            if host == allowed:
-                return True
-            return host.endswith("." + allowed)
-
-        for source in sources:
-            cfg = source.config or {}
-            for d in cfg.get("allowed_domains") or []:
-                if host_matches(d):
-                    return True
-            for base in cfg.get("base_urls") or []:
-                try:
-                    base_host = (urlparse(str(base)).hostname or "").lower()
-                except Exception:
-                    base_host = ""
-                if base_host and host_matches(base_host):
-                    return True
-
-        return False
+        return host_is_allowlisted(host, await internal_scrape_allowed_hosts(db))
 
     async def _tool_summarize_document(
         self, params: Dict[str, Any], db: AsyncSession
@@ -1943,7 +1938,7 @@ Your response:"""
 
         try:
             doc_uuid = UUID(document_id)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, AttributeError):
             return {"error": f"Invalid document ID: {document_id}"}
 
         # Check if document exists
@@ -1986,7 +1981,7 @@ Your response:"""
 
         try:
             doc_uuid = UUID(document_id)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, AttributeError):
             return {"error": f"Invalid document ID: {document_id}"}
 
         # Get document info first
@@ -1994,8 +1989,9 @@ Your response:"""
         if not document:
             return {"error": f"Document not found: {document_id}"}
 
-        # If not confirmed, return document info for confirmation
-        if not confirm:
+        # Only `true` confirms. Tested for truthiness, the strings "false"
+        # and "no" deleted the document.
+        if confirm is not True:
             return {
                 "action": "confirmation_required",
                 "document_id": document_id,
@@ -2022,7 +2018,7 @@ Your response:"""
         self, params: Dict[str, Any], db: AsyncSession
     ) -> List[Dict[str, Any]]:
         """List recently added/updated documents."""
-        limit = min(params.get("limit", 10), 50)
+        limit = bounded_int(params.get("limit"), 10, 0, 50)
 
         result = await db.execute(
             select(Document).order_by(desc(Document.updated_at)).limit(limit)
@@ -2085,8 +2081,8 @@ Your response:"""
         source_id = params.get("source_id")
         source_name = params.get("source_name")
         source_type = params.get("source_type")
-        limit = min(params.get("limit", 20), 50)
-        offset = max(params.get("offset", 0), 0)
+        limit = bounded_int(params.get("limit"), 20, 0, 50)
+        offset = bounded_int(params.get("offset"), 0, 0, 10_000_000)
 
         if not source_id and not source_name and not source_type:
             return {"error": "Provide source_id, source_name, or source_type"}
@@ -2101,12 +2097,16 @@ Your response:"""
             if source_id:
                 try:
                     source_uuid = UUID(source_id)
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, AttributeError):
                     return {"error": f"Invalid source_id: {source_id}"}
                 query = query.where(Document.source_id == source_uuid)
 
             if source_name:
-                query = query.where(DocumentSource.name.ilike(f"%{source_name}%"))
+                query = query.where(
+                    DocumentSource.name.ilike(
+                        f"%{like_literal(str(source_name))}%", escape="\\"
+                    )
+                )
 
             if source_type:
                 query = query.where(
@@ -2154,20 +2154,26 @@ Your response:"""
         self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """Search documents by author name."""
-        author = (params.get("author") or "").strip()
-        match_type = params.get("match_type", "contains")
-        limit = min(params.get("limit", 20), 50)
+        raw_author = params.get("author")
+        author = raw_author.strip() if isinstance(raw_author, str) else ""
+        match_type = params.get("match_type") or "contains"
+        limit = bounded_int(params.get("limit"), 20, 0, 50)
 
         if not author:
             return {"error": "Author is required"}
+        if match_type not in ("exact", "starts_with", "contains"):
+            return {"error": "match_type must be exact, starts_with or contains"}
 
         try:
+            # The name is text to match, not a pattern: unescaped, "exact"
+            # with `%` matched every author.
+            literal = like_literal(author)
             if match_type == "exact":
-                clause = Document.author.ilike(author)
+                clause = func.lower(Document.author) == author.lower()
             elif match_type == "starts_with":
-                clause = Document.author.ilike(f"{author}%")
+                clause = Document.author.ilike(f"{literal}%", escape="\\")
             else:
-                clause = Document.author.ilike(f"%{author}%")
+                clause = Document.author.ilike(f"%{literal}%", escape="\\")
 
             query = (
                 select(Document)
@@ -2207,14 +2213,16 @@ Your response:"""
         self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
         """Create a new document from text content."""
-        title = params.get("title", "").strip()
-        content = params.get("content", "").strip()
-        tags = params.get("tags", [])
+        title = str(params.get("title") or "").strip()
+        content = str(params.get("content") or "").strip()
+        tags = params.get("tags") or []
 
         if not title:
             return {"error": "Title is required"}
         if not content:
             return {"error": "Content is required"}
+        if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
+            return {"error": "tags must be a list of strings"}
 
         try:
             owner_display_name = None
@@ -2256,17 +2264,22 @@ Your response:"""
             await db.commit()
             await db.refresh(document)
 
-            # Process document (chunks + vector index)
+            # Process document (chunks + vector index). Saved and indexed
+            # are different things and the result says which happened: a
+            # document that could not be indexed exists and cannot be found.
+            indexed = False
             try:
-                await self.document_service.reprocess_document(
-                    document.id, db, user_id=user_id
+                indexed = bool(
+                    await self.document_service.reprocess_document(
+                        document.id, db, user_id=user_id
+                    )
                 )
             except Exception as e:
                 logger.warning(
                     f"Failed to process agent-created document embeddings: {e}"
                 )
 
-            return {
+            result = {
                 "action": "created",
                 "document_id": str(document.id),
                 "title": title,
@@ -2274,11 +2287,27 @@ Your response:"""
                 if len(content) > 200
                 else content,
                 "tags": tags,
+                "indexed": indexed,
                 "message": f"Successfully created document '{title}'",
             }
+            if not indexed:
+                result["warning"] = (
+                    "The document was saved but could not be indexed, so "
+                    "search will not find it yet."
+                )
+                result[
+                    "message"
+                ] = f"Created document '{title}', but it could not be indexed"
+            return result
 
         except Exception as e:
             logger.error(f"Error creating document from text: {e}")
+            # The session is the chat turn's; left mid-failure it refuses
+            # every later statement.
+            try:
+                await db.rollback()
+            except Exception:
+                pass
             return {"error": f"Failed to create document: {str(e)}"}
 
     async def _tool_ingest_url(
@@ -2318,11 +2347,11 @@ Your response:"""
     ) -> Dict[str, Any]:
         """Find documents similar to a given document."""
         document_id = params.get("document_id")
-        limit = min(params.get("limit", 5), 20)
+        limit = bounded_int(params.get("limit"), 5, 0, 20)
 
         try:
             doc_uuid = UUID(document_id)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, AttributeError):
             return {"error": f"Invalid document ID: {document_id}"}
 
         # Get the reference document
@@ -2335,15 +2364,21 @@ Your response:"""
 
         await self._ensure_vector_store_initialized()
 
-        # Search for similar documents
+        # Chunks come back, documents are wanted, and the reference's own
+        # chunks rank first: `limit + 5` was filled by the document itself
+        # whenever it had more chunks than that.
         search_results = await self.vector_store.search(
-            query=query_text, limit=limit + 5  # Get extras to filter out self
+            query=query_text, limit=min(max(limit * 10, 50), 200)
         )
 
-        # Format results, excluding the reference document
+        # Format results, excluding the reference document. Compared in its
+        # canonical spelling: the id as typed (upper case, no hyphens) did
+        # not match the stored one, and the document was "similar to itself".
         similar_docs = []
         seen_docs = set()
-        seen_docs.add(document_id)  # Exclude self
+        seen_docs.add(str(doc_uuid))
+        if limit == 0:
+            search_results = []
 
         for result in search_results:
             metadata = result.get("metadata", {})
@@ -2379,7 +2414,7 @@ Your response:"""
 
         try:
             doc_uuid = UUID(document_id)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, AttributeError):
             return {"error": f"Invalid document ID: {document_id}"}
 
         # Get the document
@@ -2387,17 +2422,26 @@ Your response:"""
         if not document:
             return {"error": f"Document not found: {document_id}"}
 
-        current_tags = set(document.tags or [])
-        new_tags_set = set(tags)
+        # A list of non-empty strings, required. Defaulted to [], "replace"
+        # with tags left out erased every tag; a bare string was split into
+        # letters by set(); and going through sets shuffled the order.
+        if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
+            return {"error": "tags must be a list of strings"}
+        tags = list(dict.fromkeys(t.strip() for t in tags if t.strip()))
+        if not tags:
+            return {"error": "tags is required and must not be empty"}
+
+        current = [t for t in (document.tags or []) if isinstance(t, str)]
+        current_tags = current
 
         if action == "add":
-            updated_tags = list(current_tags | new_tags_set)
+            updated_tags = current + [t for t in tags if t not in current]
             action_desc = f"Added tags: {', '.join(tags)}"
         elif action == "remove":
-            updated_tags = list(current_tags - new_tags_set)
+            updated_tags = [t for t in current if t not in tags]
             action_desc = f"Removed tags: {', '.join(tags)}"
         elif action == "replace":
-            updated_tags = list(new_tags_set)
+            updated_tags = tags
             action_desc = f"Replaced all tags with: {', '.join(tags)}"
         else:
             return {
@@ -2459,9 +2503,14 @@ Your response:"""
             )
             recent_docs = recent_result.scalar() or 0
 
-            # Vector store stats
-            await self._ensure_vector_store_initialized()
-            vector_stats = await self.vector_store.get_collection_stats()
+            # Vector store stats. Its own failure is reported in its place:
+            # sharing the outer try, an unreachable store threw away every
+            # database count above.
+            try:
+                await self._ensure_vector_store_initialized()
+                vector_stats = await self.vector_store.get_collection_stats()
+            except Exception as exc:
+                vector_stats = {"error": f"Vector store unavailable: {exc}"}
 
             return {
                 "total_documents": total_docs,
@@ -2486,41 +2535,49 @@ Your response:"""
         document_ids = params.get("document_ids", [])
         confirm = params.get("confirm", False)
 
-        if not document_ids:
+        if not document_ids or not isinstance(document_ids, list):
             return {"error": "No document IDs provided"}
 
         if len(document_ids) > 50:
             return {"error": "Cannot delete more than 50 documents at once"}
 
-        # Validate all IDs and get document info
+        # Validate all IDs and get document info. An id that is malformed or
+        # names nothing is reported, not dropped: the caller asked about it.
         documents_info = []
         valid_ids = []
+        not_found = []
 
         for doc_id in document_ids:
             try:
                 doc_uuid = UUID(doc_id)
-                document = await self.document_service.get_document(doc_uuid, db)
-                if document:
-                    documents_info.append({"id": doc_id, "title": document.title})
-                    valid_ids.append(doc_uuid)
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, AttributeError):
+                not_found.append({"id": str(doc_id), "reason": "Invalid document ID"})
                 continue
+            if doc_uuid in valid_ids:
+                continue  # the same document named twice is one document
+            document = await self.document_service.get_document(doc_uuid, db)
+            if document:
+                documents_info.append({"id": str(doc_uuid), "title": document.title})
+                valid_ids.append(doc_uuid)
+            else:
+                not_found.append({"id": str(doc_id), "reason": "Document not found"})
 
         if not valid_ids:
-            return {"error": "No valid documents found"}
+            return {"error": "No valid documents found", "not_found": not_found}
 
-        # If not confirmed, return document info for confirmation
-        if not confirm:
+        # Only `true` confirms.
+        if confirm is not True:
             return {
                 "action": "confirmation_required",
                 "documents": documents_info,
                 "count": len(documents_info),
+                "not_found": not_found or None,
                 "message": f"Are you sure you want to delete {len(documents_info)} documents? This action cannot be undone.",
             }
 
         # Proceed with deletion
         deleted = []
-        failed = []
+        failed = list(not_found)
 
         for doc_uuid in valid_ids:
             try:
@@ -2561,9 +2618,14 @@ Your response:"""
         skipped = []
         invalid = []
 
+        seen_ids = set()
+        failed = []
         for doc_id in document_ids:
             try:
                 doc_uuid = UUID(doc_id)
+                if doc_uuid in seen_ids:
+                    continue  # one summary per document
+                seen_ids.add(doc_uuid)
                 document = await self.document_service.get_document(doc_uuid, db)
 
                 if not document:
@@ -2583,14 +2645,24 @@ Your response:"""
                 # Queue for summarization (use Celery task)
                 from app.tasks.summarization_tasks import summarize_document
 
-                summarize_document.delay(str(doc_uuid), force=force_regenerate)
+                try:
+                    summarize_document.delay(str(doc_uuid), force=force_regenerate)
+                except Exception as exc:
+                    # A broker that refuses one must not lose the record of
+                    # those already queued.
+                    failed.append(
+                        {"id": doc_id, "title": document.title, "reason": str(exc)}
+                    )
+                    continue
 
                 queued.append({"id": doc_id, "title": document.title})
 
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, AttributeError):
                 invalid.append(doc_id)
 
         return {
+            "failed_count": len(failed),
+            "failed": failed if failed else None,
             "queued_count": len(queued),
             "queued": queued,
             "skipped_count": len(skipped),
@@ -2604,25 +2676,19 @@ Your response:"""
         self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """Search documents by tags."""
-        tags = params.get("tags", [])
-        match_all = params.get("match_all", False)
-        limit = min(params.get("limit", 20), 50)
+        from app.services.document_tags import clean_tags, documents_with_tags
+
+        tags = clean_tags(params.get("tags"))
+        match_all = params.get("match_all") is True
+        limit = bounded_int(params.get("limit"), 20, 0, 50)
 
         if not tags:
             return {"error": "No tags provided"}
 
         try:
-            # Build query based on match type
-            if match_all:
-                # Documents must have ALL tags
-                query = select(Document).where(Document.tags.contains(tags))
-            else:
-                # Documents can have ANY of the tags
-                query = select(Document).where(Document.tags.overlap(tags))
-
-            query = query.order_by(desc(Document.updated_at)).limit(limit)
-            result = await db.execute(query)
-            documents = result.scalars().all()
+            documents = await documents_with_tags(
+                db, tags, match_all=match_all, limit=limit
+            )
 
             return {
                 "search_tags": tags,
@@ -2658,11 +2724,13 @@ Your response:"""
             all_tags = set()
             tag_counts = {}
 
+            from app.services.document_tags import clean_tags
+
             for row in result.fetchall():
-                if row[0]:
-                    for tag in row[0]:
-                        all_tags.add(tag)
-                        tag_counts[tag] = tag_counts.get(tag, 0) + 1
+                # A string is one tag; iterating it counted its letters.
+                for tag in clean_tags(row[0]):
+                    all_tags.add(tag)
+                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
             # Sort by count
             sorted_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)
@@ -2686,13 +2754,15 @@ Your response:"""
         """Compare two documents for similarities and differences."""
         doc_id_1 = params.get("document_id_1")
         doc_id_2 = params.get("document_id_2")
-        comparison_type = params.get("comparison_type", "full")
+        comparison_type = params.get("comparison_type") or "full"
+        if comparison_type not in ("semantic", "keyword", "full"):
+            return {"error": "comparison_type must be semantic, keyword or full"}
 
         # Validate IDs
         try:
             uuid_1 = UUID(doc_id_1)
             uuid_2 = UUID(doc_id_2)
-        except (ValueError, TypeError) as e:
+        except (ValueError, TypeError, AttributeError) as e:
             return {"error": f"Invalid document ID: {e}"}
 
         # Get both documents
@@ -2754,21 +2824,32 @@ Your response:"""
                 # Use first 1000 chars as representative sample
                 sample1 = content1[:1000]
 
-                # Search using doc1 content to find doc2's similarity
-                search_results = await self.vector_store.search(query=sample1, limit=50)
+                # Search document 2 only. Searching the whole corpus and
+                # looking for it among the first fifty hits reported 0.0,
+                # "different topics", whenever it was not among them -- a
+                # score for something never measured.
+                search_results = await self.vector_store.search(
+                    query=sample1, limit=10, document_ids=[str(uuid_2)]
+                )
 
-                # Find doc2 in results
-                semantic_score = 0.0
+                semantic_score = None
                 for res in search_results:
                     res_doc_id = res.get("metadata", {}).get("document_id")
-                    if res_doc_id == doc_id_2:
+                    if str(res_doc_id) == str(uuid_2):
                         semantic_score = res.get("score", 0)
                         break
 
-                result["semantic_analysis"] = {
-                    "similarity_score": round(semantic_score, 3),
-                    "interpretation": self._interpret_similarity(semantic_score),
-                }
+                if semantic_score is None:
+                    result["semantic_analysis"] = {
+                        "similarity_score": None,
+                        "interpretation": "Not measured: the second document "
+                        "has no indexed content to compare against",
+                    }
+                else:
+                    result["semantic_analysis"] = {
+                        "similarity_score": round(semantic_score, 3),
+                        "interpretation": self._interpret_similarity(semantic_score),
+                    }
 
             except Exception as e:
                 logger.warning(f"Semantic comparison failed: {e}")
@@ -2838,7 +2919,7 @@ Provide a 2-3 sentence comparison highlighting key similarities and differences.
                 doc = await self.document_service.get_document(doc_uuid, db)
                 if doc:
                     valid_docs.append({"id": doc_id, "title": doc.title})
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, AttributeError):
                 continue
 
         if not valid_docs:
@@ -2864,7 +2945,7 @@ Provide a 2-3 sentence comparison highlighting key similarities and differences.
     ) -> Dict[str, Any]:
         """List user's template fill jobs."""
         status_filter = params.get("status_filter", "all")
-        limit = min(params.get("limit", 10), 50)
+        limit = bounded_int(params.get("limit"), 10, 0, 50)
 
         try:
             from app.models.template import TemplateJob
@@ -2923,7 +3004,7 @@ Provide a 2-3 sentence comparison highlighting key similarities and differences.
 
         try:
             job_uuid = UUID(job_id)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, AttributeError):
             return {"error": f"Invalid job ID: {job_id}"}
 
         try:
@@ -2989,7 +3070,7 @@ Provide a 2-3 sentence comparison highlighting key similarities and differences.
     ) -> Dict[str, Any]:
         """Answer a question using RAG (Retrieval-Augmented Generation)."""
         question = params.get("question", "")
-        max_sources = min(params.get("max_sources", 5), 10)
+        max_sources = bounded_int(params.get("max_sources"), 5, 0, 10)
 
         if not question.strip():
             return {"error": "Question is required"}
@@ -3085,12 +3166,12 @@ Answer:"""
     ) -> Dict[str, Any]:
         """Read the full text content of a document."""
         document_id = params.get("document_id")
-        max_length = min(params.get("max_length", 10000), 50000)
+        max_length = bounded_int(params.get("max_length"), 10000, 0, 50000)
         include_chunks = params.get("include_chunks", False)
 
         try:
             doc_uuid = UUID(document_id)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, AttributeError):
             return {"error": f"Invalid document ID: {document_id}"}
 
         try:
@@ -3132,7 +3213,7 @@ Answer:"""
 
                 result["chunks"] = chunks_data
                 result["total_chunks"] = len(document.chunks)
-                result["truncated"] = total_length >= max_length
+                result["truncated"] = total_length > max_length
 
             else:
                 # Return full content
@@ -3165,7 +3246,7 @@ Answer:"""
         """Search for entities in the knowledge graph."""
         query = params.get("query", "")
         entity_type = params.get("entity_type")
-        limit = min(params.get("limit", 10), 50)
+        limit = bounded_int(params.get("limit"), 10, 0, 50)
 
         if not query.strip():
             return {"error": "Query is required"}
@@ -3217,11 +3298,11 @@ Answer:"""
     ) -> Dict[str, Any]:
         """Get relationships for a specific entity."""
         entity_id = params.get("entity_id")
-        limit = min(params.get("limit", 20), 100)
+        limit = bounded_int(params.get("limit"), 20, 0, 100)
 
         try:
             entity_uuid = UUID(entity_id)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, AttributeError):
             return {"error": f"Invalid entity ID: {entity_id}"}
 
         try:
@@ -3241,7 +3322,8 @@ Answer:"""
                 select(Relationship, Entity)
                 .join(Entity, Relationship.target_entity_id == Entity.id)
                 .where(Relationship.source_entity_id == entity_uuid)
-                .limit(limit // 2)
+                .order_by(Relationship.confidence.desc(), Relationship.id)
+                .limit(limit)
             )
             outgoing = outgoing_result.all()
 
@@ -3250,7 +3332,8 @@ Answer:"""
                 select(Relationship, Entity)
                 .join(Entity, Relationship.source_entity_id == Entity.id)
                 .where(Relationship.target_entity_id == entity_uuid)
-                .limit(limit // 2)
+                .order_by(Relationship.confidence.desc(), Relationship.id)
+                .limit(limit)
             )
             incoming = incoming_result.all()
 
@@ -3286,6 +3369,12 @@ Answer:"""
                     }
                 )
 
+            # Each direction was given half the limit, so fifteen outgoing
+            # and none incoming returned ten of twenty, and a limit of one
+            # returned nothing. The strongest across both, up to the limit.
+            relationships.sort(key=lambda r: r.get("confidence") or 0, reverse=True)
+            relationships = relationships[:limit]
+
             return {
                 "entity": {
                     "id": str(entity.id),
@@ -3305,11 +3394,11 @@ Answer:"""
     ) -> Dict[str, Any]:
         """Find all documents that mention a specific entity."""
         entity_id = params.get("entity_id")
-        limit = min(params.get("limit", 10), 50)
+        limit = bounded_int(params.get("limit"), 10, 0, 50)
 
         try:
             entity_uuid = UUID(entity_id)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, AttributeError):
             return {"error": f"Invalid entity ID: {entity_id}"}
 
         try:
@@ -3330,8 +3419,10 @@ Answer:"""
                 .join(Document, EntityMention.document_id == Document.id)
                 .where(EntityMention.entity_id == entity_uuid)
                 .order_by(desc(Document.created_at))
-                .limit(limit * 2)
             )
+            # Every mention is read and the *documents* are limited below.
+            # Limiting mentions let one document mentioned many times fill
+            # the window and hide the rest.
             mentions = mentions_result.all()
 
             # Group by document
@@ -3385,7 +3476,7 @@ Answer:"""
 
         try:
             doc_uuid = UUID(document_id)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, AttributeError):
             return {"error": f"Invalid document ID: {document_id}"}
 
         try:
@@ -3428,7 +3519,14 @@ Answer:"""
                 rels_result = await db.execute(
                     select(Relationship).where(Relationship.document_id == doc_uuid)
                 )
-                relationships = rels_result.scalars().all()
+                relationships = [
+                    rel
+                    for rel in rels_result.scalars().all()
+                    # Both ends must be nodes of this graph, or the edge
+                    # points at something the result does not contain.
+                    if rel.source_entity_id in entity_ids
+                    and rel.target_entity_id in entity_ids
+                ]
 
                 edges = [
                     {
@@ -3465,9 +3563,10 @@ Answer:"""
             entity_types = params.get("entity_types")
             relation_types = params.get("relation_types")
             min_confidence = float(params.get("min_confidence", 0.0) or 0.0)
-            min_mentions = int(params.get("min_mentions", 1) or 1)
-            limit_nodes = min(int(params.get("limit_nodes", 300) or 300), 1000)
-            limit_edges = min(int(params.get("limit_edges", 1000) or 1000), 5000)
+            # 0 is a value: it asks for entities nothing mentions yet.
+            min_mentions = bounded_int(params.get("min_mentions"), 1, 0, 1_000_000)
+            limit_nodes = bounded_int(params.get("limit_nodes"), 300, 0, 1000)
+            limit_edges = bounded_int(params.get("limit_edges"), 1000, 0, 5000)
             search = params.get("search")
 
             svc = KnowledgeGraphService()
@@ -3490,12 +3589,12 @@ Answer:"""
     ) -> Dict[str, Any]:
         """Get mentions for an entity with pagination."""
         entity_id = params.get("entity_id")
-        limit = min(int(params.get("limit", 25) or 25), 200)
-        offset = max(int(params.get("offset", 0) or 0), 0)
+        limit = bounded_int(params.get("limit"), 25, 0, 200)
+        offset = bounded_int(params.get("offset"), 0, 0, 10_000_000)
 
         try:
             entity_uuid = UUID(entity_id)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, AttributeError):
             return {"error": f"Invalid entity ID: {entity_id}"}
 
         try:
@@ -3507,10 +3606,11 @@ Answer:"""
                 return {"error": f"Entity not found: {entity_id}"}
 
             svc = KnowledgeGraphService()
+            # The parsed id, not the string it came from.
             items = await svc.mentions_for_entity(
-                db, entity_id, limit=limit, offset=offset
+                db, entity_uuid, limit=limit, offset=offset
             )
-            total = await svc.mentions_count_for_entity(db, entity_id)
+            total = await svc.mentions_count_for_entity(db, entity_uuid)
 
             return {
                 "entity": {
@@ -3559,11 +3659,17 @@ Answer:"""
         document_id = params.get("document_id")
         try:
             doc_uuid = UUID(document_id)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, AttributeError):
             return {"error": f"Invalid document ID: {document_id}"}
 
         try:
             from app.services.knowledge_graph_service import KnowledgeGraphService
+
+            # The service answers "0 mentions, 0 relationships" for a
+            # document that does not exist, the same as a rebuild that found
+            # nothing; say which it was.
+            if await db.get(Document, doc_uuid) is None:
+                return {"error": f"Document not found: {document_id}"}
 
             svc = KnowledgeGraphService()
             result = await svc.rebuild_for_document(db, doc_uuid)
@@ -3586,7 +3692,7 @@ Answer:"""
         try:
             UUID(source_id)
             UUID(target_id)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, AttributeError):
             return {"error": "Invalid source_id or target_id"}
 
         try:
@@ -3614,7 +3720,7 @@ Answer:"""
 
         try:
             entity_uuid = UUID(entity_id)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, AttributeError):
             return {"error": f"Invalid entity ID: {entity_id}"}
 
         try:
@@ -3696,7 +3802,9 @@ Answer:"""
                 results = await vector_store.search(search_query, limit=5)
 
                 for result in results:
-                    doc_id = result.get("document_id")
+                    doc_id = (result.get("metadata") or {}).get(
+                        "document_id"
+                    ) or result.get("document_id")
                     if doc_id:
                         try:
                             doc_uuid = UUID(doc_id)
@@ -3798,19 +3906,23 @@ Generate the Mermaid diagram code:"""
             # Load user settings if available
             user_settings = await load_user_llm_settings(db, user_id)
 
+            # generate_response takes a query and a system prompt and returns
+            # text. This passed `messages=`, which it does not accept, and
+            # read `.get("content")` from the string: every request failed.
             response = await llm_service.generate_response(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert at creating clear, accurate Mermaid diagrams. Output only valid Mermaid code without markdown code blocks or explanations.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
+                query=prompt,
+                system_prompt=(
+                    "You are an expert at creating clear, accurate Mermaid "
+                    "diagrams. Output only valid Mermaid code without markdown "
+                    "code blocks or explanations."
+                ),
                 user_settings=user_settings,
                 task_type="chat",
             )
 
-            mermaid_code = response.get("content", "").strip()
+            mermaid_code = str(response or "").strip()
+            if not mermaid_code:
+                return {"error": "The model returned no diagram"}
 
             # Clean up the response - remove markdown code blocks if present
             if mermaid_code.startswith("```mermaid"):
@@ -3883,7 +3995,7 @@ Generate the Mermaid diagram code:"""
                         )
                     )
                     workflow = result.scalar_one_or_none()
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, AttributeError):
                     return {"error": f"Invalid workflow ID: {workflow_id}"}
             else:
                 # Search by name (case-insensitive)
@@ -4508,28 +4620,28 @@ Include relevant information from the knowledge base when applicable.
         self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """Get comprehensive statistics for a document collection."""
-        from datetime import datetime
-
         from app.services.analytics_service import analytics_service
 
         source_id = params.get("source_id")
         if source_id:
-            source_id = UUID(str(source_id))
+            source_id = parse_uuid(str(source_id))
+            if source_id is None:
+                return {"error": f"Invalid source_id: {params.get('source_id')}"}
 
         tag = params.get("tag")
 
+        # A date that cannot be read is refused. Dropped silently, the
+        # statistics came back for the whole collection as though they were
+        # for the period asked about.
         date_from = None
         date_to = None
-        if params.get("date_from"):
-            try:
-                date_from = datetime.fromisoformat(params["date_from"])
-            except ValueError:
-                pass
-        if params.get("date_to"):
-            try:
-                date_to = datetime.fromisoformat(params["date_to"])
-            except ValueError:
-                pass
+        try:
+            if params.get("date_from"):
+                date_from = parse_date(params["date_from"])
+            if params.get("date_to"):
+                date_to = parse_date(params["date_to"], end_of_day=True)
+        except ValueError as exc:
+            return {"error": f"date_from and date_to must be ISO dates ({exc})"}
 
         return await analytics_service.get_collection_statistics(
             db=db,
@@ -4547,7 +4659,9 @@ Include relevant information from the knowledge base when applicable.
 
         source_id = params.get("source_id")
         if source_id:
-            source_id = UUID(str(source_id))
+            source_id = parse_uuid(str(source_id))
+            if source_id is None:
+                return {"error": f"Invalid source_id: {params.get('source_id')}"}
 
         sources = await analytics_service.get_source_analytics(
             db=db, source_id=source_id
@@ -4560,8 +4674,8 @@ Include relevant information from the knowledge base when applicable.
         """Find trending topics based on recent documents."""
         from app.services.analytics_service import analytics_service
 
-        days = int(params.get("days", 7) or 7)
-        limit = int(params.get("limit", 10) or 10)
+        days = bounded_int(params.get("days"), 7, 1, 365)
+        limit = bounded_int(params.get("limit"), 10, 0, 1000)
 
         topics = await analytics_service.get_trending_topics(
             db=db, days=days, limit=limit
@@ -4572,27 +4686,22 @@ Include relevant information from the knowledge base when applicable.
         self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """Generate data for charts and visualizations."""
-        from datetime import datetime
-
         from app.services.analytics_service import analytics_service
 
         chart_type = params.get("chart_type", "bar")
         metric = params.get("metric", "document_count")
         group_by = params.get("group_by", "source_type")
-        limit = int(params.get("limit", 10) or 10)
+        limit = bounded_int(params.get("limit"), 10, 0, 1000)
 
         date_from = None
         date_to = None
-        if params.get("date_from"):
-            try:
-                date_from = datetime.fromisoformat(params["date_from"])
-            except ValueError:
-                pass
-        if params.get("date_to"):
-            try:
-                date_to = datetime.fromisoformat(params["date_to"])
-            except ValueError:
-                pass
+        try:
+            if params.get("date_from"):
+                date_from = parse_date(params["date_from"])
+            if params.get("date_to"):
+                date_to = parse_date(params["date_to"], end_of_day=True)
+        except ValueError as exc:
+            return {"error": f"date_from and date_to must be ISO dates ({exc})"}
 
         return await analytics_service.generate_chart_data(
             db=db,
@@ -4618,7 +4727,7 @@ Include relevant information from the knowledge base when applicable.
         tag = params.get("tag")
         include_content = bool(params.get("include_content", False))
         include_chunks = bool(params.get("include_chunks", False))
-        limit = int(params.get("limit", 1000) or 1000)
+        limit = bounded_int(params.get("limit"), 1000, 0, 10_000)
 
         content, filename, content_type = await analytics_service.export_data(
             db=db,
@@ -4653,8 +4762,8 @@ Include relevant information from the knowledge base when applicable.
         from app.services.search_service import search_service
 
         query = params.get("query", "")
-        page = int(params.get("page", 1) or 1)
-        page_size = int(params.get("page_size", 10) or 10)
+        page = bounded_int(params.get("page"), 1, 1, 100000)
+        page_size = bounded_int(params.get("page_size"), 10, 1, 100)
         filters = params.get("filters")
 
         return await search_service.faceted_search(
@@ -4672,7 +4781,7 @@ Include relevant information from the knowledge base when applicable.
         from app.services.search_service import search_service
 
         partial_query = params.get("partial_query", "")
-        limit = int(params.get("limit", 5) or 5)
+        limit = bounded_int(params.get("limit"), 5, 0, 1000)
 
         suggestions = await search_service.get_search_suggestions(
             partial_query=partial_query,
@@ -4688,7 +4797,7 @@ Include relevant information from the knowledge base when applicable.
         from app.services.search_service import search_service
 
         query = params.get("query", "")
-        limit = int(params.get("limit", 5) or 5)
+        limit = bounded_int(params.get("limit"), 5, 0, 1000)
 
         related = await search_service.get_related_searches(
             query=query,
@@ -4707,7 +4816,9 @@ Include relevant information from the knowledge base when applicable.
         """Generate an email draft."""
         from app.services.content_generation_service import content_generation_service
 
-        subject = params.get("subject", "")
+        subject = str(params.get("subject") or "").strip()
+        if not subject:
+            return {"error": "subject is required"}
         recipient = params.get("recipient")
         context = params.get("context")
         tone = params.get("tone", "professional")
@@ -4762,7 +4873,9 @@ Include relevant information from the knowledge base when applicable.
         """Generate documentation from source documents."""
         from app.services.content_generation_service import content_generation_service
 
-        topic = params.get("topic", "")
+        topic = str(params.get("topic") or "").strip()
+        if not topic:
+            return {"error": "topic is required"}
         doc_type = params.get("doc_type", "technical")
         target_audience = params.get("target_audience", "developers")
         include_examples = bool(params.get("include_examples", True))
@@ -4789,7 +4902,7 @@ Include relevant information from the knowledge base when applicable.
         from app.services.content_generation_service import content_generation_service
 
         topic = params.get("topic")
-        max_length = int(params.get("max_length", 500) or 500)
+        max_length = bounded_int(params.get("max_length"), 500, 1, 10000)
         include_recommendations = bool(params.get("include_recommendations", True))
         include_metrics = bool(params.get("include_metrics", True))
         search_query = params.get("search_query")

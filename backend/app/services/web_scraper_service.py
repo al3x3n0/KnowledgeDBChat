@@ -16,6 +16,47 @@ from bs4 import BeautifulSoup
 from loguru import logger
 
 
+def host_is_allowlisted(host: str, allowed: List[str]) -> bool:
+    """Whether `host` is one of `allowed` or a subdomain of one."""
+    host = (host or "").strip().lower()
+    for entry in allowed:
+        entry = (entry or "").strip().lower()
+        if entry and (host == entry or host.endswith("." + entry)):
+            return True
+    return False
+
+
+async def internal_scrape_allowed_hosts(db: Any) -> List[str]:
+    """Hosts an active web source names, which a non-admin may reach even
+    when they resolve to a private address.
+
+    The chat tool and URL ingestion each carried a copy of this lookup.
+    """
+    from sqlalchemy import select
+
+    from app.models.document import DocumentSource
+
+    rows = await db.execute(
+        select(DocumentSource).where(
+            DocumentSource.source_type == "web", DocumentSource.is_active.is_(True)
+        )
+    )
+    hosts: List[str] = []
+    for source in rows.scalars().all():
+        cfg = source.config or {}
+        for domain in cfg.get("allowed_domains") or []:
+            if str(domain or "").strip():
+                hosts.append(str(domain).strip().lower())
+        for base in cfg.get("base_urls") or []:
+            try:
+                base_host = (urlparse(str(base)).hostname or "").lower()
+            except Exception:
+                base_host = ""
+            if base_host:
+                hosts.append(base_host)
+    return hosts
+
+
 class WebScraperService:
     DEFAULT_TIMEOUT_S = 20.0
     DEFAULT_MAX_BYTES = 2_000_000
@@ -63,7 +104,15 @@ class WebScraperService:
         timeout_s: float = DEFAULT_TIMEOUT_S,
         max_bytes: int = DEFAULT_MAX_BYTES,
         headers: Optional[Dict[str, str]] = None,
+        private_hosts: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
+        # Hosts that may resolve to a private address although
+        # `allow_private_networks` is off. Per host: deciding once from the
+        # start URL and applying it to every hop let an allowlisted internal
+        # page carry a non-admin, by a link, to any other private host.
+        self._private_hosts = [
+            h.strip().lower() for h in (private_hosts or []) if h and h.strip()
+        ]
         if max_pages < 1 or max_pages > 25:
             raise ValueError("max_pages must be between 1 and 25")
         if max_depth < 0 or max_depth > 5:
@@ -99,9 +148,14 @@ class WebScraperService:
             visited.add(current_url)
 
             try:
+                # Links are always read: the crawl needs them whether or
+                # not the caller wants them back. Tied to `include_links`,
+                # a caller that did not want links listed could not crawl,
+                # and URL ingestion -- which never wants them -- ingested
+                # exactly one page whatever it was asked for.
                 page = await self._scrape_single(
                     current_url,
-                    include_links=include_links,
+                    include_links=True,
                     allow_private_networks=allow_private_networks,
                     max_content_chars=max_content_chars,
                     timeout_s=timeout_s,
@@ -114,11 +168,15 @@ class WebScraperService:
                 errors.append({"url": current_url, "error": str(e)})
                 continue
 
-            if not follow_links or depth >= max_depth or not include_links:
+            page_links = page.get("links", [])
+            if not include_links:
+                page["links"] = []
+
+            if not follow_links or depth >= max_depth:
                 continue
 
             discovered = 0
-            for link in page.get("links", []):
+            for link in page_links:
                 if discovered >= 200:
                     break
                 if link in visited:
@@ -288,6 +346,11 @@ class WebScraperService:
             raise ValueError("URL must include a hostname")
 
         host_lower = hostname.lower()
+        # Private addresses are allowed for this host when the caller allowed
+        # them everywhere, or named this host.
+        private_ok = bool(allow_private_networks) or host_is_allowlisted(
+            host_lower, getattr(self, "_private_hosts", None) or []
+        )
         if (
             host_lower in {"localhost"}
             or host_lower.endswith(".localhost")
@@ -303,9 +366,7 @@ class WebScraperService:
         except ValueError:
             literal = None
         if literal is not None:
-            if not self._is_allowed_ip(
-                literal, allow_private_networks=allow_private_networks
-            ):
+            if not self._is_allowed_ip(literal, allow_private_networks=private_ok):
                 raise ValueError("Disallowed IP address")
             return
 
@@ -320,9 +381,7 @@ class WebScraperService:
                 ip = ipaddress.ip_address(addr)
             except ValueError:
                 continue
-            if not self._is_allowed_ip(
-                ip, allow_private_networks=allow_private_networks
-            ):
+            if not self._is_allowed_ip(ip, allow_private_networks=private_ok):
                 raise ValueError("Disallowed IP address")
 
     def _select_main_content(self, soup: BeautifulSoup):

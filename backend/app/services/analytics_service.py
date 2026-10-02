@@ -499,11 +499,20 @@ class AnalyticsService:
         if source_id:
             conditions.append(Document.source_id == source_id)
 
-        query = select(Document).where(and_(*conditions)).limit(limit)
+        from sqlalchemy.orm import selectinload
+
+        # The source is read for every row below; loaded lazily on an async
+        # session that raises MissingGreenlet, so the export only worked on
+        # a session that happened to hold the sources already.
+        query = (
+            select(Document)
+            .where(and_(*conditions))
+            .options(selectinload(Document.source))
+            .order_by(Document.created_at.desc(), Document.id)
+            .limit(limit)
+        )
 
         if include_chunks:
-            from sqlalchemy.orm import selectinload
-
             query = query.options(selectinload(Document.chunks))
 
         result = await db.execute(query)
@@ -541,7 +550,8 @@ class AnalyticsService:
                     {
                         "index": c.chunk_index,
                         "content": c.content,
-                        "metadata": c.metadata,
+                        # `c.metadata` is SQLAlchemy's table registry.
+                        "metadata": c.extra_metadata,
                     }
                     for c in doc.chunks
                 ]

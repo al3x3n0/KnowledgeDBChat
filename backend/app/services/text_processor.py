@@ -554,6 +554,12 @@ class TextProcessor:
         filtered_chunks = [
             chunk for chunk in chunks if len(chunk.strip()) >= min_chunk_length
         ]
+        # The filter is for fragments left over from splitting a long text.
+        # Applied to a text that is short altogether it removed everything:
+        # a one-line note was stored with no chunks and no vectors, marked
+        # processed, and could never be found by search.
+        if not filtered_chunks:
+            filtered_chunks = [chunk for chunk in chunks if chunk.strip()]
 
         logger.debug(f"Split text into {len(filtered_chunks)} fixed-size chunks")
         return filtered_chunks

@@ -127,3 +127,60 @@ def unique_strings(value: Any, limit: int) -> List[str]:
         if len(out) >= limit:
             break
     return out
+
+
+def bounded_int(value: Any, default: int, lo: int, hi: int) -> int:
+    """A count or limit a model supplied: `default` when it is absent or not
+    a number, and never outside `lo..hi`.
+
+    The chat tools wrote `min(params.get("limit", N), cap)`. That raises on a
+    string or an explicit null, and has no floor, so a negative limit became
+    `LIMIT -1` -- every row -- or a slice that dropped the tail.
+    """
+    if value is None or isinstance(value, bool):
+        number = default
+    else:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            number = default
+    return max(lo, min(number, hi))
+
+
+def parse_uuid(value: Any) -> Optional[UUID]:
+    """A UUID from a string, or None. `UUID(12345)` raises AttributeError,
+    which `except (ValueError, TypeError)` does not catch."""
+    if isinstance(value, UUID):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return UUID(value.strip())
+    except ValueError:
+        return None
+
+
+def like_literal(text: str) -> str:
+    """`text` with LIKE's wildcards escaped, for use with `escape="\\"`."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def parse_date(value: Any, *, end_of_day: bool = False):
+    """A datetime from an ISO date or datetime string; raises ValueError
+    naming the value when it cannot be read.
+
+    A date with no time, used as an upper bound, means the end of that day:
+    parsed as midnight and compared with `<=` it excluded the day it named.
+    """
+    from datetime import datetime, time
+
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"not a date: {value!r}")
+    text = value.strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError(f"not a date: {value!r}") from None
+    if end_of_day and len(text) <= 10:
+        parsed = datetime.combine(parsed.date(), time.max)
+    return parsed

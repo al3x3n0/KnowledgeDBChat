@@ -1181,6 +1181,39 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   had met. A child job is **committed before it is queued** — delegation,
   peer review and handoff flushed the row and called `.delay`, and a worker
   in another process cannot see a row that has only been flushed.
+- **Tools nobody had tested at all.** 19 of 64 chat tool methods and 55 of
+  220 autonomous handlers were named in no test. Four new files cover 62 of
+  them (`test_chat_document_read_tools.py`, `test_chat_document_write_tools.py`,
+  `test_chat_tags_stats_kg_tools.py`, `test_generation_and_template_tools.py`),
+  and 34 tests in them are `xfail(strict)` with the defect as the reason: that
+  is the list of what is known and not yet fixed, and a fix turns the mark
+  into a failure until it is removed. What they found, by shape:
+  - `search_by_tags` called `.overlap()` on a plain JSON column and had never
+    returned a document; it and `list_documents_by_tag` now share
+    `services/document_tags.py`. `generate_diagram` passed `messages=` to
+    `generate_response` and failed every time. `export_data` read a lazy
+    relationship on an async session.
+  - **`confirm` was tested for truthiness**: the strings `"false"` and `"no"`
+    deleted a document or a whole batch. Only `True` confirms.
+  - **A limit is a number a model typed.** `min(params.get("limit", N), cap)`
+    raises on a string or a null and has no floor, so a negative limit was
+    `LIMIT -1` (every row) or a slice that dropped the tail.
+    `config_values.bounded_int` is the one way to read one; `parse_uuid` and
+    `parse_date` likewise (`UUID(123)` raises AttributeError, which
+    `except (ValueError, TypeError)` does not catch).
+  - **Chunks are fetched, documents are returned.** A window of `limit * 2`
+    chunks let one long document hide every other match, and a reference
+    document be "similar to itself".
+  - **An allowance decided once and applied to every hop.** A non-admin
+    scraping an allowlisted internal page was carried by a link on it to any
+    private host; the allowance is per host now (`private_hosts`), and the
+    allowlist lookup, which existed twice, is `internal_scrape_allowed_hosts`.
+  - A text shorter than 50 characters produced no chunks, was marked
+    processed and reported created: saved and unfindable.
+  Left as decisions, each an xfail: `POST /agent/confirm-delete/{id}` deletes
+  for any signed-in user without the approval gate chat applies to the same
+  tool; and a delete reports success when vectors or the stored file could
+  not be removed.
 - **A setting must be read, or admitted inert.** `TRAINING_ENABLED` was the
   documented gate on training and nothing read it; the concurrency limit and
   two dataset limits beside it were the same. They are enforced now (the gate

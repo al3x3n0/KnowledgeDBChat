@@ -102,16 +102,19 @@ def test_models_are_used_with_fields_they_have():
     checked, wrong = 0, []
     for path, tree in trees.items():
         relative = path.relative_to(BACKEND)
-        named = set()
+        # Local name -> model. An alias counts: three media tools filtered on
+        # `DocModel.user_id`, a column `Document` does not have, and the check
+        # walked past them because it only knew the model by its own name.
+        named = {}
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
                 "app.models"
             ):
-                named |= {
-                    a.name for a in node.names if a.name in models and not a.asname
-                }
+                for alias in node.names:
+                    if alias.name in models:
+                        named[alias.asname or alias.name] = alias.name
             if isinstance(node, ast.ClassDef) and node.name in models:
-                named.add(node.name)
+                named[node.name] = node.name
         for node in ast.walk(tree):
             if (
                 isinstance(node, ast.Attribute)
@@ -120,7 +123,8 @@ def test_models_are_used_with_fields_they_have():
             ):
                 checked += 1
                 # `Model.metadata` is the table registry, which is real.
-                if node.attr not in models[node.value.id] | INHERITED | {"metadata"}:
+                known = models[named[node.value.id]] | INHERITED | {"metadata"}
+                if node.attr not in known:
                     wrong.append(
                         f"{relative}:{node.lineno} {node.value.id}.{node.attr}"
                     )
@@ -133,7 +137,7 @@ def test_models_are_used_with_fields_they_have():
                     if keyword.arg is None:
                         continue
                     checked += 1
-                    if keyword.arg not in models[node.func.id]:
+                    if keyword.arg not in models[named[node.func.id]]:
                         wrong.append(
                             f"{relative}:{node.lineno} {node.func.id}({keyword.arg}=...)"
                         )

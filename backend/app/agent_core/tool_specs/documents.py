@@ -715,10 +715,6 @@ SPECS: tuple[ToolSpec, ...] = (
                     "type": "string",
                     "description": "UUID of the audio/video document to transcribe",
                 },
-                "language": {
-                    "type": "string",
-                    "description": "Language code (e.g. 'en', 'ru') or 'auto' for detection (default 'auto')",
-                },
             },
             "required": ["document_id"],
         },

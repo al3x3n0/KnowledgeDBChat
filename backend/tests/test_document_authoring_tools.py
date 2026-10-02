@@ -1,179 +1,618 @@
-"""Tests for document authoring enhancement tools (list_documents_by_tag, merge_documents)."""
+"""The document authoring tools: list_documents_by_tag and merge_documents.
 
-import uuid
+These call the real handlers against the in-memory database. The file used to
+restate each handler inline and assert on the restatement -- `tags = None;
+assert not tags` -- so twenty-five tests passed whatever the tools did.
 
+Only the indexing step (`reprocess_document`, which reaches the vector store)
+is replaced; the notes source and the merged row are created by the real
+`DocumentService` and read back from the database.
+"""
 
-class TestListDocumentsByTag:
-    """Tests for list_documents_by_tag tool logic."""
+import hashlib
+from types import SimpleNamespace
+from uuid import uuid4
 
-    def test_requires_tags(self):
-        params = {}
-        tags = params.get("tags")
-        assert not tags or not isinstance(tags, list) or not tags
+import pytest
+from sqlalchemy import select
 
-    def test_empty_tags_rejected(self):
-        params = {"tags": []}
-        tags = params.get("tags")
-        assert not tags
+from app.models.document import Document, DocumentSource
+from app.services.agent_tool_dispatch import (
+    AgentToolExecutionContext,
+    build_autonomous_document_provider,
+)
+from app.services.document_service import DocumentService
 
-    def test_non_list_tags_rejected(self):
-        params = {"tags": "research"}
-        tags = params.get("tags")
-        assert not isinstance(tags, list)
-
-    def test_accepts_valid_tags(self):
-        params = {"tags": ["machine-learning", "transformer"]}
-        tags = params.get("tags")
-        assert isinstance(tags, list)
-        assert len(tags) == 2
-
-    def test_match_all_defaults_false(self):
-        params = {"tags": ["a"]}
-        match_all = bool(params.get("match_all", False))
-        assert not match_all
-
-    def test_match_all_set(self):
-        params = {"tags": ["a"], "match_all": True}
-        match_all = bool(params.get("match_all", False))
-        assert match_all
-
-    def test_limit_defaults_to_20(self):
-        params = {"tags": ["a"]}
-        limit = min(int(params.get("limit", 20) or 20), 100)
-        assert limit == 20
-
-    def test_limit_capped_at_100(self):
-        params = {"tags": ["a"], "limit": 500}
-        limit = min(int(params.get("limit", 20) or 20), 100)
-        assert limit == 100
-
-    def test_or_matching(self):
-        """Documents matching ANY tag should be returned."""
-        doc_tags = [["ml", "nlp"], ["ml", "cv"], ["cv", "robotics"]]
-        search_tags = {"ml"}
-        matched = [t for t in doc_tags if search_tags & set(t)]
-        assert len(matched) == 2
-
-    def test_and_matching(self):
-        """Documents matching ALL tags should be returned."""
-        doc_tags = [["ml", "nlp"], ["ml", "cv"], ["ml", "nlp", "transformer"]]
-        search_tags = {"ml", "nlp"}
-        matched = [t for t in doc_tags if search_tags.issubset(set(t))]
-        assert len(matched) == 2
-
-    def test_tag_set_construction(self):
-        tags_param = ["research", " ai ", "", "ml"]
-        tags_set = set(str(t).strip() for t in tags_param if str(t).strip())
-        assert tags_set == {"research", "ai", "ml"}
-
-    def test_result_format(self):
-        result = {
-            "success": True,
-            "data": {
-                "tags": ["ml"],
-                "match_all": False,
-                "documents": [
-                    {
-                        "id": str(uuid.uuid4()),
-                        "title": "Paper 1",
-                        "tags": ["ml", "nlp"],
-                        "file_type": "pdf",
-                        "summary": "...",
-                        "created_at": "2026-01-01T00:00:00",
-                    },
-                ],
-                "count": 1,
-            },
-        }
-        assert result["data"]["count"] == 1
-        assert "ml" in result["data"]["documents"][0]["tags"]
+pytestmark = pytest.mark.unit
 
 
-class TestMergeDocuments:
-    """Tests for merge_documents tool logic."""
+class _Indexing(DocumentService):
+    """The real document service with the vector-store step recorded."""
 
-    def test_requires_document_ids(self):
-        params = {"title": "Merged"}
-        doc_ids = params.get("document_ids")
-        assert not doc_ids or not isinstance(doc_ids, list)
+    def __init__(self, fail=False):
+        self.reprocessed = []
+        self._fail = fail
 
-    def test_empty_ids_rejected(self):
-        params = {"document_ids": [], "title": "Merged"}
-        doc_ids = params.get("document_ids")
-        assert not doc_ids
+    async def reprocess_document(self, document_id, db, user_id=None):
+        self.reprocessed.append((document_id, user_id))
+        if self._fail:
+            raise RuntimeError("vector store unreachable")
+        return True
 
-    def test_requires_title(self):
-        params = {"document_ids": [str(uuid.uuid4())]}
-        title = str(params.get("title", "")).strip()
-        assert not title
 
-    def test_accepts_valid_params(self):
-        params = {
-            "document_ids": [str(uuid.uuid4()), str(uuid.uuid4())],
-            "title": "Merged Research Report",
-        }
-        doc_ids = params.get("document_ids")
-        title = str(params.get("title", "")).strip()
-        assert isinstance(doc_ids, list)
-        assert len(doc_ids) == 2
-        assert title
+def _job(user):
+    return SimpleNamespace(
+        id=uuid4(), user_id=user.id, goal="Merge the notes", config={}
+    )
 
-    def test_separator_default(self):
-        params = {"document_ids": ["a"], "title": "t"}
-        separator = str(params.get("separator", "\n\n---\n\n"))
-        assert separator == "\n\n---\n\n"
 
-    def test_separator_custom(self):
-        params = {"document_ids": ["a"], "title": "t", "separator": "\n\n"}
-        separator = str(params.get("separator", "\n\n---\n\n"))
-        assert separator == "\n\n"
+async def _run(tool, params, db, user, service=None, job=None):
+    service = service or _Indexing()
+    provider = build_autonomous_document_provider(
+        SimpleNamespace(document_service=service, search_service=None)
+    )
+    ctx = AgentToolExecutionContext(
+        mode="autonomous",
+        db=db,
+        service=None,
+        user_id=str(user.id),
+        job=job or _job(user),
+        state={},
+    )
+    return await provider._handlers[tool](params, ctx)
 
-    def test_tags_optional(self):
-        params = {"document_ids": ["a"], "title": "t"}
-        tags = params.get("tags") if isinstance(params.get("tags"), list) else []
-        assert tags == []
 
-    def test_document_ids_capped_at_20(self):
-        ids = [str(uuid.uuid4()) for _ in range(30)]
-        capped = ids[:20]
-        assert len(capped) == 20
+async def _source(db, name="Uploads"):
+    source = DocumentSource(name=name, source_type="file", config={})
+    db.add(source)
+    await db.commit()
+    await db.refresh(source)
+    return source
 
-    def test_merge_content_structure(self):
-        sections = [
-            "# Paper A\n\nContent of paper A.",
-            "# Paper B\n\nContent of paper B.",
+
+async def _doc(db, source, title, content="body", tags=None, **extra):
+    doc = Document(
+        title=title,
+        content=content,
+        content_hash=hashlib.sha256((content or "").encode()).hexdigest(),
+        source_id=source.id,
+        source_identifier=f"test:{uuid4().hex}",
+        tags=tags,
+        **extra,
+    )
+    db.add(doc)
+    await db.commit()
+    await db.refresh(doc)
+    return doc
+
+
+async def _all_documents(db):
+    return (await db.execute(select(Document))).scalars().all()
+
+
+def _titles(result):
+    return sorted(d["title"] for d in result["data"]["documents"])
+
+
+# --------------------------------------------------------------------------
+# list_documents_by_tag
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("params", [{}, {"tags": []}, {"tags": "ml"}, {"tags": None}])
+async def test_listing_refuses_without_a_tag_list(db_session, test_user, params):
+    result = await _run("list_documents_by_tag", params, db_session, test_user)
+
+    assert "error" in result
+    assert "tags" in result["error"]
+    assert "success" not in result
+
+
+async def test_any_tag_matches_by_default(db_session, test_user):
+    source = await _source(db_session)
+    await _doc(db_session, source, "both", tags=["ml", "cache"])
+    await _doc(db_session, source, "ml only", tags=["ml"])
+    await _doc(db_session, source, "cache only", tags=["cache"])
+    await _doc(db_session, source, "other", tags=["compilers"])
+    await _doc(db_session, source, "untagged", tags=None)
+    await _doc(db_session, source, "empty tags", tags=[])
+
+    result = await _run(
+        "list_documents_by_tag", {"tags": ["ml", "cache"]}, db_session, test_user
+    )
+
+    assert result["success"] is True
+    assert result["data"]["match_all"] is False
+    assert _titles(result) == ["both", "cache only", "ml only"]
+    assert result["data"]["count"] == 3
+    assert sorted(result["data"]["tags"]) == ["cache", "ml"]
+
+
+async def test_match_all_requires_every_tag(db_session, test_user):
+    source = await _source(db_session)
+    await _doc(db_session, source, "both", tags=["ml", "cache", "extra"])
+    await _doc(db_session, source, "ml only", tags=["ml"])
+    await _doc(db_session, source, "cache only", tags=["cache"])
+
+    result = await _run(
+        "list_documents_by_tag",
+        {"tags": ["ml", "cache"], "match_all": True},
+        db_session,
+        test_user,
+    )
+
+    assert result["data"]["match_all"] is True
+    assert _titles(result) == ["both"]
+    assert result["data"]["count"] == 1
+
+
+async def test_a_tag_nobody_has_lists_nothing(db_session, test_user):
+    source = await _source(db_session)
+    await _doc(db_session, source, "a", tags=["ml"])
+
+    result = await _run(
+        "list_documents_by_tag", {"tags": ["absent"]}, db_session, test_user
+    )
+
+    assert result["success"] is True
+    assert result["data"]["documents"] == []
+    assert result["data"]["count"] == 0
+
+
+async def test_tags_are_matched_exactly_not_as_substrings(db_session, test_user):
+    source = await _source(db_session)
+    await _doc(db_session, source, "long", tags=["machine-learning"])
+    await _doc(db_session, source, "short", tags=["ml"])
+
+    result = await _run(
+        "list_documents_by_tag", {"tags": ["machine"]}, db_session, test_user
+    )
+
+    assert result["data"]["documents"] == []
+
+
+async def test_surrounding_whitespace_in_a_requested_tag_is_ignored(
+    db_session, test_user
+):
+    source = await _source(db_session)
+    await _doc(db_session, source, "a", tags=["ml"])
+
+    result = await _run(
+        "list_documents_by_tag", {"tags": ["  ml  "]}, db_session, test_user
+    )
+
+    assert _titles(result) == ["a"]
+    assert result["data"]["tags"] == ["ml"]
+
+
+async def test_a_listed_document_carries_its_fields(db_session, test_user):
+    source = await _source(db_session)
+    doc = await _doc(
+        db_session,
+        source,
+        "Cache study",
+        tags=["ml", "cache"],
+        file_type="text/markdown",
+        summary="S" * 500,
+    )
+
+    result = await _run(
+        "list_documents_by_tag", {"tags": ["ml"]}, db_session, test_user
+    )
+
+    (listed,) = result["data"]["documents"]
+    assert listed["id"] == str(doc.id)
+    assert listed["title"] == "Cache study"
+    assert listed["tags"] == ["ml", "cache"]
+    assert listed["file_type"] == "text/markdown"
+    assert listed["summary"] == "S" * 200
+    assert listed["created_at"] == doc.created_at.isoformat()
+    # A listing is not the place the full text travels.
+    assert "content" not in listed
+
+
+async def test_a_document_without_a_summary_lists_an_empty_one(db_session, test_user):
+    source = await _source(db_session)
+    await _doc(db_session, source, "a", tags=["ml"])
+
+    result = await _run(
+        "list_documents_by_tag", {"tags": ["ml"]}, db_session, test_user
+    )
+
+    assert result["data"]["documents"][0]["summary"] == ""
+
+
+async def test_listing_defaults_to_twenty_and_honours_a_smaller_limit(
+    db_session, test_user
+):
+    source = await _source(db_session)
+    for i in range(25):
+        await _doc(db_session, source, f"d{i}", tags=["ml"])
+
+    default = await _run(
+        "list_documents_by_tag", {"tags": ["ml"]}, db_session, test_user
+    )
+    small = await _run(
+        "list_documents_by_tag", {"tags": ["ml"], "limit": 3}, db_session, test_user
+    )
+
+    assert default["data"]["count"] == 20
+    assert len(default["data"]["documents"]) == 20
+    assert small["data"]["count"] == 3
+
+
+async def test_listing_is_capped_at_one_hundred(db_session, test_user):
+    source = await _source(db_session)
+    db_session.add_all(
+        [
+            Document(
+                title=f"d{i}",
+                content="x",
+                content_hash="0" * 64,
+                source_id=source.id,
+                source_identifier=f"bulk:{i}",
+                tags=["ml"],
+            )
+            for i in range(105)
         ]
-        merged = "\n\n---\n\n".join(sections)
-        assert "# Paper A" in merged
-        assert "# Paper B" in merged
-        assert "---" in merged
+    )
+    await db_session.commit()
 
-    def test_content_size_limit(self):
-        large = "x" * 2_000_001
-        assert len(large.encode("utf-8")) > 2_000_000
+    result = await _run(
+        "list_documents_by_tag", {"tags": ["ml"], "limit": 1000}, db_session, test_user
+    )
 
-    def test_result_format(self):
-        result = {
-            "success": True,
-            "data": {
-                "document_id": str(uuid.uuid4()),
-                "title": "Merged Report",
-                "source_count": 3,
-                "content_length": 15000,
-            },
-        }
-        assert result["data"]["source_count"] == 3
-        assert result["data"]["content_length"] > 0
+    assert result["data"]["count"] == 100
+    assert len(result["data"]["documents"]) == 100
 
-    def test_artifacts_format(self):
-        artifacts = [{"type": "document", "id": str(uuid.uuid4()), "title": "Merged"}]
-        assert artifacts[0]["type"] == "document"
 
-    def test_extra_metadata_contains_source_ids(self):
-        source_ids = [str(uuid.uuid4()), str(uuid.uuid4())]
-        metadata = {"origin": "agent_merge", "source_document_ids": source_ids}
-        assert metadata["origin"] == "agent_merge"
-        assert len(metadata["source_document_ids"]) == 2
+async def test_a_match_is_found_however_many_tagged_documents_exist(
+    db_session, test_user
+):
+    source = await _source(db_session)
+    db_session.add_all(
+        [
+            Document(
+                title=f"noise{i}",
+                content="x",
+                content_hash="0" * 64,
+                source_id=source.id,
+                source_identifier=f"bulk:{i}",
+                tags=["noise"],
+            )
+            for i in range(500)
+        ]
+    )
+    await db_session.commit()
+    await _doc(db_session, source, "the one", tags=["rare"])
+
+    result = await _run(
+        "list_documents_by_tag", {"tags": ["rare"]}, db_session, test_user
+    )
+
+    assert _titles(result) == ["the one"]
+
+
+async def test_blank_tags_with_match_all_do_not_list_everything(db_session, test_user):
+    source = await _source(db_session)
+    await _doc(db_session, source, "a", tags=["ml"])
+    await _doc(db_session, source, "b", tags=["cache"])
+
+    result = await _run(
+        "list_documents_by_tag",
+        {"tags": ["  ", ""], "match_all": True},
+        db_session,
+        test_user,
+    )
+
+    assert "error" in result or result["data"]["documents"] == []
+
+
+async def test_blank_tags_without_match_all_list_nothing(db_session, test_user):
+    source = await _source(db_session)
+    await _doc(db_session, source, "a", tags=["ml"])
+
+    result = await _run("list_documents_by_tag", {"tags": [" "]}, db_session, test_user)
+
+    assert "error" in result or result["data"]["documents"] == []
+
+
+async def test_a_negative_limit_does_not_drop_matches(db_session, test_user):
+    source = await _source(db_session)
+    await _doc(db_session, source, "a", tags=["ml"])
+    await _doc(db_session, source, "b", tags=["ml"])
+
+    result = await _run(
+        "list_documents_by_tag", {"tags": ["ml"], "limit": -1}, db_session, test_user
+    )
+
+    assert "error" in result or result["data"]["count"] == 2
+
+
+async def test_a_non_numeric_limit_is_refused_not_raised(db_session, test_user):
+    source = await _source(db_session)
+    await _doc(db_session, source, "a", tags=["ml"])
+
+    result = await _run(
+        "list_documents_by_tag",
+        {"tags": ["ml"], "limit": "many"},
+        db_session,
+        test_user,
+    )
+
+    assert "error" in result or result["data"]["count"] == 1
+
+
+# --------------------------------------------------------------------------
+# merge_documents
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "params, named",
+    [
+        ({"title": "T"}, "document_ids"),
+        ({"title": "T", "document_ids": []}, "document_ids"),
+        ({"title": "T", "document_ids": "abc"}, "document_ids"),
+        ({"document_ids": ["x"]}, "title"),
+        ({"document_ids": ["x"], "title": "   "}, "title"),
+    ],
+)
+async def test_merge_refuses_without_ids_or_title(db_session, test_user, params, named):
+    service = _Indexing()
+
+    result = await _run("merge_documents", params, db_session, test_user, service)
+
+    assert named in result["error"]
+    assert await _all_documents(db_session) == []
+    assert service.reprocessed == []
+
+
+async def test_merge_stores_one_document_built_from_its_sources(db_session, test_user):
+    source = await _source(db_session)
+    first = await _doc(db_session, source, "Alpha", content="alpha body")
+    second = await _doc(db_session, source, "Beta", content="beta body")
+    service = _Indexing()
+    job = _job(test_user)
+
+    result = await _run(
+        "merge_documents",
+        {
+            "document_ids": [str(second.id), str(first.id)],
+            "title": "  Combined  ",
+            "tags": ["merged", "report"],
+        },
+        db_session,
+        test_user,
+        service,
+        job,
+    )
+
+    assert result.get("success") is True, result
+    expected = "# Beta\n\nbeta body\n\n---\n\n# Alpha\n\nalpha body"
+    merged_id = result["data"]["document_id"]
+
+    stored = [d for d in await _all_documents(db_session) if str(d.id) == merged_id]
+    assert len(stored) == 1
+    merged = stored[0]
+    assert merged.title == "Combined"
+    assert merged.content == expected
+    assert merged.content_hash == hashlib.sha256(expected.encode()).hexdigest()
+    assert merged.file_size == len(expected.encode())
+    assert merged.file_type == "text/plain"
+    assert merged.tags == ["merged", "report"]
+    assert merged.source_identifier.startswith("agent_merge:")
+    assert merged.extra_metadata == {
+        "origin": "agent_merge",
+        "source_document_ids": [str(second.id), str(first.id)],
+        "job_id": str(job.id),
+    }
+
+    notes = await db_session.get(DocumentSource, merged.source_id)
+    assert notes.name == "Agent Notes"
+    assert merged.source_id != source.id
+
+    assert result["data"] == {
+        "document_id": merged_id,
+        "title": "Combined",
+        "source_count": 2,
+        "content_length": len(expected),
+    }
+    assert result["artifacts"] == [
+        {"type": "document", "id": merged_id, "title": "Combined"}
+    ]
+    # Three documents now: the two sources, untouched, and the merge.
+    assert len(await _all_documents(db_session)) == 3
+    await db_session.refresh(first)
+    assert first.content == "alpha body"
+
+
+async def test_the_merged_document_is_sent_for_indexing(db_session, test_user):
+    source = await _source(db_session)
+    doc = await _doc(db_session, source, "Alpha")
+    service = _Indexing()
+
+    result = await _run(
+        "merge_documents",
+        {"document_ids": [str(doc.id)], "title": "M"},
+        db_session,
+        test_user,
+        service,
+    )
+
+    assert [(str(i), u) for i, u in service.reprocessed] == [
+        (result["data"]["document_id"], test_user.id)
+    ]
+
+
+async def test_a_failed_indexing_step_does_not_lose_the_merge(db_session, test_user):
+    source = await _source(db_session)
+    doc = await _doc(db_session, source, "Alpha")
+
+    result = await _run(
+        "merge_documents",
+        {"document_ids": [str(doc.id)], "title": "M"},
+        db_session,
+        test_user,
+        _Indexing(fail=True),
+    )
+
+    assert result.get("success") is True, result
+    titles = sorted(d.title for d in await _all_documents(db_session))
+    assert titles == ["Alpha", "M"]
+
+
+async def test_merge_uses_the_separator_it_is_given(db_session, test_user):
+    source = await _source(db_session)
+    a = await _doc(db_session, source, "A", content="one")
+    b = await _doc(db_session, source, "B", content="two")
+
+    result = await _run(
+        "merge_documents",
+        {"document_ids": [str(a.id), str(b.id)], "title": "M", "separator": "\n==\n"},
+        db_session,
+        test_user,
+    )
+
+    merged = await db_session.get(
+        Document, a.id.__class__(result["data"]["document_id"])
+    )
+    assert merged.content == "# A\n\none\n==\n# B\n\ntwo"
+
+
+async def test_a_null_separator_means_the_default(db_session, test_user):
+    source = await _source(db_session)
+    a = await _doc(db_session, source, "A", content="one")
+    b = await _doc(db_session, source, "B", content="two")
+
+    result = await _run(
+        "merge_documents",
+        {"document_ids": [str(a.id), str(b.id)], "title": "M", "separator": None},
+        db_session,
+        test_user,
+    )
+
+    merged = await db_session.get(
+        Document, a.id.__class__(result["data"]["document_id"])
+    )
+    assert merged.content == "# A\n\none\n\n---\n\n# B\n\ntwo"
+
+
+async def test_merge_without_tags_stores_none(db_session, test_user):
+    source = await _source(db_session)
+    a = await _doc(db_session, source, "A", tags=["kept-on-source"])
+
+    for tags in ({}, {"tags": "not-a-list"}):
+        result = await _run(
+            "merge_documents",
+            {"document_ids": [str(a.id)], "title": "M", **tags},
+            db_session,
+            test_user,
+        )
+        merged = await db_session.get(
+            Document, a.id.__class__(result["data"]["document_id"])
+        )
+        assert merged.tags == []
+
+
+async def test_merge_takes_at_most_twenty_documents(db_session, test_user):
+    source = await _source(db_session)
+    docs = [await _doc(db_session, source, f"d{i}", content=f"c{i}") for i in range(22)]
+    ids = [str(d.id) for d in docs]
+
+    result = await _run(
+        "merge_documents", {"document_ids": ids, "title": "M"}, db_session, test_user
+    )
+
+    assert result["data"]["source_count"] == 20
+    merged = await db_session.get(
+        Document, docs[0].id.__class__(result["data"]["document_id"])
+    )
+    assert merged.extra_metadata["source_document_ids"] == ids[:20]
+    assert "# d19\n" in merged.content
+    assert "# d20\n" not in merged.content
+
+
+async def test_merge_skips_ids_it_cannot_use_and_keeps_the_rest(db_session, test_user):
+    source = await _source(db_session)
+    good = await _doc(db_session, source, "Good", content="kept")
+    empty = await _doc(db_session, source, "Empty", content=None)
+
+    result = await _run(
+        "merge_documents",
+        {
+            "document_ids": ["not-a-uuid", str(uuid4()), str(empty.id), str(good.id)],
+            "title": "M",
+        },
+        db_session,
+        test_user,
+    )
+
+    assert result.get("success") is True, result
+    assert result["data"]["source_count"] == 1
+    merged = await db_session.get(
+        Document, good.id.__class__(result["data"]["document_id"])
+    )
+    assert merged.content == "# Good\n\nkept"
+    assert merged.extra_metadata["source_document_ids"] == [str(good.id)]
+
+
+async def test_merge_of_nothing_usable_stores_nothing(db_session, test_user):
+    source = await _source(db_session)
+    empty = await _doc(db_session, source, "Empty", content=None)
+    service = _Indexing()
+
+    result = await _run(
+        "merge_documents",
+        {"document_ids": ["not-a-uuid", str(uuid4()), str(empty.id)], "title": "M"},
+        db_session,
+        test_user,
+        service,
+    )
+
+    assert "error" in result
+    assert "success" not in result
+    assert [d.title for d in await _all_documents(db_session)] == ["Empty"]
+    assert service.reprocessed == []
+
+
+async def test_merge_over_two_megabytes_is_refused_and_stores_nothing(
+    db_session, test_user
+):
+    source = await _source(db_session)
+    a = await _doc(db_session, source, "A", content="x" * 1_100_000)
+    b = await _doc(db_session, source, "B", content="y" * 1_100_000)
+    service = _Indexing()
+
+    result = await _run(
+        "merge_documents",
+        {"document_ids": [str(a.id), str(b.id)], "title": "M"},
+        db_session,
+        test_user,
+        service,
+    )
+
+    assert "2MB" in result["error"]
+    assert sorted(d.title for d in await _all_documents(db_session)) == ["A", "B"]
+    assert service.reprocessed == []
+
+
+async def test_two_merges_are_two_documents_in_one_notes_source(db_session, test_user):
+    source = await _source(db_session)
+    a = await _doc(db_session, source, "A")
+    params = {"document_ids": [str(a.id)], "title": "M"}
+
+    first = await _run("merge_documents", params, db_session, test_user)
+    second = await _run("merge_documents", params, db_session, test_user)
+
+    assert first["data"]["document_id"] != second["data"]["document_id"]
+    sources = (await db_session.execute(select(DocumentSource))).scalars().all()
+    assert sorted(s.name for s in sources) == ["Agent Notes", "Uploads"]
+
+
+# --------------------------------------------------------------------------
+# Declarations: schema and registry
+# --------------------------------------------------------------------------
 
 
 class TestDocumentAuthoringToolSchemas:

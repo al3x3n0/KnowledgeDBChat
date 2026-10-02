@@ -1453,6 +1453,7 @@ class _AutonomousRuntimeAdapter:
         evaluation: Dict[str, Any],
     ) -> None:
         action = action_bundle.get("action")
+        action_result = action_bundle.get("action_result")
         verification_action = action_bundle.get("verification_action")
         verification_result = action_bundle.get("verification_result")
         summarize_action = action_bundle.get("summarize_action")
@@ -1464,6 +1465,16 @@ class _AutonomousRuntimeAdapter:
             {
                 "phase": "iteration_complete",
                 "action": action.get("tool") if isinstance(action, dict) else None,
+                # Whether the call worked, and why not. Without these the
+                # entry looked the same for a success and a failure, and the
+                # analytics tools that read this log reported every tool at
+                # a 100% success rate.
+                "success": agent_repeated_success.succeeded(action_result)
+                if isinstance(action, dict)
+                else None,
+                "error": str(action_result.get("error"))[:300]
+                if isinstance(action_result, dict) and action_result.get("error")
+                else None,
                 "progress": progress,
                 "findings_count": findings_count,
                 "verify_tool": verification_action.get("tool")

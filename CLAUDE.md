@@ -1118,7 +1118,23 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   `input.txt` whatever `input_file_path` said. To reach a real handler:
   `build_*_provider(executor)._handlers[name](params, ctx)`. The Docker fixes
   are tested at the command and file level only; nothing was run against a
-  daemon. The remaining hollow files are listed in the `hollow-tests` memory.
+  daemon. Eight more files followed (knowledge graph, snapshots, media,
+  scheduling, notifications, document authoring, batch, analytics) and every
+  one but output formatting found something. Tools that had **never worked**:
+  `create_kg_relationship` (and `link_entities`, and `POST /kg/relationship`)
+  inserted a NULL into a NOT NULL column — migration `0106` makes a
+  relationship nobody extracted from a document legal; `schedule_job` built
+  its job without the required `name`; `transcribe_document`, `analyze_image`
+  and `get_media_info` filtered on `Document.user_id`, a column that does not
+  exist. Tools that worked and lied: the analytics tools reported every tool
+  at a 100% success rate, because the execution log recorded a call the same
+  way whether it failed or not (the iteration entry now carries `success` and
+  `error`) and counted an operator's "approve" as a tool named `approve`;
+  snapshots were all stamped iteration 0, since the iteration is the job's and
+  not in runtime state. A run may now leave at most
+  `MAX_SCHEDULED_JOBS_PER_RUN` (10) scheduled jobs and
+  `MAX_NOTIFICATIONS_PER_RUN` (20) notifications behind it. The remaining
+  hollow files are listed in the `hollow-tests` memory.
 - **A setting must be read, or admitted inert.** `TRAINING_ENABLED` was the
   documented gate on training and nothing read it; the concurrency limit and
   two dataset limits beside it were the same. They are enforced now (the gate

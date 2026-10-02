@@ -1,429 +1,800 @@
-"""Tests for workspace snapshot tools (capture_snapshot, compare_snapshots, detect_drift)."""
+"""The workspace snapshot tools: capture_snapshot, compare_snapshots, detect_drift.
 
-import re
+These call the real handlers. The file used to restate each handler's logic
+inline and assert on the restatement -- `params = {}; name =
+str(params.get("name", "")).strip()[:100]; assert not name` -- so fifty-one
+tests passed whatever the tools did, including while every snapshot a real
+run took was stamped iteration 0.
+
+Two kinds of state are used on purpose. `_runtime_state()` is what the
+executor actually hands a tool (`initialize_runtime_state`), with the
+iteration on the job, where the runtime keeps it. `_state()` is a hand-built
+dict that also sets `state["iteration"]`, the key the handlers read; it is
+used only where a test is about some *other* rule and needs iterations to
+differ, so that one defect does not turn every test red.
+"""
+
+from types import SimpleNamespace
+
+import pytest
+
+from app.services.agent_runtime_state_service import initialize_runtime_state
+from app.services.agent_tool_dispatch import (
+    AgentToolExecutionContext,
+    build_autonomous_snapshot_provider,
+)
+
+pytestmark = pytest.mark.unit
+
+TOOLS = ("capture_snapshot", "compare_snapshots", "detect_drift")
+
+
+async def _run(tool, params, state, iteration=0):
+    """Run one real handler against a state dict."""
+    provider = build_autonomous_snapshot_provider(SimpleNamespace())
+    ctx = AgentToolExecutionContext(
+        mode="autonomous",
+        db=None,
+        service=None,
+        user_id="u",
+        job=SimpleNamespace(
+            id="job-1", user_id="u", goal="g", config={}, iteration=iteration
+        ),
+        state=state,
+    )
+    return await provider._handlers[tool](params, ctx)
+
+
+def _runtime_state(**overrides):
+    """The state a real run starts with."""
+    state = initialize_runtime_state()
+    state.update(overrides)
+    return state
+
+
+def _state(iteration=0, findings=0, progress=0, **extra):
+    state = {
+        "iteration": iteration,
+        "findings": [{"title": f"f{i}"} for i in range(findings)],
+        "goal_progress": progress,
+    }
+    state.update(extra)
+    return state
+
+
+async def _capture(name, state, **params):
+    result = await _run("capture_snapshot", {"name": name, **params}, state)
+    assert result.get("success") is True, result
+    return result
+
+
+def _alerts(result, metric=None):
+    alerts = result["data"]["alerts"]
+    if metric is None:
+        return alerts
+    return [a for a in alerts if a["metric"] == metric]
 
 
 class TestCaptureSnapshot:
-    """Tests for capture_snapshot tool logic."""
+    @pytest.mark.parametrize("params", [{}, {"name": ""}, {"name": "   "}])
+    async def test_a_name_is_required(self, params):
+        state = _runtime_state()
+        result = await _run("capture_snapshot", params, state)
+        assert result == {"error": "Missing required parameter: name"}
+        assert "workspace_snapshots" not in state
 
-    def test_requires_name(self):
-        params = {}
-        name = str(params.get("name", "")).strip()[:100]
-        assert not name
+    @pytest.mark.parametrize(
+        "name", ["has space", "has.dot", "has/slash", "has@at", "né"]
+    )
+    async def test_a_name_with_other_characters_is_refused(self, name):
+        state = _runtime_state()
+        result = await _run("capture_snapshot", {"name": name}, state)
+        assert "alphanumeric" in result["error"]
+        assert "success" not in result
+        assert "workspace_snapshots" not in state
 
-    def test_name_validation_alphanumeric(self):
-        valid_names = ["after_search", "before-synthesis", "snap1", "A_B_C"]
-        for name in valid_names:
-            assert re.match(r"^[a-zA-Z0-9_\-]+$", name)
+    @pytest.mark.parametrize(
+        "name", ["after_search", "before-synthesis", "snap1", "A_B_C"]
+    )
+    async def test_letters_digits_underscores_and_hyphens_are_accepted(self, name):
+        state = _runtime_state()
+        result = await _capture(name, state)
+        assert result["data"]["name"] == name
+        assert name in state["workspace_snapshots"]
 
-    def test_name_validation_rejects_special_chars(self):
-        invalid_names = ["has space", "has.dot", "has/slash", "has@at"]
-        for name in invalid_names:
-            assert not re.match(r"^[a-zA-Z0-9_\-]+$", name)
+    async def test_surrounding_whitespace_is_not_part_of_the_name(self):
+        state = _runtime_state()
+        result = await _capture("  after_search  ", state)
+        assert result["data"]["name"] == "after_search"
+        assert list(state["workspace_snapshots"]) == ["after_search"]
 
-    def test_name_truncated_to_100(self):
-        long_name = "a" * 200
-        truncated = long_name[:100]
-        assert len(truncated) == 100
+    async def test_a_long_name_is_capped_at_100_characters(self):
+        state = _runtime_state()
+        result = await _capture("a" * 200, state)
+        assert result["data"]["name"] == "a" * 100
+        assert list(state["workspace_snapshots"]) == ["a" * 100]
 
-    def test_snapshot_captures_findings_count(self):
-        state = {"findings": [{"title": "A"}, {"title": "B"}]}
-        snapshot = {"findings_count": len(state.get("findings", []))}
-        assert snapshot["findings_count"] == 2
+    async def test_it_records_the_metrics_of_the_run(self):
+        state = _runtime_state(
+            findings=[
+                {"title": "A", "document_id": "doc-1"},
+                {"title": "B", "source_id": "src-2"},
+                {"title": "C", "document_id": "doc-1"},  # same document again
+                {"title": "D"},  # no document at all
+            ],
+            actions_taken=[{"tool": "search_documents"}, {"tool": "read_document"}],
+            goal_progress=45,
+            stalled_iterations=3,
+            artifacts=[{"id": "a1"}],
+            formatted_outputs=[{"title": "t1"}, {"title": "t2"}],
+            focus_directive="Focus on papers",
+            skill_profile={"role": "researcher", "display_name": "Researcher"},
+            tool_stats={"search_documents": {"success": 3, "failure": 0}},
+        )
 
-    def test_snapshot_captures_actions_count(self):
-        state = {"actions_taken": [{"tool": "search"}, {"tool": "read"}]}
-        snapshot = {"actions_count": len(state.get("actions_taken", []))}
+        result = await _capture("after_search", state)
+
+        snapshot = state["workspace_snapshots"]["after_search"]
+        assert snapshot["findings_count"] == 4
         assert snapshot["actions_count"] == 2
-
-    def test_snapshot_captures_goal_progress(self):
-        state = {"goal_progress": 45}
-        snapshot = {"goal_progress": state.get("goal_progress", 0)}
         assert snapshot["goal_progress"] == 45
-
-    def test_snapshot_captures_documents_found(self):
-        state = {
-            "findings": [
-                {"document_id": "doc-1", "title": "A"},
-                {"document_id": "doc-2", "title": "B"},
-                {"document_id": "doc-1", "title": "C"},  # duplicate
-            ]
-        }
-        doc_ids = set()
-        for f in state.get("findings", []):
-            did = f.get("document_id") or f.get("source_id")
-            if did:
-                doc_ids.add(str(did))
-        assert len(doc_ids) == 2
-
-    def test_snapshot_captures_tool_stats(self):
-        state = {"tool_stats": {"search_documents": {"success": 3, "failure": 0}}}
-        snapshot = {"tool_stats": dict(state.get("tool_stats", {}))}
-        assert "search_documents" in snapshot["tool_stats"]
-
-    def test_snapshot_captures_stalled_iterations(self):
-        state = {"stalled_iterations": 3}
-        snapshot = {"stalled_iterations": state.get("stalled_iterations", 0)}
+        assert snapshot["documents_found"] == 2
         assert snapshot["stalled_iterations"] == 3
-
-    def test_snapshot_captures_skill_profile_role(self):
-        state = {"skill_profile": {"role": "researcher", "display_name": "Researcher"}}
-        role = (state.get("skill_profile") or {}).get("role", "")
-        assert role == "researcher"
-
-    def test_custom_keys_captured(self):
-        state = {"custom_field": "custom_value", "another": 42}
-        extra_keys = ["custom_field", "another"]
-        custom = {}
-        for k in extra_keys[:20]:
-            k = str(k).strip()
-            if k and k != "workspace_snapshots":
-                val = state.get(k)
-                if val is not None:
-                    custom[k] = str(val)[:5000]
-        assert custom["custom_field"] == "custom_value"
-        assert custom["another"] == "42"
-
-    def test_custom_key_values_truncated(self):
-        state = {"long_key": "V" * 6000}
-        val = str(state.get("long_key"))[:5000]
-        assert len(val) == 5000
-
-    def test_workspace_snapshots_key_excluded(self):
-        extra_keys = ["findings", "workspace_snapshots", "goal_progress"]
-        filtered = [k for k in extra_keys if k != "workspace_snapshots"]
-        assert "workspace_snapshots" not in filtered
-
-    def test_stored_in_state(self):
-        state = {}
-        snapshots = state.setdefault("workspace_snapshots", {})
-        snapshots["test_snap"] = {"iteration": 5, "findings_count": 10}
-        assert "test_snap" in state["workspace_snapshots"]
-        assert state["workspace_snapshots"]["test_snap"]["iteration"] == 5
-
-    def test_max_20_snapshots(self):
-        snapshots = {f"snap_{i}": {"iteration": i} for i in range(20)}
-        assert len(snapshots) == 20
-        # Adding 21st should evict oldest
-        if len(snapshots) >= 20 and "snap_new" not in snapshots:
-            oldest = min(snapshots, key=lambda n: snapshots[n].get("iteration", 0))
-            del snapshots[oldest]
-        snapshots["snap_new"] = {"iteration": 21}
-        assert len(snapshots) == 20
-        assert "snap_new" in snapshots
-
-    def test_overwrite_existing_snapshot(self):
-        snapshots = {"my_snap": {"iteration": 5, "findings_count": 3}}
-        snapshots["my_snap"] = {"iteration": 10, "findings_count": 8}
-        assert snapshots["my_snap"]["iteration"] == 10
-        assert snapshots["my_snap"]["findings_count"] == 8
-
-    def test_result_format(self):
-        result = {
+        assert snapshot["artifacts_count"] == 1
+        assert snapshot["formatted_outputs_count"] == 2
+        assert snapshot["focus_directive"] == "Focus on papers"
+        assert snapshot["skill_profile_role"] == "researcher"
+        assert snapshot["tool_stats"] == {
+            "search_documents": {"success": 3, "failure": 0}
+        }
+        assert snapshot["timestamp"]
+        assert result["data"] == {
             "name": "after_search",
-            "iteration": 5,
-            "findings_count": 12,
-            "actions_count": 20,
+            "iteration": snapshot["iteration"],
+            "findings_count": 4,
+            "actions_count": 2,
             "goal_progress": 45,
-            "documents_found": 8,
-            "total_snapshots": 3,
+            "documents_found": 2,
+            "total_snapshots": 1,
         }
-        assert result["name"] == "after_search"
-        assert "total_snapshots" in result
 
-    def test_empty_state_snapshot(self):
-        state = {}
-        snapshot = {
-            "findings_count": len(state.get("findings", [])),
-            "actions_count": len(state.get("actions_taken", [])),
-            "goal_progress": state.get("goal_progress", 0),
-            "stalled_iterations": state.get("stalled_iterations", 0),
+    async def test_it_returns_a_workspace_snapshot_finding(self):
+        # The spec declares produces=("workspace_snapshot",), and contracts
+        # count findings, so the evidence has to arrive on that channel.
+        result = await _capture("s", _runtime_state(goal_progress=10))
+        assert [f["type"] for f in result["findings"]] == ["workspace_snapshot"]
+        assert result["findings"][0]["name"] == "s"
+        assert result["findings"][0]["goal_progress"] == 10
+
+    async def test_a_fresh_run_snapshots_as_zeroes(self):
+        state = _runtime_state()
+        result = await _capture("start", state)
+        assert result["data"]["findings_count"] == 0
+        assert result["data"]["actions_count"] == 0
+        assert result["data"]["goal_progress"] == 0
+        assert result["data"]["documents_found"] == 0
+        assert state["workspace_snapshots"]["start"]["skill_profile_role"] == ""
+
+    async def test_a_snapshot_is_stamped_with_the_iteration_it_was_taken_at(self):
+        state = _runtime_state()
+        result = await _run("capture_snapshot", {"name": "s"}, state, iteration=7)
+        assert result["data"]["iteration"] == 7
+        assert state["workspace_snapshots"]["s"]["iteration"] == 7
+
+    async def test_a_snapshot_is_not_changed_by_later_progress(self):
+        state = _runtime_state(findings=[{"title": "A"}], goal_progress=20)
+        await _capture("early", state)
+
+        state["findings"].append({"title": "B"})
+        state["actions_taken"].append({"tool": "search_documents"})
+        state["goal_progress"] = 80
+        state["tool_stats"]["read_document"] = {"success": 1, "failure": 0}
+
+        snapshot = state["workspace_snapshots"]["early"]
+        assert snapshot["findings_count"] == 1
+        assert snapshot["actions_count"] == 0
+        assert snapshot["goal_progress"] == 20
+        assert "read_document" not in snapshot["tool_stats"]
+
+    async def test_a_snapshots_tool_counts_are_frozen(self):
+        state = _runtime_state(
+            tool_stats={"search_documents": {"success": 3, "failure": 0}}
+        )
+        await _capture("early", state)
+
+        # What _record_tool_outcome does: mutate the tool's own slot.
+        state["tool_stats"]["search_documents"]["failure"] += 4
+
+        snapshot = state["workspace_snapshots"]["early"]
+        assert snapshot["tool_stats"]["search_documents"]["failure"] == 0
+
+    async def test_extra_keys_are_captured_as_text(self):
+        state = _runtime_state(custom_field="custom_value", another=42)
+        await _capture("s", state, keys=["custom_field", " another ", "absent"])
+        assert state["workspace_snapshots"]["s"]["custom_keys"] == {
+            "custom_field": "custom_value",
+            "another": "42",
         }
-        assert snapshot["findings_count"] == 0
-        assert snapshot["goal_progress"] == 0
+
+    async def test_an_extra_value_is_capped_at_5000_characters(self):
+        state = _runtime_state(long_key="V" * 6000)
+        await _capture("s", state, keys=["long_key"])
+        assert state["workspace_snapshots"]["s"]["custom_keys"]["long_key"] == (
+            "V" * 5000
+        )
+
+    async def test_at_most_20_extra_keys_are_captured(self):
+        state = _runtime_state(**{f"k{i}": i for i in range(25)})
+        await _capture("s", state, keys=[f"k{i}" for i in range(25)])
+        custom = state["workspace_snapshots"]["s"]["custom_keys"]
+        assert sorted(custom) == sorted(f"k{i}" for i in range(20))
+
+    async def test_a_snapshot_never_contains_the_snapshots(self):
+        state = _runtime_state()
+        await _capture("first", state)
+        await _capture("second", state, keys=["workspace_snapshots"])
+        assert "custom_keys" not in state["workspace_snapshots"]["second"]
+
+    async def test_no_extra_keys_means_no_custom_section(self):
+        state = _runtime_state()
+        await _capture("s", state)
+        assert "custom_keys" not in state["workspace_snapshots"]["s"]
+
+    async def test_snapshots_accumulate_under_their_names(self):
+        state = _runtime_state()
+        first = await _capture("one", state)
+        second = await _capture("two", state)
+        assert first["data"]["total_snapshots"] == 1
+        assert second["data"]["total_snapshots"] == 2
+        assert sorted(state["workspace_snapshots"]) == ["one", "two"]
+
+    async def test_reusing_a_name_replaces_that_snapshot(self):
+        state = _runtime_state(goal_progress=10)
+        await _capture("mine", state)
+        state["goal_progress"] = 70
+        result = await _capture("mine", state)
+        assert result["data"]["total_snapshots"] == 1
+        assert state["workspace_snapshots"]["mine"]["goal_progress"] == 70
+
+    async def test_the_21st_snapshot_evicts_the_oldest(self):
+        state = _state()
+        for i in range(1, 21):
+            state["iteration"] = i
+            await _capture(f"snap_{i}", state)
+        assert len(state["workspace_snapshots"]) == 20
+
+        state["iteration"] = 21
+        result = await _capture("snap_new", state)
+
+        assert result["data"]["total_snapshots"] == 20
+        assert "snap_new" in state["workspace_snapshots"]
+        assert "snap_1" not in state["workspace_snapshots"]
+        assert "snap_2" in state["workspace_snapshots"]
+
+    async def test_replacing_a_snapshot_at_the_cap_evicts_nothing(self):
+        state = _state()
+        for i in range(1, 21):
+            state["iteration"] = i
+            await _capture(f"snap_{i}", state)
+
+        state["iteration"] = 21
+        await _capture("snap_5", state)
+
+        assert len(state["workspace_snapshots"]) == 20
+        assert "snap_1" in state["workspace_snapshots"]
+        assert state["workspace_snapshots"]["snap_5"]["iteration"] == 21
 
 
 class TestCompareSnapshots:
-    """Tests for compare_snapshots tool logic."""
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {},
+            {"snapshot_a": "a"},
+            {"snapshot_b": "b"},
+            {"snapshot_a": "a", "snapshot_b": " "},
+        ],
+    )
+    async def test_both_names_are_required(self, params):
+        state = _runtime_state()
+        await _capture("a", state)
+        await _capture("b", state)
+        result = await _run("compare_snapshots", params, state)
+        assert result == {"error": "Both snapshot_a and snapshot_b are required"}
 
-    def test_requires_both_names(self):
-        params = {"snapshot_a": "snap1"}
-        name_b = str(params.get("snapshot_b", "")).strip()
-        assert not name_b
+    async def test_an_unknown_snapshot_is_named_in_the_refusal(self):
+        state = _runtime_state()
+        await _capture("known", state)
 
-    def test_missing_snapshot_a_error(self):
-        snapshots = {"snap_b": {"iteration": 10}}
-        assert "snap_a" not in snapshots
-
-    def test_missing_snapshot_b_error(self):
-        snapshots = {"snap_a": {"iteration": 5}}
-        assert "snap_b" not in snapshots
-
-    def test_numeric_diff_increased(self):
-        a_val, b_val = 5, 12
-        delta = b_val - a_val
-        direction = (
-            "increased" if delta > 0 else ("decreased" if delta < 0 else "unchanged")
+        missing_a = await _run(
+            "compare_snapshots", {"snapshot_a": "nope", "snapshot_b": "known"}, state
         )
-        assert delta == 7
-        assert direction == "increased"
-
-    def test_numeric_diff_decreased(self):
-        a_val, b_val = 50, 30
-        delta = b_val - a_val
-        direction = (
-            "increased" if delta > 0 else ("decreased" if delta < 0 else "unchanged")
+        missing_b = await _run(
+            "compare_snapshots", {"snapshot_a": "known", "snapshot_b": "gone"}, state
         )
-        assert delta == -20
-        assert direction == "decreased"
 
-    def test_numeric_diff_unchanged(self):
-        a_val, b_val = 10, 10
-        delta = b_val - a_val
-        direction = (
-            "increased" if delta > 0 else ("decreased" if delta < 0 else "unchanged")
+        assert missing_a == {"error": "Snapshot 'nope' not found"}
+        assert missing_b == {"error": "Snapshot 'gone' not found"}
+
+    async def test_comparing_before_any_snapshot_exists_is_refused(self):
+        result = await _run(
+            "compare_snapshots",
+            {"snapshot_a": "a", "snapshot_b": "b"},
+            _runtime_state(),
         )
-        assert delta == 0
-        assert direction == "unchanged"
+        assert result == {"error": "Snapshot 'a' not found"}
 
-    def test_string_field_changed(self):
-        a_val = "researcher"
-        b_val = "synthesizer"
-        assert a_val != b_val
+    async def test_it_reports_what_grew_between_two_snapshots(self):
+        state = _state(
+            iteration=5,
+            findings=3,
+            progress=20,
+            actions_taken=[{"tool": "search_documents"}],
+            tool_stats={"search_documents": {"success": 3, "failure": 0}},
+        )
+        await _capture("before", state)
 
-    def test_string_field_unchanged(self):
-        a_val = "Focus on papers"
-        b_val = "Focus on papers"
-        assert a_val == b_val
+        state["iteration"] = 15
+        state["findings"] += [{"title": "x", "document_id": f"d{i}"} for i in range(7)]
+        state["actions_taken"] += [{"tool": "summarize_document"}] * 4
+        state["goal_progress"] = 60
+        state["stalled_iterations"] = 1
+        state["artifacts"] = [{"id": "a1"}]
+        state["tool_stats"]["summarize_document"] = {"success": 2, "failure": 0}
+        await _capture("after", state)
 
-    def test_tool_stats_diff(self):
-        stats_a = {"search_documents": {"success": 3}}
-        stats_b = {
-            "search_documents": {"success": 5},
-            "summarize_document": {"success": 2},
+        result = await _run(
+            "compare_snapshots", {"snapshot_a": "before", "snapshot_b": "after"}, state
+        )
+
+        assert result["success"] is True
+        diff = result["data"]["diff"]
+        assert diff["findings_count"] == {
+            "before": 3,
+            "after": 10,
+            "delta": 7,
+            "direction": "increased",
         }
-        tools_added = set(stats_b.keys()) - set(stats_a.keys())
-        tools_removed = set(stats_a.keys()) - set(stats_b.keys())
-        assert "summarize_document" in tools_added
-        assert len(tools_removed) == 0
-
-    def test_summary_format(self):
-        iter_a, iter_b = 5, 15
-        findings_delta = 8
-        progress_delta = 25
-        summary_parts = [f"Between iteration {iter_a} and {iter_b}:"]
-        if findings_delta:
-            summary_parts.append(f"findings +{findings_delta}")
-        if progress_delta:
-            summary_parts.append(f"progress +{progress_delta}%")
-        summary = " ".join(summary_parts)
-        assert "Between iteration 5 and 15:" in summary
-        assert "findings +8" in summary
-        assert "progress +25%" in summary
-
-    def test_result_format(self):
-        result = {
-            "diff": {
-                "findings_count": {
-                    "before": 5,
-                    "after": 12,
-                    "delta": 7,
-                    "direction": "increased",
-                }
-            },
-            "summary": "Between iteration 5 and 15: findings +7",
-            "snapshot_a_iteration": 5,
-            "snapshot_b_iteration": 15,
-        }
-        assert "diff" in result
-        assert "summary" in result
-        assert result["snapshot_a_iteration"] == 5
-
-    def test_full_diff_structure(self):
-        snap_a = {"findings_count": 3, "goal_progress": 20, "stalled_iterations": 0}
-        snap_b = {"findings_count": 10, "goal_progress": 60, "stalled_iterations": 1}
-        numeric_keys = ["findings_count", "goal_progress", "stalled_iterations"]
-        diff = {}
-        for key in numeric_keys:
-            a_val = snap_a.get(key, 0)
-            b_val = snap_b.get(key, 0)
-            delta = b_val - a_val
-            direction = (
-                "increased"
-                if delta > 0
-                else ("decreased" if delta < 0 else "unchanged")
-            )
-            diff[key] = {
-                "before": a_val,
-                "after": b_val,
-                "delta": delta,
-                "direction": direction,
-            }
-        assert diff["findings_count"]["delta"] == 7
+        assert diff["actions_count"]["delta"] == 4
+        assert diff["goal_progress"]["delta"] == 40
         assert diff["goal_progress"]["direction"] == "increased"
+        assert diff["documents_found"]["delta"] == 7
         assert diff["stalled_iterations"]["delta"] == 1
+        assert diff["artifacts_count"]["delta"] == 1
+        assert diff["formatted_outputs_count"]["direction"] == "unchanged"
+        assert diff["tool_stats"] == {
+            "tools_added": ["summarize_document"],
+            "tools_removed": [],
+            "total_before": 1,
+            "total_after": 2,
+        }
+        assert result["data"]["snapshot_a_iteration"] == 5
+        assert result["data"]["snapshot_b_iteration"] == 15
+        summary = result["data"]["summary"]
+        assert summary.startswith("Between iteration 5 and 15:")
+        assert "findings +7" in summary
+        assert "progress +40%" in summary
+        assert "1 new tools used" in summary
+
+    async def test_a_regression_is_reported_as_a_decrease(self):
+        state = _state(iteration=1, findings=5, progress=50)
+        await _capture("before", state)
+        state["iteration"] = 2
+        state["findings"] = state["findings"][:2]
+        state["goal_progress"] = 30
+        await _capture("after", state)
+
+        result = await _run(
+            "compare_snapshots", {"snapshot_a": "before", "snapshot_b": "after"}, state
+        )
+
+        diff = result["data"]["diff"]
+        assert diff["findings_count"]["delta"] == -3
+        assert diff["findings_count"]["direction"] == "decreased"
+        assert diff["goal_progress"]["delta"] == -20
+        assert diff["goal_progress"]["direction"] == "decreased"
+        assert "findings -3" in result["data"]["summary"]
+        assert "progress -20%" in result["data"]["summary"]
+
+    async def test_the_order_of_the_names_decides_the_sign(self):
+        state = _state(iteration=1, findings=1)
+        await _capture("early", state)
+        state["findings"].append({"title": "more"})
+        await _capture("late", state)
+
+        result = await _run(
+            "compare_snapshots", {"snapshot_a": "late", "snapshot_b": "early"}, state
+        )
+
+        assert result["data"]["diff"]["findings_count"]["delta"] == -1
+
+    async def test_identical_snapshots_report_nothing_changed(self):
+        state = _state(iteration=4, findings=2, progress=30)
+        await _capture("a", state)
+        await _capture("b", state)
+
+        result = await _run(
+            "compare_snapshots", {"snapshot_a": "a", "snapshot_b": "b"}, state
+        )
+
+        diff = result["data"]["diff"]
+        for key in ("findings_count", "actions_count", "goal_progress"):
+            assert diff[key]["delta"] == 0
+            assert diff[key]["direction"] == "unchanged"
+        assert diff["focus_directive"]["changed"] is False
+        assert result["data"]["summary"] == "Between iteration 4 and 4:"
+
+    async def test_a_snapshot_can_be_compared_with_itself(self):
+        state = _state(findings=2)
+        await _capture("a", state)
+        result = await _run(
+            "compare_snapshots", {"snapshot_a": "a", "snapshot_b": "a"}, state
+        )
+        assert result["data"]["diff"]["findings_count"]["direction"] == "unchanged"
+
+    async def test_a_change_of_focus_or_role_is_reported(self):
+        state = _state(
+            focus_directive="Focus on papers", skill_profile={"role": "researcher"}
+        )
+        await _capture("a", state)
+        state["focus_directive"] = "Focus on code"
+        state["skill_profile"] = {"role": "synthesizer"}
+        await _capture("b", state)
+
+        result = await _run(
+            "compare_snapshots", {"snapshot_a": "a", "snapshot_b": "b"}, state
+        )
+
+        diff = result["data"]["diff"]
+        assert diff["focus_directive"] == {
+            "before": "Focus on papers",
+            "after": "Focus on code",
+            "changed": True,
+        }
+        assert diff["skill_profile_role"] == {
+            "before": "researcher",
+            "after": "synthesizer",
+            "changed": True,
+        }
+
+    async def test_a_tool_no_longer_present_is_reported_removed(self):
+        state = _state(tool_stats={"old_tool": {"success": 1, "failure": 0}})
+        await _capture("a", state)
+        state["tool_stats"] = {"new_tool": {"success": 1, "failure": 0}}
+        await _capture("b", state)
+
+        result = await _run(
+            "compare_snapshots", {"snapshot_a": "a", "snapshot_b": "b"}, state
+        )
+
+        assert result["data"]["diff"]["tool_stats"]["tools_added"] == ["new_tool"]
+        assert result["data"]["diff"]["tool_stats"]["tools_removed"] == ["old_tool"]
+
+    async def test_it_returns_a_snapshot_diff_finding(self):
+        # produces=("snapshot_diff",): the diff must be a finding, not only data.
+        state = _state(iteration=1, findings=1)
+        await _capture("a", state)
+        state["findings"].append({"title": "more"})
+        await _capture("b", state)
+
+        result = await _run(
+            "compare_snapshots", {"snapshot_a": "a", "snapshot_b": "b"}, state
+        )
+
+        assert [f["type"] for f in result["findings"]] == ["snapshot_diff"]
+        assert result["findings"][0]["diff"] == result["data"]["diff"]
+        assert result["findings"][0]["summary"] == result["data"]["summary"]
+
+    async def test_comparing_does_not_alter_the_snapshots(self):
+        state = _state(findings=1)
+        await _capture("a", state)
+        await _capture("b", state)
+        before = {k: dict(v) for k, v in state["workspace_snapshots"].items()}
+
+        await _run("compare_snapshots", {"snapshot_a": "a", "snapshot_b": "b"}, state)
+
+        assert state["workspace_snapshots"] == before
+
+    async def test_a_change_in_a_captured_extra_key_is_reported(self):
+        state = _state(execution_mode="plan")
+        await _capture("a", state, keys=["execution_mode"])
+        state["execution_mode"] = "explore"
+        await _capture("b", state, keys=["execution_mode"])
+
+        result = await _run(
+            "compare_snapshots", {"snapshot_a": "a", "snapshot_b": "b"}, state
+        )
+
+        assert "execution_mode" in str(result["data"]["diff"])
+
+    async def test_the_diff_says_which_iterations_it_spans(self):
+        state = _runtime_state()
+        await _run("capture_snapshot", {"name": "a"}, state, iteration=5)
+        await _run("capture_snapshot", {"name": "b"}, state, iteration=15)
+
+        result = await _run(
+            "compare_snapshots",
+            {"snapshot_a": "a", "snapshot_b": "b"},
+            state,
+            iteration=15,
+        )
+
+        assert result["data"]["snapshot_a_iteration"] == 5
+        assert result["data"]["snapshot_b_iteration"] == 15
 
 
 class TestDetectDrift:
-    """Tests for detect_drift tool logic."""
+    @pytest.mark.parametrize("params", [{}, {"baseline": ""}, {"baseline": "  "}])
+    async def test_a_baseline_is_required(self, params):
+        result = await _run("detect_drift", params, _runtime_state())
+        assert result == {"error": "Missing required parameter: baseline"}
 
-    def test_requires_baseline(self):
-        params = {}
-        baseline = str(params.get("baseline", "")).strip()
-        assert not baseline
+    async def test_an_unknown_baseline_is_named_in_the_refusal(self):
+        state = _runtime_state()
+        await _capture("other", state)
+        result = await _run("detect_drift", {"baseline": "my_baseline"}, state)
+        assert result == {"error": "Baseline snapshot 'my_baseline' not found"}
 
-    def test_missing_baseline_error(self):
-        snapshots = {}
-        assert "my_baseline" not in snapshots
+    async def test_a_healthy_run_reports_no_drift(self):
+        state = _state(iteration=5, findings=2, progress=30)
+        await _capture("base", state)
+        state["iteration"] = 15
+        state["findings"].append({"title": "new"})
+        state["goal_progress"] = 55
+        state["tool_stats"] = {"search_documents": {"success": 9, "failure": 1}}
 
-    def test_stalled_iterations_alert(self):
-        baseline = {"stalled_iterations": 0, "iteration": 5}
-        current = {"stalled_iterations": 4, "iteration": 15}
-        threshold = 2
-        alerts = []
-        if current["stalled_iterations"] > threshold:
-            alerts.append(
-                {
-                    "metric": "stalled_iterations",
-                    "baseline_value": baseline["stalled_iterations"],
-                    "current_value": current["stalled_iterations"],
-                    "severity": "warning",
-                    "message": f"Agent has stalled for {current['stalled_iterations']} iterations",
-                }
-            )
-        assert len(alerts) == 1
-        assert alerts[0]["severity"] == "warning"
+        result = await _run("detect_drift", {"baseline": "base"}, state)
 
-    def test_no_stall_no_alert(self):
-        current_stalled = 1
-        threshold = 2
-        assert not (current_stalled > threshold)
+        assert result["success"] is True
+        alerts = _alerts(result)
+        assert [a["severity"] for a in alerts] == ["info"]
+        assert alerts[0]["metric"] == "overall"
+        assert "No drift detected after 10 iterations" in alerts[0]["message"]
+        assert result["data"]["iterations_elapsed"] == 10
+        assert result["data"]["summary"] == "1 alert(s) after 10 iterations"
+        # Nothing is wrong, so nothing is recorded as a finding.
+        assert "findings" not in result
 
-    def test_progress_regression_warning(self):
-        baseline_progress = 60
-        current_progress = 45
-        progress_drop = baseline_progress - current_progress
-        assert progress_drop == 15
-        severity = "critical" if progress_drop > 20 else "warning"
-        assert severity == "warning"
+    async def test_checking_immediately_after_the_baseline_is_quiet(self):
+        state = _runtime_state(goal_progress=40, findings=[{"title": "A"}])
+        await _capture("base", state)
+        result = await _run("detect_drift", {"baseline": "base"}, state)
+        assert [a["severity"] for a in _alerts(result)] == ["info"]
 
-    def test_progress_regression_critical(self):
-        baseline_progress = 80
-        current_progress = 50
-        progress_drop = baseline_progress - current_progress
-        assert progress_drop == 30
-        severity = "critical" if progress_drop > 20 else "warning"
-        assert severity == "critical"
+    @pytest.mark.parametrize("stalled, alerted", [(2, False), (3, True), (4, True)])
+    async def test_stalling_alerts_above_two_iterations(self, stalled, alerted):
+        state = _state(iteration=1, findings=1)
+        await _capture("base", state)
+        state["stalled_iterations"] = stalled
 
-    def test_no_progress_regression_no_alert(self):
-        baseline_progress = 40
-        current_progress = 60
-        progress_drop = baseline_progress - current_progress
-        assert progress_drop < 0  # Progress increased, no alert
+        result = await _run("detect_drift", {"baseline": "base"}, state)
 
-    def test_findings_stale_alert(self):
-        baseline = {"findings_count": 5, "iteration": 3}
-        current = {"findings_count": 5, "iteration": 10}
-        findings_delta = current["findings_count"] - baseline["findings_count"]
-        iterations_elapsed = current["iteration"] - baseline["iteration"]
-        threshold = 5
-        assert findings_delta == 0 and iterations_elapsed >= threshold
+        alerts = _alerts(result, "stalled_iterations")
+        assert bool(alerts) is alerted
+        if alerted:
+            assert alerts[0]["severity"] == "warning"
+            assert alerts[0]["baseline_value"] == 0
+            assert alerts[0]["current_value"] == stalled
+            assert f"stalled for {stalled} iterations" in alerts[0]["message"]
 
-    def test_findings_growing_no_alert(self):
-        baseline = {"findings_count": 5, "iteration": 3}
-        current = {"findings_count": 12, "iteration": 10}
-        findings_delta = current["findings_count"] - baseline["findings_count"]
-        assert findings_delta > 0
+    @pytest.mark.parametrize(
+        "now, severity",
+        [(60, None), (75, None), (59, "warning"), (40, "warning"), (39, "critical")],
+    )
+    async def test_progress_regression_is_graded_by_its_size(self, now, severity):
+        # Baseline 60: any drop warns, a drop of more than 20 points is critical.
+        state = _state(iteration=1, findings=1, progress=60)
+        await _capture("base", state)
+        state["goal_progress"] = now
 
-    def test_tool_failure_rate_alert(self):
-        tool_stats = {"search_documents": {"success": 1, "failure": 4}}
-        alerts = []
-        threshold = 0.5
-        for tool, stats in tool_stats.items():
-            total = stats.get("success", 0) + stats.get("failure", 0)
-            if total >= 3:
-                fail_rate = stats.get("failure", 0) / total
-                if fail_rate > threshold:
-                    alerts.append(
-                        {"metric": f"tool_failure:{tool}", "severity": "warning"}
-                    )
-        assert len(alerts) == 1
-        assert "search_documents" in alerts[0]["metric"]
+        result = await _run("detect_drift", {"baseline": "base"}, state)
 
-    def test_healthy_tool_no_alert(self):
-        total = 10
-        fail_rate = 1 / total
-        assert fail_rate <= 0.5
+        alerts = _alerts(result, "goal_progress")
+        if severity is None:
+            assert alerts == []
+        else:
+            assert [a["severity"] for a in alerts] == [severity]
+            assert alerts[0]["baseline_value"] == 60
+            assert alerts[0]["current_value"] == now
+            assert f"dropped by {60 - now}%" in alerts[0]["message"]
 
-    def test_tool_too_few_calls_ignored(self):
-        total = 2
-        assert total < 3  # Not enough calls to judge
+    @pytest.mark.parametrize("elapsed, alerted", [(4, False), (5, True), (9, True)])
+    async def test_no_new_findings_alerts_after_five_iterations(self, elapsed, alerted):
+        state = _state(iteration=3, findings=5)
+        await _capture("base", state)
+        state["iteration"] = 3 + elapsed
 
-    def test_custom_thresholds(self):
-        thresholds = {"stalled_iterations": 2, "goal_progress_drop": 0}
-        custom = {"stalled_iterations": 5, "goal_progress_drop": 10}
-        for k, v in custom.items():
-            if k in thresholds:
-                thresholds[k] = float(v)
-        assert thresholds["stalled_iterations"] == 5.0
-        assert thresholds["goal_progress_drop"] == 10.0
+        result = await _run("detect_drift", {"baseline": "base"}, state)
 
-    def test_no_drift_info_alert(self):
-        alerts = []
-        # When no issues found, add info alert
-        if not alerts:
-            alerts.append(
-                {
-                    "metric": "overall",
-                    "severity": "info",
-                    "message": "No drift detected after 10 iterations",
-                }
-            )
-        assert len(alerts) == 1
-        assert alerts[0]["severity"] == "info"
+        alerts = _alerts(result, "findings_count")
+        assert bool(alerts) is alerted
+        if alerted:
+            assert alerts[0]["severity"] == "warning"
+            assert f"No new findings in {elapsed} iterations" in alerts[0]["message"]
 
-    def test_drift_finding_saved(self):
-        alerts = [
-            {"severity": "warning", "metric": "stalled_iterations"},
-            {"severity": "critical", "metric": "goal_progress"},
-        ]
-        has_issues = any(a["severity"] in ("warning", "critical") for a in alerts)
-        assert has_issues
+    async def test_new_findings_are_not_stale_however_long_it_took(self):
+        state = _state(iteration=3, findings=5)
+        await _capture("base", state)
+        state["iteration"] = 30
+        state["findings"].append({"title": "new"})
 
-    def test_no_finding_for_info_only(self):
-        alerts = [{"severity": "info", "metric": "overall"}]
-        has_issues = any(a["severity"] in ("warning", "critical") for a in alerts)
-        assert not has_issues
+        result = await _run("detect_drift", {"baseline": "base"}, state)
 
-    def test_severity_counts(self):
-        alerts = [
-            {"severity": "warning"},
-            {"severity": "warning"},
-            {"severity": "critical"},
-        ]
-        counts = {}
-        for a in alerts:
-            counts[a["severity"]] = counts.get(a["severity"], 0) + 1
-        assert counts["warning"] == 2
-        assert counts["critical"] == 1
+        assert _alerts(result, "findings_count") == []
 
-    def test_result_format(self):
-        result = {
-            "alerts": [{"metric": "stalled_iterations", "severity": "warning"}],
-            "metrics_compared": 7,
-            "iterations_elapsed": 10,
-            "summary": "1 alert(s) after 10 iterations (1 warnings)",
+    async def test_a_real_run_with_no_new_findings_is_flagged(self):
+        state = _runtime_state(findings=[{"title": "A"}])
+        await _run("capture_snapshot", {"name": "base"}, state, iteration=3)
+
+        result = await _run("detect_drift", {"baseline": "base"}, state, iteration=10)
+
+        assert result["data"]["iterations_elapsed"] == 7
+        assert [a["severity"] for a in _alerts(result, "findings_count")] == ["warning"]
+
+    @pytest.mark.parametrize(
+        "stats, alerted",
+        [
+            ({"success": 1, "failure": 4}, True),
+            ({"success": 0, "failure": 3}, True),
+            ({"success": 2, "failure": 2}, False),  # exactly half is not "high"
+            ({"success": 9, "failure": 1}, False),
+            ({"success": 0, "failure": 2}, False),  # too few calls to judge
+        ],
+    )
+    async def test_a_tool_failing_more_than_half_the_time_alerts(self, stats, alerted):
+        state = _state(iteration=1, findings=1)
+        await _capture("base", state)
+        state["tool_stats"] = {"search_documents": stats}
+
+        result = await _run("detect_drift", {"baseline": "base"}, state)
+
+        alerts = _alerts(result, "tool_failure:search_documents")
+        assert bool(alerts) is alerted
+        if alerted:
+            total = stats["success"] + stats["failure"]
+            assert alerts[0]["severity"] == "warning"
+            assert alerts[0]["current_value"] == round(stats["failure"] / total, 2)
+            assert "search_documents" in alerts[0]["message"]
+
+    async def test_each_failing_tool_gets_its_own_alert(self):
+        state = _state(iteration=1, findings=1)
+        await _capture("base", state)
+        state["tool_stats"] = {
+            "search_documents": {"success": 0, "failure": 5},
+            "read_document": {"success": 8, "failure": 0},
+            "web_search": {"success": 1, "failure": 3, "last_error": "timeout"},
         }
-        assert "alerts" in result
-        assert result["metrics_compared"] == 7
-        assert "iterations_elapsed" in result
 
-    def test_summary_with_critical(self):
-        severity_counts = {"critical": 2, "warning": 1}
-        summary = "3 alert(s) after 10 iterations"
-        if severity_counts.get("critical"):
-            summary += f" ({severity_counts['critical']} critical)"
-        assert "2 critical" in summary
+        result = await _run("detect_drift", {"baseline": "base"}, state)
+
+        assert sorted(a["metric"] for a in _alerts(result)) == [
+            "tool_failure:search_documents",
+            "tool_failure:web_search",
+        ]
+
+    async def test_a_custom_stall_threshold_replaces_the_default(self):
+        state = _state(iteration=1, findings=1)
+        await _capture("base", state)
+        state["stalled_iterations"] = 4
+
+        default = await _run("detect_drift", {"baseline": "base"}, state)
+        raised = await _run(
+            "detect_drift",
+            {"baseline": "base", "thresholds": {"stalled_iterations": 5}},
+            state,
+        )
+
+        assert _alerts(default, "stalled_iterations")
+        assert _alerts(raised, "stalled_iterations") == []
+
+    async def test_a_custom_progress_threshold_tolerates_a_small_drop(self):
+        state = _state(iteration=1, findings=1, progress=60)
+        await _capture("base", state)
+        state["goal_progress"] = 52
+        params = {"baseline": "base", "thresholds": {"goal_progress_drop": 10}}
+
+        tolerated = await _run("detect_drift", params, state)
+        state["goal_progress"] = 49
+        flagged = await _run("detect_drift", params, state)
+
+        assert _alerts(tolerated, "goal_progress") == []
+        assert [a["severity"] for a in _alerts(flagged, "goal_progress")] == ["warning"]
+
+    async def test_custom_stale_and_failure_thresholds_apply(self):
+        state = _state(iteration=1, findings=1)
+        await _capture("base", state)
+        state["iteration"] = 3
+        state["tool_stats"] = {"web_search": {"success": 3, "failure": 2}}
+
+        result = await _run(
+            "detect_drift",
+            {
+                "baseline": "base",
+                "thresholds": {
+                    "findings_stale_iterations": 2,
+                    "tool_failure_rate": 0.3,
+                },
+            },
+            state,
+        )
+
+        assert sorted(a["metric"] for a in _alerts(result)) == [
+            "findings_count",
+            "tool_failure:web_search",
+        ]
+
+    @pytest.mark.parametrize(
+        "thresholds",
+        [
+            {"stalled_iterations": "not a number"},
+            {"stalled_iterations": None},
+            {"no_such_threshold": 99},
+            "stalled_iterations=99",
+            None,
+        ],
+    )
+    async def test_an_unusable_threshold_leaves_the_default_in_force(self, thresholds):
+        state = _state(iteration=1, findings=1)
+        await _capture("base", state)
+        state["stalled_iterations"] = 3
+
+        result = await _run(
+            "detect_drift", {"baseline": "base", "thresholds": thresholds}, state
+        )
+
+        assert [a["severity"] for a in _alerts(result, "stalled_iterations")] == [
+            "warning"
+        ]
+
+    async def test_drift_is_recorded_as_a_finding(self):
+        state = _state(iteration=1, findings=1, progress=80)
+        await _capture("base", state)
+        state["goal_progress"] = 50
+        state["stalled_iterations"] = 4
+
+        result = await _run("detect_drift", {"baseline": "base"}, state)
+
+        assert sorted(a["metric"] for a in _alerts(result)) == [
+            "goal_progress",
+            "stalled_iterations",
+        ]
+        assert "overall" not in [a["metric"] for a in _alerts(result)]
+        assert result["data"]["summary"] == "2 alert(s) after 0 iterations (1 critical)"
+        (finding,) = result["findings"]
+        assert finding["type"] == "drift_detected"
+        assert finding["baseline"] == "base"
+        assert finding["alert_count"] == 2
+        assert finding["severity_counts"] == {"warning": 1, "critical": 1}
+
+    async def test_warnings_alone_are_counted_in_the_summary(self):
+        state = _state(iteration=1, findings=1, progress=50)
+        await _capture("base", state)
+        state["goal_progress"] = 45
+        state["stalled_iterations"] = 3
+
+        result = await _run("detect_drift", {"baseline": "base"}, state)
+
+        assert result["data"]["summary"] == "2 alert(s) after 0 iterations (2 warnings)"
+        assert result["findings"][0]["severity_counts"] == {"warning": 2}
+
+    async def test_detecting_drift_does_not_move_the_baseline(self):
+        state = _state(iteration=1, findings=1, progress=80)
+        await _capture("base", state)
+        before = dict(state["workspace_snapshots"]["base"])
+        state["goal_progress"] = 10
+
+        await _run("detect_drift", {"baseline": "base"}, state)
+        again = await _run("detect_drift", {"baseline": "base"}, state)
+
+        assert state["workspace_snapshots"]["base"] == before
+        assert list(state["workspace_snapshots"]) == ["base"]
+        assert [a["severity"] for a in _alerts(again, "goal_progress")] == ["critical"]
+
+
+class TestSnapshotProvider:
+    def test_the_provider_answers_all_three_tools(self):
+        provider = build_autonomous_snapshot_provider(SimpleNamespace())
+        assert set(provider._handlers) == set(TOOLS)
 
 
 class TestSnapshotSchemas:
@@ -481,7 +852,7 @@ class TestSnapshotRegistry:
     def test_all_are_read(self):
         from app.services.tool_registry import get_tool_metadata
 
-        for tool_name in ["capture_snapshot", "compare_snapshots", "detect_drift"]:
+        for tool_name in TOOLS:
             meta = get_tool_metadata(tool_name)
             assert meta is not None
             assert meta.effects == "read"
@@ -489,7 +860,7 @@ class TestSnapshotRegistry:
     def test_all_are_low_cost(self):
         from app.services.tool_registry import get_tool_metadata
 
-        for tool_name in ["capture_snapshot", "compare_snapshots", "detect_drift"]:
+        for tool_name in TOOLS:
             meta = get_tool_metadata(tool_name)
             assert meta is not None
             assert meta.cost_tier == "low"
@@ -497,7 +868,7 @@ class TestSnapshotRegistry:
     def test_none_is_network_tool(self):
         from app.services.tool_registry import get_tool_metadata
 
-        for tool_name in ["capture_snapshot", "compare_snapshots", "detect_drift"]:
+        for tool_name in TOOLS:
             meta = get_tool_metadata(tool_name)
             assert meta is not None
             assert meta.network == "none"

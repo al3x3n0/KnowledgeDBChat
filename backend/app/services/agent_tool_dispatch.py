@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -4162,6 +4163,11 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
     )
 
 
+#: How many scheduled jobs and notifications one run may leave behind it.
+MAX_SCHEDULED_JOBS_PER_RUN = 10
+MAX_NOTIFICATIONS_PER_RUN = 20
+
+
 def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolProvider:
     """Workspace mutation and code-execution tools for AutonomousAgentExecutor."""
 
@@ -7396,6 +7402,27 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
             "findings": outcome["findings"],
         }
 
+    def _tool_calls(log: Any) -> Iterable[tuple[str, Optional[str], Dict[str, Any]]]:
+        """(tool, error, entry) for each tool call in an execution log.
+
+        Only the executor's per-iteration entry is a call. Operator decisions
+        also carry an `action` ("approve"), and were being counted as calls
+        to a tool of that name. A call failed if it recorded an error or
+        recorded that it did not succeed.
+        """
+        for entry in log or []:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("phase") not in (None, "iteration_complete"):
+                continue
+            tool = entry.get("action")
+            if not tool:
+                continue
+            error = entry.get("error")
+            if not error and entry.get("success") is False:
+                error = "failed"
+            yield str(tool), (str(error) if error else None), entry
+
     async def _get_job_history(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -7417,7 +7444,7 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
             status_filter = str(params.get("status", "")).strip()
             if status_filter:
                 stmt = stmt.where(AgentJobModel.status == status_filter)
-            limit = min(int(params.get("limit", 10) or 10), 50)
+            limit = max(1, min(int(params.get("limit", 10) or 10), 50))
             stmt = stmt.limit(limit)
 
             past_jobs = (await ctx.db.execute(stmt)).scalars().all()
@@ -7483,10 +7510,8 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                 )
             tool_counts = {}
             if target_job.execution_log:
-                for entry in target_job.execution_log:
-                    tool = entry.get("action")
-                    if tool:
-                        tool_counts[tool] = tool_counts.get(tool, 0) + 1
+                for tool, _error, _entry in _tool_calls(target_job.execution_log):
+                    tool_counts[tool] = tool_counts.get(tool, 0) + 1
 
             return {
                 "success": True,
@@ -7530,7 +7555,7 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
 
         job = ctx.job
         try:
-            days = min(int(params.get("days", 7) or 7), 30)
+            days = max(1, min(int(params.get("days", 7) or 7), 30))
             tool_name_filter = str(params.get("tool_name", "")).strip() or None
             cutoff = datetime.now(timezone.utc) - timedelta(days=days)
             stmt = select(AgentJobModel).where(
@@ -7542,15 +7567,14 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
 
             tool_stats = {}
             for row in analyzed_jobs:
-                for entry in row.execution_log or []:
-                    tool = entry.get("action")
-                    if not tool or (tool_name_filter and tool != tool_name_filter):
+                for tool, error, _entry in _tool_calls(row.execution_log):
+                    if tool_name_filter and tool != tool_name_filter:
                         continue
                     stats = tool_stats.setdefault(
                         tool, {"calls": 0, "successes": 0, "failures": 0}
                     )
                     stats["calls"] += 1
-                    if entry.get("error"):
+                    if error:
                         stats["failures"] += 1
                     else:
                         stats["successes"] += 1
@@ -7593,27 +7617,31 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
         if not analysis_tool_name:
             return {"error": "tool_name is required"}
         try:
-            days = min(int(params.get("days", 7) or 7), 30)
+            days = max(1, min(int(params.get("days", 7) or 7), 30))
             cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-            stmt = select(AgentJobModel).where(
-                AgentJobModel.user_id == job.user_id,
-                AgentJobModel.created_at >= cutoff,
-                AgentJobModel.execution_log.isnot(None),
+            stmt = (
+                select(AgentJobModel)
+                .where(
+                    AgentJobModel.user_id == job.user_id,
+                    AgentJobModel.created_at >= cutoff,
+                    AgentJobModel.execution_log.isnot(None),
+                )
+                .order_by(AgentJobModel.created_at.asc())
             )
             analyzed_jobs = (await ctx.db.execute(stmt)).scalars().all()
             total_calls = 0
             errors = []
             for row in analyzed_jobs:
-                for entry in row.execution_log or []:
-                    if entry.get("action") != analysis_tool_name:
+                for tool, error, entry in _tool_calls(row.execution_log):
+                    if tool != analysis_tool_name:
                         continue
                     total_calls += 1
-                    if entry.get("error"):
+                    if error:
                         errors.append(
                             {
                                 "job_id": str(row.id),
                                 "job_type": row.job_type,
-                                "error": str(entry.get("error"))[:200],
+                                "error": error[:200],
                                 "timestamp": entry.get("timestamp"),
                                 "iteration": entry.get("iteration"),
                             }
@@ -7662,7 +7690,7 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
             queries = [str(q).strip() for q in queries_raw if str(q).strip()][:10]
             if not queries:
                 return {"error": "No valid queries provided"}
-            limit_per = min(int(params.get("limit_per_query", 5) or 5), 20)
+            limit_per = max(1, min(int(params.get("limit_per_query", 5) or 5), 20))
             source_id_filter = str(params.get("source_id", "")).strip() or None
             dedup = params.get("deduplicate", True)
             if dedup is None:
@@ -7757,16 +7785,24 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                         )
                     elif generate_missing:
                         try:
+                            from app.services.llm_service import load_user_llm_settings
+
                             summary_text = (
                                 await executor.document_service.summarize_document(
-                                    doc.id, ctx.db, user_id=job.user_id
+                                    doc.id,
+                                    ctx.db,
+                                    user_settings=await load_user_llm_settings(
+                                        ctx.db, job.user_id
+                                    ),
                                 )
                             )
+                            if not summary_text:
+                                raise ValueError("the summariser returned nothing")
                             summaries.append(
                                 {
                                     "document_id": doc_id_str,
                                     "title": doc.title,
-                                    "summary": summary_text or "",
+                                    "summary": summary_text,
                                     "status": "generated",
                                 }
                             )
@@ -8902,6 +8938,23 @@ def build_autonomous_notification_visualization_provider(
         if not notif_message:
             return {"error": "message is required"}
         try:
+            from sqlalchemy import func
+
+            from app.models.notification import Notification
+
+            sent = (
+                await ctx.db.execute(
+                    select(func.count(Notification.id)).where(
+                        Notification.related_entity_id == job.id,
+                        Notification.notification_type == "agent_job_alert",
+                    )
+                )
+            ).scalar() or 0
+            if sent >= MAX_NOTIFICATIONS_PER_RUN:
+                return {
+                    "error": f"This run has already sent {sent} notifications "
+                    f"(limit {MAX_NOTIFICATIONS_PER_RUN})."
+                }
             ns = NotificationService()
             priority = str(params.get("priority", "normal")).strip().lower()
             if priority not in {"low", "normal", "high", "urgent"}:
@@ -8919,6 +8972,10 @@ def build_autonomous_notification_visualization_provider(
                 action_url=str(params.get("action_url", "")).strip()[:500] or None,
                 commit=False,
             )
+            if notification is None:
+                # The service swallows its own failures and returns None;
+                # reporting success here told the run a person had been told.
+                return {"error": "The notification could not be stored"}
             await ctx.db.flush()
             return {
                 "success": True,
@@ -8965,6 +9022,10 @@ def build_autonomous_notification_visualization_provider(
                 data={"intended_delivery": "email", "source_job_id": str(job.id)},
                 commit=False,
             )
+            if notification is None:
+                # The service swallows its own failures and returns None;
+                # reporting success here told the run a person had been told.
+                return {"error": "The notification could not be stored"}
             await ctx.db.flush()
             return {
                 "success": True,
@@ -9324,9 +9385,9 @@ def build_autonomous_kg_provider(executor: Any) -> FunctionToolProvider:
             kg = KnowledgeGraphService()
             limit = min(int(params.get("limit", 20) or 20), 100)
             entity_type = str(params.get("entity_type", "")).strip() or None
-            entities = await kg.entities(ctx.db, q=query, limit=limit)
-            if entity_type:
-                entities = [e for e in entities if e.entity_type == entity_type]
+            entities = await kg.entities(
+                ctx.db, q=query, limit=limit, entity_type=entity_type
+            )
             return {
                 "success": True,
                 "data": {
@@ -9361,7 +9422,35 @@ def build_autonomous_kg_provider(executor: Any) -> FunctionToolProvider:
             context = await kg.get_entity_context(
                 [_UUID(entity_id)], ctx.db, max_relationships=30
             )
-            return {"success": True, "data": context}
+            if not context["entities"]:
+                return {"error": f"Entity {entity_id} not found"}
+            # Plain data: the service returns rows, which neither a model nor
+            # the job's JSON results can hold.
+            return {
+                "success": True,
+                "data": {
+                    "entities": [
+                        {
+                            "id": str(e.id),
+                            "canonical_name": e.canonical_name,
+                            "entity_type": e.entity_type,
+                            "description": e.description or "",
+                        }
+                        for e in context["entities"]
+                    ],
+                    "relationships": [
+                        {
+                            "id": str(r.id),
+                            "relation_type": r.relation_type,
+                            "source_entity_id": str(r.source_entity_id),
+                            "target_entity_id": str(r.target_entity_id),
+                            "confidence": r.confidence,
+                            "evidence": r.evidence or "",
+                        }
+                        for r in context["relationships"]
+                    ],
+                },
+            }
         except ValueError:
             return {"error": f"Invalid entity_id format: {entity_id}"}
         except Exception as exc:
@@ -9385,7 +9474,10 @@ def build_autonomous_kg_provider(executor: Any) -> FunctionToolProvider:
                 description=str(params.get("description", "")).strip() or None,
             )
             ctx.db.add(entity)
-            await ctx.db.flush()
+            # Committed, like the relationship beside it: the id is handed to
+            # the model, and a later tool rolling this session back would
+            # leave it holding the id of a row that no longer exists.
+            await ctx.db.commit()
             return {
                 "success": True,
                 "data": {
@@ -9419,7 +9511,7 @@ def build_autonomous_kg_provider(executor: Any) -> FunctionToolProvider:
                 db=ctx.db,
                 source_entity_id=source_id,
                 target_entity_id=target_id,
-                relation_type=relation_type[:128],
+                relation_type=relation_type[:64],
                 confidence=confidence,
                 evidence=str(params.get("evidence", "")).strip() or None,
             )
@@ -9453,6 +9545,9 @@ def build_autonomous_kg_provider(executor: Any) -> FunctionToolProvider:
                 else None,
                 min_confidence=float(params.get("min_confidence", 0.0) or 0.0),
                 search=str(params.get("search", "")).strip() or None,
+                # An entity this run created has no mentions yet; the default
+                # of 1 hid it from the graph it had just been added to.
+                min_mentions=0,
                 limit_nodes=min(int(params.get("limit_nodes", 50) or 50), 200),
                 limit_edges=min(int(params.get("limit_nodes", 50) or 50), 200) * 3,
             )
@@ -9485,7 +9580,10 @@ def build_autonomous_scheduling_provider(executor: Any) -> FunctionToolProvider:
     ) -> Any:
         from datetime import datetime, timezone
 
+        from sqlalchemy import func
+
         from app.models.agent_job import AgentJob as AgentJobModel
+        from app.models.agent_job import AgentJobType
 
         job = ctx.job
         goal = str(params.get("goal", "")).strip()
@@ -9494,8 +9592,29 @@ def build_autonomous_scheduling_provider(executor: Any) -> FunctionToolProvider:
             return {"error": "goal is required"}
         if schedule_type not in {"once", "recurring"}:
             return {"error": "schedule_type must be 'once' or 'recurring'"}
+        job_type_param = str(params.get("job_type") or "research").strip().lower()
+        known_job_types = {t.value for t in AgentJobType} | {"coding"}
+        if job_type_param not in known_job_types:
+            return {
+                "error": f"job_type must be one of {sorted(known_job_types)}, "
+                f"not {job_type_param!r}"
+            }
         try:
-            job_type_param = str(params.get("job_type", "research")).strip().lower()
+            # A run that schedules jobs which schedule jobs has no natural
+            # end, so one run may leave only so many behind it.
+            already = (
+                await ctx.db.execute(
+                    select(func.count(AgentJobModel.id)).where(
+                        AgentJobModel.parent_job_id == job.id,
+                        AgentJobModel.schedule_type.isnot(None),
+                    )
+                )
+            ).scalar() or 0
+            if already >= MAX_SCHEDULED_JOBS_PER_RUN:
+                return {
+                    "error": f"This run has already scheduled {already} jobs "
+                    f"(limit {MAX_SCHEDULED_JOBS_PER_RUN}). Cancel one first."
+                }
             config_param = (
                 params.get("config") if isinstance(params.get("config"), dict) else {}
             )
@@ -9521,6 +9640,9 @@ def build_autonomous_scheduling_provider(executor: Any) -> FunctionToolProvider:
                 )
             new_job = AgentJobModel(
                 user_id=job.user_id,
+                # Required by the table; it was never set, so every call
+                # was refused by the database.
+                name=f"Scheduled: {goal}"[:200],
                 goal=goal[:2000],
                 job_type=job_type_param,
                 schedule_type=schedule_type,
@@ -9530,8 +9652,11 @@ def build_autonomous_scheduling_provider(executor: Any) -> FunctionToolProvider:
                 config=config_param,
                 parent_job_id=job.id,
             )
-            ctx.db.add(new_job)
-            await ctx.db.flush()
+            # In a savepoint: this session is the run's, and a refused insert
+            # would otherwise leave it unusable for every later tool.
+            async with ctx.db.begin_nested():
+                ctx.db.add(new_job)
+                await ctx.db.flush()
             return {
                 "success": True,
                 "data": {
@@ -9565,6 +9690,10 @@ def build_autonomous_scheduling_provider(executor: Any) -> FunctionToolProvider:
                 return {"error": "Not authorized to cancel this job"}
             if target.status == "running":
                 return {"error": "Cannot cancel a currently running job"}
+            if target.schedule_type is None:
+                # Without this a finished one-shot job was rewritten to
+                # "cancelled", losing the record that it had completed.
+                return {"error": f"Job {cancel_job_id} is not a scheduled job"}
             target.status = "cancelled"
             target.next_run_at = None
             target.schedule_type = None
@@ -9605,15 +9734,14 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
         from app.models.document import Document as DocModel
         from app.tasks.transcription_tasks import transcribe_document as transcribe_task
 
-        job = ctx.job
         doc_id = (params.get("document_id") or "").strip()
         if not doc_id:
             return {"error": "Missing required parameter: document_id"}
         try:
             doc_result = await ctx.db.execute(
-                select(DocModel).where(
-                    DocModel.id == _UUID(doc_id), DocModel.user_id == job.user_id
-                )
+                # Documents have no owner column: the knowledge base is
+                # shared. Filtering on one raised AttributeError on every call.
+                select(DocModel).where(DocModel.id == _UUID(doc_id))
             )
             doc = doc_result.scalar_one_or_none()
             if not doc:
@@ -9659,10 +9787,13 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
             )
             if not is_av:
                 return {"error": f"Document is not audio/video (type={ft}, ext={ext})"}
+            # Queue first. With the flag committed before the enqueue, a
+            # broker that was down left the document "in progress" for ever
+            # and every retry was told so.
+            celery_result = transcribe_task.delay(str(doc.id))
             doc.extra_metadata = {**meta, "is_transcribing": True}
             flag_modified(doc, "extra_metadata")
             await ctx.db.commit()
-            celery_result = transcribe_task.delay(str(doc.id))
             return {
                 "success": True,
                 "data": {
@@ -9694,19 +9825,20 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
         from app.models.document import Document as DocModel
         from app.services.storage_service import storage_service as _storage
 
-        job = ctx.job
         doc_id = (params.get("document_id") or "").strip()
         prompt_text = (
             params.get("prompt") or ""
         ).strip() or "Describe this image in detail, including any text, diagrams, charts, or notable visual elements."
-        vision_model = (params.get("model") or "").strip()
+        vision_model = (params.get("model") or "").strip() or (
+            getattr(_settings, "VISION_MODEL", "llava") or "llava"
+        )
         if not doc_id:
             return {"error": "Missing required parameter: document_id"}
         try:
             doc_result = await ctx.db.execute(
-                select(DocModel).where(
-                    DocModel.id == _UUID(doc_id), DocModel.user_id == job.user_id
-                )
+                # Documents have no owner column: the knowledge base is
+                # shared. Filtering on one raised AttributeError on every call.
+                select(DocModel).where(DocModel.id == _UUID(doc_id))
             )
             doc = doc_result.scalar_one_or_none()
             if not doc:
@@ -9736,15 +9868,18 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
             }
             if ft not in image_types and ext not in image_exts:
                 return {"error": f"Document is not an image (type={ft}, ext={ext})"}
-            image_bytes = await _storage.get_file_content(doc.file_path)
+            try:
+                image_bytes = await _storage.get_file_content(doc.file_path)
+            except Exception as storage_exc:
+                return {
+                    "error": f"Failed to download image {doc.file_path}: {storage_exc}"
+                }
             if not image_bytes:
                 return {"error": "Failed to download image: empty content"}
             if len(image_bytes) > 20 * 1024 * 1024:
                 return {
                     "error": f"Image too large ({len(image_bytes) // (1024*1024)}MB). Max 20MB."
                 }
-            if not vision_model:
-                vision_model = getattr(_settings, "VISION_MODEL", "llava") or "llava"
             payload = {
                 "model": vision_model,
                 "prompt": prompt_text[:2000],
@@ -9782,7 +9917,8 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
             }
         except Exception as exc:
             error_msg = str(exc)
-            if "404" in error_msg or "not found" in error_msg.lower():
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status == 404:
                 return {
                     "error": f"Vision model '{vision_model}' not available. Pull it with: ollama pull {vision_model}"
                 }
@@ -9796,15 +9932,14 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
 
         from app.models.document import Document as DocModel
 
-        job = ctx.job
         doc_id = (params.get("document_id") or "").strip()
         if not doc_id:
             return {"error": "Missing required parameter: document_id"}
         try:
             doc_result = await ctx.db.execute(
-                select(DocModel).where(
-                    DocModel.id == _UUID(doc_id), DocModel.user_id == job.user_id
-                )
+                # Documents have no owner column: the knowledge base is
+                # shared. Filtering on one raised AttributeError on every call.
+                select(DocModel).where(DocModel.id == _UUID(doc_id))
             )
             doc = doc_result.scalar_one_or_none()
             if not doc:
@@ -9863,7 +9998,10 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
                     )
                     temp_path = tmp.name
                     tmp.close()
-                    await _storage.download_file(doc.file_path, temp_path)
+                    if not await _storage.download_file(doc.file_path, temp_path):
+                        raise FileNotFoundError(
+                            f"{doc.file_path} was not found in storage"
+                        )
                     probe_result = subprocess.run(
                         [
                             "ffprobe",
@@ -9950,6 +10088,19 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
 def build_autonomous_snapshot_provider(executor: Any) -> FunctionToolProvider:
     """Workspace snapshot and drift-detection tools for AutonomousAgentExecutor."""
 
+    def _run_iteration(ctx: AgentToolExecutionContext) -> int:
+        # The iteration is the job's. Runtime state has no such key, so
+        # reading it there stamped every snapshot 0, and drift never saw
+        # an iteration pass.
+        state = ctx.state if isinstance(ctx.state, dict) else {}
+        value = state.get("iteration")
+        if value is None:
+            value = getattr(ctx.job, "iteration", 0)
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
     async def _capture_snapshot(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -9971,13 +10122,14 @@ def build_autonomous_snapshot_provider(executor: Any) -> FunctionToolProvider:
             if f.get("document_id") or f.get("source_id")
         }
         snapshot = {
-            "iteration": state.get("iteration", 0),
+            "iteration": _run_iteration(ctx),
             "timestamp": _dt.utcnow().isoformat(),
             "findings_count": len(state.get("findings", [])),
             "actions_count": len(state.get("actions_taken", [])),
             "goal_progress": state.get("goal_progress", 0),
             "documents_found": len(doc_ids),
-            "tool_stats": dict(state.get("tool_stats", {})),
+            # Deep: the executor updates a tool's counters in place.
+            "tool_stats": copy.deepcopy(state.get("tool_stats", {})),
             "stalled_iterations": state.get("stalled_iterations", 0),
             "artifacts_count": len(state.get("artifacts", [])),
             "formatted_outputs_count": len(state.get("formatted_outputs", [])),
@@ -10063,6 +10215,19 @@ def build_autonomous_snapshot_provider(executor: Any) -> FunctionToolProvider:
             a_val = str(snap_a.get(key, ""))
             b_val = str(snap_b.get(key, ""))
             diff[key] = {"before": a_val, "after": b_val, "changed": a_val != b_val}
+        # Keys the run asked to have captured are compared too; they were
+        # stored and then never read.
+        custom_a = snap_a.get("custom_keys") or {}
+        custom_b = snap_b.get("custom_keys") or {}
+        if custom_a or custom_b:
+            diff["custom_keys"] = {
+                key: {
+                    "before": custom_a.get(key),
+                    "after": custom_b.get(key),
+                    "changed": custom_a.get(key) != custom_b.get(key),
+                }
+                for key in sorted(set(custom_a) | set(custom_b))
+            }
         stats_a = snap_a.get("tool_stats", {})
         stats_b = snap_b.get("tool_stats", {})
         tools_added = set(stats_b.keys()) - set(stats_a.keys())
@@ -10123,7 +10288,7 @@ def build_autonomous_snapshot_provider(executor: Any) -> FunctionToolProvider:
             if f.get("document_id") or f.get("source_id")
         }
         current = {
-            "iteration": state.get("iteration", 0),
+            "iteration": _run_iteration(ctx),
             "findings_count": len(state.get("findings", [])),
             "actions_count": len(state.get("actions_taken", [])),
             "goal_progress": state.get("goal_progress", 0),
@@ -10761,15 +10926,38 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
         if not tags_param or not isinstance(tags_param, list) or not tags_param:
             return {"error": "tags is required and must be a non-empty array"}
         match_all = bool(params.get("match_all", False))
-        limit = min(int(params.get("limit", 20) or 20), 100)
+        try:
+            limit = min(int(params.get("limit", 20) or 20), 100)
+        except (TypeError, ValueError):
+            return {"error": "limit must be a number"}
+        if limit < 1:
+            return {"error": "limit must be at least 1"}
         tags_set = set(str(tag).strip() for tag in tags_param if str(tag).strip())
-        stmt = select(Document).where(Document.tags.isnot(None)).limit(500)
-        docs = (await ctx.db.execute(stmt)).scalars().all()
+        if not tags_set:
+            # The empty set is a subset of every document's tags, so with
+            # match_all a list of blank tags listed everything.
+            return {"error": "tags is required and must be a non-empty array"}
 
-        if match_all:
-            matched = [doc for doc in docs if tags_set.issubset(set(doc.tags or []))]
-        else:
-            matched = [doc for doc in docs if tags_set & set(doc.tags or [])]
+        # Newest first, a page at a time, until enough match. One unordered
+        # page of 500 meant a match beyond it was never listed.
+        matched = []
+        page_size, offset = 500, 0
+        while len(matched) < limit:
+            stmt = (
+                select(Document)
+                .where(Document.tags.isnot(None))
+                .order_by(Document.created_at.desc(), Document.id)
+                .offset(offset)
+                .limit(page_size)
+            )
+            docs = (await ctx.db.execute(stmt)).scalars().all()
+            for doc in docs:
+                doc_tags = set(doc.tags or []) if isinstance(doc.tags, list) else set()
+                if tags_set.issubset(doc_tags) if match_all else tags_set & doc_tags:
+                    matched.append(doc)
+            if len(docs) < page_size:
+                break
+            offset += page_size
         matched = matched[:limit]
         return {
             "success": True,
@@ -10810,7 +10998,8 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
         if not merge_title:
             return {"error": "title is required"}
 
-        separator = str(params.get("separator", "\n\n---\n\n"))
+        separator = params.get("separator")
+        separator = "\n\n---\n\n" if separator is None else str(separator)
         merge_tags = params.get("tags") if isinstance(params.get("tags"), list) else []
         sections = []
         source_ids = []

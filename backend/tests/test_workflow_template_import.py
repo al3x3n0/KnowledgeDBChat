@@ -17,7 +17,8 @@ def test_importing_a_template_returns_the_new_workflow(client, auth_headers, tes
     template = WORKFLOW_TEMPLATES[0]
 
     response = client.post(
-        f"/api/v1/workflows/templates/{template['template_id']}/import", headers=auth_headers
+        f"/api/v1/workflows/templates/{template['template_id']}/import",
+        headers=auth_headers,
     )
 
     assert response.status_code == 200, response.text

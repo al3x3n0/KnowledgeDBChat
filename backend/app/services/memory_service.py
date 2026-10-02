@@ -2,6 +2,7 @@
 Memory service for conversation context retention.
 """
 
+import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -23,6 +24,23 @@ from app.schemas.memory import (
 )
 from app.services.llm_service import LLMService, UserLLMSettings
 from app.services.text_processor import TextProcessor
+
+_WORD = re.compile(r"[a-z0-9]+")
+_STOPWORDS = frozenset(
+    "a an and are as at be by for from in is it of on or that the to was with".split()
+)
+
+
+def _words(text: str) -> set:
+    return {w for w in _WORD.findall((text or "").lower()) if len(w) > 1} - _STOPWORDS
+
+
+def lexical_relevance(query: str, text: str) -> float:
+    """The share of the query's words that appear in `text`, 0.0 to 1.0."""
+    wanted = _words(query)
+    if not wanted:
+        return 0.0
+    return len(wanted & _words(text)) / len(wanted)
 
 
 class MemoryService:
@@ -551,18 +569,25 @@ class MemoryService:
     async def _rank_memories_by_relevance(
         self, memories: List[ConversationMemory], query: str
     ) -> List[ConversationMemory]:
-        """Rank memories by relevance to query using LLM."""
-        try:
-            if not memories:
-                return []
+        """Memories that share words with the query first, then by importance.
 
-            # Use LLM to rank (simplified - in production, use proper ranking)
-            # For now, return sorted by importance score
-            return sorted(memories, key=lambda m: m.importance_score, reverse=True)
-
-        except Exception as e:
-            logger.error(f"Error ranking memories: {e}")
-            return sorted(memories, key=lambda m: m.importance_score, reverse=True)
+        This used to ignore the query altogether and sort by importance, so
+        every "search" returned the same memories whatever was asked. It is
+        still lexical, not semantic: no embedding is involved. Memories that
+        match nothing are kept, after the ones that do, because a caller that
+        injects memories into a prompt wants the important ones regardless;
+        a caller that wants only matches filters on `lexical_relevance`.
+        """
+        if not memories:
+            return []
+        return sorted(
+            memories,
+            key=lambda m: (
+                lexical_relevance(query, f"{m.content} {' '.join(m.tags or [])}"),
+                m.importance_score or 0.0,
+            ),
+            reverse=True,
+        )
 
     async def _extract_memories_with_llm(
         self,

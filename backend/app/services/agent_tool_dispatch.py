@@ -2653,7 +2653,13 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
         if not content_str:
             return {"error": "content is required"}
 
-        importance = max(0.0, min(1.0, float(params.get("importance", 0.5) or 0.5)))
+        raw_importance = params.get("importance")
+        try:
+            # 0.0 is a value, not an absence: `or 0.5` stored it as 0.5.
+            importance = 0.5 if raw_importance is None else float(raw_importance)
+        except (TypeError, ValueError):
+            return {"error": "importance must be a number between 0.0 and 1.0"}
+        importance = max(0.0, min(1.0, importance))
         category = str(params.get("category", "fact") or "fact")
         metadata = (
             params.get("metadata") if isinstance(params.get("metadata"), dict) else None
@@ -2673,6 +2679,16 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
             mem_resp = await executor.memory_service.create_memory(
                 job.user_id, memory_data, ctx.db
             )
+            # Say which run remembered it; the column exists for that.
+            try:
+                from app.models.memory import ConversationMemory
+
+                row = await ctx.db.get(ConversationMemory, mem_resp.id)
+                if row is not None and row.job_id is None and job.id is not None:
+                    row.job_id = job.id
+                    await ctx.db.commit()
+            except Exception:
+                await ctx.db.rollback()
             return {
                 "success": True,
                 "data": {"memory_id": str(mem_resp.id), "content": content_str[:200]},
@@ -2690,7 +2706,10 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
         if not query_str:
             return {"error": "query is required"}
 
-        limit = min(int(params.get("limit", 10) or 10), 50)
+        try:
+            limit = max(1, min(int(params.get("limit", 10) or 10), 50))
+        except (TypeError, ValueError):
+            limit = 10
         cat_filter = params.get("category_filter")
         min_imp = params.get("min_importance")
         memory_types = [cat_filter] if cat_filter else None
@@ -2704,6 +2723,8 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
             memories = await executor.memory_service.search_memories(
                 job.user_id, search_req, ctx.db
             )
+            from app.services.memory_service import lexical_relevance
+
             return {
                 "success": True,
                 "data": {
@@ -2713,6 +2734,13 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
                             "content": m.content,
                             "importance": m.importance_score,
                             "type": m.memory_type,
+                            # How much of the query this memory shares, by
+                            # words. The ranking is lexical, so a memory
+                            # scoring 0.0 was returned for its importance,
+                            # not because it matched.
+                            "relevance": round(
+                                lexical_relevance(query_str, m.content or ""), 2
+                            ),
                         }
                         for m in memories
                     ],
@@ -2732,7 +2760,10 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
         if not topic:
             return {"error": "topic is required"}
 
-        limit = min(int(params.get("limit", 10) or 10), 50)
+        try:
+            limit = max(1, min(int(params.get("limit", 10) or 10), 50))
+        except (TypeError, ValueError):
+            limit = 10
         try:
             search_req = MemorySearchRequest(query=topic, limit=limit)
             memories = await executor.memory_service.search_memories(
@@ -2768,6 +2799,15 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
                     "total_memories": stats.total_memories,
                     "memories_by_type": stats.memories_by_type,
                     "recent_memories": stats.recent_memories,
+                    "most_accessed_memories": [
+                        {
+                            "id": str(m.id),
+                            "content": (m.content or "")[:200],
+                            "type": m.memory_type,
+                            "access_count": m.access_count,
+                        }
+                        for m in (stats.most_accessed_memories or [])[:10]
+                    ],
                 },
             }
         except Exception as exc:
@@ -2829,6 +2869,20 @@ def build_autonomous_workflow_provider(executor: Any) -> FunctionToolProvider:
         except Exception as exc:
             return {"error": f"Failed to list workflows: {exc}"}
 
+    def _bounded_json(value: Any, limit: int = 20000) -> Any:
+        """`value` if it serialises within `limit` characters, else a note
+        saying how large it was and its top-level keys."""
+        if not value:
+            return {}
+        try:
+            size = len(json.dumps(value, default=str))
+        except Exception:
+            return {"_unreadable": True}
+        if size <= limit:
+            return value
+        keys = sorted(value) if isinstance(value, dict) else []
+        return {"_truncated": True, "_size": size, "_keys": keys[:100]}
+
     async def _execute_workflow(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -2862,6 +2916,35 @@ def build_autonomous_workflow_provider(executor: Any) -> FunctionToolProvider:
                 },
             }
         except Exception as exc:
+            # The engine commits a failed execution before it raises. Name
+            # it, or the run cannot ask what went wrong and a retry simply
+            # makes another.
+            failed_id = None
+            try:
+                from app.models.workflow import WorkflowExecution
+
+                await ctx.db.rollback()
+                failed_id = (
+                    await ctx.db.execute(
+                        select(WorkflowExecution.id)
+                        .where(
+                            WorkflowExecution.workflow_id == _UUID(wf_id_str),
+                            WorkflowExecution.user_id == job.user_id,
+                            WorkflowExecution.status == "failed",
+                        )
+                        .order_by(WorkflowExecution.created_at.desc())
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+            except Exception:
+                failed_id = None
+            if failed_id is not None:
+                return {
+                    "error": f"Workflow execution failed: {exc} "
+                    f"(execution_id {failed_id})",
+                    "execution_id": str(failed_id),
+                    "status": "failed",
+                }
             return {"error": f"Workflow execution failed: {exc}"}
 
     async def _get_workflow_status(
@@ -2877,9 +2960,11 @@ def build_autonomous_workflow_provider(executor: Any) -> FunctionToolProvider:
         if not exec_id_str:
             return {"error": "execution_id is required"}
         try:
+            # The caller's own executions only; a stranger's reads as absent.
             exec_result = await ctx.db.execute(
                 _select(WorkflowExecution).where(
-                    WorkflowExecution.id == _UUID(exec_id_str)
+                    WorkflowExecution.id == _UUID(exec_id_str),
+                    WorkflowExecution.user_id == ctx.job.user_id,
                 )
             )
             execution = exec_result.scalar_one_or_none()
@@ -2899,6 +2984,9 @@ def build_autonomous_workflow_provider(executor: Any) -> FunctionToolProvider:
                     "completed_at": str(execution.completed_at)
                     if execution.completed_at
                     else None,
+                    # What the workflow produced: without it a run could
+                    # start a workflow and never read its result.
+                    "output": _bounded_json(execution.context),
                 },
             }
         except Exception as exc:
@@ -7846,7 +7934,9 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
         state = ctx.state if isinstance(ctx.state, dict) else {}
         try:
             condition = str(params.get("condition", "")).strip()
-            threshold = int(params.get("threshold", 1) or 1)
+            # 0 is a threshold; `or 1` turned it into 1.
+            raw_threshold = params.get("threshold")
+            threshold = 1 if raw_threshold is None else int(raw_threshold)
             data: Dict[str, Any]
             if condition == "findings_count":
                 count = len(state.get("findings", []))
@@ -7857,9 +7947,16 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                     "condition": condition,
                 }
             elif condition == "findings_has_category":
-                cat = str(params.get("category", "")).strip()
+                cat = str(params.get("category") or "").strip()
+                if not cat:
+                    return {
+                        "error": "category parameter required for "
+                        "findings_has_category condition"
+                    }
                 matches = [
-                    f for f in state.get("findings", []) if f.get("category") == cat
+                    f
+                    for f in state.get("findings", [])
+                    if isinstance(f, dict) and f.get("category") == cat
                 ]
                 data = {
                     "met": len(matches) >= threshold,
@@ -7869,12 +7966,17 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                     "condition": condition,
                 }
             elif condition == "documents_count":
+                # The search reports as its total only what it fetched, so
+                # the page must be at least as large as the threshold: with a
+                # page of one the total was at most two, and a threshold of
+                # three or more could never be met. `actual` is therefore a
+                # floor once it reaches the threshold, not an exact count.
                 source_id = str(params.get("source_id", "")).strip() or None
                 _, total, _ = await executor.search_service.search(
                     query="*",
                     mode="smart",
                     page=1,
-                    page_size=1,
+                    page_size=max(1, min(threshold, 100)),
                     source_id=source_id,
                     db=ctx.db,
                 )
@@ -7891,11 +7993,13 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                     return {
                         "error": "query parameter required for search_has_results condition"
                     }
+                # The search reports as its total only what it fetched, so
+                # the page has to be at least as large as the threshold.
                 _, total, _ = await executor.search_service.search(
                     query=query,
                     mode="smart",
                     page=1,
-                    page_size=1,
+                    page_size=max(1, min(threshold, 100)),
                     source_id=source_id,
                     db=ctx.db,
                 )
@@ -7941,13 +8045,14 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
             filtered = [
                 f
                 for f in findings
-                if float(f.get("confidence", 0.8) or 0.8) >= min_conf
+                if (0.8 if f.get("confidence") is None else float(f.get("confidence")))
+                >= min_conf
             ]
             if cat_filter:
                 filtered = [f for f in filtered if f.get("category") == cat_filter]
             by_category: dict[str, int] = {}
             for finding in filtered:
-                category = str(finding.get("category", "uncategorized"))
+                category = str(finding.get("category") or "uncategorized")
                 by_category[category] = by_category.get(category, 0) + 1
             return {
                 "success": True,
@@ -8039,9 +8144,14 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
         state = ctx.state if isinstance(ctx.state, dict) else {}
         try:
             exec_plan = state.get("execution_plan")
-            plan_steps_total = (
-                len(exec_plan.get("steps", [])) if isinstance(exec_plan, dict) else 0
-            )
+            # The plan is stored as a list of steps; only a dict was counted,
+            # so every real plan reported zero steps.
+            if isinstance(exec_plan, list):
+                plan_steps_total = len(exec_plan)
+            elif isinstance(exec_plan, dict):
+                plan_steps_total = len(exec_plan.get("steps", []))
+            else:
+                plan_steps_total = 0
             return {
                 "success": True,
                 "data": {
@@ -8073,7 +8183,8 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
         state = ctx.state if isinstance(ctx.state, dict) else {}
         try:
             actions = state.get("actions_taken", [])
-            keep_last = min(int(params.get("keep_last", 5) or 5), 20)
+            raw_keep = params.get("keep_last")
+            keep_last = max(0, min(5 if raw_keep is None else int(raw_keep), 20))
             if len(actions) <= keep_last:
                 return {
                     "success": True,
@@ -8115,10 +8226,14 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                     f"Previous compressed history:\n{existing_compressed}\n\n"
                 )
             compress_prompt += f"New actions to compress:\n{actions_text}\n\nWrite a concise summary in past tense."
-            # The executor holds these as an attribute; there is no
-            # _get_user_settings method and never was, so this raised
-            # AttributeError and took the tool down with it.
-            user_settings = getattr(executor, "user_settings", None)
+            # Loaded for the job's owner. The executor has no such attribute
+            # (only its runtime adapter does), so reading it there always
+            # gave None and the owner's provider and model were ignored.
+            from app.services.llm_service import load_user_llm_settings
+
+            user_settings = await load_user_llm_settings(
+                ctx.db, getattr(ctx.job, "user_id", None)
+            )
             summary_resp = await executor.llm_service.generate_response(
                 system_prompt="You are a concise summarizer. Output only the summary, no preamble.",
                 user_message=compress_prompt,
@@ -8127,6 +8242,13 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                 snapshot_context=_tool_snapshot_context(ctx, "compress_history"),
             )
             summary_text = str(summary_resp or "").strip()[:2000]
+            if not summary_text:
+                # Nothing is dropped for a summary that is not there: storing
+                # it erased the earlier summary and the actions together.
+                return {
+                    "error": "The model returned no summary; history was left "
+                    "as it was"
+                }
             state["compressed_history"] = summary_text
             state["actions_taken"] = actions[-keep_last:] if keep_last > 0 else []
             return {
@@ -8170,10 +8292,14 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                 "Group related findings, identify themes, note contradictions, and highlight the most important insights.\n\n"
                 f"Findings:\n{findings_text}\n\nWrite a structured synthesis."
             )
-            # The executor holds these as an attribute; there is no
-            # _get_user_settings method and never was, so this raised
-            # AttributeError and took the tool down with it.
-            user_settings = getattr(executor, "user_settings", None)
+            # Loaded for the job's owner. The executor has no such attribute
+            # (only its runtime adapter does), so reading it there always
+            # gave None and the owner's provider and model were ignored.
+            from app.services.llm_service import load_user_llm_settings
+
+            user_settings = await load_user_llm_settings(
+                ctx.db, getattr(ctx.job, "user_id", None)
+            )
             synthesis_resp = await executor.llm_service.generate_response(
                 system_prompt="You are a research synthesizer. Output only the synthesis, no preamble.",
                 user_message=synth_prompt,
@@ -8182,6 +8308,11 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                 snapshot_context=_tool_snapshot_context(ctx, "summarize_findings"),
             )
             synthesis_text = str(synthesis_resp or "").strip()[:3000]
+            if not synthesis_text:
+                return {
+                    "error": "The model returned no synthesis; the findings "
+                    "were left as they were"
+                }
             out: Dict[str, Any] = {
                 "success": True,
                 "data": {
@@ -8206,7 +8337,9 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                     "tags": ["synthesized", "compressed"],
                     "created_at": datetime.utcnow().isoformat(),
                 }
-                state["findings"].append(consolidated)
+                # Returned, not appended: the executor adds a result's
+                # `findings` to state itself, so appending here as well
+                # recorded the synthesis twice.
                 executor._job_findings.setdefault(str(job.id), []).append(consolidated)
                 out["findings"] = [consolidated]
             return out
@@ -8775,6 +8908,7 @@ def build_autonomous_web_research_provider(executor: Any) -> FunctionToolProvide
     async def _search_web(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
+        import html as _html
         import re as _re
         from urllib.parse import unquote
 
@@ -8784,7 +8918,7 @@ def build_autonomous_web_research_provider(executor: Any) -> FunctionToolProvide
         if not query:
             return {"error": "query is required"}
         try:
-            max_results = min(int(params.get("max_results", 5) or 5), 10)
+            max_results = max(1, min(int(params.get("max_results", 5) or 5), 10))
             async with httpx.AsyncClient(
                 timeout=15.0,
                 headers={"User-Agent": "Mozilla/5.0 (compatible; KnowledgeDBChat/1.0)"},
@@ -8794,16 +8928,43 @@ def build_autonomous_web_research_provider(executor: Any) -> FunctionToolProvide
                     "https://html.duckduckgo.com/html/", params={"q": query}
                 )
                 resp.raise_for_status()
-            result_blocks = _re.findall(
-                r'<a[^>]+class="result__a"[^>]+href="([^"]*)"[^>]*>(.*?)</a>.*?'
-                r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
-                resp.text,
-                _re.DOTALL,
+            # One result at a time: a snippet is looked for only between a
+            # title and the next title. A single pattern spanning title to
+            # snippet gave a result that had no snippet the next result's,
+            # and swallowed that result.
+            titles = list(
+                _re.finditer(
+                    r'<a[^>]+class="result__a"[^>]+href="([^"]*)"[^>]*>(.*?)</a>',
+                    resp.text,
+                    _re.DOTALL,
+                )
             )
+            result_blocks = []
+            for index, match in enumerate(titles):
+                end = (
+                    titles[index + 1].start()
+                    if index + 1 < len(titles)
+                    else len(resp.text)
+                )
+                snippet = _re.search(
+                    r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
+                    resp.text[match.end() : end],
+                    _re.DOTALL,
+                )
+                result_blocks.append(
+                    (
+                        match.group(1),
+                        match.group(2),
+                        snippet.group(1) if snippet else "",
+                    )
+                )
             results_list = []
             for url_raw, title_raw, snippet_raw in result_blocks[:max_results]:
-                title_clean = _re.sub(r"<[^>]+>", "", title_raw).strip()
-                snippet_clean = _re.sub(r"<[^>]+>", "", snippet_raw).strip()
+                title_clean = _html.unescape(_re.sub(r"<[^>]+>", "", title_raw)).strip()
+                snippet_clean = _html.unescape(
+                    _re.sub(r"<[^>]+>", "", snippet_raw)
+                ).strip()
+                url_raw = _html.unescape(url_raw)
                 url_match = _re.search(r"uddg=([^&]+)", url_raw)
                 url_clean = unquote(url_match.group(1) if url_match else url_raw)
                 if title_clean:
@@ -8845,7 +9006,15 @@ def build_autonomous_web_research_provider(executor: Any) -> FunctionToolProvide
         finally:
             await scraper.aclose()
         pages = (result or {}).get("pages") or []
-        return pages[0] if isinstance(pages[0], dict) else {} if pages else {}
+        if not pages:
+            # Say why. Indexing the empty list reported every 404, timeout
+            # and refused connection as "list index out of range", with the
+            # real cause sitting unread beside it.
+            errors = (result or {}).get("errors") or []
+            first = errors[0] if errors else {}
+            reason = first.get("error") if isinstance(first, dict) else first
+            raise ValueError(str(reason or "the page could not be fetched"))
+        return pages[0] if isinstance(pages[0], dict) else {}
 
     async def _fetch_url_content(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
@@ -8880,7 +9049,9 @@ def build_autonomous_web_research_provider(executor: Any) -> FunctionToolProvide
             return {"error": "url is required"}
         try:
             page = await _scrape_one_page(url, 100000)
-            text = str(page.get("content", ""))[:50000]
+            full_text = str(page.get("content", ""))
+            # What the model is shown is what is reported as summarised.
+            text = full_text[:30000]
             if not text.strip():
                 return {"error": f"No content extracted from {url}"}
             focus = str(params.get("focus", "")).strip()
@@ -8892,17 +9063,20 @@ def build_autonomous_web_research_provider(executor: Any) -> FunctionToolProvide
                     "Summarize the web page content the user provides"
                     f"{focus_clause}. Be concise and extract key information."
                 ),
-                user_message=text[:30000],
+                user_message=text,
                 max_tokens=1000,
                 db=ctx.db,
                 snapshot_context=_tool_snapshot_context(ctx, "summarize_url"),
             )
+            if not str(summary or "").strip():
+                return {"error": f"The model returned no summary for {url}"}
             return {
                 "success": True,
                 "data": {
                     "url": url,
                     "summary": summary,
                     "content_length": len(text),
+                    "truncated": len(full_text) > len(text),
                     "focus": focus or None,
                 },
             }
@@ -9086,8 +9260,12 @@ def build_autonomous_notification_visualization_provider(
             image_bytes = b64.b64decode(chart_result["image_base64"])
             object_path = f"agent_artifacts/{job.id}/charts/{_uuid4()}.{fmt}"
             await storage_service.initialize()
+            # The service builds its type as "image/<format>", which for svg
+            # is not a registered type and browsers will not render it.
             await storage_service.upload_to_path(
-                object_path, image_bytes, chart_result.get("mime_type", f"image/{fmt}")
+                object_path,
+                image_bytes,
+                "image/svg+xml" if fmt == "svg" else "image/png",
             )
             url = await storage_service.get_presigned_download_url(object_path)
             return {
@@ -9118,7 +9296,14 @@ def build_autonomous_notification_visualization_provider(
         if not diagram_code:
             return {"error": "diagram_code is required"}
         try:
-            diagram_type = str(params.get("diagram_type", "mermaid")).strip().lower()
+            diagram_type = str(params.get("diagram_type") or "mermaid").strip().lower()
+            if diagram_type not in {"mermaid", "graphviz"}:
+                # Anything else used to be rendered as Mermaid and reported
+                # back under the name the caller had asked for.
+                return {
+                    "error": f"Invalid diagram_type: {diagram_type}. "
+                    "Must be mermaid or graphviz"
+                }
             fmt = str(params.get("format", "png")).strip().lower()
             if fmt not in {"png", "svg"}:
                 fmt = "png"

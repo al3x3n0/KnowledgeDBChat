@@ -1,217 +1,844 @@
-"""Tests for agent collaboration protocol tools (create_handoff, get_sibling_status, broadcast_to_siblings)."""
+"""`create_handoff`, `get_sibling_status` and `broadcast_to_siblings`, called
+through the real handlers.
 
-import uuid
+The handlers are run against the in-memory database and judged on the
+`agent_jobs` rows they leave behind and on what the job at the other end then
+sees: a handoff is only a handoff if a runnable child exists, was queued, and
+is shown its contract; a broadcast is only delivered if a sibling can read it.
 
+The Celery `delay` is the one edge replaced; what was queued is recorded and
+checked against the task's real signature.
+"""
 
-class TestCreateHandoff:
-    """Tests for create_handoff tool logic."""
+import inspect
+from contextlib import contextmanager
+from uuid import uuid4
 
-    def test_requires_goal(self):
-        params = {"expected_outputs": ["summary"]}
-        goal = str(params.get("goal", "")).strip()
-        assert not goal
+import pytest
+from sqlalchemy import event, select
 
-    def test_requires_expected_outputs(self):
-        params = {"goal": "Research transformers"}
-        outputs = params.get("expected_outputs", [])
-        assert not isinstance(outputs, list) or not outputs
+from app.models.agent_job import AgentJob
+from app.services.agent_tool_dispatch import (
+    AgentToolExecutionContext,
+    build_autonomous_collaboration_provider,
+    build_autonomous_output_state_provider,
+)
+from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+from app.tasks.agent_job_tasks import execute_agent_job_task
 
-    def test_empty_expected_outputs_rejected(self):
-        params = {"goal": "Research transformers", "expected_outputs": []}
-        outputs = params.get("expected_outputs", [])
-        assert not outputs
-
-    def test_accepts_valid_params(self):
-        params = {
-            "goal": "Research transformers",
-            "expected_outputs": ["summary", "key_findings", "recommendations"],
-        }
-        goal = str(params.get("goal", "")).strip()
-        outputs = params.get("expected_outputs", [])
-        assert goal
-        assert isinstance(outputs, list) and len(outputs) == 3
-
-    def test_chain_depth_guard(self):
-        chain_depth = 3
-        assert chain_depth >= 3
-
-    def test_max_children_guard(self):
-        existing_children = [str(uuid.uuid4()) for _ in range(5)]
-        assert len(existing_children) >= 5
-
-    def test_default_job_type_is_research(self):
-        params = {"goal": "test", "expected_outputs": ["summary"]}
-        job_type = str(params.get("job_type", "research")).strip()
-        assert job_type == "research"
-
-    def test_invalid_job_type_falls_back(self):
-        params = {
-            "goal": "test",
-            "expected_outputs": ["summary"],
-            "job_type": "invalid",
-        }
-        child_type = str(params.get("job_type", "research")).strip()
-        valid = {"research", "analysis", "synthesis", "custom"}
-        if child_type not in valid:
-            child_type = "research"
-        assert child_type == "research"
-
-    def test_max_iterations_capped_at_20(self):
-        params = {"goal": "test", "expected_outputs": ["summary"], "max_iterations": 50}
-        child_max = min(int(params.get("max_iterations", 10) or 10), 20)
-        assert child_max == 20
-
-    def test_default_max_iterations_10(self):
-        params = {"goal": "test", "expected_outputs": ["summary"]}
-        child_max = min(int(params.get("max_iterations", 10) or 10), 20)
-        assert child_max == 10
-
-    def test_share_findings_defaults_true(self):
-        params = {"goal": "test", "expected_outputs": ["summary"]}
-        share = params.get("share_findings", True)
-        if share is None:
-            share = True
-        assert share is True
-
-    def test_handoff_contract_structure(self):
-        contract = {
-            "from_job_id": str(uuid.uuid4()),
-            "from_job_name": "Parent Job",
-            "context": "We have found 5 papers on transformers",
-            "expected_outputs": ["summary", "key_findings"],
-        }
-        assert "from_job_id" in contract
-        assert "expected_outputs" in contract
-        assert len(contract["expected_outputs"]) == 2
-
-    def test_context_truncated_to_2000(self):
-        long_ctx = "X" * 3000
-        truncated = long_ctx[:2000]
-        assert len(truncated) == 2000
-
-    def test_expected_outputs_capped_at_10(self):
-        outputs = [f"output_{i}" for i in range(15)]
-        capped = [str(o)[:200] for o in outputs[:10]]
-        assert len(capped) == 10
-
-    def test_result_format(self):
-        result = {
-            "child_job_id": str(uuid.uuid4()),
-            "child_name": "Handoff from parent: Research transformers",
-            "job_type": "research",
-            "expected_outputs": ["summary", "key_findings"],
-            "max_iterations": 10,
-            "findings_shared": True,
-        }
-        assert "child_job_id" in result
-        assert "expected_outputs" in result
-        assert result["findings_shared"] is True
+pytestmark = pytest.mark.unit
 
 
-class TestGetSiblingStatus:
-    """Tests for get_sibling_status tool logic."""
-
-    def test_no_parent_rejected(self):
-        parent_job_id = None
-        assert not parent_job_id
-
-    def test_include_findings_default_false(self):
-        params = {}
-        include_findings = bool(params.get("include_findings", False))
-        assert include_findings is False
-
-    def test_sibling_entry_format(self):
-        entry = {
-            "job_id": str(uuid.uuid4()),
-            "name": "Sibling Research",
-            "job_type": "research",
-            "status": "running",
-            "iteration": 5,
-            "max_iterations": 15,
-        }
-        assert "job_id" in entry
-        assert "status" in entry
-        assert entry["iteration"] == 5
-
-    def test_sibling_entry_with_findings(self):
-        entry = {
-            "job_id": str(uuid.uuid4()),
-            "name": "Sibling Research",
-            "job_type": "research",
-            "status": "completed",
-            "iteration": 10,
-            "max_iterations": 10,
-            "findings_count": 5,
-            "finding_titles": ["Paper on BERT", "Transformer survey"],
-        }
-        assert entry["findings_count"] == 5
-        assert len(entry["finding_titles"]) == 2
-
-    def test_finding_titles_capped_at_10(self):
-        findings = [{"title": f"Finding {i}"} for i in range(15)]
-        titles = [str(f.get("title", ""))[:100] for f in findings[:10]]
-        assert len(titles) == 10
-
-    def test_result_format(self):
-        result = {
-            "siblings": [
-                {"job_id": "id1", "name": "A", "status": "running"},
-                {"job_id": "id2", "name": "B", "status": "completed"},
-            ],
-            "count": 2,
-        }
-        assert result["count"] == 2
-        assert len(result["siblings"]) == 2
+@pytest.fixture(scope="module")
+def executor():
+    """The real executor: the handoff asks it for the job's source scope."""
+    return AutonomousAgentExecutor()
 
 
-class TestBroadcastToSiblings:
-    """Tests for broadcast_to_siblings tool logic."""
+def _ctx(db, job, state=None):
+    return AgentToolExecutionContext(
+        mode="autonomous",
+        db=db,
+        service=None,
+        user_id=str(job.user_id),
+        job=job,
+        state={} if state is None else state,
+    )
 
-    def test_requires_message(self):
-        params = {}
-        message = str(params.get("message", "")).strip()
-        assert not message
 
-    def test_no_parent_rejected(self):
-        parent_job_id = None
-        assert not parent_job_id
+async def _call(executor, tool_name, db, job, params, state=None):
+    provider = build_autonomous_output_state_provider(executor)
+    return await provider._handlers[tool_name](params, _ctx(db, job, state))
 
-    def test_default_category_is_broadcast(self):
-        params = {"message": "Hello siblings"}
-        category = str(params.get("category", "broadcast")).strip()[:100]
-        assert category == "broadcast"
 
-    def test_message_truncated_to_2000(self):
-        long_msg = "M" * 3000
-        truncated = long_msg[:2000]
-        assert len(truncated) == 2000
+async def _read_messages(executor, db, job):
+    """The recipient's side: the tool a job reads its inbox with."""
+    provider = build_autonomous_collaboration_provider(executor)
+    return await provider._handlers["read_agent_messages"]({}, _ctx(db, job))
 
-    def test_message_entry_format(self):
-        msg = {
-            "from_job_id": str(uuid.uuid4()),
-            "from_job_name": "Researcher A",
-            "message": "Found important paper on attention mechanisms",
-            "category": "broadcast",
-            "sent_at": "2026-03-20T12:00:00",
-            "broadcast": True,
-        }
-        assert msg["broadcast"] is True
-        assert "from_job_id" in msg
-        assert msg["category"] == "broadcast"
 
-    def test_messages_capped_at_100(self):
-        existing = [{"message": f"msg-{i}"} for i in range(99)]
-        existing.append({"message": "new message"})
-        capped = existing[-100:]
-        assert len(capped) == 100
+async def _job(db, user, **overrides):
+    """A stored job; by default the running job that is calling the tool."""
+    fields = {
+        "name": "Calling job",
+        "goal": "Characterise the prefetcher",
+        "job_type": "research",
+        "user_id": user.id,
+        "status": "running",
+    }
+    fields.update(overrides)
+    job = AgentJob(**fields)
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+    return job
 
-    def test_result_format(self):
-        result = {
-            "recipients": 3,
-            "message_length": 45,
-        }
-        assert result["recipients"] == 3
-        assert result["message_length"] == 45
+
+async def _other_rows(db, *known):
+    """Every job row the test did not create itself."""
+    known_ids = {job.id for job in known}
+    rows = (await db.execute(select(AgentJob))).scalars().all()
+    return [row for row in rows if row.id not in known_ids]
+
+
+async def _stored(db, job):
+    """The job's results as the database holds them."""
+    await db.commit()
+    await db.refresh(job)
+    return job.results if isinstance(job.results, dict) else {}
+
+
+async def _family(db, user):
+    """A parent with three children; the first is the one calling the tool."""
+    parent = await _job(db, user, name="Parent")
+    children = [
+        await _job(
+            db,
+            user,
+            name=name,
+            parent_job_id=parent.id,
+            root_job_id=parent.id,
+            chain_depth=1,
+        )
+        for name in ("Caller", "Sibling A", "Sibling B")
+    ]
+    return parent, children
+
+
+@pytest.fixture(autouse=True)
+def queued(monkeypatch):
+    """Record what would have been sent to Celery instead of sending it."""
+    calls = []
+
+    def _delay(*args, **kwargs):
+        # A call the task's signature cannot take would fail in the worker.
+        inspect.signature(execute_agent_job_task.run).bind(*args, **kwargs)
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(execute_agent_job_task, "delay", _delay)
+    return calls
+
+
+@contextmanager
+def _inserts_fail():
+    """Make every `agent_jobs` INSERT fail in the database itself."""
+
+    def _blank_the_name(mapper, connection, target):
+        target.name = None  # NOT NULL
+
+    event.listen(AgentJob, "before_insert", _blank_the_name)
+    try:
+        yield
+    finally:
+        event.remove(AgentJob, "before_insert", _blank_the_name)
+
+
+HANDOFF = {
+    "goal": "Re-profile the kernel at function granularity",
+    "context": "The current profile is per-module and too coarse to mine",
+    "expected_outputs": ["hot_functions", "summary"],
+}
+
+
+# ---------------------------------------------------------------------------
+# create_handoff: refusals
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "params, names",
+    [
+        ({"expected_outputs": ["summary"]}, "goal"),
+        ({"goal": "   ", "expected_outputs": ["summary"]}, "goal"),
+        ({"goal": "Re-profile"}, "expected_outputs"),
+        ({"goal": "Re-profile", "expected_outputs": []}, "expected_outputs"),
+        ({"goal": "Re-profile", "expected_outputs": "summary"}, "expected_outputs"),
+    ],
+)
+async def test_handoff_refuses_and_names_what_is_missing(
+    executor, db_session, test_user, queued, params, names
+):
+    caller = await _job(db_session, test_user)
+
+    result = await _call(executor, "create_handoff", db_session, caller, params)
+
+    assert "success" not in result
+    assert names in result["error"]
+    assert await _other_rows(db_session, caller) == []
+    assert queued == []
+
+
+async def test_handoff_is_refused_at_the_maximum_depth(
+    executor, db_session, test_user, queued
+):
+    caller = await _job(db_session, test_user, chain_depth=3)
+
+    result = await _call(executor, "create_handoff", db_session, caller, HANDOFF)
+
+    assert "success" not in result
+    assert "depth" in result["error"]
+    assert await _other_rows(db_session, caller) == []
+    assert queued == []
+
+
+async def test_a_parent_may_hand_off_five_times_and_no_more(
+    executor, db_session, test_user, queued
+):
+    caller = await _job(db_session, test_user)
+    state = {}
+
+    for _ in range(5):
+        result = await _call(
+            executor, "create_handoff", db_session, caller, HANDOFF, state
+        )
+        assert result.get("success") is True, result
+    sixth = await _call(executor, "create_handoff", db_session, caller, HANDOFF, state)
+
+    assert "success" not in sixth
+    assert "5" in sixth["error"]
+    assert len(await _other_rows(db_session, caller)) == 5
+    assert len(queued) == 5
+    assert len(state["delegated_subtask_ids"]) == 5
+
+
+async def test_a_pipeline_stage_that_may_revisit_is_steered_to_the_rerun_tool(
+    executor, db_session, test_user, queued
+):
+    caller = await _job(
+        db_session, test_user, config={"may_revisit": ["profile", "scan"]}
+    )
+
+    result = await _call(executor, "create_handoff", db_session, caller, HANDOFF)
+
+    assert "success" not in result
+    assert "request_stage_rerun" in result["error"]
+    assert "profile" in result["error"] and "scan" in result["error"]
+    assert await _other_rows(db_session, caller) == []
+    assert queued == []
+
+
+# ---------------------------------------------------------------------------
+# create_handoff: what is created
+# ---------------------------------------------------------------------------
+
+
+async def test_handoff_creates_a_runnable_child_and_queues_it(
+    executor, db_session, test_user, queued
+):
+    caller = await _job(db_session, test_user, name="Mining stage")
+    state = {}
+
+    result = await _call(executor, "create_handoff", db_session, caller, HANDOFF, state)
+
+    assert result.get("success") is True, result
+    await db_session.commit()
+    children = await _other_rows(db_session, caller)
+    assert [str(row.id) for row in children] == [result["data"]["child_job_id"]]
+    child = children[0]
+    assert child.user_id == test_user.id
+    assert child.parent_job_id == caller.id
+    assert child.root_job_id == caller.id
+    assert child.chain_depth == 1
+    assert child.status == "pending"
+    assert child.goal == HANDOFF["goal"]
+    assert child.job_type == "research"
+    assert child.name == result["data"]["child_name"]
+    assert "Mining stage" in child.name
+    assert child.max_iterations == 10
+    assert child.config["handoff_contract"] == {
+        "from_job_id": str(caller.id),
+        "from_job_name": "Mining stage",
+        "context": HANDOFF["context"],
+        "expected_outputs": HANDOFF["expected_outputs"],
+    }
+    assert result["data"]["expected_outputs"] == HANDOFF["expected_outputs"]
+    assert result["data"]["job_type"] == "research"
+    assert result["data"]["max_iterations"] == 10
+    # The parent can wait on it, and it counts against the child budget.
+    assert state["delegated_subtask_ids"] == [str(child.id)]
+    # And a worker was asked to run it, for the same owner.
+    assert queued == [((str(child.id), str(test_user.id)), {})]
+
+
+async def test_the_child_is_shown_its_contract(executor, db_session, test_user):
+    caller = await _job(db_session, test_user)
+    await _call(executor, "create_handoff", db_session, caller, HANDOFF)
+    child = (await _other_rows(db_session, caller))[0]
+
+    prompt = executor._build_thinking_prompt_stable(child, None, {})
+
+    assert "HANDOFF CONTRACT" in prompt
+    assert HANDOFF["context"] in prompt
+    assert "hot_functions" in prompt and "summary" in prompt
+
+
+@pytest.mark.parametrize(
+    "requested, stored",
+    [
+        (None, "research"),
+        ("analysis", "analysis"),
+        ("synthesis", "synthesis"),
+        ("custom", "custom"),
+        ("coding", "research"),
+        ("  analysis  ", "analysis"),
+    ],
+)
+async def test_handoff_runs_the_child_under_a_job_type_it_offers(
+    executor, db_session, test_user, requested, stored
+):
+    caller = await _job(db_session, test_user)
+    params = dict(HANDOFF)
+    if requested is not None:
+        params["job_type"] = requested
+
+    result = await _call(executor, "create_handoff", db_session, caller, params)
+
+    assert result.get("success") is True, result
+    assert result["data"]["job_type"] == stored
+    assert (await _other_rows(db_session, caller))[0].job_type == stored
+
+
+async def test_handoff_caps_the_childs_budget(executor, db_session, test_user):
+    caller = await _job(
+        db_session,
+        test_user,
+        max_tool_calls=40,
+        max_llm_calls=25,
+        max_runtime_minutes=12,
+    )
+
+    result = await _call(
+        executor,
+        "create_handoff",
+        db_session,
+        caller,
+        {**HANDOFF, "max_iterations": 500},
+    )
+
+    assert result.get("success") is True, result
+    assert result["data"]["max_iterations"] == 20
+    child = (await _other_rows(db_session, caller))[0]
+    assert child.max_iterations == 20
+    # Never more than the parent itself was allowed.
+    assert child.max_tool_calls == 40
+    assert child.max_llm_calls == 25
+    assert child.max_runtime_minutes == 12
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "agent_tool_dispatch.py _create_handoff computes "
+        "min(int(params.get('max_iterations', 10) or 10), 20) with no lower "
+        "bound, so max_iterations=-5 creates and queues a child with "
+        "max_iterations=-5, max_tool_calls=-25 and max_llm_calls=-15. Clamp to "
+        "at least 1 (the same expression is in _delegate_subtask)."
+    ),
+)
+async def test_handoff_never_creates_a_child_with_a_negative_budget(
+    executor, db_session, test_user
+):
+    caller = await _job(db_session, test_user)
+
+    result = await _call(
+        executor,
+        "create_handoff",
+        db_session,
+        caller,
+        {**HANDOFF, "max_iterations": -5},
+    )
+
+    children = await _other_rows(db_session, caller)
+    assert "error" in result or (
+        children[0].max_iterations >= 1
+        and children[0].max_tool_calls >= 1
+        and children[0].max_llm_calls >= 1
+    )
+
+
+async def test_handoff_refuses_a_max_iterations_that_is_not_a_number(
+    executor, db_session, test_user, queued
+):
+    caller = await _job(db_session, test_user)
+
+    result = await _call(
+        executor,
+        "create_handoff",
+        db_session,
+        caller,
+        {**HANDOFF, "max_iterations": "a few"},
+    )
+
+    assert "success" not in result
+    assert result["error"]
+    assert await _other_rows(db_session, caller) == []
+    assert queued == []
+
+
+async def test_handoff_trims_an_oversized_contract(executor, db_session, test_user):
+    caller = await _job(db_session, test_user)
+
+    result = await _call(
+        executor,
+        "create_handoff",
+        db_session,
+        caller,
+        {
+            "goal": "g" * 5000,
+            "context": "c" * 5000,
+            "expected_outputs": [f"{i}-" + "o" * 500 for i in range(15)],
+        },
+    )
+
+    assert result.get("success") is True, result
+    child = (await _other_rows(db_session, caller))[0]
+    assert child.goal == "g" * 2000
+    assert len(child.name) <= 200
+    contract = child.config["handoff_contract"]
+    assert contract["context"] == "c" * 2000
+    assert len(contract["expected_outputs"]) == 10
+    assert all(len(output) == 200 for output in contract["expected_outputs"])
+    assert result["data"]["expected_outputs"] == contract["expected_outputs"]
+
+
+async def test_handoff_passes_the_parents_latest_findings_to_the_child(
+    executor, db_session, test_user
+):
+    caller = await _job(db_session, test_user)
+    findings = [{"title": f"finding {i}"} for i in range(25)]
+
+    result = await _call(
+        executor, "create_handoff", db_session, caller, HANDOFF, {"findings": findings}
+    )
+
+    assert result.get("success") is True, result
+    assert result["data"]["findings_shared"] is True
+    child = (await _other_rows(db_session, caller))[0]
+    assert child.config["inherited_findings"] == findings[-20:]
+
+
+async def test_handoff_withholds_the_findings_when_asked_to(
+    executor, db_session, test_user
+):
+    caller = await _job(db_session, test_user)
+
+    result = await _call(
+        executor,
+        "create_handoff",
+        db_session,
+        caller,
+        {**HANDOFF, "share_findings": False},
+        {"findings": [{"title": "private"}]},
+    )
+
+    assert result.get("success") is True, result
+    assert result["data"]["findings_shared"] is False
+    child = (await _other_rows(db_session, caller))[0]
+    assert "inherited_findings" not in child.config
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Data written where nothing reads it. _create_handoff (and "
+        "_delegate_subtask) in agent_tool_dispatch.py put the parent's "
+        "findings in the child's config['inherited_findings'] and report "
+        "findings_shared=True, and that key is read nowhere in backend/app: "
+        "not by _build_thinking_prompt_stable (which does read "
+        "handoff_contract from the same config), not by the initial state in "
+        "agent_runtime_state_service, not by _inherit_assumed_findings (which "
+        "reads pipeline_assumes). The child starts without them. Seed the "
+        "child's state or prompt from the key."
+    ),
+)
+async def test_the_child_is_told_the_findings_its_parent_shared(
+    executor, db_session, test_user
+):
+    caller = await _job(db_session, test_user)
+    await _call(
+        executor,
+        "create_handoff",
+        db_session,
+        caller,
+        HANDOFF,
+        {"findings": [{"title": "ZEBRA-FINDING: profile is per-module"}]},
+    )
+    child = (await _other_rows(db_session, caller))[0]
+
+    prompt = executor._build_thinking_prompt_stable(child, None, {})
+
+    assert "ZEBRA-FINDING" in prompt
+
+
+async def test_handoff_keeps_the_child_in_the_parents_source_scope(
+    executor, db_session, test_user
+):
+    scoped = await _job(db_session, test_user, config={"source_id": "repo-42"})
+    unscoped = await _job(db_session, test_user, name="Unscoped")
+
+    await _call(executor, "create_handoff", db_session, scoped, HANDOFF)
+    await _call(executor, "create_handoff", db_session, unscoped, HANDOFF)
+
+    children = {
+        row.parent_job_id: row
+        for row in await _other_rows(db_session, scoped, unscoped)
+    }
+    assert children[scoped.id].config["default_source_id"] == "repo-42"
+    assert "default_source_id" not in children[unscoped.id].config
+
+
+async def test_a_grandchild_handoff_records_its_depth_and_the_root(
+    executor, db_session, test_user
+):
+    root = await _job(db_session, test_user, name="Root")
+    caller = await _job(
+        db_session,
+        test_user,
+        name="Middle",
+        parent_job_id=root.id,
+        root_job_id=root.id,
+        chain_depth=2,
+    )
+
+    result = await _call(executor, "create_handoff", db_session, caller, HANDOFF)
+
+    assert result.get("success") is True, result
+    child = (await _other_rows(db_session, root, caller))[0]
+    assert child.chain_depth == 3
+    assert child.parent_job_id == caller.id
+    assert child.root_job_id == root.id
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "agent_tool_dispatch.py _create_handoff catches the failed flush and "
+        "returns {'error': ...} without undoing it. The session it borrowed "
+        "from the executor is left with a failed transaction: the next "
+        "statement on it raises PendingRollbackError, so one refused child "
+        "insert takes the parent job down from somewhere unrelated. A plain "
+        "rollback() is not the fix either (it expires the executor's job "
+        "object: MissingGreenlet); insert inside `async with "
+        "ctx.db.begin_nested()` so only the savepoint is undone."
+    ),
+)
+async def test_a_failed_handoff_leaves_the_session_usable(
+    executor, db_session, test_user, queued
+):
+    caller = await _job(db_session, test_user)
+    state = {}
+
+    with _inserts_fail():
+        result = await _call(
+            executor, "create_handoff", db_session, caller, HANDOFF, state
+        )
+
+    assert "success" not in result
+    assert "Failed to create handoff" in result["error"]
+    assert queued == []
+    assert not state.get("delegated_subtask_ids")
+    # The executor goes on using this session and this job object.
+    assert caller.name == "Calling job"
+    assert await _other_rows(db_session, caller) == []
+    retry = await _call(executor, "create_handoff", db_session, caller, HANDOFF, state)
+    assert retry.get("success") is True, retry
+    assert len(await _other_rows(db_session, caller)) == 1
+
+
+# ---------------------------------------------------------------------------
+# get_sibling_status
+# ---------------------------------------------------------------------------
+
+
+async def test_sibling_status_is_refused_for_a_job_with_no_parent(
+    executor, db_session, test_user
+):
+    caller = await _job(db_session, test_user)
+    await _job(db_session, test_user, name="Unrelated")
+
+    result = await _call(executor, "get_sibling_status", db_session, caller, {})
+
+    assert "success" not in result
+    assert "no parent" in result["error"]
+
+
+async def test_sibling_status_lists_the_siblings_and_nobody_else(
+    executor, db_session, test_user, admin_user
+):
+    parent, (caller, sibling_a, sibling_b) = await _family(db_session, test_user)
+    sibling_a.status = "completed"
+    sibling_a.iteration = 7
+    sibling_a.max_iterations = 12
+    sibling_a.job_type = "analysis"
+    await db_session.commit()
+    await _job(db_session, test_user, name="Unrelated")
+    await _job(db_session, test_user, name="Nephew", parent_job_id=sibling_a.id)
+    await _job(db_session, admin_user, name="Another tenant", parent_job_id=parent.id)
+
+    result = await _call(executor, "get_sibling_status", db_session, caller, {})
+
+    assert result.get("success") is True, result
+    assert result["data"]["count"] == 2
+    by_id = {entry["job_id"]: entry for entry in result["data"]["siblings"]}
+    assert set(by_id) == {str(sibling_a.id), str(sibling_b.id)}
+    assert by_id[str(sibling_a.id)] == {
+        "job_id": str(sibling_a.id),
+        "name": "Sibling A",
+        "job_type": "analysis",
+        "status": "completed",
+        "iteration": 7,
+        "max_iterations": 12,
+    }
+    assert by_id[str(sibling_b.id)]["status"] == "running"
+
+
+async def test_an_only_child_has_no_siblings(executor, db_session, test_user):
+    parent = await _job(db_session, test_user, name="Parent")
+    caller = await _job(db_session, test_user, parent_job_id=parent.id)
+
+    result = await _call(executor, "get_sibling_status", db_session, caller, {})
+
+    assert result.get("success") is True, result
+    assert result["data"] == {"siblings": [], "count": 0}
+
+
+async def test_sibling_findings_are_left_out_unless_asked_for(
+    executor, db_session, test_user
+):
+    parent, (caller, sibling_a, _b) = await _family(db_session, test_user)
+    sibling_a.results = {"findings": [{"title": "Stride is 2.1x"}]}
+    await db_session.commit()
+
+    result = await _call(executor, "get_sibling_status", db_session, caller, {})
+
+    for entry in result["data"]["siblings"]:
+        assert "findings_count" not in entry
+        assert "finding_titles" not in entry
+
+
+async def test_sibling_status_can_include_finding_titles(
+    executor, db_session, test_user
+):
+    parent, (caller, sibling_a, sibling_b) = await _family(db_session, test_user)
+    sibling_a.results = {
+        "findings": [{"title": f"{i}-" + "t" * 300} for i in range(14)] + ["not a dict"]
+    }
+    await db_session.commit()
+
+    result = await _call(
+        executor, "get_sibling_status", db_session, caller, {"include_findings": True}
+    )
+
+    assert result.get("success") is True, result
+    by_id = {entry["job_id"]: entry for entry in result["data"]["siblings"]}
+    with_findings = by_id[str(sibling_a.id)]
+    assert with_findings["findings_count"] == 15
+    assert len(with_findings["finding_titles"]) == 10
+    assert with_findings["finding_titles"][0].startswith("0-")
+    assert all(len(title) == 100 for title in with_findings["finding_titles"])
+    # A sibling with nothing recorded is still listed.
+    assert by_id[str(sibling_b.id)]["status"] == "running"
+    assert not by_id[str(sibling_b.id)].get("finding_titles")
+
+
+async def test_sibling_status_changes_nothing(executor, db_session, test_user):
+    parent, (caller, sibling_a, _b) = await _family(db_session, test_user)
+
+    await _call(
+        executor, "get_sibling_status", db_session, caller, {"include_findings": True}
+    )
+
+    assert await _stored(db_session, sibling_a) == {}
+    assert await _other_rows(db_session, parent, caller, sibling_a, _b) == []
+
+
+# ---------------------------------------------------------------------------
+# broadcast_to_siblings
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("params", [{}, {"message": "   "}, {"category": "status"}])
+async def test_broadcast_refuses_a_call_with_no_message(
+    executor, db_session, test_user, params
+):
+    parent, (caller, sibling_a, _b) = await _family(db_session, test_user)
+
+    result = await _call(executor, "broadcast_to_siblings", db_session, caller, params)
+
+    assert "success" not in result
+    assert "message" in result["error"]
+    assert "agent_messages" not in await _stored(db_session, sibling_a)
+
+
+async def test_broadcast_is_refused_for_a_job_with_no_parent(
+    executor, db_session, test_user
+):
+    caller = await _job(db_session, test_user)
+    unrelated = await _job(db_session, test_user, name="Unrelated")
+
+    result = await _call(
+        executor, "broadcast_to_siblings", db_session, caller, {"message": "hello"}
+    )
+
+    assert "success" not in result
+    assert "no parent" in result["error"]
+    assert "agent_messages" not in await _stored(db_session, unrelated)
+
+
+async def test_broadcast_reaches_every_sibling_and_nobody_else(
+    executor, db_session, test_user, admin_user
+):
+    parent, (caller, sibling_a, sibling_b) = await _family(db_session, test_user)
+    unrelated = await _job(db_session, test_user, name="Unrelated")
+    nephew = await _job(db_session, test_user, name="Nephew", parent_job_id=caller.id)
+    theirs = await _job(
+        db_session, admin_user, name="Another tenant", parent_job_id=parent.id
+    )
+
+    result = await _call(
+        executor,
+        "broadcast_to_siblings",
+        db_session,
+        caller,
+        {"message": "  the gem5 image is stale, rebuild first  "},
+    )
+
+    assert result.get("success") is True, result
+    assert result["data"]["recipients"] == 2
+    for sibling in (sibling_a, sibling_b):
+        inbox = (await _stored(db_session, sibling))["agent_messages"]
+        assert len(inbox) == 1
+        assert inbox[0]["from_job_id"] == str(caller.id)
+        assert inbox[0]["from_job_name"] == "Caller"
+        assert inbox[0]["message"] == "the gem5 image is stale, rebuild first"
+        assert inbox[0]["category"] == "broadcast"
+        assert inbox[0]["broadcast"] is True
+        assert inbox[0]["sent_at"]
+    for bystander in (caller, parent, unrelated, nephew, theirs):
+        assert "agent_messages" not in await _stored(db_session, bystander)
+
+
+async def test_a_sibling_reads_the_broadcast_in_its_inbox(
+    executor, db_session, test_user
+):
+    parent, (caller, sibling_a, _b) = await _family(db_session, test_user)
+    await _call(
+        executor,
+        "broadcast_to_siblings",
+        db_session,
+        caller,
+        {"message": "arXiv is answering 406", "category": "outage"},
+    )
+    await db_session.commit()
+    await db_session.refresh(sibling_a)
+
+    result = await _read_messages(executor, db_session, sibling_a)
+
+    assert result.get("success") is True, result
+    assert result["data"]["total"] == 1
+    assert result["data"]["messages"][0]["message"] == "arXiv is answering 406"
+    assert result["data"]["messages"][0]["category"] == "outage"
+    assert result["data"]["messages"][0]["from_job_id"] == str(caller.id)
+
+
+async def test_broadcast_with_no_siblings_delivers_to_nobody(
+    executor, db_session, test_user
+):
+    parent = await _job(db_session, test_user, name="Parent")
+    caller = await _job(db_session, test_user, parent_job_id=parent.id)
+
+    result = await _call(
+        executor, "broadcast_to_siblings", db_session, caller, {"message": "anyone?"}
+    )
+
+    assert result.get("success") is True, result
+    assert result["data"]["recipients"] == 0
+    assert "agent_messages" not in await _stored(db_session, parent)
+
+
+async def test_broadcast_keeps_what_a_sibling_already_recorded(
+    executor, db_session, test_user
+):
+    parent, (caller, sibling_a, _b) = await _family(db_session, test_user)
+    sibling_a.results = {
+        "findings": [{"title": "its own"}],
+        "agent_messages": [{"from_job_id": "earlier", "message": "first"}],
+    }
+    await db_session.commit()
+
+    result = await _call(
+        executor, "broadcast_to_siblings", db_session, caller, {"message": "second"}
+    )
+
+    assert result.get("success") is True, result
+    stored = await _stored(db_session, sibling_a)
+    assert stored["findings"] == [{"title": "its own"}]
+    assert [m["message"] for m in stored["agent_messages"]] == ["first", "second"]
+
+
+async def test_broadcast_trims_a_long_message_and_category(
+    executor, db_session, test_user
+):
+    parent, (caller, sibling_a, _b) = await _family(db_session, test_user)
+
+    result = await _call(
+        executor,
+        "broadcast_to_siblings",
+        db_session,
+        caller,
+        {"message": "m" * 5000, "category": "c" * 500},
+    )
+
+    assert result.get("success") is True, result
+    entry = (await _stored(db_session, sibling_a))["agent_messages"][0]
+    assert entry["message"] == "m" * 2000
+    assert entry["category"] == "c" * 100
+
+
+async def test_a_siblings_inbox_keeps_only_the_newest_hundred(
+    executor, db_session, test_user
+):
+    parent, (caller, sibling_a, _b) = await _family(db_session, test_user)
+    sibling_a.results = {
+        "agent_messages": [
+            {"from_job_id": "old", "message": f"old-{i}"} for i in range(99)
+        ]
+    }
+    await db_session.commit()
+
+    for text in ("new-0", "new-1", "new-2"):
+        result = await _call(
+            executor, "broadcast_to_siblings", db_session, caller, {"message": text}
+        )
+        assert result.get("success") is True, result
+
+    inbox = (await _stored(db_session, sibling_a))["agent_messages"]
+    assert len(inbox) == 100
+    assert inbox[0]["message"] == "old-2"
+    assert [m["message"] for m in inbox[-3:]] == ["new-0", "new-1", "new-2"]
+
+
+async def test_a_missing_job_id_is_not_mistaken_for_a_sibling(
+    executor, db_session, test_user
+):
+    """Two parentless jobs share parent_job_id NULL; that is not a family."""
+    caller = await _job(db_session, test_user, parent_job_id=None)
+    other_root = await _job(db_session, test_user, name="Another root")
+    assert other_root.parent_job_id is None and uuid4() != other_root.id
+
+    status = await _call(executor, "get_sibling_status", db_session, caller, {})
+    broadcast = await _call(
+        executor, "broadcast_to_siblings", db_session, caller, {"message": "hello"}
+    )
+
+    assert "success" not in status
+    assert "success" not in broadcast
+    assert "agent_messages" not in await _stored(db_session, other_root)
+
+
+# ---------------------------------------------------------------------------
+# Declarations
+# ---------------------------------------------------------------------------
 
 
 class TestCollaborationSchemas:

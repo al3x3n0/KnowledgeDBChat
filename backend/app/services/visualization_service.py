@@ -588,11 +588,12 @@ class VisualizationService:
 
         box_data = [data[col].dropna() for col in columns]
 
-        bp = ax.boxplot(
-            box_data,
-            labels=columns,
-            patch_artist=True,
-        )
+        # Labels are set on the axis afterwards: `labels=` was renamed
+        # `tick_labels=` in matplotlib 3.9 and removed later, and the
+        # requirement is only `>=3.7`, so neither keyword works everywhere.
+        bp = ax.boxplot(box_data, patch_artist=True)
+        ax.set_xticks(range(1, len(columns) + 1))
+        ax.set_xticklabels([str(c) for c in columns])
 
         for patch, color in zip(bp["boxes"], palette):
             patch.set_facecolor(color)

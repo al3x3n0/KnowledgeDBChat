@@ -21,6 +21,7 @@ class WebScraperService:
     DEFAULT_MAX_BYTES = 2_000_000
     DEFAULT_MAX_CONTENT_CHARS = 50_000
     DEFAULT_USER_AGENT = "KnowledgeDBChat/1.0"
+    MAX_REDIRECTS = 5
 
     def __init__(
         self,
@@ -203,24 +204,40 @@ class WebScraperService:
         allow_private_networks: bool,
     ) -> Tuple[str, httpx.Response]:
         client = await self._get_client(timeout_s=timeout_s, headers=headers)
-        async with client.stream("GET", url) as response:
-            response.raise_for_status()
-            total = 0
-            chunks: List[bytes] = []
-            async for chunk in response.aiter_bytes():
-                if not chunk:
+        # Redirects are followed here, one hop at a time, so each address is
+        # checked *before* it is requested. Letting the client follow them
+        # and checking the final URL afterwards withheld the content of a
+        # redirect to a private address but still sent the request -- which,
+        # for a metadata endpoint or an internal service, is the harm.
+        current = url
+        for _hop in range(self.MAX_REDIRECTS + 1):
+            if self._enforce_network_safety:
+                self._validate_safe_url(
+                    current, allow_private_networks=allow_private_networks
+                )
+            async with client.stream(
+                "GET", current, follow_redirects=False
+            ) as response:
+                location = response.headers.get("location")
+                if response.status_code in (301, 302, 303, 307, 308) and location:
+                    current = self._normalize_url(urljoin(current, location))
                     continue
-                total += len(chunk)
-                if total > max_bytes:
-                    raise ValueError(f"Response too large (>{max_bytes} bytes)")
-                chunks.append(chunk)
-            content = b"".join(chunks)
+                response.raise_for_status()
+                total = 0
+                chunks: List[bytes] = []
+                async for chunk in response.aiter_bytes():
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ValueError(f"Response too large (>{max_bytes} bytes)")
+                    chunks.append(chunk)
+                content = b"".join(chunks)
+            break
+        else:
+            raise ValueError(f"Too many redirects (>{self.MAX_REDIRECTS})")
 
-        final_url = str(response.url)
-        if self._enforce_network_safety:
-            self._validate_safe_url(
-                final_url, allow_private_networks=allow_private_networks
-            )
+        final_url = current
         hydrated = httpx.Response(
             status_code=response.status_code,
             headers=response.headers,
@@ -278,16 +295,19 @@ class WebScraperService:
         ):
             raise ValueError("Localhost domains are not allowed")
 
-        # If it's a literal IP, check it directly.
+        # If it's a literal IP, check it directly. The refusal is raised
+        # outside the try: inside it, the `except ValueError` meant for
+        # "not an IP at all" swallowed the refusal too.
         try:
-            ip = ipaddress.ip_address(host_lower)
+            literal = ipaddress.ip_address(host_lower)
+        except ValueError:
+            literal = None
+        if literal is not None:
             if not self._is_allowed_ip(
-                ip, allow_private_networks=allow_private_networks
+                literal, allow_private_networks=allow_private_networks
             ):
                 raise ValueError("Disallowed IP address")
             return
-        except ValueError:
-            pass
 
         try:
             infos = socket.getaddrinfo(hostname, None)

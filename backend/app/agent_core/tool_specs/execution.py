@@ -748,9 +748,11 @@ SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="capture_snapshot",
         produces=("workspace_snapshot",),
-        requires=("clone_and_index_repo",),
+        # Nothing: it records the run's own state (findings, progress, tool
+        # stats). Requiring clone_and_index_repo told a stage that needed a
+        # snapshot to clone a repository first, and priced the clone.
         typical_seconds=10,
-        consumes="A workspace id; records its state for comparison.",
+        consumes="A label; records the run's current state for comparison.",
         description="Capture a named snapshot of current workspace state metrics (findings count, progress, tool stats, etc.) for later comparison or drift detection.",
         parameters={
             "type": "object",

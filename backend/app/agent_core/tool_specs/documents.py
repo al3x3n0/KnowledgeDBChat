@@ -460,6 +460,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["document_ids"],
         },
         job_types=(),
+        effects="write",
     ),
     ToolSpec(
         name="search_by_tags",
@@ -613,6 +614,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["source_id"],
         },
         job_types=(),
+        effects="write",
     ),
     ToolSpec(
         name="faceted_search",
@@ -756,6 +758,8 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["document_id"],
         },
         cost_tier="medium",
+        # It posts the image to an Ollama server.
+        network="egress",
     ),
     ToolSpec(
         name="get_media_info",

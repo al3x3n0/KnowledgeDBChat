@@ -1254,6 +1254,35 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   delete_document(..., warnings=[...])`: a file or vectors that could not be
   removed) rather than a bare success; and **document sources are shared**,
   so no source tool checks who requested the source.
+  - **The scraper connects only to an address it checked**
+    (`web_scraper_service.PinnedNetworkBackend`). The URL check resolved a
+    name and httpx resolved it again to connect, so a name answering public
+    then private (DNS rebinding) reached the private address. The connection
+    now resolves once and checks every address; TLS still verifies the
+    hostname. **Not behind a proxy**: there the proxy resolves, and httpx
+    ignores proxy settings whenever a transport is given, so pinning would
+    silently route around the proxy. macOS reports system proxies to
+    `urllib.request.getproxies()` with no variable set (this machine has one
+    at 127.0.0.1:1082). That made the first control test pass for the wrong
+    reason. So did anyio resolving the IDNA-encoded name as *bytes*, which a
+    fake DNS comparing against a `str` misses.
+  - `execute_workflow` **queues** (`WorkflowEngine.queue_workflow`, shared
+    with `POST /workflows/{id}/execute/async`); it used to run the whole graph
+    inside the tool call. What can be checked without running (owned, active,
+    one start node) is checked first, and a refusal is recorded as a failed
+    execution.
+  - `merge_documents` names every id it did not merge and why, merges a
+    repeated id once, and warns when the result could not be indexed.
+  - Nine tools were labelled `effects: read` or `network: none` while their
+    handlers queued work, persisted documents, searched arXiv or (for
+    `analyze_image`) posted to Ollama;
+    `tests/test_tool_effects_match_handlers.py` reads the handlers' source
+    and refuses that. The labels feed the policy UI and plugin
+    classification, not the approval gate.
+  - `capture_snapshot` no longer requires `clone_and_index_repo`: it records
+    run state, and the false prerequisite planned and priced a clone.
+  - `analyze_image` stays Ollama-only (see `VISION_MODEL`); with no Ollama
+    reachable it now says that instead of a bare connection error.
   A second round (`test_patch_bundle_review_handlers.py`,
   `test_compiler_tool_handlers.py`, five of whose tests run live against
   Docker) found:

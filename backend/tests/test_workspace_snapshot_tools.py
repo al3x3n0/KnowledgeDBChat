@@ -872,3 +872,16 @@ class TestSnapshotRegistry:
             meta = get_tool_metadata(tool_name)
             assert meta is not None
             assert meta.network == "none"
+
+
+def test_a_snapshot_needs_no_repository():
+    """It records the run's own state, so the plan must not clone first."""
+    from app.services.agent_evidence_map import chain_for
+
+    assert chain_for(["workspace_snapshot"], job_type="research") == [
+        "capture_snapshot"
+    ]
+    assert chain_for(["snapshot_diff"], job_type="research") == [
+        "capture_snapshot",
+        "compare_snapshots",
+    ]

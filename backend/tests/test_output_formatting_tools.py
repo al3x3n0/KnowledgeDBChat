@@ -368,13 +368,19 @@ class TestOutputFormattingSchemas:
 class TestOutputFormattingRegistry:
     """Tests for output formatting tool registry classification."""
 
-    def test_all_are_read(self):
+    def test_the_pure_formatters_are_read(self):
         from app.services.tool_registry import get_tool_metadata
 
-        for tool_name in ["format_as_table", "format_as_report", "set_output_schema"]:
+        for tool_name in ["format_as_table", "set_output_schema"]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None
             assert meta.effects == "read"
+
+    def test_format_as_report_is_a_write(self):
+        # With persist=true it stores a Document; a read label hid that.
+        from app.services.tool_registry import get_tool_metadata
+
+        assert get_tool_metadata("format_as_report").effects == "write"
 
     def test_all_are_low_cost(self):
         from app.services.tool_registry import get_tool_metadata

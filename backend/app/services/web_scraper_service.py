@@ -4,13 +4,16 @@ Web scraping utilities for fetching and extracting readable text from web pages.
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import re
 import socket
+import urllib.request
 from collections import deque
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlparse, urlunparse
 
+import httpcore
 import httpx
 from bs4 import BeautifulSoup
 from loguru import logger
@@ -86,6 +89,64 @@ async def private_network_access(
     return False, hosts, PRIVATE_NETWORK_REFUSAL
 
 
+class PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
+    """Resolve once, check every address, connect to one that was checked.
+
+    The URL check resolved the hostname and the HTTP client then resolved it
+    again to connect. A DNS server that answers with a public address the
+    first time and a private one the second (DNS rebinding) passed the check
+    and reached the private one. Here the check and the connection use the
+    same answer. TLS still verifies against the hostname: httpcore takes the
+    SNI name from the request, not from the address connected to.
+
+    `allowed(host, ip)` returns whether `ip` may be reached for `host`.
+    """
+
+    def __init__(
+        self,
+        allowed: Callable[[str, Any], bool],
+        inner: Optional[httpcore.AsyncNetworkBackend] = None,
+    ):
+        self._allowed = allowed
+        self._inner = inner or httpcore.AnyIOBackend()
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: Optional[float] = None,
+        local_address: Optional[str] = None,
+        socket_options: Any = None,
+    ) -> httpcore.AsyncNetworkStream:
+        try:
+            infos = await asyncio.get_running_loop().getaddrinfo(
+                host, port, type=socket.SOCK_STREAM
+            )
+        except OSError as exc:
+            raise httpcore.ConnectError(f"Failed to resolve {host}: {exc}") from exc
+        addresses = []
+        for info in infos:
+            ip = ipaddress.ip_address(info[4][0].split("%", 1)[0])
+            if not self._allowed(host, ip):
+                raise httpcore.ConnectError(f"Disallowed IP address for {host}: {ip}")
+            addresses.append(str(ip))
+        if not addresses:
+            raise httpcore.ConnectError(f"No address for {host}")
+        return await self._inner.connect_tcp(
+            addresses[0],
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+    async def connect_unix_socket(self, *args: Any, **kwargs: Any) -> Any:
+        raise httpcore.ConnectError("Unix sockets are not reachable from the scraper")
+
+    async def sleep(self, seconds: float) -> None:
+        await self._inner.sleep(seconds)
+
+
 class WebScraperService:
     DEFAULT_TIMEOUT_S = 20.0
     DEFAULT_MAX_BYTES = 2_000_000
@@ -107,12 +168,37 @@ class WebScraperService:
         self, *, timeout_s: float, headers: Dict[str, str]
     ) -> httpx.AsyncClient:
         if self._client is None:
+            transport = None
+            if self._enforce_network_safety and not urllib.request.getproxies():
+                # The connection checks the address it connects to; see
+                # PinnedNetworkBackend. httpx exposes no parameter for the
+                # backend, so it is set on the transport's pool.
+                #
+                # Not behind a proxy: there the proxy resolves the name and
+                # this process never sees an address, so the URL check is the
+                # only check -- and httpx ignores proxy settings whenever a
+                # transport is given, so pinning would silently route around
+                # a proxy the deployment relies on.
+                transport = httpx.AsyncHTTPTransport()
+                transport._pool._network_backend = PinnedNetworkBackend(
+                    self._address_allowed
+                )
             self._client = httpx.AsyncClient(
                 timeout=timeout_s,
                 follow_redirects=True,
                 headers=headers,
+                transport=transport,
             )
         return self._client
+
+    def _address_allowed(self, host: str, ip: Any) -> bool:
+        """The rule `_validate_safe_url` applies, for one resolved address."""
+        private_ok = bool(getattr(self, "_fetch_allows_private", False)) or (
+            host_is_allowlisted(
+                host.lower(), getattr(self, "_private_hosts", None) or []
+            )
+        )
+        return self._is_allowed_ip(ip, allow_private_networks=private_ok)
 
     async def aclose(self) -> None:
         if self._owns_client and self._client is not None:
@@ -290,6 +376,8 @@ class WebScraperService:
         headers: Dict[str, str],
         allow_private_networks: bool,
     ) -> Tuple[str, httpx.Response]:
+        # Read by the connection's address check (_address_allowed).
+        self._fetch_allows_private = bool(allow_private_networks)
         client = await self._get_client(timeout_s=timeout_s, headers=headers)
         # Redirects are followed here, one hop at a time, so each address is
         # checked *before* it is requested. Letting the client follow them

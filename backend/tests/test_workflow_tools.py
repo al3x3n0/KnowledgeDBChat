@@ -243,20 +243,16 @@ class TestExecuteWorkflow:
         # With nothing passed, the run says which job launched it.
         assert row.trigger_data == {"source_job_id": str(job.id)}
 
-        # The work is either done or handed to the task that does it -- never
-        # a pending row nobody will pick up.
-        if queued:
-            assert row.status == "pending"
-            args, kwargs = queued[0]
-            task_fn = workflow_tasks.execute_workflow_task.run
-            bound = inspect.signature(task_fn).bind(*args, **kwargs)
-            assert bound.arguments["execution_id"] == str(row.id)
-        else:
-            assert row.status == "completed"
-            assert row.progress == 100
-            assert row.started_at is not None
-            assert row.completed_at is not None
-            assert row.error is None
+        # Launched, not run: the work is handed to the task that does it,
+        # exactly once. Running the graph inline held the agent's turn on
+        # every node.
+        assert row.status == "pending"
+        assert row.started_at is None
+        (args, kwargs), *rest = queued
+        assert rest == []
+        task_fn = workflow_tasks.execute_workflow_task.run
+        bound = inspect.signature(task_fn).bind(*args, **kwargs)
+        assert bound.arguments["execution_id"] == str(row.id)
 
     async def test_trigger_data_and_inputs_are_passed_through(
         self, db_session, test_user, queued
@@ -590,3 +586,46 @@ class TestWorkflowToolRegistry:
         meta = get_tool_metadata("execute_workflow")
         assert meta is not None
         assert meta.cost_tier == "medium"
+
+
+class TestAsyncExecuteRoute:
+    """POST /workflows/{id}/execute/async queues through the same path."""
+
+    async def test_queues_a_pending_execution(
+        self, client, auth_headers, db_session, test_user, queued
+    ):
+        workflow = await _workflow(db_session, test_user)
+
+        response = client.post(
+            f"/api/v1/workflows/{workflow.id}/execute/async",
+            json={"inputs": {"topic": "x"}},
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 202, response.text
+        (row,) = await _executions(db_session)
+        assert response.json()["execution_id"] == str(row.id)
+        assert row.status == "pending"
+        assert [args for args, _ in queued] == [(str(row.id),)]
+
+    async def test_a_workflow_without_a_start_is_refused_and_not_queued(
+        self, client, auth_headers, db_session, test_user, queued
+    ):
+        workflow = await _workflow(db_session, test_user, nodes=("end",))
+
+        response = client.post(
+            f"/api/v1/workflows/{workflow.id}/execute/async",
+            json={},
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 400
+        assert "start node" in response.json()["detail"]
+        assert queued == []
+
+    async def test_an_unknown_workflow_is_404(self, client, auth_headers, queued):
+        response = client.post(
+            f"/api/v1/workflows/{uuid4()}/execute/async", json={}, headers=auth_headers
+        )
+        assert response.status_code == 404
+        assert queued == []

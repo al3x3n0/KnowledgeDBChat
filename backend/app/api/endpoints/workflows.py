@@ -465,38 +465,17 @@ async def execute_workflow_async(
     Returns the execution ID. Use WebSocket or polling to monitor progress.
     """
     try:
-        # Verify workflow exists
-        result = await db.execute(
-            select(Workflow).where(
-                Workflow.id == workflow_id, Workflow.user_id == current_user.id
+        try:
+            execution = await WorkflowEngine(db, current_user).queue_workflow(
+                workflow_id=workflow_id,
+                trigger_type=execution_data.trigger_type,
+                trigger_data=execution_data.trigger_data,
+                initial_context=execution_data.inputs,
             )
-        )
-        workflow = result.scalar_one_or_none()
-
-        if not workflow:
-            raise HTTPException(status_code=404, detail="Workflow not found")
-
-        if not workflow.is_active:
-            raise HTTPException(status_code=400, detail="Workflow is not active")
-
-        # Create pending execution
-        execution = WorkflowExecution(
-            workflow_id=workflow_id,
-            user_id=current_user.id,
-            trigger_type=execution_data.trigger_type,
-            trigger_data=execution_data.trigger_data,
-            status="pending",
-            progress=0,
-            context=execution_data.inputs,
-        )
-        db.add(execution)
-        await db.commit()
-        await db.refresh(execution)
-
-        # Queue Celery task
-        from app.tasks.workflow_tasks import execute_workflow_task
-
-        execute_workflow_task.delay(str(execution.id))
+        except WorkflowExecutionError as e:
+            status_code = 404 if "not found" in str(e) else 400
+            detail = "Workflow not found" if status_code == 404 else str(e)
+            raise HTTPException(status_code=status_code, detail=detail)
 
         return {
             "execution_id": str(execution.id),

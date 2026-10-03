@@ -460,6 +460,28 @@ async def test_a_failed_indexing_step_does_not_lose_the_merge(db_session, test_u
     assert result.get("success") is True, result
     titles = sorted(d.title for d in await _all_documents(db_session))
     assert titles == ["Alpha", "M"]
+    assert "could not be indexed" in result["data"]["warning"]
+
+
+async def test_an_id_given_twice_is_merged_once(db_session, test_user):
+    source = await _source(db_session)
+    doc = await _doc(db_session, source, "Alpha", content="once")
+
+    result = await _run(
+        "merge_documents",
+        {"document_ids": [str(doc.id), str(doc.id)], "title": "M"},
+        db_session,
+        test_user,
+    )
+
+    assert result["data"]["source_count"] == 1
+    assert result["data"]["skipped"] == [
+        {"id": str(doc.id), "reason": "listed more than once"}
+    ]
+    merged = await db_session.get(
+        Document, doc.id.__class__(result["data"]["document_id"])
+    )
+    assert merged.content == "# Alpha\n\nonce"
 
 
 async def test_merge_uses_the_separator_it_is_given(db_session, test_user):
@@ -525,6 +547,10 @@ async def test_merge_takes_at_most_twenty_documents(db_session, test_user):
     )
 
     assert result["data"]["source_count"] == 20
+    # The two left out are named, not dropped in silence.
+    assert result["data"]["skipped"] == [
+        {"id": i, "reason": "over the 20 limit"} for i in ids[20:]
+    ]
     merged = await db_session.get(
         Document, docs[0].id.__class__(result["data"]["document_id"])
     )
@@ -550,6 +576,12 @@ async def test_merge_skips_ids_it_cannot_use_and_keeps_the_rest(db_session, test
 
     assert result.get("success") is True, result
     assert result["data"]["source_count"] == 1
+    missing = result["data"]["skipped"][1]["id"]
+    assert result["data"]["skipped"] == [
+        {"id": "not-a-uuid", "reason": "not a document id"},
+        {"id": missing, "reason": "no such document"},
+        {"id": str(empty.id), "reason": "document has no content"},
+    ]
     merged = await db_session.get(
         Document, good.id.__class__(result["data"]["document_id"])
     )

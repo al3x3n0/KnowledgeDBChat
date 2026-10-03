@@ -3058,7 +3058,9 @@ def build_autonomous_workflow_provider(executor: Any) -> FunctionToolProvider:
             if not user_obj:
                 return {"error": "Could not load user for workflow execution"}
             engine = WorkflowEngine(ctx.db, user_obj)
-            execution = await engine.execute_workflow(
+            # Queued, not run here: the spec says this launches, and running
+            # inline held the whole agent turn on every node of the graph.
+            execution = await engine.queue_workflow(
                 workflow_id=_UUID(wf_id_str),
                 trigger_type="agent_job",
                 trigger_data=params.get("trigger_data")
@@ -10652,6 +10654,8 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
         from pathlib import Path as _Path
         from uuid import UUID as _UUID
 
+        import httpx
+
         from app.core.config import settings as _settings
         from app.models.document import Document as DocModel
         from app.services.storage_service import storage_service as _storage
@@ -10752,6 +10756,18 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
             if status == 404:
                 return {
                     "error": f"Vision model '{vision_model}' not available. Pull it with: ollama pull {vision_model}"
+                }
+            if isinstance(exc, httpx.ConnectError):
+                # Image analysis is Ollama-only whatever LLM_PROVIDER says,
+                # and the stack does not bundle Ollama. Say so: a bare
+                # connection error reads as a transient fault worth retrying.
+                return {
+                    "error": (
+                        "Image analysis needs an Ollama instance with a vision "
+                        f"model, and none is reachable at "
+                        f"{executor.llm_service.base_url} (OLLAMA_BASE_URL): "
+                        f"{error_msg}"
+                    )
                 }
             return {"error": f"Failed to analyze image: {error_msg}"}
 
@@ -11298,6 +11314,10 @@ def build_autonomous_project_bootstrap_provider(executor: Any) -> FunctionToolPr
     )
 
 
+#: merge_documents combines at most this many documents.
+MERGE_MAX_DOCUMENTS = 20
+
+
 def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
     """Document-domain tools for AutonomousAgentExecutor."""
 
@@ -11826,6 +11846,8 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
         import uuid
         from uuid import UUID as _UUID
 
+        from loguru import logger
+
         from app.models.document import Document
 
         job = ctx.job
@@ -11839,18 +11861,41 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
         separator = params.get("separator")
         separator = "\n\n---\n\n" if separator is None else str(separator)
         merge_tags = params.get("tags") if isinstance(params.get("tags"), list) else []
+        # Every id that is not merged is named with its reason. They used to
+        # be dropped in silence -- an id that was not one, a document that
+        # did not exist, anything past the 20th -- and an id given twice was
+        # merged twice.
         sections = []
-        source_ids = []
-        for doc_id_str in doc_ids[:20]:
+        source_ids: List[str] = []
+        skipped: List[Dict[str, str]] = []
+        for doc_id_str in doc_ids:
+            raw_id = str(doc_id_str).strip()
             try:
-                doc_obj = await ctx.db.get(Document, _UUID(str(doc_id_str).strip()))
-                if doc_obj and doc_obj.content:
-                    sections.append(f"# {doc_obj.title}\n\n{doc_obj.content}")
-                    source_ids.append(str(doc_obj.id))
-            except Exception:
+                doc_uuid = _UUID(raw_id)
+            except (ValueError, AttributeError, TypeError):
+                skipped.append({"id": raw_id, "reason": "not a document id"})
                 continue
+            if str(doc_uuid) in source_ids:
+                skipped.append({"id": raw_id, "reason": "listed more than once"})
+                continue
+            if len(source_ids) >= MERGE_MAX_DOCUMENTS:
+                skipped.append(
+                    {"id": raw_id, "reason": f"over the {MERGE_MAX_DOCUMENTS} limit"}
+                )
+                continue
+            doc_obj = await ctx.db.get(Document, doc_uuid)
+            if doc_obj is None:
+                skipped.append({"id": raw_id, "reason": "no such document"})
+            elif not doc_obj.content:
+                skipped.append({"id": raw_id, "reason": "document has no content"})
+            else:
+                sections.append(f"# {doc_obj.title}\n\n{doc_obj.content}")
+                source_ids.append(str(doc_obj.id))
         if not sections:
-            return {"error": "No valid documents with content found"}
+            return {
+                "error": "No valid documents with content found",
+                "skipped": skipped,
+            }
 
         merged_content = separator.join(sections)
         if len(merged_content.encode("utf-8")) > 2_000_000:
@@ -11881,20 +11926,30 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
         await ctx.db.refresh(new_doc)
 
         try:
-            await executor.document_service.reprocess_document(
+            indexed = await executor.document_service.reprocess_document(
                 new_doc.id, ctx.db, user_id=job.user_id
             )
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - the merge is kept either way
+            logger.warning(f"merge_documents: indexing {new_doc.id} failed: {exc}")
+            indexed = False
 
+        data = {
+            "document_id": str(new_doc.id),
+            "title": new_doc.title,
+            "source_count": len(source_ids),
+            "content_length": len(merged_content),
+        }
+        if skipped:
+            data["skipped"] = skipped
+        if not indexed:
+            # Saved but not searchable: a search for it would find nothing.
+            data["warning"] = (
+                "The merged document was saved but could not be indexed, so "
+                "search will not find it until it is reprocessed."
+            )
         return {
             "success": True,
-            "data": {
-                "document_id": str(new_doc.id),
-                "title": new_doc.title,
-                "source_count": len(source_ids),
-                "content_length": len(merged_content),
-            },
+            "data": data,
             "artifacts": [
                 {"type": "document", "id": str(new_doc.id), "title": new_doc.title}
             ],

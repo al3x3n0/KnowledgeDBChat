@@ -532,6 +532,21 @@ class TestAnalyzeImage:
         assert "bakllava" in result["error"]
         assert "ollama pull bakllava" in result["error"]
 
+    async def test_no_ollama_to_reach_is_named_as_such(self, call, image, vision):
+        # Image analysis is Ollama-only and the stack does not bundle Ollama;
+        # a bare "connection refused" read as a fault worth retrying.
+        async def refused(url, json=None, timeout=None):
+            raise httpx.ConnectError("[Errno 61] Connection refused")
+
+        vision.post = refused
+
+        result = await call("analyze_image", {"document_id": str(image.id)})
+
+        assert "needs an Ollama instance" in result["error"]
+        assert "OLLAMA_BASE_URL" in result["error"]
+        assert "Connection refused" in result["error"]
+        assert "findings" not in result
+
     async def test_any_other_upstream_failure_is_reported_as_itself(
         self, call, image, vision
     ):
@@ -925,10 +940,13 @@ class TestMultiModalRegistry:
         meta = get_tool_metadata("get_media_info")
         assert meta.cost_tier == "low"
 
-    def test_none_is_network_tool(self):
+    def test_only_image_analysis_goes_out(self):
+        # analyze_image posts the image to an Ollama server; the other two
+        # stay on this side.
         from app.services.tool_registry import get_tool_metadata
 
-        for tool_name in ["transcribe_document", "analyze_image", "get_media_info"]:
+        for tool_name in ["transcribe_document", "get_media_info"]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None
             assert meta.network == "none"
+        assert get_tool_metadata("analyze_image").network == "egress"

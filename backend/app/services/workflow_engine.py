@@ -220,6 +220,60 @@ class WorkflowEngine:
 
         return execution
 
+    async def queue_workflow(
+        self,
+        workflow_id: UUID,
+        trigger_type: str = "manual",
+        trigger_data: Optional[Dict[str, Any]] = None,
+        initial_context: Optional[Dict[str, Any]] = None,
+    ) -> WorkflowExecution:
+        """Create a pending execution and hand it to the workflow task.
+
+        `execute_workflow` runs the whole graph before it returns, which is
+        right for the synchronous endpoint and wrong for an agent tool that
+        says it launches: the run waited on every node, LLM calls included.
+        What can be known without running is checked here -- the workflow is
+        the caller's, active, and has one start node -- so a workflow that
+        cannot start is refused now rather than failing later in a worker.
+        Like the engine, a refused start is recorded as a failed execution.
+        """
+        result = await self.db.execute(
+            select(Workflow)
+            .options(selectinload(Workflow.nodes))
+            .where(Workflow.id == workflow_id, Workflow.user_id == self.user.id)
+        )
+        workflow = result.scalar_one_or_none()
+        if not workflow:
+            raise WorkflowExecutionError(f"Workflow {workflow_id} not found")
+        if not workflow.is_active:
+            raise WorkflowExecutionError("Workflow is not active")
+
+        execution = WorkflowExecution(
+            workflow_id=workflow_id,
+            user_id=self.user.id,
+            trigger_type=trigger_type,
+            trigger_data=trigger_data or {},
+            status="pending",
+            progress=0,
+            context=initial_context or {},
+        )
+        self.db.add(execution)
+        starts = [n for n in workflow.nodes if n.node_type == "start"]
+        if len(starts) != 1:
+            message = "Workflow must have exactly one start node"
+            execution.status = "failed"
+            execution.error = message
+            execution.completed_at = datetime.utcnow()
+            await self.db.commit()
+            raise WorkflowExecutionError(message)
+        await self.db.commit()
+        await self.db.refresh(execution)
+
+        from app.tasks.workflow_tasks import execute_workflow_task
+
+        execute_workflow_task.delay(str(execution.id))
+        return execution
+
     async def execute_existing_execution(
         self, execution: WorkflowExecution
     ) -> WorkflowExecution:

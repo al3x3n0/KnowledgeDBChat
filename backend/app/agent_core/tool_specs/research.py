@@ -190,6 +190,8 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["source_id"],
         },
         job_types=(),
+        effects="write",
+        network="egress",
     ),
     ToolSpec(
         name="generate_literature_review_for_source",
@@ -508,6 +510,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": [],
         },
         job_types=("research", "knowledge_expansion"),
+        network="egress",
     ),
     ToolSpec(
         name="build_research_graph",
@@ -700,6 +703,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["topic"],
         },
         job_types=("monitor",),
+        network="egress",
     ),
     ToolSpec(
         name="ingest_paper_by_id",
@@ -730,6 +734,7 @@ SPECS: tuple[ToolSpec, ...] = (
         },
         effects="write",
         job_types=("research", "monitor", "knowledge_expansion"),
+        network="egress",
     ),
     ToolSpec(
         name="analyze_document_cluster",
@@ -836,6 +841,8 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["arxiv_ids"],
         },
         job_types=("research", "knowledge_expansion"),
+        effects="write",
+        network="egress",
     ),
     ToolSpec(
         name="search_web",

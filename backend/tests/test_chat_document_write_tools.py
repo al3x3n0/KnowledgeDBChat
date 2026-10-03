@@ -426,12 +426,12 @@ class _RefusingDeletes(DocumentService):
         self._mode = mode
         self._ids = {str(i) for i in ids}
 
-    async def delete_document(self, document_id, db):
+    async def delete_document(self, document_id, db, *, warnings=None):
         if str(document_id) in self._ids:
             if self._mode == "raise":
                 raise RuntimeError("database is read-only")
             return False
-        return await super().delete_document(document_id, db)
+        return await super().delete_document(document_id, db, warnings=warnings)
 
 
 @pytest.mark.parametrize("mode", ["false", "raise"])
@@ -449,13 +449,6 @@ async def test_a_delete_that_fails_is_reported_as_a_failure(service, db_session,
     assert await _titles(db_session) == ["Stuck"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="document_service.py:751-787 logs and continues when the object store "
-    "or the vector store refuses the delete, then removes the row and returns "
-    "True; the tool says 'Successfully deleted' while the file / the vectors "
-    "(still returned by search) are orphaned with no row left to retry from",
-)
 @pytest.mark.parametrize("edge", ["fail_vector_delete", "fail_storage"])
 async def test_delete_does_not_claim_success_when_vectors_or_file_remain(
     service, db_session, edges, edge
@@ -546,8 +539,10 @@ async def test_confirm_endpoint_requires_a_signed_in_caller(client, db_session, 
 
 
 async def test_confirm_endpoint_deletes_the_document(
-    client, auth_headers, db_session, edges
+    client, auth_headers, db_session, edges, monkeypatch
 ):
+    """Where approvals are switched off, confirming is enough."""
+    monkeypatch.setattr(settings, "AGENT_REQUIRE_TOOL_APPROVAL", False)
     source = await _source(db_session)
     doc = await _doc(db_session, source, "Confirmed", file_path="docs/c.pdf")
     await _doc(db_session, source, "Other")
@@ -586,15 +581,6 @@ async def test_confirm_endpoint_answers_a_bad_or_unknown_id_without_deleting(
     assert await _titles(db_session) == ["Untouched"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="SECURITY. endpoints/agent.py:157 calls _tool_delete_document with "
-    "confirm=True for any signed-in caller and any id. In chat the same tool is "
-    "in AGENT_DANGEROUS_TOOLS and stops at an owner_and_admin approval "
-    "(AgentService._execute_tool); this route deletes with no pending confirmation, "
-    "no approval and no ToolExecutionAudit row, so the gate is bypassed by "
-    "POSTing the id",
-)
 async def test_confirm_endpoint_does_not_bypass_the_approval_gate(
     client, auth_headers, db_session, monkeypatch
 ):

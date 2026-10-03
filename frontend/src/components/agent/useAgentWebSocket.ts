@@ -719,7 +719,15 @@ export function useAgentWebSocket(): UseAgentWebSocketReturn {
         }
       });
 
-      if (!response.ok) throw new Error('Delete failed');
+      if (!response.ok) {
+        // 409 means the deletion is waiting for an approval: say so rather
+        // than "failed", since nothing went wrong.
+        const body = await response.json().catch(() => ({}));
+        const detail = body?.detail;
+        const message =
+          typeof detail === 'string' ? detail : detail?.message || 'Delete failed';
+        throw new Error(message);
+      }
 
       const successMessage: AgentMessage = {
         id: `delete-${Date.now()}`,
@@ -733,12 +741,15 @@ export function useAgentWebSocket(): UseAgentWebSocketReturn {
 
     } catch (error: any) {
       console.error('Delete error:', error);
-      toast.error('Failed to delete document');
+      const reason = error?.message && error.message !== 'Delete failed' ? error.message : '';
+      toast.error(reason || 'Failed to delete document');
 
       const errorMessage: AgentMessage = {
         id: `delete-error-${Date.now()}`,
         role: 'assistant',
-        content: `Failed to delete the document. Please try again.`,
+        content: reason
+          ? `The document was not deleted: ${reason}`
+          : `Failed to delete the document. Please try again.`,
         created_at: new Date().toISOString(),
       };
       setMessages(prev => [...prev, errorMessage]);

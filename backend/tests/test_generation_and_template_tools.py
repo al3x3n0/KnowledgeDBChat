@@ -2060,22 +2060,22 @@ class TestEnrichArxivMetadataForSource:
 
         assert enrich_task.calls[0]["limit"] == 5000
 
-    async def test_another_users_source_is_refused(
+    async def test_another_users_source_may_be_enriched(
         self, db_session, arxiv_source, enrich_task
     ):
+        """Sources are shared, like documents; this tool alone used to refuse
+        a source another user had requested."""
         stranger = await _stranger(db_session)
 
-        message = await _refusal(
-            _chat(
-                "enrich_arxiv_metadata_for_source",
-                {"source_id": str(arxiv_source.source.id)},
-                db_session,
-                stranger.id,
-            )
+        result = await _chat(
+            "enrich_arxiv_metadata_for_source",
+            {"source_id": str(arxiv_source.source.id)},
+            db_session,
+            stranger.id,
         )
 
-        assert "authorized" in message
-        assert enrich_task.calls == []
+        assert "error" not in result, result
+        assert len(enrich_task.calls) == 1
 
     async def test_an_admin_may_enrich_any_source(
         self, db_session, admin_user, arxiv_source, enrich_task
@@ -2268,33 +2268,22 @@ class TestGenerateSlidesForSource:
 
         assert slides_task.calls == []
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Two implementations disagree: "
-            "_tool_enrich_arxiv_metadata_for_source refuses a source "
-            "another user requested, while "
-            "_tool_generate_slides_for_source (and "
-            "_tool_summarize_documents_in_source) perform no ownership "
-            "check on the same source."
-        ),
-    )
-    async def test_another_users_source_is_refused(
-        self, db_session, arxiv_source, slides_task
+    async def test_another_users_source_may_be_enriched(
+        self, db_session, arxiv_source, enrich_task
     ):
-        """The same rule `enrich_arxiv_metadata_for_source` applies to this source."""
+        """Sources are shared, like documents; this tool alone used to refuse
+        a source another user had requested."""
         stranger = await _stranger(db_session)
 
-        await _refusal(
-            _chat(
-                "generate_slides_for_source",
-                {"source_id": str(arxiv_source.source.id)},
-                db_session,
-                stranger.id,
-            )
+        result = await _chat(
+            "enrich_arxiv_metadata_for_source",
+            {"source_id": str(arxiv_source.source.id)},
+            db_session,
+            stranger.id,
         )
 
-        assert slides_task.calls == []
+        assert "error" not in result, result
+        assert len(enrich_task.calls) == 1
 
 
 # --- find_related_papers ---------------------------------------------------

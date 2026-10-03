@@ -1215,10 +1215,14 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   Faceted search takes its results, total and facets from one sample of
   documents and applies all five declared filters; it says when the sample
   was full (`sampled`).
-  Left as decisions, each an xfail: `POST /agent/confirm-delete/{id}` deletes
-  for any signed-in user without the approval gate chat applies to the same
-  tool; and a delete reports success when vectors or the stored file could
-  not be removed.
+  Three decisions, now made: **`POST /agent/confirm-delete/{id}` goes through
+  `_execute_tool`**, the same approval gate and audit row a chat turn gets —
+  with `AGENT_REQUIRE_TOOL_APPROVAL` on (the default) it answers 409 with an
+  `approval_id` instead of deleting, and the widget says the deletion is
+  waiting; **a delete reports what it left behind** (`DocumentService.
+  delete_document(..., warnings=[...])`: a file or vectors that could not be
+  removed) rather than a bare success; and **document sources are shared**,
+  so no source tool checks who requested the source.
 - **A setting must be read, or admitted inert.** `TRAINING_ENABLED` was the
   documented gate on training and nothing read it; the concurrency limit and
   two dataset limits beside it were the same. They are enforced now (the gate

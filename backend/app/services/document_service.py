@@ -708,9 +708,21 @@ class DocumentService:
             document.processing_error = str(e)
             await db.commit()
 
-    async def delete_document(self, document_id: UUID, db: AsyncSession) -> bool:
+    async def delete_document(
+        self,
+        document_id: UUID,
+        db: AsyncSession,
+        *,
+        warnings: Optional[List[str]] = None,
+    ) -> bool:
         """
         Delete a document and all associated data.
+
+        The row is deleted even when its stored file or its vectors cannot
+        be removed -- by design, so one broken store cannot pin a document
+        forever. Pass a list as `warnings` to be told what was left behind:
+        returning a bare True for that hid orphaned vectors that search
+        still returned.
 
         This method deletes:
         1. File from MinIO storage
@@ -766,11 +778,20 @@ class DocumentService:
                         logger.warning(
                             f"File deletion returned False for: {document.file_path}"
                         )
+                        if warnings is not None:
+                            warnings.append(
+                                f"The stored file {document.file_path} was not removed"
+                            )
                 except Exception as e:
                     logger.warning(
                         f"Failed to delete file from MinIO {document.file_path}: {e}",
                         exc_info=True,
                     )
+                    if warnings is not None:
+                        warnings.append(
+                            f"The stored file {document.file_path} could not be "
+                            f"removed: {e}"
+                        )
                     # Continue with deletion even if MinIO delete fails
 
             # Step 2: Delete from vector store (ChromaDB)
@@ -786,6 +807,11 @@ class DocumentService:
                 logger.warning(
                     f"Failed to delete chunks from vector store for document {document_id}: {e}"
                 )
+                if warnings is not None:
+                    warnings.append(
+                        "Its vectors could not be removed from the search index, "
+                        f"so search may still return it: {e}"
+                    )
                 # Continue with deletion even if vector store delete fails
 
             # Step 3: Delete chunks from database explicitly (in addition to cascade)

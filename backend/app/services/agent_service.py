@@ -1581,22 +1581,8 @@ Your response:"""
         if not src or src.source_type != "arxiv":
             raise ValueError("arXiv source not found")
 
-        # Best-effort ownership check: match requested_by / requested_by_user_id if present (admins bypass)
-        cfg = src.config if isinstance(src.config, dict) else {}
-        requested_by_user_id = cfg.get("requested_by_user_id") or cfg.get(
-            "requestedByUserId"
-        )
-        requested_by = cfg.get("requested_by") or cfg.get("requestedBy")
-        if (
-            requested_by_user_id
-            and requested_by_user_id != str(user_id)
-            and requested_by != str(user_id)
-        ):
-            from app.models.user import User as DbUser
-
-            u = await db.get(DbUser, user_id)
-            if not (u and u.is_admin()):
-                raise ValueError("Not authorized for this source")
+        # Sources are shared, as documents are: no other tool that acts on a
+        # source checks who requested it, and this one alone refused.
 
         force = bool(params.get("force", False))
         limit = bounded_int(params.get("limit"), 500, 0, 5000)
@@ -2001,14 +1987,25 @@ Your response:"""
 
         # Proceed with deletion
         try:
-            success = await self.document_service.delete_document(doc_uuid, db)
+            title = document.title
+            left_behind: List[str] = []
+            success = await self.document_service.delete_document(
+                doc_uuid, db, warnings=left_behind
+            )
             if success:
-                return {
+                result = {
                     "action": "deleted",
                     "document_id": document_id,
-                    "title": document.title,
-                    "message": f"Successfully deleted document '{document.title}'",
+                    "title": title,
+                    "message": f"Successfully deleted document '{title}'",
                 }
+                if left_behind:
+                    result["warnings"] = left_behind
+                    result["message"] = (
+                        f"Deleted document '{title}', but not everything it "
+                        "left behind could be removed"
+                    )
+                return result
             else:
                 return {"error": f"Failed to delete document '{document.title}'"}
         except Exception as e:
@@ -2578,13 +2575,19 @@ Your response:"""
         # Proceed with deletion
         deleted = []
         failed = list(not_found)
+        batch_warnings: List[str] = []
 
         for doc_uuid in valid_ids:
             try:
-                success = await self.document_service.delete_document(doc_uuid, db)
+                left_behind: List[str] = []
+                success = await self.document_service.delete_document(
+                    doc_uuid, db, warnings=left_behind
+                )
                 doc_id = str(doc_uuid)
                 if success:
                     deleted.append(doc_id)
+                    for note in left_behind:
+                        batch_warnings.append(f"{doc_id}: {note}")
                 else:
                     failed.append({"id": doc_id, "reason": "Deletion failed"})
             except Exception as e:
@@ -2596,6 +2599,7 @@ Your response:"""
             "deleted_ids": deleted,
             "failed_count": len(failed),
             "failed": failed if failed else None,
+            "warnings": batch_warnings or None,
             "message": f"Successfully deleted {len(deleted)} document(s)"
             + (f", {len(failed)} failed" if failed else ""),
         }

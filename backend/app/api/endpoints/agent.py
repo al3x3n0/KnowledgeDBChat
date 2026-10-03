@@ -153,13 +153,49 @@ async def confirm_document_deletion(
     Returns:
         Deletion result
     """
-    try:
-        result = await agent_service._tool_delete_document(
-            params={"document_id": document_id, "confirm": True}, db=db
-        )
+    # A bad or unknown id is answered before anything is gated: an approval
+    # request for a document that does not exist is nothing to approve.
+    from uuid import UUID as _UUID
 
-        if "error" in result:
-            raise HTTPException(status_code=400, detail=result["error"])
+    try:
+        target_id = _UUID(str(document_id))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid document ID")
+    from app.models.document import Document as _Document
+
+    if await db.get(_Document, target_id) is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    try:
+        # Through the same gate a chat turn goes through: the approval check
+        # and the audit row. Calling the tool directly deleted for any
+        # signed-in user even where chat would have stopped for an approval.
+        from app.schemas.agent import AgentToolCall
+
+        call = await agent_service._execute_tool(
+            AgentToolCall(
+                tool_name="delete_document",
+                tool_input={"document_id": document_id, "confirm": True},
+                status="pending",
+            ),
+            current_user.id,
+            db,
+        )
+        result = call.tool_output if isinstance(call.tool_output, dict) else {}
+
+        if call.status == "requires_approval":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": result.get("message")
+                    or "This deletion needs an approval before it can run.",
+                    "approval_id": result.get("approval_id"),
+                },
+            )
+        if call.status != "completed" or "error" in result:
+            detail = result.get("error") or call.error or "Delete failed"
+            status_code = 404 if "not found" in str(detail).lower() else 400
+            raise HTTPException(status_code=status_code, detail=detail)
 
         return result
 

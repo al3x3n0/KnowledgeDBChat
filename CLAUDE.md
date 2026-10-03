@@ -1223,6 +1223,33 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   delete_document(..., warnings=[...])`: a file or vectors that could not be
   removed) rather than a bare success; and **document sources are shared**,
   so no source tool checks who requested the source.
+  A second round (`test_patch_bundle_review_handlers.py`,
+  `test_compiler_tool_handlers.py`, five of whose tests run live against
+  Docker) found:
+  - **Docker's exit 125 is not the code's failure.** Nine compiler, binary,
+    BOLT and gem5 tools ignored the return code. So "the image is not built"
+    read as "the pass did not compile", or "work is not defined", or
+    `baseline_broken`, and a pass synthesis spent three model calls repairing
+    it. `agent_sandbox_runtime.could_not_run(rc, stderr, image)` is the
+    check, and it fires on 125 alone: a script may exit 126/127 itself.
+  - **An autonomous context carries the job's owner.** `agent_action_service`
+    left `user_id` unset, so every model-calling handler ran without the
+    owner's LLM settings.
+  - **A workspace belongs to its job.** `get_or_default(..., job=ctx.job)`
+    refuses a workspace another job owns; naming its id used to propose that
+    job's diff as your own.
+  - **`propose_code_patch` writes a `CodePatchProposal` row.** It used to stay
+    in run state, which no review page reads. It also includes files the run
+    created (bare `git diff` omits untracked files), lists deleted files, and
+    reports a failed `git diff` instead of "no changes".
+  - `literature_review_arxiv` had no autonomous handler, so the one producer
+    of `literature_review` was unreachable from the jobs it names. An empty
+    search no longer yields that finding. An old-style arXiv id
+    (`hep-th/9901001v1`) keeps its archive prefix.
+  - Replaying your own evidence bundle no longer appends the replay to it
+    (`extra["replaying_bundle"]`). gem5 runs have a time limit, and none had
+    one by default. A BOLT option is refused before the build, not after it.
+    A pass that crashes is `pass_crashed`, not "unregistered".
 - **A setting must be read, or admitted inert.** `TRAINING_ENABLED` was the
   documented gate on training and nothing read it; the concurrency limit and
   two dataset limits beside it were the same. They are enforced now (the gate

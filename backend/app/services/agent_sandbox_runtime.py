@@ -17,7 +17,7 @@ import asyncio
 import logging
 import subprocess
 import uuid
-from typing import List, Optional, Sequence, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,25 @@ def explain_sandbox_exit(returncode: int, stderr: str, image: str) -> str:
             f"needs does not. Docker said: {detail[:400]}"
         )
     return ""
+
+
+def could_not_run(returncode: Any, stderr: str, image: str) -> str:
+    """Why the script never ran, or "" when it did.
+
+    Only docker's own 125. A script is free to exit 126 or 127 itself (a
+    command it names is missing), and that is the code's failure, which its
+    caller already reports; 125 is the daemon refusing before anything ran.
+    Every tool that ignored the return code read it as the code's failure
+    instead -- "the pass did not compile", "work is not defined in the
+    object", "baseline_broken" -- and sent the run to edit code that had
+    never executed.
+    """
+    if returncode != DOCKER_COULD_NOT_START:
+        return ""
+    return explain_sandbox_exit(returncode, stderr, image)
+
+
+NO_DOCKER = "Docker is not available to this process"
 
 
 def image_not_allowlisted(image: str) -> str:

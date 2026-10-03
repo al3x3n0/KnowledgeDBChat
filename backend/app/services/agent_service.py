@@ -1357,7 +1357,7 @@ Your response:"""
             for c in (params.get("categories") or [])
             if isinstance(c, str) and c.strip()
         ]
-        max_papers = max(1, min(int(params.get("max_papers") or 5), 25))
+        max_papers = bounded_int(params.get("max_papers"), 5, 1, 25)
         ingest = bool(params.get("ingest", True))
         sort_by = params.get("sort_by") or "relevance"
         sort_order = params.get("sort_order") or "descending"
@@ -1411,16 +1411,21 @@ Your response:"""
             # declares produces=("literature_review",), and without this the
             # evidence never arrives under the name the contract counts --
             # the same defect that made create_synthesis_document unable to
-            # satisfy the contract it was the only producer of.
-            "findings": [
-                {
-                    "type": "literature_review",
-                    "topic": topic,
-                    "query": q,
-                    "paper_count": len(papers),
-                    "paper_ids": paper_ids[:25],
-                }
-            ],
+            # satisfy the contract it was the only producer of. A search that
+            # found nothing is not a review, so it satisfies nothing.
+            "findings": (
+                [
+                    {
+                        "type": "literature_review",
+                        "topic": topic,
+                        "query": q,
+                        "paper_count": len(papers),
+                        "paper_ids": paper_ids[:25],
+                    }
+                ]
+                if paper_ids
+                else []
+            ),
             "next_steps": [
                 "Open the imported documents in Documents once ingestion completes.",
                 "Ask the agent to summarize and compare the imported papers.",

@@ -566,6 +566,12 @@ async def _propose_and_judge(
     out = {"proposals": judged, "verdicts": tally, "findings": findings}
     if failures:
         out["proposal_failures"] = failures
+    if judged and all(entry["verdict"] == "error" for entry in judged):
+        # Nothing was judged: the comparison itself could not run. Returned
+        # as a success, "0 of 1 beat both" read as a proposal that lost.
+        out["error"] = (
+            "no proposal could be judged: " + str(judged[-1].get("problem") or "")
+        ).strip()
     return out
 
 
@@ -784,10 +790,15 @@ async def _compile_object(kernel: str, flags: str) -> Dict[str, str]:
                 image=DEFAULT_IMAGE,
                 timeout_seconds=120,
             )
-        except (asyncio.TimeoutError, FileNotFoundError) as exc:
-            return {
-                "error": f"could not compile the kernel to an object: {exc.__class__.__name__}"
-            }
+        except asyncio.TimeoutError:
+            return {"error": "compiling the kernel to an object timed out"}
+        except FileNotFoundError:
+            # Not "could not compile ... FileNotFoundError": that read as a
+            # compile failure, when no compiler had been reached.
+            return {"error": agent_sandbox_runtime.NO_DOCKER}
+        never_ran = agent_sandbox_runtime.could_not_run(rc, stderr, DEFAULT_IMAGE)
+        if never_ran:
+            return {"error": never_ran}
         obj = Path(workdir, "kernel.o")
         if rc != 0 or not obj.exists():
             return {"error": "kernel did not compile: " + (stderr or "")[:1500]}

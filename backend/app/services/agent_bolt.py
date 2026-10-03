@@ -287,7 +287,7 @@ async def build_and_profile(
         for i, text in enumerate(inputs):
             Path(workdir, f"in_{i}.txt").write_text(text, encoding="utf-8")
         try:
-            _, stdout, _ = await agent_sandbox_runtime.run_in_sandbox(
+            rc, stdout, stderr = await agent_sandbox_runtime.run_in_sandbox(
                 _profile_script(build, run_args, profile_inputs),
                 workdir,
                 image=BOLT_IMAGE,
@@ -297,6 +297,9 @@ async def build_and_profile(
             return {"error": f"build and profiling timed out after {timeout_seconds}s"}
         except FileNotFoundError:
             return {"error": "Docker is not available to this process"}
+        never_ran = agent_sandbox_runtime.could_not_run(rc, stderr, BOLT_IMAGE)
+        if never_ran:
+            return {"error": never_ran}
 
         for marker, what in (
             ("__build_failed__", "the program did not build"),
@@ -315,10 +318,18 @@ async def build_and_profile(
                     + (f"; profiling runs failed: {failed}" if failed else "")
                 )
             }
-        prog = Path(workdir, "prog").read_bytes()
-        fdata = Path(workdir, "prof.fdata").read_text(
-            encoding="utf-8", errors="replace"
-        )
+        prog_file, fdata_file = Path(workdir, "prog"), Path(workdir, "prof.fdata")
+        if not (prog_file.is_file() and fdata_file.is_file()):
+            # Every failure the script knows how to name is above; this is the
+            # one it did not, and it used to escape as FileNotFoundError.
+            return {
+                "error": (
+                    "build and profiling ended without a binary and a profile: "
+                    + ((stderr or "").strip() or stdout.strip() or "no output")[-1500:]
+                )
+            }
+        prog = prog_file.read_bytes()
+        fdata = fdata_file.read_text(encoding="utf-8", errors="replace")
 
     if len(fdata) > MAX_PROFILE_BYTES:
         return {"error": f"the profile is {len(fdata)} bytes, over {MAX_PROFILE_BYTES}"}
@@ -484,6 +495,13 @@ async def optimize_executable(
     """
     if measure not in ("wall", "cycles"):
         return {"error": "measure is 'wall' or 'cycles'"}
+    # Before the build: refused inside judge_configuration, a bad option cost
+    # a whole build-instrument-profile run and came back as success=True.
+    # (judge_configuration keeps its own check, shaped for the proposer's
+    # repair loop, which hands a refusal back to the model.)
+    problem, _ = check_options(options)
+    if problem:
+        return {"success": False, "error": f"options: {problem}"}
     for args in (run_args, profile_run_args):
         # Both are interpolated into shell commands; build_and_profile checks
         # only the profiling pair, so the measured one is checked here.
@@ -861,7 +879,7 @@ async def simulate_configuration(
             for a in arms
         )
         try:
-            _, stdout, _ = await agent_sandbox_runtime.run_in_sandbox(
+            rc, stdout, stderr = await agent_sandbox_runtime.run_in_sandbox(
                 differential_script("chmod +x prog", arms, len(inputs), run_args)
                 + "; "
                 + fma_probe,
@@ -871,6 +889,11 @@ async def simulate_configuration(
             )
         except asyncio.TimeoutError:
             return {"error": "building and checking the arms timed out"}
+        except FileNotFoundError:
+            return {"error": agent_sandbox_runtime.NO_DOCKER}
+        never_ran = agent_sandbox_runtime.could_not_run(rc, stderr, BOLT_IMAGE)
+        if never_ran:
+            return {"error": never_ran}
         parsed = parse_differential(stdout)
         if not parsed["built"].get("cand"):
             return {
@@ -919,7 +942,7 @@ async def simulate_configuration(
             for name in built
         )
         try:
-            _, sim_out, _ = await agent_sandbox_runtime.run_in_sandbox(
+            sim_rc, sim_out, sim_err = await agent_sandbox_runtime.run_in_sandbox(
                 f"{sims} wait",
                 workdir,
                 image=GEM5_IMAGE,
@@ -934,6 +957,11 @@ async def simulate_configuration(
                     "instructions a second: shrink the timed input."
                 )
             }
+        except FileNotFoundError:
+            return {"error": agent_sandbox_runtime.NO_DOCKER}
+        never_ran = agent_sandbox_runtime.could_not_run(sim_rc, sim_err, GEM5_IMAGE)
+        if never_ran:
+            return {"error": never_ran}
         stats: Dict[str, Dict[str, Optional[int]]] = {}
         failed: Dict[str, str] = {}
         for name in built:

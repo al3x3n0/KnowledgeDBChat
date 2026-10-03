@@ -146,13 +146,16 @@ async def disassemble_symbol(
             else:
                 target.write_text(content, encoding="utf-8")
         try:
-            _, stdout, stderr = await agent_sandbox_runtime.run_in_sandbox(
+            rc, stdout, stderr = await agent_sandbox_runtime.run_in_sandbox(
                 script, workdir, image=image, timeout_seconds=timeout_seconds
             )
         except asyncio.TimeoutError:
             return {"error": f"disassembly timed out after {timeout_seconds}s"}
         except FileNotFoundError:
             return {"error": "Docker is not available to this process"}
+    never_ran = agent_sandbox_runtime.could_not_run(rc, stderr, image)
+    if never_ran:
+        return {"error": never_ran}
 
     if "__prep_failed__" in stdout:
         return {

@@ -843,7 +843,7 @@ async def run_comparison(
         Path(workdir, CPUTIME_SOURCE).write_text(CPUTIME_C, encoding="utf-8")
 
         try:
-            _, stdout, stderr = await agent_sandbox_runtime.run_in_sandbox(
+            rc, stdout, stderr = await agent_sandbox_runtime.run_in_sandbox(
                 differential_script(prep, arms, len(inputs), run_args),
                 workdir,
                 image=image,
@@ -863,6 +863,9 @@ async def run_comparison(
             detail = str(exc).strip() or exc.__class__.__name__
             logger.warning(f"restructure comparison failed: {detail}")
             return {"verdict": "unresolved", "error": f"sandbox run failed: {detail}"}
+        never_ran = agent_sandbox_runtime.could_not_run(rc, stderr, image)
+        if never_ran:
+            return {"verdict": "unresolved", "error": never_ran}
 
         parsed = parse_differential(stdout)
         if parsed["prep_ok"] is not True:
@@ -919,7 +922,7 @@ async def run_comparison(
             timed.append(Arm(CONTROL_ARM, "true", differential=False))
         budget_ns = int(timeout_seconds * TRIAL_BUDGET_SHARE * 1_000_000_000)
         try:
-            _, t_out, _ = await agent_sandbox_runtime.run_in_sandbox(
+            t_rc, t_out, t_err = await agent_sandbox_runtime.run_in_sandbox(
                 timing_script(timed, bench_input, trials, budget_ns, run_args),
                 workdir,
                 image=image,
@@ -931,6 +934,13 @@ async def run_comparison(
                 "verdict": "unresolved",
                 "equivalence": equivalence,
                 "error": f"equivalent, but timing did not finish: {detail}",
+            }
+        never_ran = agent_sandbox_runtime.could_not_run(t_rc, t_err, image)
+        if never_ran:
+            return {
+                "verdict": "unresolved",
+                "equivalence": equivalence,
+                "error": f"equivalent, but timing never ran: {never_ran}",
             }
 
         collected = {

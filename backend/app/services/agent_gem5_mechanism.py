@@ -925,6 +925,11 @@ async def run_configs(
         )
     if "-static" not in safe_flags.split():
         safe_flags = f"{safe_flags} -static"
+    if not timeout_seconds or timeout_seconds <= 0:
+        # None reached asyncio.wait_for as "no limit": a hung simulation held
+        # its worker for ever. Every study that does not choose gets the
+        # bound the single-study tools already use.
+        timeout_seconds = DEFAULT_TIMEOUT_SECONDS
 
     if not agent_sandbox_runtime.execution_enabled():
         raise SandboxRunFailed(
@@ -1037,6 +1042,9 @@ async def run_configs(
                 {"success": False, "error": f"Simulation failed: {exc}"}
             )
 
+        never_ran = agent_sandbox_runtime.could_not_run(returncode, stderr, image)
+        if never_ran:
+            raise SandboxRunFailed({"success": False, "error": never_ran})
         if returncode == 89:
             raise SandboxRunFailed(
                 {

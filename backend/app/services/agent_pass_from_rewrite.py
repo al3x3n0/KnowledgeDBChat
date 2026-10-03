@@ -176,7 +176,7 @@ async def probe_firing(
         for name, text in sources.items():
             Path(workdir, name).write_text(text, encoding="utf-8")
         try:
-            _, stdout, _ = await agent_sandbox_runtime.run_in_sandbox(
+            rc, stdout, stderr = await agent_sandbox_runtime.run_in_sandbox(
                 _firing_script(flags, list(sources), pass_name),
                 workdir,
                 image=PASS_IMAGE,
@@ -185,10 +185,10 @@ async def probe_firing(
         except asyncio.TimeoutError:
             return {"stage": "sandbox", "errors": f"timed out after {timeout_seconds}s"}
         except FileNotFoundError:
-            return {
-                "stage": "sandbox",
-                "errors": "Docker is not available to this process",
-            }
+            return {"stage": "sandbox", "errors": agent_sandbox_runtime.NO_DOCKER}
+    never_ran = agent_sandbox_runtime.could_not_run(rc, stderr, PASS_IMAGE)
+    if never_ran:
+        return {"stage": "sandbox", "errors": never_ran}
 
     if "__build_failed__" in stdout:
         return {"_all": parse_firing(stdout)}
@@ -246,11 +246,15 @@ async def evaluate_pass_on_kernel(
     firing = await probe_firing(
         pass_source=pass_source, pass_name=pass_name, sources=probe_sources, flags=safe
     )
+    if firing.get("stage") == "sandbox":
+        # probe_firing reports a sandbox failure at the top level. Looked for
+        # only under "kernel.c", a missing Docker read as did_not_fire.
+        return {"success": False, "error": firing["errors"], "could_not_run": True}
     if "_all" in firing:
         return _early("did_not_compile", firing["_all"]["errors"], pass_name, label)
     on_kernel = firing.get("kernel.c") or {}
     if on_kernel.get("stage") == "sandbox":
-        return {"success": False, "error": on_kernel["errors"]}
+        return {"success": False, "error": on_kernel["errors"], "could_not_run": True}
     if on_kernel.get("stage") == "unregistered":
         return _early(
             "unregistered",
@@ -585,6 +589,11 @@ async def synthesize_pass_from_rewrite(
         return {
             "error": "rewrite_kernel is required: the hand-optimised kernel to generalise"
         }
+    if not (kernel or "").strip() or "main(" not in (driver or "").replace(" ", ""):
+        # The caller's arguments, checked before a model call is spent:
+        # refused later, each attempt was handed back to the model as its own
+        # mistake.
+        return {"error": "kernel (no main) and driver (with main) are required"}
     problem, cleaned = check_inputs(inputs, bench_input)
     if problem:
         return {"error": problem}
@@ -668,9 +677,12 @@ async def synthesize_pass_from_rewrite(
             bench_input=bench_input,
             label=f"{subject}/{pass_name or 'pass'}",
         )
+        if result.get("could_not_run"):
+            # Nothing the model writes can bring Docker back.
+            return {"success": False, "error": result["error"], "attempts": attempts}
         if result.get("error") and not result.get("data"):
-            # A refused call (a bad pass name, a sandbox fault) is evidence the
-            # model can act on only when it is about its own output.
+            # A refused call (a bad pass name) is evidence the model can act
+            # on, since it is about its own output.
             attempts.append(
                 {"attempt": attempt, "verdict": "refused", "detail": result["error"]}
             )

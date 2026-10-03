@@ -140,6 +140,10 @@ class AgentActionService:
                     mode="autonomous",
                     db=db,
                     service=executor,
+                    # The job's owner. Left unset, every handler that asks a
+                    # model passed None and the owner's LLM settings were
+                    # never used.
+                    user_id=getattr(job, "user_id", None),
                     job=job,
                     state=state,
                     idempotency_key=str(action.get("_idempotency_key") or "") or None,
@@ -190,9 +194,11 @@ class AgentActionService:
                             "error"
                         ] = "Prefer internal documents first (run a document search before arXiv)."
                         return result
-            else:
-                result["error"] = f"Unknown or unimplemented tool: {tool_name}"
-                logger.warning(f"Tool not implemented: {tool_name}")
+            # No provider handled the tool. A research job used to fall out of
+            # the branch above with success=False and no error at all, so the
+            # run could not learn why its call failed.
+            result["error"] = f"Unknown or unimplemented tool: {tool_name}"
+            logger.warning(f"Tool not implemented: {tool_name}")
         except Exception as exc:
             logger.error(f"Error executing tool {tool_name}: {exc}")
             result["error"] = str(exc)

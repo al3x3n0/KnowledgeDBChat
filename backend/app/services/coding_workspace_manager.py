@@ -384,13 +384,29 @@ class CodingWorkspaceManager:
         )
 
     def get_or_default(
-        self, workspace_id: Optional[str], state: Dict[str, Any]
+        self,
+        workspace_id: Optional[str],
+        state: Dict[str, Any],
+        *,
+        job: Any = None,
     ) -> Optional[CodingWorkspace]:
-        """Get workspace by explicit id or fall back to state['coding_workspace_id']."""
+        """Get workspace by explicit id or fall back to state['coding_workspace_id'].
+
+        Given the calling `job`, a workspace another job owns is not found:
+        an explicit `workspace_id` is the model's word, and without this a run
+        naming another job's id read, edited and proposed that job's changes
+        as its own.
+        """
         wid = workspace_id or (state.get("coding_workspace_id") if state else None)
         if not wid:
             return None
-        return self._workspaces.get(str(wid))
+        workspace = self._workspaces.get(str(wid))
+        if workspace is None or job is None:
+            return workspace
+        job_id = getattr(job, "id", None)
+        if workspace.owner_job_id and job_id and workspace.owner_job_id != str(job_id):
+            return None
+        return workspace
 
     # ------------------------------------------------------------------
     # Recovery checkpoints

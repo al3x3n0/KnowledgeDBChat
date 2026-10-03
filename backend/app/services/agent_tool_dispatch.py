@@ -7,6 +7,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Protocol
 
 from sqlalchemy import select
@@ -430,6 +431,10 @@ class AgentToolRegistry:
         from app.services import agent_evidence_bundle as bundle
 
         if tool_name not in bundle.EVIDENCE_TOOLS:
+            return
+        # A replay re-runs calls already in the bundle; recording them again
+        # appended every one to the bundle being verified.
+        if (getattr(context, "extra", None) or {}).get("replaying_bundle"):
             return
         job_id = getattr(getattr(context, "job", None), "id", None)
         if not job_id:
@@ -1179,6 +1184,27 @@ def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
             "success": True,
             "data": {"findings": findings, "total": len(findings)},
         }
+
+    async def _literature_review_arxiv(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        """The chat tool, as the job's owner.
+
+        Its spec names research, monitor and knowledge_expansion jobs, and it
+        is the producer of `literature_review` -- yet only chat had a handler,
+        so a contract requiring that evidence could not be met by any run.
+        """
+        user_id = ctx.user_id or getattr(ctx.job, "user_id", None)
+        if user_id is None:
+            return {"error": "literature_review_arxiv needs the job's owner"}
+        from app.services.agent_service import AgentService
+
+        try:
+            return await AgentService()._tool_literature_review_arxiv(
+                params, user_id, ctx.db
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}
 
     async def _ingest_paper_by_id(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
@@ -1981,7 +2007,7 @@ cannot say why their number differs."""
             task_type="methodology_comparison",
             temperature=0.2,
             max_tokens=1800,
-            user_id=ctx.user_id,
+            user_id=ctx.user_id or getattr(ctx.job, "user_id", None),
             db=ctx.db,
         )
         if payload is None:
@@ -2032,7 +2058,7 @@ cannot say why their number differs."""
             task_type="research_gap_analysis",
             temperature=0.3,
             max_tokens=1500,
-            user_id=ctx.user_id,
+            user_id=ctx.user_id or getattr(ctx.job, "user_id", None),
             db=ctx.db,
         )
         if payload is None:
@@ -2414,7 +2440,7 @@ Suggest the single best next action and explain why."""
             task_type="document_cluster_analysis",
             temperature=0.2,
             max_tokens=1500,
-            user_id=ctx.user_id,
+            user_id=ctx.user_id or getattr(ctx.job, "user_id", None),
             db=ctx.db,
         )
         if payload is None:
@@ -2434,6 +2460,7 @@ Suggest the single best next action and explain why."""
             "save_research_finding": _save_research_finding,
             "get_research_findings": _get_research_findings,
             "ingest_paper_by_id": _ingest_paper_by_id,
+            "literature_review_arxiv": _literature_review_arxiv,
             "batch_ingest_papers": _batch_ingest_papers,
             "monitor_arxiv_topic": _monitor_arxiv_topic,
             "find_related_papers": _find_related_papers,
@@ -4367,7 +4394,7 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
     ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {
@@ -4394,7 +4421,7 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
     async def _read_file(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}
@@ -4420,7 +4447,7 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
     ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}
@@ -4452,7 +4479,7 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
     ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}
@@ -4464,7 +4491,7 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
     ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}
@@ -4544,6 +4571,108 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
 #: How many scheduled jobs and notifications one run may leave behind it.
 MAX_SCHEDULED_JOBS_PER_RUN = 10
 MAX_NOTIFICATIONS_PER_RUN = 20
+
+
+def _diff_files(diff: str) -> List[str]:
+    """Every path a unified diff touches, deletions included.
+
+    Reading only `+++ b/` lines missed a deleted file, whose new side is
+    `/dev/null`; its old side is the only place it is named.
+    """
+    files: List[str] = []
+    for line in diff.splitlines():
+        path = None
+        if line.startswith("+++ b/"):
+            path = line[len("+++ b/") :]
+        elif line.startswith("--- a/"):
+            path = line[len("--- a/") :]
+        if path and path not in files:
+            files.append(path)
+    return files
+
+
+def _new_file_diffs(ws: Any, manager: Any, diff: str) -> str:
+    """Unified-diff hunks for files the run created that git does not track."""
+    try:
+        added = manager.get_status(ws).get("added") or []
+    except Exception:  # noqa: BLE001
+        return ""
+    known = set(_diff_files(diff))
+    chunks: List[str] = []
+    for rel in added:
+        if rel in known:
+            continue
+        try:
+            text = (Path(ws.base_path) / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        lines = text.splitlines()
+        body = "".join(f"+{line}\n" for line in lines)
+        chunks.append(
+            f"diff --git a/{rel} b/{rel}\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            f"+++ b/{rel}\n"
+            f"@@ -0,0 +1,{len(lines)} @@\n"
+            f"{body}"
+        )
+    return "".join(chunks)
+
+
+async def _store_patch_proposal(
+    ctx: "AgentToolExecutionContext", proposal: Dict[str, Any]
+) -> Any:
+    """Write (or revise) the job's CodePatchProposal row; returns its id.
+
+    One row per job (`uq_code_patch_proposals_job_id`): a second proposal from
+    the same run revises the first while it is still awaiting review, and is
+    refused once a person has decided on it.
+    """
+    job = ctx.job
+    user_id = getattr(job, "user_id", None) or ctx.user_id
+    if ctx.db is None or user_id is None:
+        return None
+    from app.models.code_patch_proposal import CodePatchProposal
+
+    metadata = {
+        "files_touched": proposal["files"],
+        "rationale": proposal["rationale"],
+        "lines_added": proposal["lines_added"],
+        "lines_removed": proposal["lines_removed"],
+        "workspace_id": proposal["workspace_id"],
+        "origin": "propose_code_patch",
+    }
+    if "diff_truncated_from" in proposal:
+        metadata["diff_truncated_from"] = proposal["diff_truncated_from"]
+    row = None
+    if job is not None:
+        row = (
+            await ctx.db.execute(
+                select(CodePatchProposal).where(CodePatchProposal.job_id == job.id)
+            )
+        ).scalar_one_or_none()
+    if row is not None and row.status != "proposed":
+        return {
+            "error": (
+                f"This run's proposal was already {row.status}; a decided "
+                "proposal is not overwritten."
+            )
+        }
+    if row is None:
+        row = CodePatchProposal(
+            user_id=user_id,
+            job_id=getattr(job, "id", None),
+            status="proposed",
+            title=proposal["title"][:500],
+            diff_unified=proposal["diff"],
+        )
+        ctx.db.add(row)
+    row.title = proposal["title"][:500]
+    row.summary = proposal["rationale"] or None
+    row.diff_unified = proposal["diff"]
+    row.proposal_metadata = metadata
+    await ctx.db.commit()
+    return row.id
 
 
 def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolProvider:
@@ -4755,7 +4884,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
     ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}
@@ -4787,7 +4916,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
     ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}
@@ -4808,7 +4937,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
     ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}
@@ -4840,7 +4969,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
     ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}
@@ -4976,7 +5105,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
     ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}
@@ -5089,7 +5218,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
 
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if ws is None:
             return {"error": "No active coding workspace"}
@@ -5192,7 +5321,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
 
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if ws is None:
             return {"error": "No active coding workspace"}
@@ -5212,10 +5341,28 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 ),
                 timeout=10,
             )
-            stdout_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=60
+            )
             diff = stdout_bytes.decode("utf-8", errors="replace")
         except Exception as exc:  # noqa: BLE001
             return {"error": f"Could not read the workspace diff: {exc}"}
+
+        if proc.returncode not in (0, None):
+            # A workspace built from KB documents has no .git, and git exits
+            # 129 with nothing on stdout. That used to read as "no changes".
+            detail = (stderr_bytes or b"").decode("utf-8", errors="replace").strip()
+            return {
+                "error": (
+                    f"git diff failed (exit {proc.returncode}), so the "
+                    "workspace's changes could not be read: "
+                    f"{detail.splitlines()[0] if detail else 'no output'}"
+                )
+            }
+
+        # Bare `git diff` shows tracked files only. A file the run created is
+        # a change all the same, and get_status already counts it.
+        diff += _new_file_diffs(ws, executor.workspace_manager, diff)
 
         if not diff.strip():
             # A proposal with no diff is the shape of a run that believes it
@@ -5227,15 +5374,12 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 )
             }
 
-        files = [
-            line[len("+++ b/") :]
-            for line in diff.splitlines()
-            if line.startswith("+++ b/")
-        ]
+        files = _diff_files(diff)
+        stored_diff = diff[:200000]
         proposal = {
             "title": title,
             "rationale": str(params.get("rationale") or ""),
-            "diff": diff[:200000],
+            "diff": stored_diff,
             "files": files,
             "lines_added": sum(
                 1
@@ -5249,11 +5393,22 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             ),
             "workspace_id": getattr(ws, "workspace_id", None),
         }
+        if len(diff) > len(stored_diff):
+            proposal["diff_truncated_from"] = len(diff)
         state["code_patch_proposal"] = proposal
+
+        # The proposal is meant for a person, and people read /code-patches.
+        # Kept only in the run state, it reached no review surface at all.
+        stored = await _store_patch_proposal(ctx, proposal)
+        if isinstance(stored, dict) and stored.get("error"):
+            return stored
+        data = {k: v for k, v in proposal.items() if k != "diff"}
+        if stored is not None:
+            data["proposal_id"] = str(stored)
 
         return {
             "success": True,
-            "data": {k: v for k, v in proposal.items() if k != "diff"},
+            "data": data,
             "findings": [
                 {
                     "type": "code_patch_proposal",
@@ -5277,7 +5432,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
 
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}
@@ -5435,7 +5590,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             # pasted text cannot carry (raylib's includes are 11 MB).
             state = ctx.state if isinstance(ctx.state, dict) else {}
             ws = executor.workspace_manager.get_or_default(
-                params.get("workspace_id"), state
+                params.get("workspace_id"), state, job=ctx.job
             )
             if not ws:
                 return {
@@ -5506,7 +5661,9 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             }
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            reference.get("workspace_id") or params.get("workspace_id"), state
+            reference.get("workspace_id") or params.get("workspace_id"),
+            state,
+            job=ctx.job,
         )
         if not ws:
             return {
@@ -5530,7 +5687,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             **ref,
             focus=str(params.get("focus") or ""),
             count=int(params.get("count") or 3),
-            user_id=ctx.user_id,
+            user_id=ctx.user_id or getattr(ctx.job, "user_id", None),
             db=ctx.db,
             **harness,
         )
@@ -5582,7 +5739,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             kernel=str(params.get("kernel") or ""),
             focus=str(params.get("focus") or ""),
             count=int(params.get("count") or 3),
-            user_id=ctx.user_id,
+            user_id=ctx.user_id or getattr(ctx.job, "user_id", None),
             db=ctx.db,
             **harness,
         )
@@ -5620,7 +5777,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             rewrite_kernel=str(params.get("rewrite_kernel") or ""),
             idea=str(params.get("idea") or ""),
             invariant=str(params.get("invariant") or ""),
-            user_id=ctx.user_id,
+            user_id=ctx.user_id or getattr(ctx.job, "user_id", None),
             db=ctx.db,
             **harness,
         )
@@ -5667,6 +5824,19 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         if profile is not None:
             if not isinstance(profile, list):
                 return {"error": "profile_inputs must be a list of input indices"}
+            # The schema checks that this is an array, not what is in it:
+            # ["all"] reached int() and surfaced as a bare ValueError.
+            if not all(
+                (isinstance(i, int) and not isinstance(i, bool))
+                or (isinstance(i, str) and i.strip().isdigit())
+                for i in profile
+            ):
+                return {
+                    "error": (
+                        f"profile_inputs must be a list of input indices, got "
+                        f"{profile!r}"
+                    )
+                }
             program["profile_inputs"] = [int(i) for i in profile]
         if isinstance(params.get("sources"), dict):
             program["sources"] = {
@@ -5675,7 +5845,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             return program
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {
@@ -5702,7 +5872,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         return await agent_bolt.propose_bolt_configurations(
             count=int(params.get("count") or 3),
             focus=str(params.get("focus") or ""),
-            user_id=ctx.user_id,
+            user_id=ctx.user_id or getattr(ctx.job, "user_id", None),
             db=ctx.db,
             **program,
         )
@@ -6245,7 +6415,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
 
         row = await agent_retraction_service.retract(
             ctx.db,
-            user_id=ctx.user_id,
+            user_id=ctx.user_id or getattr(ctx.job, "user_id", None),
             kind=RetractionKind.FINDING,
             ref=ref,
             reason=reason,
@@ -6441,18 +6611,24 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 )
             }
 
+        # Before any replay: the summary describes what the run recorded.
+        summary = bundle.summarize(str(job_id))
         replay: Dict[str, Any] = {}
         if bool(params.get("replay", False)):
+            import dataclasses
+
+            replay_ctx = dataclasses.replace(
+                ctx, extra={**(ctx.extra or {}), "replaying_bundle": True}
+            )
 
             async def execute(tool: str, tool_params: Dict[str, Any]) -> Any:
                 _, result = await executor.tool_registry.try_execute(
-                    tool, tool_params, ctx
+                    tool, tool_params, replay_ctx
                 )
                 return result
 
             replay = await bundle.replay_bundle(str(job_id), execute)
 
-        summary = bundle.summarize(str(job_id))
         verdict = replay.get("verdict") if replay else "not replayed"
         return {
             "success": True,
@@ -7142,7 +7318,7 @@ def build_autonomous_symbol_retrieval_provider(executor: Any) -> FunctionToolPro
         if not query_str:
             return {"error": "query is required"}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {
@@ -7207,7 +7383,7 @@ def build_autonomous_symbol_retrieval_provider(executor: Any) -> FunctionToolPro
         if not symbol_name or not file_path_param:
             return {"error": "symbol_name and file_path are required"}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}
@@ -7283,7 +7459,7 @@ def build_autonomous_symbol_retrieval_provider(executor: Any) -> FunctionToolPro
         if not symbol_name:
             return {"error": "symbol_name is required"}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}

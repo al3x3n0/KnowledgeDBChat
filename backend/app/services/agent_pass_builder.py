@@ -179,6 +179,9 @@ async def build_llvm_pass(
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(f"build_llvm_pass failed: {exc}")
             return {"error": f"pass build failed: {exc}"}
+    never_ran = agent_sandbox_runtime.could_not_run(_rc, stderr, image)
+    if never_ran:
+        return {"success": False, "error": never_ran}
 
     sections: Dict[str, list] = {}
     current = None
@@ -218,7 +221,23 @@ async def build_llvm_pass(
         }
 
     pass_out = join("pass_out")
-    registered = opt_rc == 0 and "unknown pass" not in pass_out.lower()
+    unknown_name = "unknown pass" in pass_out.lower()
+    if opt_rc not in (0, None) and not unknown_name:
+        # opt knew the name and died running it: report_fatal_error, an
+        # assertion, a segfault. Calling that "unregistered" sent the run to
+        # fix a registration that was fine.
+        return {
+            "success": False,
+            "compiled": True,
+            "registered": True,
+            "verdict": "pass_crashed",
+            "error": (
+                f"`opt -passes={pass_name}` found the pass and crashed running "
+                f"it (exit {opt_rc}); its output says where."
+            ),
+            "opt_output": pass_out[:4000],
+        }
+    registered = opt_rc == 0 and not unknown_name
     if not registered:
         return {
             "success": False,

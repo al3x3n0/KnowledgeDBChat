@@ -57,6 +57,35 @@ async def internal_scrape_allowed_hosts(db: Any) -> List[str]:
     return hosts
 
 
+PRIVATE_NETWORK_REFUSAL = (
+    "allow_private_networks requires admin role (or an active web source allowlist)"
+)
+
+
+async def private_network_access(
+    db: Any, url: str, *, asked: bool, admin: bool
+) -> Tuple[bool, List[str], Optional[str]]:
+    """Who may reach a private address, decided once for a scrape.
+
+    Returns (allow every private address, hosts allowed to be private,
+    refusal). An admin who asks may reach private networks; anyone else may
+    reach only the hosts an active web source names -- those hosts, not
+    whatever a page on one of them links to. Asking without being an admin,
+    for a URL on no such host, is refused.
+
+    The chat tool and URL ingestion each made this decision, and each read
+    the allowlist twice to do it.
+    """
+    hosts = await internal_scrape_allowed_hosts(db)
+    if not asked:
+        return False, hosts, None
+    if admin:
+        return True, hosts, None
+    if host_is_allowlisted((urlparse(url).hostname or "").lower(), hosts):
+        return False, hosts, None
+    return False, hosts, PRIVATE_NETWORK_REFUSAL
+
+
 class WebScraperService:
     DEFAULT_TIMEOUT_S = 20.0
     DEFAULT_MAX_BYTES = 2_000_000

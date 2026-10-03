@@ -34,12 +34,14 @@ def clamped_float(
     return max(lo, min(val, hi))
 
 
-def string_list(value: Any) -> List[str]:
-    """A list of non-empty strings, from a list or a comma-separated string."""
+def string_list(value: Any, *, split: bool = True) -> List[str]:
+    """A list of non-empty strings, from a list or (with `split`) a
+    comma-separated string. A null item is no string: `str(None)` made one
+    called "None", which then matched nothing or, worse, a thing named so."""
     if isinstance(value, list):
-        return [str(x).strip() for x in value if str(x).strip()]
-    if isinstance(value, str):
-        return [str(x).strip() for x in value.split(",") if str(x).strip()]
+        return [str(x).strip() for x in value if x is not None and str(x).strip()]
+    if split and isinstance(value, str):
+        return [x.strip() for x in value.split(",") if x.strip()]
     return []
 
 

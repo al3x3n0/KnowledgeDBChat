@@ -30,6 +30,17 @@ APP = Path(__file__).resolve().parents[1] / "app"
 
 #: function name -> the one module allowed to define it.
 ONE_HOME = {
+    # The deterministic runners' phase report: 24 copies of one closure.
+    "phase_reporter": "services/agent_runner_progress.py",
+    # Export, presentation and repo-report cleanup.
+    "prune_finished_jobs": "tasks/job_support.py",
+    # Five private copies of config_values.safe_int / bounded_int.
+    "_as_int": None,
+    # Three copies, one of which never found an entity with a long name.
+    "get_or_create_entity": "services/kg_entities.py",
+    "_get_or_create_entity": None,
+    "private_network_access": "services/web_scraper_service.py",
+    "_is_url_allowlisted_for_internal_scrape": None,
     "_sanitize_bib_filename": "services/bibtex.py",
     "_escape_bibtex": "services/bibtex.py",
     "_extract_arxiv_id": "services/bibtex.py",
@@ -186,6 +197,10 @@ def test_config_values():
     assert config_values.string_list("a, b,,c ") == ["a", "b", "c"]
     assert config_values.string_list([" a ", "", 3]) == ["a", "3"]
     assert config_values.string_list(None) == []
+    # str(None) is "None": a null in a list of ids became an id.
+    assert config_values.string_list(["a", None, 0]) == ["a", "0"]
+    # A JSON field that should hold a list does not become one by splitting.
+    assert config_values.string_list("a,b", split=False) == []
     assert config_values.coerce_bool("Off", default=True) is False
     assert config_values.coerce_bool("yes", default=False) is True
     assert config_values.coerce_bool("perhaps", default=True) is True

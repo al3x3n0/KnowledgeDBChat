@@ -4,8 +4,7 @@ Utilities to map paper insights (structured extraction) into the knowledge graph
 
 from __future__ import annotations
 
-import json
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable
 from uuid import UUID
 
 from loguru import logger
@@ -14,7 +13,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document, DocumentSource
-from app.models.knowledge_graph import Entity, EntityMention, Relationship
+from app.models.knowledge_graph import EntityMention, Relationship
+from app.services.kg_entities import get_or_create_entity
 from app.services.paper_enrichment_service import _arxiv_id_from_source_identifier
 
 REL_USES_METHOD = "uses_method"
@@ -85,9 +85,9 @@ class PaperKnowledgeGraphService:
 
         arxiv_id = _arxiv_id_from_source_identifier(doc.source_identifier)
         paper_key = arxiv_id or (doc.title or "paper")[:512]
-        paper, _ = await self._get_or_create_entity(
+        paper, _ = await get_or_create_entity(
             db,
-            canonical_name=paper_key,
+            name=paper_key,
             entity_type="paper",
             description=(doc.title or None) if arxiv_id else None,
             properties={
@@ -111,9 +111,7 @@ class PaperKnowledgeGraphService:
         ) -> None:
             nonlocal created_entities, created_mentions, created_relationships
             for name in items:
-                ent, created = await self._get_or_create_entity(
-                    db, canonical_name=name, entity_type=entity_type
-                )
+                ent, created = await get_or_create_entity(db, name, entity_type)
                 if created:
                     created_entities += 1
 
@@ -138,35 +136,6 @@ class PaperKnowledgeGraphService:
             "mentions_created": created_mentions,
             "relationships_created": created_relationships,
         }
-
-    async def _get_or_create_entity(
-        self,
-        db: AsyncSession,
-        canonical_name: str,
-        entity_type: str,
-        description: Optional[str] = None,
-        properties: Optional[Dict[str, Any]] = None,
-    ) -> tuple[Entity, bool]:
-        q = await db.execute(
-            select(Entity).where(
-                Entity.canonical_name == canonical_name,
-                Entity.entity_type == entity_type,
-            )
-        )
-        ent = q.scalar_one_or_none()
-        if ent:
-            return ent, False
-        ent = Entity(
-            canonical_name=canonical_name[:512],
-            entity_type=entity_type[:64],
-            description=description,
-            properties=json.dumps(properties, ensure_ascii=False)
-            if properties
-            else None,
-        )
-        db.add(ent)
-        await db.flush()
-        return ent, True
 
     async def _ensure_mention(
         self, db: AsyncSession, entity_id: UUID, document_id: UUID, text: str

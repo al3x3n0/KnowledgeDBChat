@@ -67,6 +67,7 @@ from app.utils.ingestion_state import (
     set_ingestion_task_mapping,
 )
 from app.utils.validators import validate_file_type
+from app.utils.websocket_auth import require_websocket_auth
 
 router = APIRouter()
 document_service = DocumentService()
@@ -1382,93 +1383,58 @@ async def retrigger_transcription(
         raise HTTPException(status_code=500, detail="Failed to schedule transcription")
 
 
-@router.websocket("/{document_id}/transcription-progress")
-async def transcription_progress_websocket(websocket: WebSocket, document_id: UUID):
-    """WebSocket endpoint for real-time transcription progress updates."""
-    from app.utils.websocket_auth import require_websocket_auth
+async def _relay_progress(websocket: WebSocket, key: str) -> None:
+    """Hold an authorised socket on `key` until the client goes.
+
+    Four document-progress sockets each carried this loop. Progress is pushed
+    to the socket by the websocket manager; the client may ping.
+    """
     from app.utils.websocket_manager import websocket_manager
 
-    # Authenticate WebSocket connection
+    await websocket_manager.connect(websocket, key)
     try:
-        user = await require_websocket_auth(websocket)
-        logger.info(
-            f"Transcription progress WebSocket authenticated for user {user.id}, document {document_id}"
-        )
-    except WebSocketDisconnect:
-        logger.warning(
-            f"Transcription progress WebSocket authentication failed for document {document_id}"
-        )
-        return
-
-    # Verify user has access to this document
-    from app.core.database import AsyncSessionLocal
-
-    async with AsyncSessionLocal() as db:
-        document = await document_service.get_document(document_id, db)
-
-        if not document:
-            await websocket.close(code=1008, reason="Document not found")
-            return
-
-    # Connect to WebSocket manager
-    await websocket_manager.connect(websocket, str(document_id))
-
-    try:
-        # Keep connection alive and wait for messages (client can send ping)
         while True:
             try:
-                # Wait for messages from client (ping/pong or close)
-                data = await websocket.receive_text()
-                if data == "ping":
+                if await websocket.receive_text() == "ping":
                     await websocket.send_text("pong")
             except WebSocketDisconnect:
                 break
     except Exception as e:
-        logger.error(f"Error in transcription progress WebSocket: {e}")
+        logger.error(f"Error in progress WebSocket {key}: {e}")
     finally:
-        websocket_manager.disconnect(websocket, str(document_id))
+        websocket_manager.disconnect(websocket, key)
+
+
+async def _document_exists(websocket: WebSocket, document_id: UUID) -> bool:
+    """Documents are a shared corpus -- the HTTP read route checks only that
+    the caller is signed in -- so a progress socket checks the same."""
+    async with AsyncSessionLocal() as db:
+        if await document_service.get_document(document_id, db):
+            return True
+    await websocket.close(code=1008, reason="Document not found")
+    return False
+
+
+@router.websocket("/{document_id}/transcription-progress")
+async def transcription_progress_websocket(websocket: WebSocket, document_id: UUID):
+    """WebSocket endpoint for real-time transcription progress updates."""
+    try:
+        await require_websocket_auth(websocket)
+    except WebSocketDisconnect:
+        return
+    if await _document_exists(websocket, document_id):
+        await _relay_progress(websocket, str(document_id))
 
 
 @router.websocket("/{document_id}/summarization-progress")
 async def summarization_progress_websocket(websocket: WebSocket, document_id: UUID):
     """WebSocket endpoint for real-time summarization progress updates."""
-    from app.utils.websocket_auth import require_websocket_auth
-    from app.utils.websocket_manager import websocket_manager
-
-    # Authenticate WebSocket connection
     try:
-        user = await require_websocket_auth(websocket)
-        logger.info(
-            f"Summarization progress WebSocket authenticated for user {user.id}, document {document_id}"
-        )
+        await require_websocket_auth(websocket)
     except WebSocketDisconnect:
-        logger.warning(
-            f"Summarization progress WebSocket authentication failed for document {document_id}"
-        )
         return
-
-    # Verify user has access to this document
-    from app.core.database import AsyncSessionLocal
-
-    async with AsyncSessionLocal() as db:
-        document = await document_service.get_document(document_id, db)
-        if not document:
-            await websocket.close(code=1008, reason="Document not found")
-            return
-
-    await websocket_manager.connect(websocket, str(document_id))
-    try:
-        while True:
-            try:
-                data = await websocket.receive_text()
-                if data == "ping":
-                    await websocket.send_text("pong")
-            except WebSocketDisconnect:
-                break
-    except Exception as e:
-        logger.error(f"Error in summarization progress WebSocket: {e}")
-    finally:
-        websocket_manager.disconnect(websocket, str(document_id))
+    if await _document_exists(websocket, document_id):
+        await _relay_progress(websocket, str(document_id))
 
 
 @router.post("/summarize-missing")
@@ -2173,9 +2139,6 @@ async def document_source_ingestion_progress(
     source_id: UUID,
 ):
     """WebSocket endpoint for ingestion progress updates (requesting user or admin)."""
-    from app.utils.websocket_auth import require_websocket_auth
-    from app.utils.websocket_manager import websocket_manager
-
     try:
         user = await require_websocket_auth(websocket)
     except WebSocketDisconnect:
@@ -2209,17 +2172,7 @@ async def document_source_ingestion_progress(
         )
         return
 
-    await websocket_manager.connect(websocket, str(source_id))
-    try:
-        while True:
-            try:
-                data = await websocket.receive_text()
-                if data == "ping":
-                    await websocket.send_text("pong")
-            except WebSocketDisconnect:
-                break
-    finally:
-        websocket_manager.disconnect(websocket, str(source_id))
+    await _relay_progress(websocket, str(source_id))
 
 
 @router.websocket("/ingest-url/{job_id}/progress")
@@ -2229,8 +2182,6 @@ async def url_ingest_progress(
 ):
     """WebSocket endpoint for ad-hoc URL ingestion progress updates."""
     from app.core.cache import get_redis_client
-    from app.utils.websocket_auth import require_websocket_auth
-    from app.utils.websocket_manager import websocket_manager
 
     try:
         user = await require_websocket_auth(websocket)
@@ -2255,18 +2206,7 @@ async def url_ingest_progress(
             await websocket.close(code=1008, reason="Not authorized to view this job")
             return
 
-    key = f"url_ingest:{job_id}"
-    await websocket_manager.connect(websocket, key)
-    try:
-        while True:
-            try:
-                data = await websocket.receive_text()
-                if data == "ping":
-                    await websocket.send_text("pong")
-            except WebSocketDisconnect:
-                break
-    finally:
-        websocket_manager.disconnect(websocket, key)
+    await _relay_progress(websocket, f"url_ingest:{job_id}")
 
 
 @router.post("/ingest-url/{job_id}/cancel")

@@ -131,7 +131,12 @@ from app.services.agent_tool_dispatch import (
 )
 from app.services.agent_tools import AGENT_TOOLS
 from app.services.arxiv_search_service import ArxivSearchService
-from app.services.config_values import clamped_float, clamped_int, string_list
+from app.services.config_values import (
+    bounded_int,
+    clamped_float,
+    clamped_int,
+    string_list,
+)
 from app.services.data_analysis_tools import DataAnalysisTools
 from app.services.llm_service import LLMService, UserLLMSettings, load_user_llm_settings
 from app.services.project_profile_service import (
@@ -8490,13 +8495,6 @@ RESPONSE FORMAT:
         raw = cfg.get("goal_contract")
         raw = raw if isinstance(raw, dict) else {}
 
-        def _as_int(value: Any, default: int, lo: int, hi: int) -> int:
-            try:
-                iv = int(value if value is not None else default)
-            except Exception:
-                iv = default
-            return max(lo, min(iv, hi))
-
         def _as_str_list(value: Any) -> List[str]:
             items: List[str] = []
             if isinstance(value, list):
@@ -8524,7 +8522,7 @@ RESPONSE FORMAT:
                 for key, raw_count in value.items():
                     name = str(key).strip()
                     if name:
-                        counts[name] = _as_int(raw_count, 1, 1, 100_000)
+                        counts[name] = bounded_int(raw_count, 1, 1, 100_000)
                 return counts
             return {name: 1 for name in _as_str_list(value)}
 
@@ -8654,7 +8652,7 @@ RESPONSE FORMAT:
         default_min_progress = 0 if names_evidence else 100
         return {
             "enabled": bool(enabled),
-            "min_progress": _as_int(
+            "min_progress": bounded_int(
                 raw.get(
                     "min_progress",
                     cfg.get("goal_contract_min_progress", default_min_progress),
@@ -8663,13 +8661,13 @@ RESPONSE FORMAT:
                 0,
                 100,
             ),
-            "min_findings": _as_int(
+            "min_findings": bounded_int(
                 raw.get("min_findings", cfg.get("goal_contract_min_findings", 0)),
                 0,
                 0,
                 100_000,
             ),
-            "min_artifacts": _as_int(
+            "min_artifacts": bounded_int(
                 raw.get("min_artifacts", cfg.get("goal_contract_min_artifacts", 0)),
                 0,
                 0,

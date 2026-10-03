@@ -38,6 +38,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from app.services import agent_evidence_map
 from app.services import agent_evidence_map as evidence
+from app.services.config_values import safe_int
 
 #: How a loop is allowed to decide it is finished.
 #:
@@ -194,14 +195,14 @@ def normalize(spec: Mapping[str, Any]) -> Pipeline:
         loop = None
         if isinstance(loop_raw, Mapping):
             loop = LoopPolicy(
-                max_iterations=_as_int(loop_raw.get("max_iterations"), 0),
+                max_iterations=safe_int(loop_raw.get("max_iterations"), 0),
                 until=str(loop_raw.get("until") or "contract_satisfied").strip(),
-                dry_rounds=_as_int(loop_raw.get("dry_rounds"), 2),
+                dry_rounds=safe_int(loop_raw.get("dry_rounds"), 2),
             )
         spawn_raw = raw.get("spawn_on")
         spawn = None
         if isinstance(spawn_raw, Mapping):
-            spawn = SpawnPolicy(findings=_as_int(spawn_raw.get("findings"), 0))
+            spawn = SpawnPolicy(findings=safe_int(spawn_raw.get("findings"), 0))
         contract = raw.get("contract")
         stages.append(
             PipelineStage(
@@ -222,16 +223,9 @@ def normalize(spec: Mapping[str, Any]) -> Pipeline:
         name=str(spec.get("name") or "").strip(),
         stages=tuple(stages),
         revisit_budget=max(
-            0, _as_int(spec.get("revisit_budget"), DEFAULT_REVISIT_BUDGET)
+            0, safe_int(spec.get("revisit_budget"), DEFAULT_REVISIT_BUDGET)
         ),
     )
-
-
-def _as_int(value: Any, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
 
 
 #: Result keys a run can actually end up with, and what puts them there.

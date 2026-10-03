@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable, List, Mapping, Optional
 from uuid import UUID
 
@@ -207,3 +207,46 @@ async def mark_job_failed(model: Any, job_id: Any, error_text: str) -> bool:
         job.completed_at = datetime.utcnow()
         await db.commit()
         return True
+
+
+async def prune_finished_jobs(
+    db: Any, model: Any, *, older_than_days: int, storage: Any, label: str
+) -> dict:
+    """Delete finished jobs older than the cutoff, file first, then row.
+
+    Export, presentation and repository-report cleanup each had a copy, and
+    all three ignored `delete_file`'s answer: it returns False rather than
+    raising, so a file MinIO would not delete lost its row anyway -- and the
+    row was the only record that the file existed. A job whose file could
+    not be removed now keeps its row, and the next sweep tries again.
+    """
+    cutoff = datetime.utcnow() - timedelta(days=older_than_days)
+    jobs = (
+        (
+            await db.execute(
+                select(model).where(
+                    model.created_at < cutoff, model.status.in_(FINISHED)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    deleted = kept = 0
+    for job in jobs:
+        try:
+            if job.file_path and not await storage.delete_file(job.file_path):
+                kept += 1
+                logger.warning(
+                    f"Kept {label} job {job.id}: its file {job.file_path} "
+                    "could not be deleted"
+                )
+                continue
+            await db.delete(job)
+            deleted += 1
+        except Exception as exc:  # noqa: BLE001 - one job must not stop the sweep
+            kept += 1
+            logger.warning(f"Failed to clean up {label} job {job.id}: {exc}")
+    await db.commit()
+    logger.info(f"Cleaned up {deleted} old {label} jobs; kept {kept}")
+    return {"deleted": deleted, "kept": kept}

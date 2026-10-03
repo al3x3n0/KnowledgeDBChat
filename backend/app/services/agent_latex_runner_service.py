@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.services import llm_structured
 from app.services.agent_artifact_paths import insert_before_end_document
+from app.services.agent_runner_progress import phase_reporter
 from app.services.bibtex import (
     _bib_key_from_uuid,
     _bibtex_month_macro,
@@ -76,14 +77,7 @@ class AgentLatexRunnerService:
         from app.models.latex_project_file import LatexProjectFile
         from app.services.storage_service import storage_service
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "latex_citation_sync", "result": details}
-            )
+        _emit = phase_reporter(job, "latex_citation_sync")
 
         def _bib_stem(name: str) -> str:
             n = _sanitize_bib_filename(name)
@@ -447,14 +441,7 @@ class AgentLatexRunnerService:
         from app.services.storage_service import storage_service
         from app.tasks.latex_tasks import compile_latex_project_job
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "latex_compile_project", "result": details}
-            )
+        _emit = phase_reporter(job, "latex_compile_project")
 
         cfg = job.config if isinstance(job.config, dict) else {}
         enabled_raw = cfg.get("enabled")
@@ -763,14 +750,7 @@ class AgentLatexRunnerService:
         from app.services.document_service import DocumentService
         from app.services.storage_service import storage_service
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "latex_publish_project", "result": details}
-            )
+        _emit = phase_reporter(job, "latex_publish_project")
 
         cfg = job.config if isinstance(job.config, dict) else {}
         enabled_raw = cfg.get("enabled")
@@ -1076,18 +1056,7 @@ class AgentLatexRunnerService:
         from app.services.storage_service import storage_service
         from app.services.unified_diff_service import apply_unified_diff_to_text
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {
-                    "phase": phase,
-                    "action": "latex_apply_unified_diff",
-                    "result": details,
-                }
-            )
+        _emit = phase_reporter(job, "latex_apply_unified_diff")
 
         cfg = job.config if isinstance(job.config, dict) else {}
         enabled_raw = cfg.get("enabled")
@@ -1249,14 +1218,7 @@ class AgentLatexRunnerService:
 
         from app.models.latex_project import LatexProject
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "latex_reviewer_critic", "result": details}
-            )
+        _emit = phase_reporter(job, "latex_reviewer_critic")
 
         cfg = job.config if isinstance(job.config, dict) else {}
         enabled_raw = cfg.get("enabled")

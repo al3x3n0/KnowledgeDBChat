@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from app.agent_core.tool_specs import data_analysis as data_analysis_specs
 from app.services import llm_structured
+from app.services.config_values import bounded_int, safe_int
 from app.services.data_analysis_tools import DATA_ANALYSIS_EXPOSED_NAMES
 
 
@@ -6197,16 +6198,10 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
     ) -> Any:
         from app.services import agent_compiler_sandbox
 
-        def _as_int(value: Any, default: int) -> int:
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                return default
-
         return await agent_compiler_sandbox.cost_fusion_candidate(
             pattern=str(params.get("pattern") or ""),
             cpu=str(params.get("cpu") or ""),
-            copies=_as_int(params.get("copies"), 20),
+            copies=safe_int(params.get("copies"), 20),
             mode=str(params.get("mode") or "dependent"),
             label=str(params.get("label") or ""),
         )
@@ -6248,18 +6243,12 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 )
             }
 
-        def _as_int(value: Any, default: int, low: int, high: int) -> int:
-            try:
-                return max(low, min(int(value), high))
-            except (TypeError, ValueError):
-                return default
-
         ranked = isa_candidate_mining.mine_blocks(
             [b for b in blocks if isinstance(b, dict)],
-            max_nodes=_as_int(params.get("max_instructions"), 3, 2, 6),
-            max_inputs=_as_int(params.get("max_inputs"), 2, 1, 8),
-            max_outputs=_as_int(params.get("max_outputs"), 1, 1, 4),
-            min_dynamic=_as_int(params.get("min_executions"), 0, 0, 10**15),
+            max_nodes=bounded_int(params.get("max_instructions"), 3, 2, 6),
+            max_inputs=bounded_int(params.get("max_inputs"), 2, 1, 8),
+            max_outputs=bounded_int(params.get("max_outputs"), 1, 1, 4),
+            min_dynamic=bounded_int(params.get("min_executions"), 0, 0, 10**15),
         )
         if not ranked:
             return {

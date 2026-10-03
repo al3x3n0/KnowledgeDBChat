@@ -1864,25 +1864,24 @@ Your response:"""
 
         from app.services.web_scraper_service import (
             WebScraperService,
-            internal_scrape_allowed_hosts,
+            private_network_access,
         )
 
-        # An admin who asks may reach private networks. Anyone else may
-        # reach only the hosts an active web source names -- those hosts,
-        # not whatever a page on one of them links to.
-        allowlisted_hosts = await internal_scrape_allowed_hosts(db)
-        allow_private_effective = False
+        admin = False
         if allow_private_networks:
             from app.models.user import User
 
             user_result = await db.execute(select(User).where(User.id == user_id))
-            user = user_result.scalar_one_or_none()
-            if is_admin(user):
-                allow_private_effective = True
-            elif not await self._is_url_allowlisted_for_internal_scrape(url, db):
-                return {
-                    "error": "allow_private_networks requires admin role (or an active web source allowlist)"
-                }
+            admin = is_admin(user_result.scalar_one_or_none())
+        (
+            allow_private_effective,
+            allowlisted_hosts,
+            refusal,
+        ) = await private_network_access(
+            db, url, asked=bool(allow_private_networks), admin=admin
+        )
+        if refusal:
+            return {"error": refusal}
 
         scraper = WebScraperService(enforce_network_safety=True)
         try:
@@ -1903,22 +1902,6 @@ Your response:"""
             return {"error": str(exc)}
         finally:
             await scraper.aclose()
-
-    async def _is_url_allowlisted_for_internal_scrape(
-        self, url: str, db: AsyncSession
-    ) -> bool:
-        """Whether the URL's host is named by an active web source."""
-        from urllib.parse import urlparse
-
-        from app.services.web_scraper_service import (
-            host_is_allowlisted,
-            internal_scrape_allowed_hosts,
-        )
-
-        host = (urlparse(url).hostname or "").lower()
-        if not host:
-            return False
-        return host_is_allowlisted(host, await internal_scrape_allowed_hosts(db))
 
     async def _tool_summarize_document(
         self, params: Dict[str, Any], db: AsyncSession

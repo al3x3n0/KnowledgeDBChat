@@ -33,6 +33,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from app.services.config_values import safe_int
+
 #: Mirrors ``ResearchMonitorProfileService.STOPWORDS``. Domain words ("paper",
 #: "model", "dataset") are in it because they appear in everything a research
 #: inbox holds and so separate nothing.
@@ -153,13 +155,6 @@ def _weights(bias: Mapping[str, Any], key: str) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def _as_int(value: Any) -> int:
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
 def explain(
     *,
     bias: Optional[Mapping[str, Any]],
@@ -195,17 +190,17 @@ def explain(
             found.append(DiscoverySignal(kind=kind, term=term, weight=weight))
 
     if item_type and item_type in source_type_scores:
-        delta = _as_int(source_type_scores.get(item_type))
+        delta = safe_int(source_type_scores.get(item_type))
         score += delta * _SOURCE_TYPE_MULTIPLIER
         remember("source_type", item_type, delta)
 
     for token in tokens[:_TOKEN_WINDOW]:
-        weight = _as_int(token_scores.get(token))
+        weight = safe_int(token_scores.get(token))
         score += weight
         remember("token", token, weight)
 
     for phrase in phrases[:_PHRASE_WINDOW]:
-        weight = _as_int(phrase_scores.get(phrase))
+        weight = safe_int(phrase_scores.get(phrase))
         score += weight * _PHRASE_MULTIPLIER
         remember("phrase", phrase, weight)
 

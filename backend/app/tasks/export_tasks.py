@@ -128,47 +128,18 @@ def cleanup_old_exports(days: int = 30):
     Args:
         days: Number of days to keep exports
     """
-    from datetime import timedelta
-
-    from sqlalchemy import and_
-
-    logger.info(f"Starting cleanup of exports older than {days} days")
+    from app.services.storage_service import StorageService
+    from app.tasks.job_support import prune_finished_jobs
 
     async def _cleanup():
         session_factory = create_celery_session()
         async with session_factory() as db:
-            from app.services.storage_service import StorageService
-
-            storage = StorageService()
-
-            cutoff_date = datetime.utcnow() - timedelta(days=days)
-
-            # Find old completed/failed jobs
-            result = await db.execute(
-                select(ExportJob).where(
-                    and_(
-                        ExportJob.created_at < cutoff_date,
-                        ExportJob.status.in_(["completed", "failed", "cancelled"]),
-                    )
-                )
+            return await prune_finished_jobs(
+                db,
+                ExportJob,
+                older_than_days=days,
+                storage=StorageService(),
+                label="export",
             )
-            old_jobs = result.scalars().all()
 
-            deleted_count = 0
-            for job in old_jobs:
-                try:
-                    # Delete file from MinIO
-                    if job.file_path:
-                        await storage.delete_file(job.file_path)
-
-                    # Delete job from database
-                    await db.delete(job)
-                    deleted_count += 1
-
-                except Exception as e:
-                    logger.warning(f"Failed to cleanup export job {job.id}: {e}")
-
-            await db.commit()
-            logger.info(f"Cleaned up {deleted_count} old export jobs")
-
-    asyncio.run(_cleanup())
+    return asyncio.run(_cleanup())

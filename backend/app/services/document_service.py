@@ -460,102 +460,93 @@ class DocumentService:
             return None
         return os.path.splitext(filename)[1].lower().lstrip(".")
 
-    async def _get_or_create_upload_source(self, db: AsyncSession) -> DocumentSource:
-        """Get or create the upload document source."""
+    async def _get_or_create_builtin_source(
+        self,
+        db: AsyncSession,
+        name: str,
+        *,
+        source_type: str,
+        config: Dict[str, Any],
+        active: bool = True,
+    ) -> DocumentSource:
+        """The source named `name`, created on first use.
+
+        Four methods were copies of this, differing in the row they create.
+        An inactive source is kept inactive even if someone switched it on,
+        since being active is what makes the periodic sync crawl it.
+        """
         result = await db.execute(
-            select(DocumentSource).where(DocumentSource.name == "File Upload")
+            select(DocumentSource).where(DocumentSource.name == name)
         )
         source = result.scalar_one_or_none()
 
         if not source:
             source = DocumentSource(
-                name="File Upload",
-                source_type="file",
-                config={"type": "upload", "description": "Manually uploaded files"},
+                name=name, source_type=source_type, is_active=active, config=config
             )
             db.add(source)
             await db.commit()
             await db.refresh(source)
+        elif not active and source.is_active:
+            source.is_active = False
+            await db.commit()
 
         return source
+
+    async def _get_or_create_upload_source(self, db: AsyncSession) -> DocumentSource:
+        """Get or create the upload document source."""
+        return await self._get_or_create_builtin_source(
+            db,
+            "File Upload",
+            source_type="file",
+            config={"type": "upload", "description": "Manually uploaded files"},
+        )
 
     async def _get_or_create_agent_notes_source(
         self, db: AsyncSession
     ) -> DocumentSource:
         """Get or create the agent-created notes document source."""
-        result = await db.execute(
-            select(DocumentSource).where(DocumentSource.name == "Agent Notes")
+        return await self._get_or_create_builtin_source(
+            db,
+            "Agent Notes",
+            source_type="file",
+            config={
+                "type": "agent_notes",
+                "description": "Notes created by the in-app agent/tools",
+            },
         )
-        source = result.scalar_one_or_none()
-
-        if not source:
-            source = DocumentSource(
-                name="Agent Notes",
-                source_type="file",
-                config={
-                    "type": "agent_notes",
-                    "description": "Notes created by the in-app agent/tools",
-                },
-            )
-            db.add(source)
-            await db.commit()
-            await db.refresh(source)
-
-        return source
 
     async def _get_or_create_latex_projects_source(
         self, db: AsyncSession
     ) -> DocumentSource:
         """Get or create the LaTeX Studio projects document source."""
-        result = await db.execute(
-            select(DocumentSource).where(DocumentSource.name == "LaTeX Projects")
+        return await self._get_or_create_builtin_source(
+            db,
+            "LaTeX Projects",
+            source_type="file",
+            config={
+                "type": "latex_projects",
+                "description": "LaTeX Studio projects published into the knowledge base",
+            },
         )
-        source = result.scalar_one_or_none()
-
-        if not source:
-            source = DocumentSource(
-                name="LaTeX Projects",
-                source_type="file",
-                config={
-                    "type": "latex_projects",
-                    "description": "LaTeX Studio projects published into the knowledge base",
-                },
-            )
-            db.add(source)
-            await db.commit()
-            await db.refresh(source)
-
-        return source
 
     async def _get_or_create_url_ingest_source(
         self, db: AsyncSession
     ) -> DocumentSource:
-        """Get or create the URL ingestion source."""
-        result = await db.execute(
-            select(DocumentSource).where(DocumentSource.name == "URL Ingest")
+        """Get or create the URL ingestion source.
+
+        Inactive, so periodic web source sync jobs don't try to crawl it.
+        """
+        return await self._get_or_create_builtin_source(
+            db,
+            "URL Ingest",
+            source_type="web",
+            config={
+                "type": "url_ingest",
+                "description": "Ad-hoc URL ingestion into the knowledge base",
+            },
+            active=False,
         )
-        source = result.scalar_one_or_none()
-
-        if not source:
-            source = DocumentSource(
-                name="URL Ingest",
-                source_type="web",
-                # Keep this source inactive so periodic web source sync jobs don't try to crawl it.
-                is_active=False,
-                config={
-                    "type": "url_ingest",
-                    "description": "Ad-hoc URL ingestion into the knowledge base",
-                },
-            )
-            db.add(source)
-            await db.commit()
-            await db.refresh(source)
-        elif source.is_active:
-            # Safety: if it exists and is active, disable to avoid scheduled web syncs.
-            source.is_active = False
-            await db.commit()
-
-        return source
 
     async def _process_document_async(
         self, document: Document, db: AsyncSession, user_id: Optional[UUID] = None

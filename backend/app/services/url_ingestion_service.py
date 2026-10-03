@@ -83,19 +83,17 @@ class UrlIngestionService:
                 cancel_check=cancel_check,
             )
 
-        from app.services.web_scraper_service import internal_scrape_allowed_hosts
+        from app.services.web_scraper_service import private_network_access
 
-        # Per host, as in the chat tool: an admin who asks may reach private
-        # networks; anyone else only the hosts an active web source names.
-        allowlisted_hosts = await internal_scrape_allowed_hosts(db)
-        allow_private_effective = False
-        if allow_private_networks:
-            if is_admin(user):
-                allow_private_effective = True
-            elif not await self._is_url_allowlisted_for_internal_scrape(url, db):
-                return {
-                    "error": "allow_private_networks requires admin role (or an active web source allowlist)"
-                }
+        (
+            allow_private_effective,
+            allowlisted_hosts,
+            refusal,
+        ) = await private_network_access(
+            db, url, asked=bool(allow_private_networks), admin=is_admin(user)
+        )
+        if refusal:
+            return {"error": refusal}
 
         if cancel_check():
             return {"error": "canceled"}
@@ -497,19 +495,3 @@ class UrlIngestionService:
             }
             publish("complete", {"progress": 100, **result})
             return result
-
-    async def _is_url_allowlisted_for_internal_scrape(
-        self, url: str, db: AsyncSession
-    ) -> bool:
-        """Whether the URL's host is named by an active web source."""
-        from urllib.parse import urlparse
-
-        from app.services.web_scraper_service import (
-            host_is_allowlisted,
-            internal_scrape_allowed_hosts,
-        )
-
-        host = (urlparse(url).hostname or "").lower()
-        if not host:
-            return False
-        return host_is_allowlisted(host, await internal_scrape_allowed_hosts(db))

@@ -17,6 +17,7 @@ from app.models.agent_job import AgentJob, AgentJobStatus
 from app.models.user import User
 from app.services import agent_sandbox_runtime
 from app.services.agent_artifact_paths import safe_relpath
+from app.services.agent_runner_progress import phase_reporter
 from app.services.auth_service import is_admin as auth_service_is_admin
 
 
@@ -36,18 +37,7 @@ class AgentIngestionDemoRunnerService:
 
         from app.models.research_inbox import ResearchInboxItem
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {
-                    "phase": phase,
-                    "action": "arxiv_inbox_extract_repos",
-                    "result": details,
-                }
-            )
+        _emit = phase_reporter(job, "arxiv_inbox_extract_repos")
 
         def _extract(text: str) -> list[dict]:
             s = text or ""
@@ -188,14 +178,7 @@ class AgentIngestionDemoRunnerService:
         from app.services.document_service import DocumentService
         from app.tasks.ingestion_tasks import ingest_from_source
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "git_repo_ingest_wait", "result": details}
-            )
+        _emit = phase_reporter(job, "git_repo_ingest_wait")
 
         def _normalize_repo(provider: str, raw: str) -> str:
             s = (raw or "").strip()
@@ -461,18 +444,7 @@ class AgentIngestionDemoRunnerService:
         from app.core.feature_flags import get_str as get_feature_str
         from app.models.document import Document, DocumentSource
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {
-                    "phase": phase,
-                    "action": "generated_project_demo_check",
-                    "result": details,
-                }
-            )
+        _emit = phase_reporter(job, "generated_project_demo_check")
 
         cfg = job.config if isinstance(job.config, dict) else {}
         source_id_raw = cfg.get("source_id")
@@ -789,14 +761,7 @@ class AgentIngestionDemoRunnerService:
         from app.models.document import Document, DocumentSource
         from app.models.research_inbox import ResearchInboxItem
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "paper_algorithm_project", "result": details}
-            )
+        _emit = phase_reporter(job, "paper_algorithm_project")
 
         inbox_item_id = (
             (job.config or {}).get("inbox_item_id")

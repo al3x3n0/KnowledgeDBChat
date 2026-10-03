@@ -179,49 +179,18 @@ def cleanup_old_presentations(days: int = 30):
     Args:
         days: Number of days to keep presentations
     """
-    from datetime import timedelta
-
-    from sqlalchemy import and_
-
-    logger.info(f"Starting cleanup of presentations older than {days} days")
+    from app.services.storage_service import StorageService
+    from app.tasks.job_support import prune_finished_jobs
 
     async def _cleanup():
         session_factory = create_celery_session()
         async with session_factory() as db:
-            from app.services.storage_service import StorageService
-
-            storage = StorageService()
-
-            cutoff_date = datetime.utcnow() - timedelta(days=days)
-
-            # Find old completed/failed jobs
-            result = await db.execute(
-                select(PresentationJob).where(
-                    and_(
-                        PresentationJob.created_at < cutoff_date,
-                        PresentationJob.status.in_(
-                            ["completed", "failed", "cancelled"]
-                        ),
-                    )
-                )
+            return await prune_finished_jobs(
+                db,
+                PresentationJob,
+                older_than_days=days,
+                storage=StorageService(),
+                label="presentation",
             )
-            old_jobs = result.scalars().all()
 
-            deleted_count = 0
-            for job in old_jobs:
-                try:
-                    # Delete file from MinIO
-                    if job.file_path:
-                        await storage.delete_file(job.file_path)
-
-                    # Delete job from database
-                    await db.delete(job)
-                    deleted_count += 1
-
-                except Exception as e:
-                    logger.warning(f"Failed to cleanup presentation job {job.id}: {e}")
-
-            await db.commit()
-            logger.info(f"Cleaned up {deleted_count} old presentation jobs")
-
-    asyncio.run(_cleanup())
+    return asyncio.run(_cleanup())

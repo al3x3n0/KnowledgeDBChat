@@ -1056,6 +1056,37 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   query is the whole of those routes' ownership check.
   `tests/test_shared_helpers_have_one_definition.py`
   names the one module allowed to define each.
+  **Copies that differ only in a string are invisible to an exact-hash scan.**
+  A later pass hashed function bodies with their string and number constants
+  normalised, and found more:
+  - 24 identical phase-report closures in the deterministic runners, now
+    `agent_runner_progress.phase_reporter(job, action)`.
+  - Three job-cleanup tasks, now `job_support.prune_finished_jobs`. All three
+    deleted the row even when `StorageService.delete_file` answered False,
+    which it does instead of raising, so the file was orphaned with nothing
+    pointing at it. The row is now kept for the next sweep.
+  - Three entity get-or-creates, now `kg_entities.get_or_create_entity`. The
+    paper-KG copy looked a name up whole and stored it cut to 512 characters,
+    so a long name never found its own row and made another each time; with
+    no unique constraint the copies piled up until a lookup raised
+    `MultipleResultsFound`.
+  - Four document progress sockets with one relay loop.
+  - Two admin "enabled ids" route pairs.
+  - Four built-in document sources.
+  - Two experiment run-config setters.
+  - The private-network decision both scrapers made (and each queried twice),
+    now `web_scraper_service.private_network_access`.
+  - Five private `_as_int` copies of `safe_int` / `bounded_int`.
+
+  `config_values.string_list` no longer turns a null item into `"None"`, and
+  `split=False` reads a JSON list without splitting a bare string.
+
+  Left apart on purpose:
+  - `_slugify` ×3: different separators, caps and fallbacks.
+  - `_text` ×11: a one-line idiom in five variants.
+  - `_job_to_response` ×6: six models into six schemas.
+  - Connector `test_connection`s: one interface, different endpoints.
+  - Per-class Pydantic validators.
 - **An import inside a function, under `except Exception`, can name
   nothing and nobody finds out.** Four did: synthesis output files imported
   three builder singletons that never existed, so every DOCX/PDF/PPTX

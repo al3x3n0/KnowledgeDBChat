@@ -259,46 +259,18 @@ def cleanup_old_repo_reports(days: int = 30):
     Args:
         days: Number of days to keep reports
     """
-    from datetime import timedelta
-
-    from sqlalchemy import and_
-
-    logger.info(f"Starting cleanup of repo reports older than {days} days")
+    from app.services.storage_service import StorageService
+    from app.tasks.job_support import prune_finished_jobs
 
     async def _cleanup():
         session_factory = create_celery_session()
         async with session_factory() as db:
-            storage = StorageService()
-            await storage.initialize()
-
-            cutoff_date = datetime.utcnow() - timedelta(days=days)
-
-            # Find old completed/failed jobs
-            result = await db.execute(
-                select(RepoReportJob).where(
-                    and_(
-                        RepoReportJob.created_at < cutoff_date,
-                        RepoReportJob.status.in_(["completed", "failed", "cancelled"]),
-                    )
-                )
+            return await prune_finished_jobs(
+                db,
+                RepoReportJob,
+                older_than_days=days,
+                storage=StorageService(),
+                label="repo report",
             )
-            old_jobs = result.scalars().all()
 
-            deleted_count = 0
-            for job in old_jobs:
-                try:
-                    # Delete file from MinIO
-                    if job.file_path:
-                        await storage.delete_file(job.file_path)
-
-                    # Delete job from database
-                    await db.delete(job)
-                    deleted_count += 1
-
-                except Exception as e:
-                    logger.warning(f"Failed to cleanup repo report job {job.id}: {e}")
-
-            await db.commit()
-            logger.info(f"Cleaned up {deleted_count} old repo report jobs")
-
-    asyncio.run(_cleanup())
+    return asyncio.run(_cleanup())

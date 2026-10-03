@@ -35,6 +35,7 @@ from app.services.agent_domain_research_scoring import (
 from app.services.agent_domain_research_scoring import (
     track_keyword_sets as _track_keyword_sets,
 )
+from app.services.agent_runner_progress import phase_reporter
 from app.services.ai_hub_dataset_preset_service import ai_hub_dataset_preset_service
 from app.services.ai_hub_eval_service import ai_hub_eval_service
 from app.services.autonomy_service import (
@@ -115,14 +116,7 @@ class AgentResearchRunnerService:
         from app.core.feature_flags import set_str as set_feature_str
         from app.schemas.customer_profile import CustomerProfile
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "ai_hub_scientist", "result": details}
-            )
+        _emit = phase_reporter(job, "ai_hub_scientist")
 
         # Customer profile (deployment-level) optionally overrides defaults.
         customer_profile_raw = await get_feature_str("ai_hub_customer_profile")
@@ -936,14 +930,7 @@ class AgentResearchRunnerService:
         from app.models.research_inbox import ResearchInboxItem
         from app.schemas.customer_profile import CustomerProfile
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "research_inbox_monitor", "result": details}
-            )
+        _emit = phase_reporter(job, "research_inbox_monitor")
 
         def _safe_text(x: Any) -> str:
             try:
@@ -1768,18 +1755,7 @@ class AgentResearchRunnerService:
         from app.models.document import Document
         from app.models.latex_project import LatexProject
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {
-                    "phase": phase,
-                    "action": "research_engineer_scientist",
-                    "result": details,
-                }
-            )
+        _emit = phase_reporter(job, "research_engineer_scientist")
 
         config = job.config if isinstance(job.config, dict) else {}
         search_query = (
@@ -1955,18 +1931,7 @@ class AgentResearchRunnerService:
         from app.models.experiment import ExperimentPlan
         from app.models.research_inbox import ResearchInboxItem
 
-        def _emit(progress: int, phase: str, details: str) -> None:
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {
-                    "phase": phase,
-                    "action": "domain_research_orchestrator",
-                    "result": details,
-                }
-            )
+        _emit = phase_reporter(job, "domain_research_orchestrator")
 
         config = job.config if isinstance(job.config, dict) else {}
         profile_id_raw = str(config.get("profile_id") or "").strip()
@@ -3852,18 +3817,7 @@ class AgentResearchRunnerService:
         from app.models.research_note import ResearchNote
         from app.models.research_portfolio import ResearchPortfolio
 
-        def _emit(progress: int, phase: str, details: str) -> None:
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {
-                    "phase": phase,
-                    "action": "research_fleet_orchestrator",
-                    "result": details,
-                }
-            )
+        _emit = phase_reporter(job, "research_fleet_orchestrator")
 
         def _policy(raw: Any) -> dict[str, Any]:
             from app.services.scientific_validation_service import (
@@ -5235,18 +5189,7 @@ class AgentResearchRunnerService:
 
         from app.models.latex_project import LatexProject
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {
-                    "phase": phase,
-                    "action": "research_engineer_paper_update",
-                    "result": details,
-                }
-            )
+        _emit = phase_reporter(job, "research_engineer_paper_update")
 
         config = job.config if isinstance(job.config, dict) else {}
         latex_project_id = (config or {}).get("latex_project_id")
@@ -5397,14 +5340,7 @@ class AgentResearchRunnerService:
         """Deterministic runner: aggregate swarm sibling outputs into a strict merged schema."""
         cfg = job.config if isinstance(job.config, dict) else {}
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "swarm_fan_in_aggregate", "result": details}
-            )
+        _emit = phase_reporter(job, "swarm_fan_in_aggregate")
 
         inherited = (
             cfg.get("inherited_data")

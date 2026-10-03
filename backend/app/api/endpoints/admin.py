@@ -66,6 +66,7 @@ from app.schemas.ldap import (
 )
 from app.services import agent_sandbox_runtime
 from app.services.auth_service import require_admin
+from app.services.config_values import string_list
 from app.services.llm_service import LLMService
 from app.services.vector_store import vector_store_service
 from app.tasks.ingestion_tasks import dry_run_source as dry_run_task
@@ -1693,6 +1694,31 @@ async def set_llm_routing_settings(
     return {"updated": updated}
 
 
+async def _enabled_ids(flag: str) -> dict:
+    """An admin-curated id list, stored in a string feature flag as CSV."""
+    raw = await get_feature_str(flag)
+    return {"enabled": string_list(raw), "raw": raw}
+
+
+async def _set_enabled_ids(flag: str, payload: dict) -> dict:
+    """Store `{"enabled": [...]}` or `{"raw": "a,b"}` under `flag` as CSV.
+
+    The eval-template and dataset-preset routes were two copies of this.
+    """
+    enabled = payload.get("enabled")
+    raw = payload.get("raw")
+    if isinstance(enabled, list) or isinstance(raw, str):
+        raw = ",".join(string_list(enabled if isinstance(enabled, list) else raw))
+    elif enabled is None and raw is None:
+        raise HTTPException(status_code=400, detail="Missing 'enabled' or 'raw'")
+    else:
+        raise HTTPException(status_code=400, detail="Invalid payload")
+
+    if not await set_feature_str(flag, raw):
+        raise HTTPException(status_code=400, detail="Failed to update setting")
+    return {"ok": True, "enabled": string_list(raw)}
+
+
 @router.get("/ai-hub/evals/enabled")
 async def get_enabled_ai_hub_eval_templates(
     current_user: User = Depends(require_admin),
@@ -1701,9 +1727,7 @@ async def get_enabled_ai_hub_eval_templates(
     Get the enabled AI Hub eval template IDs (admin).
     Stored in Redis feature flag key `ai_hub_enabled_eval_templates` as CSV.
     """
-    raw = await get_feature_str("ai_hub_enabled_eval_templates")
-    enabled = [x.strip() for x in (raw or "").split(",") if x and x.strip()]
-    return {"enabled": enabled, "raw": raw}
+    return await _enabled_ids("ai_hub_enabled_eval_templates")
 
 
 @router.post("/ai-hub/evals/enabled")
@@ -1717,24 +1741,7 @@ async def set_enabled_ai_hub_eval_templates(
       - {"enabled": ["id1", "id2"]}
       - {"raw": "id1,id2"}
     """
-    enabled = payload.get("enabled")
-    raw = payload.get("raw")
-
-    if isinstance(enabled, list):
-        cleaned = [str(x).strip() for x in enabled if str(x).strip()]
-        raw = ",".join(cleaned)
-    elif isinstance(raw, str):
-        cleaned = [x.strip() for x in raw.split(",") if x and x.strip()]
-        raw = ",".join(cleaned)
-    elif enabled is None and raw is None:
-        raise HTTPException(status_code=400, detail="Missing 'enabled' or 'raw'")
-    else:
-        raise HTTPException(status_code=400, detail="Invalid payload")
-
-    ok = await set_feature_str("ai_hub_enabled_eval_templates", raw or "")
-    if not ok:
-        raise HTTPException(status_code=400, detail="Failed to update setting")
-    return {"ok": True, "enabled": [x for x in (raw or "").split(",") if x]}
+    return await _set_enabled_ids("ai_hub_enabled_eval_templates", payload)
 
 
 @router.get("/ai-hub/datasets/presets/enabled")
@@ -1745,9 +1752,7 @@ async def get_enabled_ai_hub_dataset_presets(
     Get the enabled AI Hub dataset preset IDs (admin).
     Stored in Redis feature flag key `ai_hub_enabled_dataset_presets` as CSV.
     """
-    raw = await get_feature_str("ai_hub_enabled_dataset_presets")
-    enabled = [x.strip() for x in (raw or "").split(",") if x and x.strip()]
-    return {"enabled": enabled, "raw": raw}
+    return await _enabled_ids("ai_hub_enabled_dataset_presets")
 
 
 @router.post("/ai-hub/datasets/presets/enabled")
@@ -1761,24 +1766,7 @@ async def set_enabled_ai_hub_dataset_presets(
       - {"enabled": ["id1", "id2"]}
       - {"raw": "id1,id2"}
     """
-    enabled = payload.get("enabled")
-    raw = payload.get("raw")
-
-    if isinstance(enabled, list):
-        cleaned = [str(x).strip() for x in enabled if str(x).strip()]
-        raw = ",".join(cleaned)
-    elif isinstance(raw, str):
-        cleaned = [x.strip() for x in raw.split(",") if x and x.strip()]
-        raw = ",".join(cleaned)
-    elif enabled is None and raw is None:
-        raise HTTPException(status_code=400, detail="Missing 'enabled' or 'raw'")
-    else:
-        raise HTTPException(status_code=400, detail="Invalid payload")
-
-    ok = await set_feature_str("ai_hub_enabled_dataset_presets", raw or "")
-    if not ok:
-        raise HTTPException(status_code=400, detail="Failed to update setting")
-    return {"ok": True, "enabled": [x for x in (raw or "").split(",") if x]}
+    return await _set_enabled_ids("ai_hub_enabled_dataset_presets", payload)
 
 
 def _normalize_profile_keywords(keywords: list[str]) -> list[str]:

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.services import agent_sandbox_runtime, llm_json
 from app.services.agent_artifact_paths import insert_before_end_document, safe_relpath
+from app.services.agent_runner_progress import phase_reporter
 from app.services.llm_service import LLMService
 from app.services.project_profile_service import build_project_profile
 
@@ -50,18 +51,7 @@ class AgentExperimentRunnerService:
         from app.models.experiment import ExperimentPlan
         from app.models.research_note import ResearchNote
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {
-                    "phase": phase,
-                    "action": "experiment_plan_generate",
-                    "result": details,
-                }
-            )
+        _emit = phase_reporter(job, "experiment_plan_generate")
 
         def _extract_hypothesis_section(markdown: str) -> Optional[str]:
             if not markdown:
@@ -228,14 +218,7 @@ class AgentExperimentRunnerService:
         """
         cfg = job.config if isinstance(job.config, dict) else {}
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "experiment_loop_seed", "result": details}
-            )
+        _emit = phase_reporter(job, "experiment_loop_seed")
 
         research_note_id = str(
             cfg.get("research_note_id") or cfg.get("note_id") or ""
@@ -384,14 +367,7 @@ class AgentExperimentRunnerService:
         """
         cfg = job.config if isinstance(job.config, dict) else {}
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "experiment_decide_next", "result": details}
-            )
+        _emit = phase_reporter(job, "experiment_decide_next")
 
         iteration = int(cfg.get("experiment_iteration") or 0)
         variants = (
@@ -514,18 +490,7 @@ class AgentExperimentRunnerService:
         from app.models.experiment import ExperimentPlan, ExperimentRun
         from app.models.research_note import ResearchNote
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {
-                    "phase": phase,
-                    "action": "experiment_persist_results",
-                    "result": details,
-                }
-            )
+        _emit = phase_reporter(job, "experiment_persist_results")
 
         cfg = job.config if isinstance(job.config, dict) else {}
         inherited = (
@@ -813,14 +778,7 @@ class AgentExperimentRunnerService:
             get_scientific_validation_runtime_limits,
         )
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "experiment_runner", "result": details}
-            )
+        _emit = phase_reporter(job, "experiment_runner")
 
         async def _linked_run() -> Optional[ExperimentRun]:
             run_id_raw = str(cfg.get("experiment_run_id") or "").strip()

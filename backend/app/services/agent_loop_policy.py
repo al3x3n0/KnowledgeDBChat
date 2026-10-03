@@ -28,6 +28,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.services.config_values import safe_int
+
 #: What a stage may ask for. An unrecognised value is ignored rather than
 #: guessed at, and reported, because silently picking a policy the author did
 #: not choose is how a run stops for a reason nobody can explain.
@@ -129,7 +131,7 @@ def should_stop(
     # code, no checks, nothing new recorded, and nothing in place to notice.
     # Before this, declaring any loop at all bought a stage out of stall
     # detection entirely.
-    dry_rounds = _as_int(config.get("loop_dry_rounds"), DEFAULT_DRY_ROUNDS)
+    dry_rounds = safe_int(config.get("loop_dry_rounds"), DEFAULT_DRY_ROUNDS)
     if dry_rounds < 1:
         dry_rounds = DEFAULT_DRY_ROUNDS
     if policy != "no_new_findings":
@@ -139,7 +141,7 @@ def should_stop(
         # purpose.
         dry_rounds = max(
             dry_rounds,
-            _as_int(config.get("loop_dry_rounds"), 0) or DECLARED_LOOP_DRY_ROUNDS,
+            safe_int(config.get("loop_dry_rounds"), 0) or DECLARED_LOOP_DRY_ROUNDS,
         )
 
     history: List[int] = [
@@ -182,13 +184,6 @@ def policy_warning(config: Optional[Dict[str, Any]]) -> str:
         f"Unknown loop policy {policy!r}; treating it as contract_satisfied. "
         f"Known policies: {', '.join(KNOWN_POLICIES)}"
     )
-
-
-def _as_int(value: Any, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
 
 
 #: State a run accumulates as evidence that it should give up. A correction

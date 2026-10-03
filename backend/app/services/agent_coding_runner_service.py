@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.services import llm_structured
+from app.services.agent_runner_progress import phase_reporter
 from app.services.coding_backlog_decomposition import (
     append_artifact_history,
     append_backlog_timeline,
@@ -68,14 +69,7 @@ class AgentCodingRunnerService:
         from app.models.code_patch_proposal import CodePatchProposal
         from app.models.document import Document, DocumentSource
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "code_patch_proposer", "result": details}
-            )
+        _emit = phase_reporter(job, "code_patch_proposer")
 
         source_id_raw = None
         if isinstance(job.config, dict):
@@ -674,14 +668,7 @@ class AgentCodingRunnerService:
         )
         from app.services.document_service import DocumentService
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "code_patch_apply_to_kb", "result": details}
-            )
+        _emit = phase_reporter(job, "code_patch_apply_to_kb")
 
         cfg = job.config if isinstance(job.config, dict) else {}
         inherited = (cfg or {}).get("inherited_data") if isinstance(cfg, dict) else None
@@ -1149,18 +1136,7 @@ class AgentCodingRunnerService:
         )
         from app.tasks.agent_job_tasks import execute_agent_job_task
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {
-                    "phase": phase,
-                    "action": "coding_backlog_orchestrator",
-                    "result": details,
-                }
-            )
+        _emit = phase_reporter(job, "coding_backlog_orchestrator")
 
         def _normalize_ids(values: Any) -> list[str]:
             if not isinstance(values, list):

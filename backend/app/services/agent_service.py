@@ -1402,11 +1402,24 @@ Your response:"""
                 db,
             )
 
+        # Whether the papers are on their way into the corpus. Asked for and
+        # not queued (no broker, a failed enqueue) is said, not left inside
+        # `ingest` where the finding a contract counts never shows it.
+        ingest_queued = bool((ingest_result or {}).get("queued"))
+        warning = None
+        if ingest and paper_ids and not ingest_queued:
+            warning = (
+                "The papers were found but their ingestion was not queued, so "
+                "they will not appear in the knowledge base. Retry the ingest "
+                f"for source {(ingest_result or {}).get('source_id')}."
+            )
+
         return {
             "topic": topic,
             "query": q,
             "papers": papers,
             "ingest": ingest_result,
+            **({"warning": warning} if warning else {}),
             # A goal contract counts finding types, not return keys. The spec
             # declares produces=("literature_review",), and without this the
             # evidence never arrives under the name the contract counts --
@@ -1421,6 +1434,7 @@ Your response:"""
                         "query": q,
                         "paper_count": len(papers),
                         "paper_ids": paper_ids[:25],
+                        "ingest_queued": ingest_queued,
                     }
                 ]
                 if paper_ids

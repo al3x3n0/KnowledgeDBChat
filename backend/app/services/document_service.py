@@ -13,6 +13,7 @@ from uuid import UUID
 from fastapi import UploadFile
 from loguru import logger
 from sqlalchemy import and_, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload, selectinload
 
@@ -481,10 +482,23 @@ class DocumentService:
         source = result.scalar_one_or_none()
 
         if not source:
-            source = DocumentSource(
+            candidate = DocumentSource(
                 name=name, source_type=source_type, is_active=active, config=config
             )
-            db.add(source)
+            try:
+                # A savepoint, so losing the race undoes only this insert and
+                # leaves the caller's other objects unexpired.
+                async with db.begin_nested():
+                    db.add(candidate)
+                source = candidate
+            except IntegrityError:
+                # Two first uploads at once: `name` is unique, so the other
+                # one created it between the lookup and the insert.
+                source = (
+                    await db.execute(
+                        select(DocumentSource).where(DocumentSource.name == name)
+                    )
+                ).scalar_one()
             await db.commit()
             await db.refresh(source)
         elif not active and source.is_active:

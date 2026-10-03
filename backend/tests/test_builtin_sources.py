@@ -49,3 +49,38 @@ async def test_url_ingest_stays_inactive_so_no_sync_crawls_it(db_session):
 async def test_other_builtin_sources_are_active(db_session):
     service = DocumentService.__new__(DocumentService)
     assert (await service._get_or_create_upload_source(db_session)).is_active is True
+
+
+async def test_losing_the_creation_race_returns_the_winners_row(
+    db_session, monkeypatch
+):
+    """Two first uploads at once: both look, both miss, one inserts first."""
+    winner = DocumentSource(name="File Upload", source_type="file", config={})
+    db_session.add(winner)
+    await db_session.commit()
+    bystander = DocumentSource(name="Unrelated", source_type="file", config={})
+    db_session.add(bystander)
+    await db_session.flush()
+
+    real_execute = db_session.execute
+    missed = []
+
+    class _Miss:
+        def scalar_one_or_none(self):
+            return None
+
+    async def execute(statement, *args, **kwargs):
+        if not missed:
+            missed.append(statement)  # the lookup that lost the race
+            return _Miss()
+        return await real_execute(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db_session, "execute", execute)
+    service = DocumentService.__new__(DocumentService)
+
+    source = await service._get_or_create_upload_source(db_session)
+
+    assert source.id == winner.id
+    # Only the failed insert was undone: other pending work survived.
+    assert bystander.name == "Unrelated"
+    assert await db_session.get(DocumentSource, bystander.id) is not None

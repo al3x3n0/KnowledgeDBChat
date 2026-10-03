@@ -838,6 +838,10 @@ async def test_review_reports_a_broker_that_refused_the_ingestion(
 
     assert result["ingest"]["queued"] is False
     assert result["ingest"]["task_id"] is None
+    # Said where it is seen: on the result, and on the finding a contract
+    # counts.
+    assert "not queued" in result["warning"]
+    assert result["findings"][0]["ingest_queued"] is False
 
 
 async def test_review_fails_when_arxiv_answers_with_an_error(

@@ -6444,7 +6444,16 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         try:
             reps = [int(r) for r in (reps or [])]
         except (TypeError, ValueError):
-            reps = []
+            # Given and unreadable is refused, not replaced: falling back to
+            # (2, 8) ran a study at counts nobody asked for and reported it
+            # as the one requested.
+            return {
+                "success": False,
+                "error": (
+                    "reps must name exactly two different positive counts, "
+                    f"e.g. [2, 8]; got {params.get('reps')!r}"
+                ),
+            }
 
         return await agent_gem5_studies.measure_marginal(
             code=str(params.get("code") or ""),

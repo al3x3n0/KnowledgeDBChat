@@ -585,6 +585,24 @@ class TestWhatEachHandlerPasses:
         assert list(call["reps"]) == [3, 12]
         assert call["memory_bound"] is True
 
+    @pytest.mark.parametrize("reps", ["two and eight", ["a", "b"], "[2, x]"])
+    async def test_measure_marginal_refuses_reps_it_cannot_read(self, service, reps):
+        # It used to run (2, 8) instead and report that as the study asked for.
+        recorder = service("measure_marginal")
+
+        result = await _call(
+            "measure_marginal", {"code": "REPS", "configs": {"base": {}}, "reps": reps}
+        )
+
+        assert result["success"] is False
+        assert "reps" in result["error"]
+        assert recorder.calls == []
+
+    async def test_measure_marginal_without_reps_uses_the_default(self, service):
+        recorder = service("measure_marginal")
+        await _call("measure_marginal", {"code": "REPS", "configs": {"base": {}}})
+        assert list(recorder.calls[0]["reps"]) == [2, 8]
+
     @pytest.mark.parametrize("tool", MODEL_TOOLS)
     async def test_the_model_is_asked_as_the_jobs_owner(self, tool, service):
         recorder = service(tool)

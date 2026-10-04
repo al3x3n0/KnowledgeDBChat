@@ -123,7 +123,8 @@ def cleanup_old_exports(days: int = 30):
     Cleanup task to remove old export jobs and files.
 
     Removes exports older than the specified number of days.
-    Scheduled to run periodically via Celery Beat.
+    Not in the beat schedule, deliberately: nothing is deleted on a timer
+    (decided 2026-10-05). Run it by hand or add it to the schedule.
 
     Args:
         days: Number of days to keep exports

@@ -1330,6 +1330,17 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
     (`extra["replaying_bundle"]`). gem5 runs have a time limit, and none had
     one by default. A BOLT option is refused before the build, not after it.
     A pass that crashes is `pass_crashed`, not "unregistered".
+- **A task the worker never imports is a message thrown away.** The worker
+  loads only `celery_app`'s `include` list. `workflow_tasks` (since January),
+  `export_tasks` and `synthesis_tasks` (since February) were not on it, so the
+  API queued their tasks happily and the worker discarded each one as
+  unregistered: no async workflow, export or synthesis job ever ran, and the
+  rows just stayed pending. `tests/test_every_task_module_is_registered.py`
+  fails on a module defining a task that is not included. Decided
+  2026-10-05: scheduled workflows are **on** (a per-minute beat entry; it
+  fires only for a tick in the last minute, so a dormant schedule does not
+  replay), and the export, presentation, repo-report and synthesis cleanups
+  stay **off** -- nothing is deleted on a timer.
 - **A setting must be read, or admitted inert.** `TRAINING_ENABLED` was the
   documented gate on training and nothing read it; the concurrency limit and
   two dataset limits beside it were the same. They are enforced now (the gate

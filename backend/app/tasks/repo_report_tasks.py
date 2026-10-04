@@ -254,7 +254,8 @@ def cleanup_old_repo_reports(days: int = 30):
     Cleanup task to remove old repository report jobs and files.
 
     Removes reports older than the specified number of days.
-    Scheduled to run periodically via Celery Beat.
+    Not in the beat schedule, deliberately: nothing is deleted on a timer
+    (decided 2026-10-05). Run it by hand or add it to the schedule.
 
     Args:
         days: Number of days to keep reports

@@ -40,6 +40,14 @@ celery_app = Celery(
         "app.tasks.autonomous_rnd_eval_tasks",
         "app.tasks.plugin_tasks",
         "app.tasks.sandbox_skill_tasks",
+        # Missing until 2026-10-05, so the worker never registered their
+        # tasks: every queued workflow, export and synthesis job was dropped
+        # as an unregistered task and stayed pending. Every module defining a
+        # task must be here; test_every_task_module_is_registered fails if
+        # one is not.
+        "app.tasks.workflow_tasks",
+        "app.tasks.export_tasks",
+        "app.tasks.synthesis_tasks",
     ],
 )
 
@@ -184,6 +192,14 @@ celery_app.conf.beat_schedule = {
     "scan-scheduled-sources": {
         "task": "app.tasks.sync_tasks.scan_scheduled_sources",
         "schedule": crontab(minute="*/5"),
+    },
+    # Workflows whose trigger is a cron schedule. Never scheduled until
+    # 2026-10-05 (and its module never registered), so a workflow given a
+    # schedule did nothing. It fires only for a tick in the last minute, so a
+    # long-dormant schedule starts at its next tick rather than replaying.
+    "trigger-scheduled-workflows": {
+        "task": "app.tasks.workflow.trigger_scheduled_workflows",
+        "schedule": crontab(minute="*"),
     },
     # Process scheduled agent jobs (every 5 minutes)
     "process-scheduled-agent-jobs": {

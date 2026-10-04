@@ -145,6 +145,11 @@ def _job_spec(stage: PipelineStage, pipeline: Pipeline) -> Dict[str, Any]:
         config["goal_contract"] = dict(stage.contract)
     if stage.assumes:
         config["pipeline_assumes"] = list(stage.assumes)
+    if len(stage.depends_on) > 1:
+        # A fan-in stage is created as a child of whichever stage it waits on
+        # finishes last; this names the others, so it can start from every
+        # one's working files rather than one's.
+        config["pipeline_depends_on"] = sorted(stage.depends_on)
     if stage.runner:
         config["deterministic_runner"] = stage.runner
 
@@ -263,9 +268,12 @@ def bind(pipeline: Pipeline) -> BoundPipeline:
                 "child_jobs": child_jobs,
             }
             if stage.spawn_on is not None:
-                chain["trigger_thresholds"] = {
-                    "findings_threshold": stage.spawn_on.findings
-                }
+                # At the top of chain_config, where should_trigger_chain reads
+                # it. It was nested under `trigger_thresholds` -- the shape a
+                # chain *definition* uses before launch flattens it -- and
+                # nothing flattened it here, so every `spawn_on: {findings: N}`
+                # released its successors at the default of 10.
+                chain["findings_threshold"] = stage.spawn_on.findings
             if chain_data:
                 chain["chain_data"] = chain_data
             job["chain_config"] = chain

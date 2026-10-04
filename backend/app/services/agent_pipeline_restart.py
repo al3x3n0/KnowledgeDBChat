@@ -84,6 +84,16 @@ class StageJob:
         return bool(self.job.goal_contract_satisfied())
 
 
+#: A predecessor in one of these has nothing a restart could build on.
+_ENDED_BADLY = (AgentJobStatus.FAILED.value, AgentJobStatus.CANCELLED.value)
+
+
+def _releases_on_findings(job: AgentJob) -> bool:
+    """Whether this stage releases its successors on evidence (`spawn_on`)."""
+    chain = job.chain_config if isinstance(job.chain_config, dict) else {}
+    return str(chain.get("trigger_condition") or "") == "on_findings"
+
+
 def stage_of(job: AgentJob) -> str:
     """The stage id a job was created for, or "" if it is not a pipeline stage."""
     config = job.config if isinstance(job.config, dict) else {}
@@ -300,13 +310,33 @@ async def restart_from_stage(
             "restarted on evidence that is not there."
         )
 
-    if not parent.completed:
+    spawning = _releases_on_findings(parent.job)
+    if spawning:
+        # A `spawn_on` stage releases what follows on evidence and may never
+        # complete -- a monitor is still monitoring. Requiring it to complete
+        # made every stage after it impossible to restart. What it must have
+        # done is what the first release required: reached its threshold,
+        # which `chain_triggered` records.
+        if str(parent.job.status or "") in _ENDED_BADLY:
+            raise PipelineRestartError(
+                f"Stage {parent.stage_id!r} is {parent.job.status}. Restart "
+                "from that stage instead."
+            )
+        if not parent.job.chain_triggered and not (
+            parent.completed and parent.contract_met
+        ):
+            raise PipelineRestartError(
+                f"Stage {parent.stage_id!r} has not yet produced the findings "
+                f"that release {stage_id!r}, so there is nothing for it to "
+                "start from."
+            )
+    elif not parent.completed:
         raise PipelineRestartError(
             f"Stage {parent.stage_id!r} is {parent.job.status}, not completed. "
             f"Restarting {stage_id!r} on it would build on work that has not "
             "finished."
         )
-    if not parent.contract_met:
+    elif not parent.contract_met:
         raise PipelineRestartError(
             f"Stage {parent.stage_id!r} completed without meeting its "
             f"contract, so the evidence {stage_id!r} assumes was never "
@@ -330,8 +360,11 @@ async def restart_from_stage(
         _attach_correction(child_config, clue["note"])
 
     # The parent fired its chain once already; without this the orchestration
-    # would treat the stage as started and do nothing, silently.
-    parent.job.chain_triggered = False
+    # would treat the stage as started and do nothing, silently. Not for a
+    # spawning parent: it may still be running, and clearing the flag would
+    # let it release every successor a second time at its next finding.
+    if not spawning:
+        parent.job.chain_triggered = False
 
     child = await executor.chain_orchestration_service.create_chained_job(
         executor, parent.job, child_config, db

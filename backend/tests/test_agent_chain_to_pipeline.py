@@ -174,3 +174,47 @@ class TestTheMonitorCase:
             ],
         )
         assert spec["stages"][0]["spawn_on"] == {"findings": 1}
+
+
+class TestASpawnThresholdIsTheOneThatFires:
+    """`spawn_on: {findings: N}` must release successors at N.
+
+    The binding nested the threshold under `trigger_thresholds`, the shape a
+    chain definition has before launch flattens it. Nothing flattened it for a
+    pipeline, and `should_trigger_chain` reads the top level -- so every
+    pipeline's spawn released at the default of 10, whatever it said.
+    """
+
+    @staticmethod
+    def _bound_chain(findings):
+        from app.services import agent_pipeline_binding
+
+        pipeline = normalize(
+            {
+                "name": "watch",
+                "stages": [
+                    {
+                        "id": "watch",
+                        "goal": "g",
+                        "spawn_on": {"findings": findings},
+                        "contract": {"required_finding_types": ["algorithm_spec"]},
+                    },
+                    {
+                        "id": "alert",
+                        "goal": "g",
+                        "depends_on": ["watch"],
+                        "contract": {"required_finding_types": ["algorithm_spec"]},
+                    },
+                ],
+            }
+        )
+        return agent_pipeline_binding.bind(pipeline).roots[0]["chain_config"]
+
+    @pytest.mark.parametrize("findings", [1, 3, 25])
+    def test_the_real_trigger_fires_at_the_stated_count(self, findings):
+        from app.models.agent_job import AgentJob
+
+        job = AgentJob(chain_config=self._bound_chain(findings), chain_triggered=False)
+
+        assert job.should_trigger_chain("findings", findings - 1) is False
+        assert job.should_trigger_chain("findings", findings) is True

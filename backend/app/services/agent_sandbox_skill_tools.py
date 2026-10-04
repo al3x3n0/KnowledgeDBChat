@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from loguru import logger
+
 from app.services import (
     sandbox_skill_manifest,
     sandbox_skill_runtime,
@@ -56,18 +58,146 @@ def _user_id(ctx: Any) -> Any:
     )
 
 
-def _workdir(ctx: Any):
+#: Statuses in which a job may still act -- or, paused at a checkpoint, be
+#: about to. A pipeline run with any job in one of these keeps its files.
+LIVE_STATUSES = ("pending", "running", "paused")
+
+#: Bounds on walking a chain up or down; a pipeline is a few levels deep.
+_MAX_CHAIN_DEPTH = 50
+
+
+async def _stage_sources(ctx: Any, job: Any) -> tuple:
+    """(chain parent's stage label, the other stages a fan-in waits on).
+
+    A fan-in stage is created as the child of whichever stage it waits on
+    finished last, so `parent_job_id` names one of them. The others are its
+    parent's siblings carrying the stage ids in `pipeline_depends_on`. A
+    restarted stage has several jobs; the newest is the one whose files count.
+    """
+    from sqlalchemy import select
+
+    from app.models.agent_job import AgentJob
+
+    db = getattr(ctx, "db", None)
+    parent_id = getattr(job, "parent_job_id", None)
+    if db is None or not parent_id:
+        return "", []
+    parent = await db.get(AgentJob, parent_id)
+    if parent is None:
+        return "", []
+    parent_label = str((parent.config or {}).get("pipeline_stage") or "")
+    wanted = (getattr(job, "config", None) or {}).get("pipeline_depends_on")
+    if not isinstance(wanted, list) or len(wanted) < 2 or not parent.parent_job_id:
+        return parent_label, []
+    siblings = (
+        (
+            await db.execute(
+                select(AgentJob)
+                .where(AgentJob.parent_job_id == parent.parent_job_id)
+                .order_by(AgentJob.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    newest: Dict[str, str] = {}
+    for sibling in siblings:
+        stage = str((sibling.config or {}).get("pipeline_stage") or "")
+        if stage in wanted and stage != parent_label and sibling.id != parent.id:
+            newest[stage] = str(sibling.id)
+    return parent_label, sorted(newest.items())
+
+
+async def _live_run_keys(db: Any) -> set:
+    """Every job in a pipeline run that still has a live job in it.
+
+    A stage's files are its successors' inputs, and a successor can wait days
+    on a checkpoint. So a run keeps every stage's directory until the whole
+    run is over; only then does age decide.
+    """
+    from sqlalchemy import select
+
+    from app.models.agent_job import AgentJob
+
+    rows = (
+        await db.execute(
+            select(AgentJob.id, AgentJob.parent_job_id).where(
+                AgentJob.status.in_(LIVE_STATUSES)
+            )
+        )
+    ).all()
+    parent_of = {job_id: parent for job_id, parent in rows}
+    missing = {p for p in parent_of.values() if p and p not in parent_of}
+    for _ in range(_MAX_CHAIN_DEPTH):
+        if not missing:
+            break
+        found = (
+            await db.execute(
+                select(AgentJob.id, AgentJob.parent_job_id).where(
+                    AgentJob.id.in_(missing)
+                )
+            )
+        ).all()
+        for job_id, parent in found:
+            parent_of[job_id] = parent
+        missing = {p for _, p in found if p and p not in parent_of}
+    roots = {
+        job_id
+        for job_id, parent in parent_of.items()
+        if not parent or parent not in parent_of
+    }
+    keys = set(roots)
+    frontier = set(roots)
+    for _ in range(_MAX_CHAIN_DEPTH):
+        if not frontier:
+            break
+        children = (
+            (
+                await db.execute(
+                    select(AgentJob.id).where(AgentJob.parent_job_id.in_(frontier))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        frontier = set(children) - keys
+        keys |= frontier
+    return {str(key) for key in keys}
+
+
+async def _prune(ctx: Any) -> None:
+    """Prune abandoned directories, never one a live pipeline run still needs.
+
+    If the database cannot say which runs are live, nothing is pruned: a full
+    disk is recoverable, a successor's deleted inputs are not.
+    """
+    db = getattr(ctx, "db", None)
+    if db is None:
+        return
+    try:
+        keep = await _live_run_keys(db)
+    except Exception as exc:  # noqa: BLE001 - pruning is housekeeping
+        logger.warning(f"Not pruning skill directories: {exc}")
+        return
+    sandbox_skill_runtime.prune_stale(keep=keep)
+
+
+async def _workdir(ctx: Any):
     """Where this caller works: a job's directory, or a conversation's.
 
-    A job's is seeded from its parent stage if it has one. Chat has no job, so
-    the conversation is what persists between calls -- "build it, now measure
-    it" two messages apart must find the build. A call with neither gets a
-    directory per user rather than one shared by everybody.
+    A job's is seeded from the stages before it, if it has any. Chat has no
+    job, so the conversation is what persists between calls -- "build it, now
+    measure it" two messages apart must find the build. A call with neither
+    gets a directory per user rather than one shared by everybody.
     """
     job = getattr(ctx, "job", None)
     if getattr(job, "id", None):
+        parent_label, others = await _stage_sources(ctx, job)
         return sandbox_skill_runtime.run_dir(
-            str(job.id), getattr(job, "parent_job_id", None)
+            str(job.id),
+            getattr(job, "parent_job_id", None),
+            parent_label=parent_label,
+            also_from=others,
         )
     extra = getattr(ctx, "extra", None) or {}
     extra = extra if isinstance(extra, dict) else {}
@@ -157,7 +287,7 @@ async def load_sandbox_skill(params: Dict[str, Any], ctx: Any) -> Dict[str, Any]
             # What is already there. A later pipeline stage starts with a copy
             # of the previous stage's files, and is only spared rebuilding
             # them if it is told they exist.
-            "working_directory": _directory_view(_workdir(ctx)),
+            "working_directory": _directory_view(await _workdir(ctx)),
         },
     }
 
@@ -178,8 +308,8 @@ async def run_sandbox_skill(params: Dict[str, Any], ctx: Any) -> Dict[str, Any]:
     collect = bool(params.get("collect_result"))
     command = str(params.get("command") or "")
 
-    sandbox_skill_runtime.prune_stale()
-    workdir = _workdir(ctx)
+    await _prune(ctx)
+    workdir = await _workdir(ctx)
     run = await sandbox_skill_runtime.execute(
         manifest,
         workdir=workdir,

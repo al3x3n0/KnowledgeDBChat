@@ -34,7 +34,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from loguru import logger
 
@@ -47,7 +47,9 @@ from app.services import agent_sandbox_runtime, sandbox_skill_manifest
 ROOT_NAME = "kdbc-skills"
 
 #: A run directory nobody has touched for this long belongs to a job that is
-#: over. Pruned opportunistically rather than at job end: a job can die without
+#: over -- unless the caller says otherwise (`keep`): a stage that finished
+#: days ago is still the source of a later stage waiting on a checkpoint.
+#: Pruned opportunistically rather than at job end: a job can die without
 #: reaching any finaliser, and its directory would otherwise stay for ever.
 STALE_AFTER_SECONDS = 24 * 3600
 
@@ -110,15 +112,23 @@ def root_dir() -> Path:
     return Path(tempfile.gettempdir()) / ROOT_NAME
 
 
-def prune_stale(now: Optional[float] = None) -> int:
-    """Remove job directories nothing has touched for a day. Returns the count."""
+def prune_stale(now: Optional[float] = None, keep: Iterable[Any] = ()) -> int:
+    """Remove job directories nothing has touched for a day. Returns the count.
+
+    `keep` names directories that stay whatever their age: a pipeline run's
+    stages while any stage of it is still live. Age alone pruned a finished
+    stage's files while the next one waited a weekend on a checkpoint.
+    """
     base = root_dir()
     if not base.is_dir():
         return 0
     cutoff = (now if now is not None else time.time()) - STALE_AFTER_SECONDS
+    kept = {_safe_key(key) for key in keep}
     removed = 0
     for entry in base.iterdir():
         try:
+            if entry.name in kept:
+                continue
             if entry.is_dir() and entry.stat().st_mtime < cutoff:
                 shutil.rmtree(entry, ignore_errors=True)
                 removed += 1
@@ -169,20 +179,45 @@ def _not_inherited(_directory: str, names: List[str]) -> List[str]:
     ]
 
 
-def _inherit(target: Path, parent: Path) -> str:
-    """Copy what the previous stage left, and say what happened."""
+def _inherit(
+    target: Path, parent: Path, *, label: str = "", budget: Optional[int] = None
+) -> Tuple[str, int]:
+    """Copy what one earlier stage left, and say what happened.
+
+    With several earlier stages (a fan-in), a name an earlier one already
+    placed is not overwritten: this stage's copy goes under `from-<label>/`,
+    and the note says so. Returns the note and the bytes copied.
+    """
     size = _tree_bytes(parent)
-    if size > MAX_INHERIT_BYTES:
+    limit = MAX_INHERIT_BYTES if budget is None else budget
+    who = f"Stage {label}" if label else "The previous stage"
+    if size > limit:
+        mb = size // (1024 * 1024)
+        cap = MAX_INHERIT_BYTES // (1024 * 1024)
+        if not label:
+            return (
+                f"The previous stage left {mb} MB, over the {cap} MB a stage "
+                "may inherit, so this directory starts empty. Rebuild what you "
+                "need.",
+                0,
+            )
         return (
-            f"The previous stage left {size // (1024 * 1024)} MB, over the "
-            f"{MAX_INHERIT_BYTES // (1024 * 1024)} MB a stage may inherit, so "
-            "this directory starts empty. Rebuild what you need."
+            f"{who} left {mb} MB, more than remained of the {cap} MB a stage "
+            "may inherit, so none of it was copied. Rebuild what you need.",
+            0,
         )
     copied = 0
+    moved: List[str] = []
     for entry in parent.iterdir():
         if _not_inherited(str(parent), [entry.name]):
             continue
         destination = target / entry.name
+        if destination.exists() or destination.is_symlink():
+            aside = target / f"from-{_safe_key(label) or 'parent'}"
+            aside.mkdir(exist_ok=True)
+            _open_up(aside)
+            destination = aside / entry.name
+            moved.append(entry.name)
         if entry.is_dir() and not entry.is_symlink():
             shutil.copytree(entry, destination, symlinks=True, ignore=_not_inherited)
         else:
@@ -196,14 +231,29 @@ def _inherit(target: Path, parent: Path) -> str:
             if not full.is_symlink():
                 _open_up(full)
     if not copied:
-        return ""
-    return (
-        f"Started with a copy of the {copied} top-level item(s) the previous "
-        "stage left in its working directory. Changes here do not reach it."
-    )
+        return "", 0
+    if not label:
+        return (
+            f"Started with a copy of the {copied} top-level item(s) the previous "
+            "stage left in its working directory. Changes here do not reach it.",
+            size,
+        )
+    note = f"Copied {copied} top-level item(s) from stage {label}."
+    if moved:
+        note += (
+            f" {', '.join(sorted(moved))} already came from another stage, so "
+            f"stage {label}'s copies are under from-{_safe_key(label)}/."
+        )
+    return note, size
 
 
-def run_dir(job_key: Any, parent_key: Any = None) -> Path:
+def run_dir(
+    job_key: Any,
+    parent_key: Any = None,
+    *,
+    parent_label: str = "",
+    also_from: Sequence[Tuple[str, Any]] = (),
+) -> Path:
     """The directory one job works in, created if need be.
 
     One per job, shared by every skill that job uses, and persistent across
@@ -216,6 +266,11 @@ def run_dir(job_key: Any, parent_key: Any = None) -> Path:
     each rewrite ``skill/`` and delete the other's ``result.json``. A copy
     also leaves the earlier stage's directory as it was, so restarting a later
     stage starts from the same place twice.
+
+    A stage that waits on several (a fan-in) is created as a child of only
+    one of them, so `also_from` names the others as `(stage label, job key)`.
+    It starts with every one's files; a name two of them left is kept from
+    the first, and the other's copy goes under `from-<label>/`.
 
     Only ever done once, when the directory is first made. A stage that has
     started working must not have its files replaced underneath it.
@@ -231,12 +286,14 @@ def run_dir(job_key: Any, parent_key: Any = None) -> Path:
     os.utime(target, None)
 
     parent_name = _safe_key(parent_key) if parent_key else ""
-    if created and parent_name:
+    if created and also_from:
+        _inherit_from_several(base, target, (parent_label, parent_key), also_from)
+    elif created and parent_name:
         parent = base / parent_name
         note = ""
         if parent.is_dir() and parent != target:
             try:
-                note = _inherit(target, parent)
+                note, _size = _inherit(target, parent)
             except OSError as exc:
                 note = (
                     "The previous stage's files could not be copied "
@@ -254,6 +311,43 @@ def run_dir(job_key: Any, parent_key: Any = None) -> Path:
         if note:
             (target / _INHERITANCE_NOTE).write_text(note, encoding="utf-8")
     return target
+
+
+def _inherit_from_several(
+    base: Path,
+    target: Path,
+    parent: Tuple[str, Any],
+    also_from: Sequence[Tuple[str, Any]],
+) -> None:
+    """Seed a fan-in stage from every stage it waits on, within one budget."""
+    sources: List[Tuple[str, Any]] = []
+    for label, key in [parent, *also_from]:
+        if key and _safe_key(key) not in {_safe_key(k) for _, k in sources}:
+            sources.append((label, key))
+    notes: List[str] = []
+    budget = MAX_INHERIT_BYTES
+    for label, key in sources:
+        name = label or "the chain parent"
+        source = base / _safe_key(key)
+        if source == target:
+            continue
+        if not source.is_dir():
+            notes.append(f"Stage {name} left no working directory.")
+            continue
+        try:
+            note, used = _inherit(
+                target, source, label=label or "parent", budget=budget
+            )
+        except OSError as exc:
+            note, used = f"Stage {name}'s files could not be copied ({exc}).", 0
+        budget -= used
+        if note:
+            notes.append(note)
+    if notes:
+        (target / _INHERITANCE_NOTE).write_text(
+            "This stage waits on several earlier stages. " + " ".join(notes),
+            encoding="utf-8",
+        )
 
 
 def inheritance_note(workdir: Path) -> str:

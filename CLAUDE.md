@@ -568,10 +568,19 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   "now measure it" two messages apart find the same files) and proposals are
   bounded by the review queue (10 unreviewed) rather than per job. A finding
   recorded in chat satisfies no contract -- there is none.
-  Not done yet: run directories
-  under `$TMPDIR/kdbc-skills` are pruned after a day rather than at job end,
-  so a stage waiting longer than that on a checkpoint inherits nothing; and a
-  stage inherits from its chain parent only, not from every `depends_on`.
+  **A fan-in stage starts with every branch's files.** It is created as a
+  child of whichever stage it waits on finished last, so the binding records
+  `pipeline_depends_on` and the skill tools find the others among its
+  parent's siblings (the newest job per stage, so a restart counts). A name
+  two branches left is kept from the chain parent; the other copy goes under
+  `from-<stage>/`, and the inheritance note says so. One 256 MB budget covers
+  all of them.
+  **A run's directories live as long as the run.** Pruning used to go by age
+  alone, so a finished stage's files were deleted while the next waited more
+  than a day on a checkpoint. Now nothing in a pipeline run (every job sharing
+  a root) is pruned while any job in it is pending, running or paused; age
+  decides only after that. If the database cannot say what is live, nothing
+  is pruned.
 - **There is one confined `docker run`, and it is `agent_sandbox_runtime.docker_command`.**
   Five places built that command by hand: the runtime, the experiment runner,
   the ingestion demo runner (twice) and the admin sandbox check. They agreed
@@ -619,8 +628,13 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   runtime changed. It is refused alongside `checkpoint` (one waits for a person,
   the other does not wait at all), on a stage nothing depends on, and on a
   contract requiring no finding types, since there would be nothing to count.
-  Known limitation: `agent_pipeline_restart` will not restart a stage whose
-  parent has not completed, which a spawning parent may never do.
+  A stage after a spawning one **can be restarted** while its parent still
+  runs: the parent must have reached its threshold (`chain_triggered`), not
+  completed, and its flag is left set, or it would release every successor
+  again at its next finding. **The threshold used to be ignored**: the
+  binding nested it under `trigger_thresholds`, which only chain definitions
+  flatten, while `should_trigger_chain` reads the top of `chain_config`, so
+  every pipeline spawn released at the default of 10.
 - **A contract may only require evidence some callable tool produces.** A tool
   spec's `job_types` distinguishes `None` (every job type) from `()` (**no**
   autonomous job type — 58 tools are reachable only from chat or MCP), and

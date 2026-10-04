@@ -139,7 +139,6 @@ class AgentJob(Base):
     # Example results for research job:
     # {
     #   "papers_found": 45,
-    #   "papers_analyzed": 30,
     #   "key_findings": [...],
     #   "synthesis_document_id": "...",
     #   "knowledge_graph_nodes_added": 150

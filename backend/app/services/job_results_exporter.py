@@ -411,8 +411,6 @@ class JobResultsExporter:
             parts.append(f"Actions taken: {job.results['actions_count']}")
         if "papers_found" in job.results:
             parts.append(f"Papers found: {job.results['papers_found']}")
-        if "papers_analyzed" in job.results:
-            parts.append(f"Papers analyzed: {job.results['papers_analyzed']}")
 
         return "\n".join(parts) if parts else "Job completed."
 
@@ -797,8 +795,6 @@ class JobResultsExporter:
                 stats_items.append(f"Actions taken: {job.results['actions_count']}")
             if "papers_found" in job.results:
                 stats_items.append(f"Papers found: {job.results['papers_found']}")
-            if "papers_analyzed" in job.results:
-                stats_items.append(f"Papers analyzed: {job.results['papers_analyzed']}")
             extraction = self._get_memory_extraction_summary(job)
             experiment = self._get_experiment_run_summary(job)
             interventions = self._get_operator_intervention_summary(job)

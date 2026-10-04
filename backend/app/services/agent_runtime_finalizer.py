@@ -605,6 +605,11 @@ async def finalize_job(
     if isinstance(output_schema, dict) and output_schema:
         job.results["structured_output"] = output_schema
 
+    # Methods from record_method, which the run's own record lists verbatim.
+    recorded_methods = state.get("recorded_methods", [])
+    if isinstance(recorded_methods, list) and recorded_methods:
+        job.results["methods"] = recorded_methods[-20:]
+
     # Formatted outputs from format_as_table / format_as_report tools
     formatted_outputs = state.get("formatted_outputs", [])
     if isinstance(formatted_outputs, list) and formatted_outputs:

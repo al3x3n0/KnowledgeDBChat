@@ -2779,6 +2779,20 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
         except Exception as exc:
             return {"error": f"Failed to record the method: {str(exc)[:200]}"}
 
+        # Also kept on the run, which is where the run's own record reads it:
+        # the finaliser's "what this run established" document lists methods
+        # verbatim from results["methods"], and nothing ever wrote that key,
+        # so a run's methods reached later jobs' memory and never its record.
+        state.setdefault("recorded_methods", []).append(
+            {
+                "name": record["name"],
+                "procedure": record["procedure"],
+                "prevents": record["prevents"],
+                "status": record["status"],
+                "evidence": record["evidence"],
+            }
+        )
+
         return {
             "success": True,
             "data": {

@@ -126,7 +126,9 @@ async def _execute_training_async(job_id: str, user_id: str):
             # Download dataset from MinIO to temp file
             from app.services.storage_service import storage_service
 
-            dataset_content = await storage_service.download_file(dataset.file_path)
+            # The bytes. download_file(path) wants a local destination and
+            # returns a bool, which the line below then wrote as the dataset.
+            dataset_content = await storage_service.get_file_content(dataset.file_path)
 
             with tempfile.NamedTemporaryFile(
                 mode="wb",
@@ -285,9 +287,8 @@ async def _execute_training_async(job_id: str, user_id: str):
                             minio_path = f"{adapter_minio_path}/{rel_path}"
 
                             with open(local_path, "rb") as f:
-                                await storage_service.upload_file(
-                                    object_name=minio_path,
-                                    data=f.read(),
+                                await storage_service.upload_to_path(
+                                    minio_path, f.read()
                                 )
 
                 # Complete job with adapter

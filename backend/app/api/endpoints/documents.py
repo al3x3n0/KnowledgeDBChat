@@ -1005,7 +1005,9 @@ async def delete_document(
                 status_code=409,
                 detail="Document is being converted. Please wait until it finishes.",
             )
-        success = await document_service.delete_document(document_id, db)
+        success = await document_service.delete_document(
+            document_id, db, user_id=current_user.id
+        )
         if not success:
             logger.warning(f"Document {document_id} not found or deletion failed")
             raise HTTPException(status_code=404, detail="Document not found")

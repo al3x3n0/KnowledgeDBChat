@@ -18,9 +18,20 @@ class FlatThemeMixin:
         """Professional defaults, overridden by the keys of ``theme`` that the
         style config knows; unknown keys are dropped."""
         config = dict(self.STYLES["professional"])
-        for key in theme:
+        for key, value in theme.items():
+            # A field the person left unset arrives as None (the endpoint
+            # sends the whole model); laid over a default, it broke the
+            # build -- `None * int` in DOCX, `None.lstrip` in PDF.
+            if value is None:
+                continue
             if key in config:
-                config[key] = theme[key]
+                config[key] = value
+        # The UI's one heading size names no builder key, so it was dropped.
+        # It sets the top level; the second keeps the defaults' proportion.
+        heading = theme.get("heading_size")
+        if isinstance(heading, (int, float)) and heading > 0:
+            config["heading1_size"] = heading
+            config["heading2_size"] = max(1, round(heading * 14 / 18))
         return config
 
     @classmethod

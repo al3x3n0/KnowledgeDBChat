@@ -61,7 +61,12 @@ async def get_document_for_editing(
         temp_file.close()
 
         # Download from storage
-        file_data = await storage_service.download_file(document.file_path)
+        # get_file_content returns the bytes. download_file(path) writes to a
+        # local path it was never given, so the editor could open nothing.
+        try:
+            file_data = await storage_service.get_file_content(document.file_path)
+        except FileNotFoundError:
+            file_data = None
         if not file_data:
             raise HTTPException(
                 status_code=404, detail="Document file not found in storage"
@@ -134,7 +139,10 @@ async def save_document_edits(
         temp_original_path = temp_original.name
         temp_original.close()
 
-        original_data = await storage_service.download_file(document.file_path)
+        try:
+            original_data = await storage_service.get_file_content(document.file_path)
+        except FileNotFoundError:
+            original_data = None
         if original_data:
             with open(temp_original_path, "wb") as f:
                 f.write(original_data)
@@ -145,7 +153,7 @@ async def save_document_edits(
         backup_path = None
         if request.create_backup and original_data:
             backup_path = f"{document.file_path}.backup"
-            await storage_service.upload_file(
+            await storage_service.upload_to_path(
                 backup_path,
                 original_data,
                 content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -158,7 +166,9 @@ async def save_document_edits(
         )
 
         # Upload new version to MinIO
-        await storage_service.upload_file(
+        # upload_to_path stores at the path given; upload_file takes a
+        # document id and a filename, so saving raised and nothing was kept.
+        await storage_service.upload_to_path(
             document.file_path,
             docx_bytes,
             content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

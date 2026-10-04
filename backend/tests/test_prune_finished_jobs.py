@@ -14,7 +14,12 @@ from sqlalchemy import select
 
 from app.models.export_job import ExportJob
 from app.services.storage_service import StorageService
-from app.tasks import export_tasks, presentation_tasks, repo_report_tasks
+from app.tasks import (
+    export_tasks,
+    presentation_tasks,
+    repo_report_tasks,
+    synthesis_tasks,
+)
 from app.tasks.job_support import prune_finished_jobs
 
 pytestmark = pytest.mark.unit
@@ -109,7 +114,9 @@ async def test_a_file_that_would_not_delete_keeps_its_row(db_session, test_user)
     assert stuck.id in await _remaining(db_session)
 
 
-@pytest.mark.parametrize("task", [export_tasks, presentation_tasks, repo_report_tasks])
+@pytest.mark.parametrize(
+    "task", [export_tasks, presentation_tasks, repo_report_tasks, synthesis_tasks]
+)
 def test_every_cleanup_task_uses_it(task):
     source = inspect.getsource(task)
     assert "prune_finished_jobs(" in source

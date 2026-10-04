@@ -1998,3 +1998,87 @@ async def test_youtube_audio_only_chooses_what_is_downloaded(
     assert "bestaudio" in audio
     assert "bestaudio" not in video
     assert all(opts["noplaylist"] is True for opts in youtube.seen)
+
+
+# --------------------------------------------------------------------------
+# Workflow events: the editor offers document.uploaded / processed / deleted
+# triggers, and nothing published them, so no event workflow ever ran.
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def published(monkeypatch):
+    import inspect
+
+    from app.tasks import workflow_tasks
+
+    real = workflow_tasks.publish_workflow_event
+    calls = []
+
+    def publish(*args, **kwargs):
+        bound = inspect.signature(real).bind(*args, **kwargs)
+        calls.append(dict(bound.arguments))
+
+    monkeypatch.setattr(workflow_tasks, "publish_workflow_event", publish)
+    return calls
+
+
+async def test_a_users_delete_publishes_document_deleted(
+    db_session, test_user, edges, published
+):
+    source = await _source(db_session)
+    doc = await _doc(db_session, source, "Gone")
+
+    assert await _document_service().delete_document(
+        doc.id, db_session, user_id=test_user.id
+    )
+
+    assert published == [
+        {
+            "event_name": "document.deleted",
+            "event_data": {"document_id": str(doc.id), "title": "Gone"},
+            "user_id": str(test_user.id),
+        }
+    ]
+
+
+async def test_a_delete_with_no_user_publishes_nothing(db_session, edges, published):
+    # A source sync removing documents belongs to nobody's workflows.
+    source = await _source(db_session)
+    doc = await _doc(db_session, source, "Gone")
+
+    assert await _document_service().delete_document(doc.id, db_session)
+    assert published == []
+
+
+async def test_processing_publishes_document_processed(
+    db_session, test_user, edges, published
+):
+    source = await _source(db_session)
+    doc = await _doc(
+        db_session, source, "Fresh", content="enough words " * 40, chunks=0
+    )
+
+    await _document_service()._process_document_async(
+        doc, db_session, user_id=test_user.id
+    )
+
+    assert [c["event_name"] for c in published] == ["document.processed"]
+    assert published[0]["event_data"]["document_id"] == str(doc.id)
+
+
+async def test_a_broker_that_refuses_the_event_does_not_fail_the_delete(
+    db_session, test_user, edges, monkeypatch
+):
+    from app.tasks import workflow_tasks
+
+    def refuse(*args, **kwargs):
+        raise ConnectionError("broker down")
+
+    monkeypatch.setattr(workflow_tasks, "publish_workflow_event", refuse)
+    source = await _source(db_session)
+    doc = await _doc(db_session, source, "Gone")
+
+    assert await _document_service().delete_document(
+        doc.id, db_session, user_id=test_user.id
+    )

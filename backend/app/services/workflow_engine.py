@@ -333,6 +333,21 @@ class WorkflowEngine:
                     "Workflow must have exactly one start node"
                 )
 
+            # What started the run, where the nodes can read it. Templates read
+            # `{{context.trigger_data.topic}}`; a sub-workflow got this key and
+            # a top-level run did not, so every such input resolved to None.
+            if execution.trigger_data and "trigger_data" not in (
+                execution.context or {}
+            ):
+                execution.context = {
+                    **(execution.context or {}),
+                    "trigger_data": execution.trigger_data,
+                }
+                # Committed now: the cancellation check below refreshes the
+                # row, which would discard an uncommitted change.
+                self._context_changed(execution)
+                await self.db.commit()
+
             # Detect output key collisions
             collision_warnings = self._detect_output_key_collisions(workflow.nodes)
             if collision_warnings:
@@ -826,7 +841,18 @@ class WorkflowEngine:
                 )
 
             path = value[2:-2].strip()
-            resolved_val, exists = self._get_nested_value(context, path)
+            # `{{context.x}}` is the documented spelling (the docstring above,
+            # 77 uses in the shipped templates, the synthesis prompt and the
+            # editor's input mapper) and names the run context itself, which
+            # has no key called "context". Looked up literally it resolved to
+            # None, and the node ran on None while the run reported success.
+            lookup = path
+            if "context" not in context:
+                if lookup == "context":
+                    return ResolvedValue(value=context, exists=True, path=path)
+                if lookup.startswith("context."):
+                    lookup = lookup[len("context.") :]
+            resolved_val, exists = self._get_nested_value(context, lookup)
 
             return ResolvedValue(
                 value=resolved_val, exists=exists, path=path, error=None

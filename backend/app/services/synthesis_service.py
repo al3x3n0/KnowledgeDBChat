@@ -142,7 +142,9 @@ class SynthesisService:
                 job.job_type == SynthesisJobType.GAP_ANALYSIS_HYPOTHESES.value
                 and job.paper_ids
             ):
-                papers = await self._load_research_papers(db, job.paper_ids)
+                papers = await self._load_research_papers(
+                    db, job.paper_ids, job.user_id
+                )
                 if papers:
                     source_kind = "papers"
             elif (
@@ -225,33 +227,67 @@ class SynthesisService:
             job.status = SynthesisJobStatus.SYNTHESIZING.value
             await db.commit()
 
+            # What the document job types write from: documents and the agent
+            # runs the job cited. They were handed `documents` alone, so a
+            # cited run was dropped -- and a job citing only runs passed the
+            # "No sources" check above and was then written from nothing.
+            written_from = documents + agent_runs
+
             if job.job_type == SynthesisJobType.MULTI_DOC_SUMMARY.value:
                 result = await self._multi_doc_summary(
-                    documents, job.topic, job.options, user_settings, progress_callback
+                    written_from,
+                    job.topic,
+                    job.options,
+                    user_settings,
+                    progress_callback,
                 )
             elif job.job_type == SynthesisJobType.COMPARATIVE_ANALYSIS.value:
                 result = await self._comparative_analysis(
-                    documents, job.topic, job.options, user_settings, progress_callback
+                    written_from,
+                    job.topic,
+                    job.options,
+                    user_settings,
+                    progress_callback,
                 )
             elif job.job_type == SynthesisJobType.THEME_EXTRACTION.value:
                 result = await self._theme_extraction(
-                    documents, job.topic, job.options, user_settings, progress_callback
+                    written_from,
+                    job.topic,
+                    job.options,
+                    user_settings,
+                    progress_callback,
                 )
             elif job.job_type == SynthesisJobType.KNOWLEDGE_SYNTHESIS.value:
                 result = await self._knowledge_synthesis(
-                    documents, job.topic, job.options, user_settings, progress_callback
+                    written_from,
+                    job.topic,
+                    job.options,
+                    user_settings,
+                    progress_callback,
                 )
             elif job.job_type == SynthesisJobType.RESEARCH_REPORT.value:
                 result = await self._research_report(
-                    documents, job.topic, job.options, user_settings, progress_callback
+                    written_from,
+                    job.topic,
+                    job.options,
+                    user_settings,
+                    progress_callback,
                 )
             elif job.job_type == SynthesisJobType.EXECUTIVE_BRIEF.value:
                 result = await self._executive_brief(
-                    documents, job.topic, job.options, user_settings, progress_callback
+                    written_from,
+                    job.topic,
+                    job.options,
+                    user_settings,
+                    progress_callback,
                 )
             elif job.job_type == SynthesisJobType.DECISION_MEMO.value:
                 result = await self._decision_memo(
-                    documents, job.topic, job.options, user_settings, progress_callback
+                    written_from,
+                    job.topic,
+                    job.options,
+                    user_settings,
+                    progress_callback,
                 )
             elif job.job_type == SynthesisJobType.GAP_ANALYSIS_HYPOTHESES.value:
                 result = await self._gap_analysis_hypotheses(
@@ -497,7 +533,11 @@ class SynthesisService:
                             f"Goal: {job.goal}\n\n"
                             f"Findings recorded by this run:\n{body}"
                         ),
-                        "summary": job.goal or "",
+                        # No summary: the context builder prefers a summary
+                        # over the content, and this one was the goal, so the
+                        # model saw what the run set out to do and never a
+                        # number it found. The content is already short.
+                        "summary": "",
                         "metadata": {
                             "source_kind": "agent_run",
                             "agent_job_id": str(job.id),
@@ -578,8 +618,14 @@ class SynthesisService:
         self,
         db: AsyncSession,
         paper_ids: List[str],
+        user_id: Any,
     ) -> List[Dict[str, Any]]:
-        """Load extracted research papers and flatten their claims into synthesis context."""
+        """Load extracted research papers and flatten their claims into synthesis context.
+
+        Only the job owner's papers. Papers are per user, as the paper routes
+        scope them; loaded by id alone, someone else's abstract and claims
+        went into this user's prompt.
+        """
         papers: List[Dict[str, Any]] = []
 
         for paper_id in paper_ids:
@@ -587,7 +633,10 @@ class SynthesisService:
                 result = await db.execute(
                     select(ResearchPaper)
                     .options(selectinload(ResearchPaper.claims))
-                    .where(ResearchPaper.id == UUID(paper_id))
+                    .where(
+                        ResearchPaper.id == UUID(paper_id),
+                        ResearchPaper.user_id == user_id,
+                    )
                 )
                 paper = result.scalar_one_or_none()
                 if not paper:
@@ -1174,19 +1223,23 @@ Extract up to {max_themes} key themes and provide:
         artifacts = []
         if themes:
             try:
+                # In the diagram service's own terms: `branches` of `name`s
+                # in, `code` out. It was passed `children` of `text`, checked
+                # a `success` key nothing returns and read `mermaid_code`, so
+                # no theme map was ever produced and nothing said so.
                 mindmap_data = {
                     "root": topic or "Themes",
-                    "children": [{"text": theme} for theme in themes[:8]],
+                    "branches": [{"name": theme} for theme in themes[:8]],
                 }
                 mindmap = diagram_service.create_mermaid_diagram(
-                    "mindmap", mindmap_data, {"title": "Theme Map"}
+                    "mindmap", mindmap_data, {"title": "Theme Map", "render": False}
                 )
-                if mindmap.get("success"):
+                if mindmap.get("code"):
                     artifacts.append(
                         {
                             "type": "diagram",
                             "format": "mermaid",
-                            "code": mindmap.get("mermaid_code"),
+                            "code": mindmap["code"],
                             "title": "Theme Map",
                         }
                     )
@@ -2687,74 +2740,76 @@ Text:
         content: str,
         artifacts: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        """Generate output file (DOCX, PDF, PPTX)."""
+        """Generate output file (DOCX, PDF, PPTX).
+
+        Raises on failure, so the job is recorded as failed. It used to log
+        and return {}, and a job whose upload failed ended `completed` with no
+        file and no error.
+        """
         from app.services.docx_builder import DOCXBuilder, markdown_to_content_items
         from app.services.pdf_builder import PDFBuilder
         from app.services.storage_service import storage_service
 
-        try:
-            if job.output_format == "docx":
-                # Build DOCX
-                content_items = markdown_to_content_items(content)
-                file_bytes = DOCXBuilder(style=job.output_style).build(
-                    title=job.title,
-                    content_items=content_items,
-                )
-                ext = "docx"
-                mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        if job.output_format == "docx":
+            # Build DOCX
+            content_items = markdown_to_content_items(content)
+            file_bytes = DOCXBuilder(style=job.output_style).build(
+                title=job.title,
+                content_items=content_items,
+            )
+            ext = "docx"
+            mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
-            elif job.output_format == "pdf":
-                # Build PDF via DOCX conversion
-                content_items = markdown_to_content_items(content)
-                file_bytes = PDFBuilder(style=job.output_style).build(
-                    title=job.title,
-                    content_items=content_items,
-                )
-                ext = "pdf"
-                mime = "application/pdf"
+        elif job.output_format == "pdf":
+            # Build PDF via DOCX conversion
+            content_items = markdown_to_content_items(content)
+            file_bytes = PDFBuilder(style=job.output_style).build(
+                title=job.title,
+                content_items=content_items,
+            )
+            ext = "pdf"
+            mime = "application/pdf"
 
-            elif job.output_format == "pptx":
-                # Build PPTX - simplified for synthesis
-                from app.schemas.presentation import PresentationOutline, SlideContent
-                from app.services.pptx_builder import PPTXBuilder
+        elif job.output_format == "pptx":
+            # Build PPTX - simplified for synthesis
+            from app.schemas.presentation import PresentationOutline, SlideContent
+            from app.services.pptx_builder import PPTXBuilder
 
-                outline = PresentationOutline(
-                    title=job.title,
-                    slides=[
-                        SlideContent(
-                            slide_number=number,
-                            slide_type=slide["type"],
-                            title=slide["title"],
-                            subtitle=slide.get("subtitle"),
-                            content=slide.get("bullets") or [],
-                        )
-                        for number, slide in enumerate(
-                            self._content_to_slides(content, job.title), start=1
-                        )
-                    ],
-                )
-                file_bytes = PPTXBuilder(style=job.output_style).build(outline)
-                ext = "pptx"
-                mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            outline = PresentationOutline(
+                title=job.title,
+                slides=[
+                    SlideContent(
+                        slide_number=number,
+                        slide_type=slide["type"],
+                        title=slide["title"],
+                        subtitle=slide.get("subtitle"),
+                        content=slide.get("bullets") or [],
+                    )
+                    for number, slide in enumerate(
+                        self._content_to_slides(content, job.title), start=1
+                    )
+                ],
+            )
+            file_bytes = PPTXBuilder(style=job.output_style).build(outline)
+            ext = "pptx"
+            mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
-            else:
-                return {}
+        else:
+            # A file format asked for and not produced is a failure: returning
+            # nothing here marked the job completed with no file.
+            raise ValueError(f"Unsupported output format: {job.output_format}")
 
-            # Save to MinIO
-            filename = f"synthesis_{job.id}.{ext}"
-            path = f"synthesis/{str(job.user_id)}/{filename}"
+        # Save to MinIO
+        filename = f"synthesis_{job.id}.{ext}"
+        path = f"synthesis/{str(job.user_id)}/{filename}"
 
-            await storage_service.upload_to_path(path, file_bytes, mime)
-            file_size = len(file_bytes)
+        await storage_service.upload_to_path(path, file_bytes, mime)
+        file_size = len(file_bytes)
 
-            return {
-                "file_path": path,
-                "file_size": file_size,
-            }
-
-        except Exception as e:
-            logger.error(f"Failed to generate output file: {e}")
-            return {}
+        return {
+            "file_path": path,
+            "file_size": file_size,
+        }
 
     def _content_to_slides(self, content: str, title: str) -> List[Dict[str, Any]]:
         """Convert content to presentation slides."""

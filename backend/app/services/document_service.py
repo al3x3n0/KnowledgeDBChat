@@ -194,6 +194,31 @@ class DocumentService:
 
         return document
 
+    @staticmethod
+    def _publish_document_event(
+        event: str, document_id: Any, title: Any, user_id: Any
+    ) -> None:
+        """Tell workflows with an event trigger that this happened.
+
+        The editor offers document.uploaded / processed / deleted triggers and
+        `trigger_event_workflow` runs them, but nothing ever published an
+        event, so an event-triggered workflow never ran. Published only for a
+        known user (a workflow belongs to one; a source sync has none), and
+        never allowed to fail the action that caused it.
+        """
+        if user_id is None:
+            return
+        try:
+            from app.tasks.workflow_tasks import publish_workflow_event
+
+            publish_workflow_event(
+                event,
+                {"document_id": str(document_id), "title": title},
+                str(user_id),
+            )
+        except Exception as exc:  # noqa: BLE001 - an event is a courtesy
+            logger.warning(f"Could not publish {event} for {document_id}: {exc}")
+
     async def upload_file(
         self,
         file: UploadFile,
@@ -430,6 +455,12 @@ class DocumentService:
             await cache_service.set(cache_key, document, ttl=3600)
 
             logger.info(f"Uploaded document: {document.id}")
+            self._publish_document_event(
+                "document.uploaded",
+                document.id,
+                document.title,
+                owner_user.id if owner_user else None,
+            )
             return document
 
         except Exception as e:
@@ -682,6 +713,9 @@ class DocumentService:
             logger.info(
                 f"Processed document {document.id} with {len(document_chunks)} chunks"
             )
+            self._publish_document_event(
+                "document.processed", document.id, document.title, user_id
+            )
 
             # Optionally auto-summarize
             if await _get_flag("summarization_enabled") and await _get_flag(
@@ -719,9 +753,13 @@ class DocumentService:
         db: AsyncSession,
         *,
         warnings: Optional[List[str]] = None,
+        user_id: Optional[UUID] = None,
     ) -> bool:
         """
         Delete a document and all associated data.
+
+        `user_id`, when the deletion is someone's, publishes document.deleted
+        for their event-triggered workflows.
 
         The row is deleted even when its stored file or its vectors cannot
         be removed -- by design, so one broken store cannot pin a document
@@ -893,6 +931,9 @@ class DocumentService:
 
             logger.info(
                 f"Successfully deleted document {document_id}: {document.title}"
+            )
+            self._publish_document_event(
+                "document.deleted", document_id, document.title, user_id
             )
             return True
 

@@ -224,3 +224,129 @@ def test_calls_pass_arguments_their_callee_accepts():
     assert not misfits, "\n".join(sorted(set(misfits)))
     # A check that examines nothing passes for ever.
     assert checked > 4000, checked
+
+
+def test_calls_on_held_services_pass_arguments_they_accept():
+    """`self.storage.upload_file(...)` and `storage_service.delete_file(...)`.
+
+    The check above stops at `self.method()`, so a method called on a service
+    an object holds, or on an imported singleton, was never compared with its
+    signature. That is how every export failed for eight months: the export
+    service called `self.storage.upload_file(file_bytes, file_path, ...)`
+    against `upload_file(document_id, filename, content, ...)`, inside an
+    `except Exception` that recorded it as the export's own failure.
+
+    Certain targets only: an attribute assigned once in its class, to a call
+    of a class defined once in app/; a module-level `name = Class()` imported
+    by name and not rebound in the caller.
+    """
+    trees = {
+        path: ast.parse(path.read_text(encoding="utf-8"))
+        for path in sorted(APP.rglob("*.py"))
+    }
+    by_name = {}
+    for tree in trees.values():
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                by_name.setdefault(node.name, []).append(node)
+    classes = {name: nodes[0] for name, nodes in by_name.items() if len(nodes) == 1}
+
+    def instance_of(value):
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id in classes
+        ):
+            return value.func.id
+        return None
+
+    singletons = {}  # path -> {name: class}
+    for path, tree in trees.items():
+        found, rebound = {}, set()
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and len(node.targets) == 1:
+                target = node.targets[0]
+                if isinstance(target, ast.Name):
+                    if target.id in found:
+                        rebound.add(target.id)
+                    cls = instance_of(node.value)
+                    if cls:
+                        found[target.id] = cls
+        singletons[path] = {k: v for k, v in found.items() if k not in rebound}
+
+    checked, misfits = 0, []
+
+    def check(call, cls, spelled, relative):
+        nonlocal checked
+        methods = _methods(cls, classes)
+        if not methods or call.func.attr not in methods:
+            return
+        checked += 1
+        problem = _misfit(call, methods[call.func.attr], bound=True)
+        if problem:
+            misfits.append(f"{relative}:{call.lineno} {spelled}(): {problem}")
+
+    for path, tree in trees.items():
+        relative = path.relative_to(BACKEND)
+        shadowed = {
+            n.id
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)
+        }
+        imported = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+                "app"
+            ):
+                source = _module_path(node.module)
+                for alias in node.names:
+                    cls = singletons.get(source, {}).get(alias.name)
+                    if cls:
+                        imported[alias.asname or alias.name] = cls
+        imported.update(singletons.get(path, {}))
+
+        for call in ast.walk(tree):
+            if (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and isinstance(call.func.value, ast.Name)
+                and call.func.value.id in imported
+                and (
+                    call.func.value.id not in shadowed
+                    or call.func.value.id in singletons.get(path, {})
+                )
+            ):
+                name = call.func.value.id
+                check(call, imported[name], f"{name}.{call.func.attr}", relative)
+
+        for owner in ast.walk(tree):
+            if not isinstance(owner, ast.ClassDef):
+                continue
+            held, counts = {}, {}
+            for node in ast.walk(owner):
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if (
+                            isinstance(target, ast.Attribute)
+                            and isinstance(target.value, ast.Name)
+                            and target.value.id == "self"
+                        ):
+                            counts[target.attr] = counts.get(target.attr, 0) + 1
+                            cls = instance_of(node.value)
+                            if cls:
+                                held[target.attr] = cls
+            held = {k: v for k, v in held.items() if counts.get(k) == 1}
+            for call in ast.walk(owner):
+                if (
+                    isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Attribute)
+                    and isinstance(call.func.value, ast.Attribute)
+                    and isinstance(call.func.value.value, ast.Name)
+                    and call.func.value.value.id == "self"
+                    and call.func.value.attr in held
+                ):
+                    attr = call.func.value.attr
+                    check(call, held[attr], f"self.{attr}.{call.func.attr}", relative)
+
+    assert checked > 200, f"only {checked} calls examined; the scan found too little"
+    assert not misfits, "\n".join(sorted(set(misfits)))

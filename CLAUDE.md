@@ -1341,6 +1341,29 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   fires only for a tick in the last minute, so a dormant schedule does not
   replay), and the export, presentation, repo-report and synthesis cleanups
   stay **off** -- nothing is deleted on a timer.
+  Running those task bodies for the first time
+  (`test_export_and_synthesis_tasks_run.py`, `test_workflow_tasks_run.py`)
+  found what code that has never run usually has:
+  - **No export could complete.** `upload_file(file_bytes, file_path)` was
+    called against `upload_file(document_id, filename, content)`. Chat
+    exports also read `session.topic` and `msg.sources`, which do not exist.
+    A partly-filled custom theme laid `None` over the defaults, and the UI's
+    `heading_size` matched no builder key.
+  - **Synthesis:** the theme map was never produced (wrong keys both ways).
+    An output file that failed to upload left the job `completed` with no
+    file. Cited agent runs never reached the seven document job types, and
+    a run's findings were hidden behind its goal used as a summary. Papers
+    were loaded by id with no owner check. The cleanup dropped rows whose
+    file survived.
+  - **Workflows:** the documented `{{context.X}}` input syntax (77 template
+    uses) resolved to None, and a top-level run had no `trigger_data` in its
+    context. Nothing published workflow events: document upload, processing
+    and a user's delete now do.
+  `test_calls_fit_signatures` now also checks methods called on a held
+  service (`self.storage.upload_file`) and on an imported singleton
+  (`storage_service.download_file`). It found the DOCX editor and training
+  calling `download_file(path)` for bytes it never returns (the editor could
+  open and save nothing, and every training job failed reading its dataset).
 - **A setting must be read, or admitted inert.** `TRAINING_ENABLED` was the
   documented gate on training and nothing read it; the concurrency limit and
   two dataset limits beside it were the same. They are enforced now (the gate

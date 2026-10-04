@@ -145,64 +145,27 @@ def cleanup_old_synthesis_jobs(days: int = 30) -> Dict[str, Any]:
 
 
 async def _async_cleanup_old_jobs(days: int) -> Dict[str, Any]:
-    """Async implementation of job cleanup."""
+    """Finished synthesis jobs older than `days`, file first, then row.
+
+    Through the same helper the export, presentation and repo-report cleanups
+    use. This one deleted the row whatever `delete_file` answered, and that
+    method returns False rather than raising -- so a file MinIO kept lost the
+    only row that pointed at it.
+    """
+    from app.models.synthesis_job import SynthesisJob
+    from app.services.storage_service import storage_service
+    from app.tasks.job_support import prune_finished_jobs
+
     async with create_celery_session()() as db:
         try:
-            from datetime import datetime, timedelta
-
-            from sqlalchemy import select
-
-            from app.models.synthesis_job import SynthesisJob, SynthesisJobStatus
-            from app.services.storage_service import storage_service
-
-            cutoff = datetime.utcnow() - timedelta(days=days)
-
-            # Find old completed/failed jobs
-            result = await db.execute(
-                select(SynthesisJob).where(
-                    SynthesisJob.created_at < cutoff,
-                    SynthesisJob.status.in_(
-                        [
-                            SynthesisJobStatus.COMPLETED.value,
-                            SynthesisJobStatus.FAILED.value,
-                            SynthesisJobStatus.CANCELLED.value,
-                        ]
-                    ),
-                )
+            counts = await prune_finished_jobs(
+                db,
+                SynthesisJob,
+                older_than_days=days,
+                storage=storage_service,
+                label="synthesis",
             )
-            old_jobs = result.scalars().all()
-
-            deleted_count = 0
-            files_deleted = 0
-
-            for job in old_jobs:
-                try:
-                    # Delete file if exists
-                    if job.file_path:
-                        try:
-                            await storage_service.delete_file(job.file_path)
-                            files_deleted += 1
-                        except Exception as e:
-                            logger.warning(
-                                f"Failed to delete file {job.file_path}: {e}"
-                            )
-
-                    await db.delete(job)
-                    deleted_count += 1
-                except Exception as e:
-                    logger.warning(f"Failed to delete job {job.id}: {e}")
-
-            await db.commit()
-
-            logger.info(
-                f"Cleaned up {deleted_count} old synthesis jobs, {files_deleted} files"
-            )
-            return {
-                "success": True,
-                "jobs_deleted": deleted_count,
-                "files_deleted": files_deleted,
-            }
-
         except Exception as e:
             logger.error(f"Cleanup failed: {e}")
             return {"success": False, "error": str(e)}
+    return {"success": True, "jobs_deleted": counts["deleted"], "kept": counts["kept"]}

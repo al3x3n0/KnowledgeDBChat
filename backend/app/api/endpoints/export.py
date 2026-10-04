@@ -87,7 +87,7 @@ async def export_chat_session(
     # Determine title
     title = (
         request.title
-        or session.topic
+        or session.title
         or f"Chat Export - {session.created_at.strftime('%Y-%m-%d')}"
     )
 

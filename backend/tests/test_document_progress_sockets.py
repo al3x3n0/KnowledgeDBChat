@@ -106,3 +106,42 @@ def test_url_ingest_progress_refuses_a_stranger(client, signed_in, monkeypatch):
         with pytest.raises(WebSocketDisconnect) as closed:
             ws.receive_text()
     assert closed.value.code == 1008
+
+
+@pytest.fixture
+def sources(monkeypatch):
+    known = {}
+
+    class _Session:
+        async def get(self, model, source_id):
+            return known.get(source_id)
+
+    @asynccontextmanager
+    async def session():
+        yield _Session()
+
+    monkeypatch.setattr(documents_endpoint, "AsyncSessionLocal", session)
+    return known
+
+
+def test_any_signed_in_user_may_watch_a_source_ingest(client, signed_in, sources):
+    # Sources are shared: the requester being someone else does not matter.
+    source_id = uuid4()
+    sources[source_id] = SimpleNamespace(
+        id=source_id, config={"requested_by": "someone_else"}
+    )
+
+    with client.websocket_connect(
+        f"/api/v1/documents/sources/{source_id}/ingestion-progress"
+    ) as websocket:
+        websocket.send_text("ping")
+        assert websocket.receive_text() == "pong"
+
+
+def test_an_unknown_source_is_closed(client, signed_in, sources):
+    with client.websocket_connect(
+        f"/api/v1/documents/sources/{uuid4()}/ingestion-progress"
+    ) as websocket:
+        with pytest.raises(WebSocketDisconnect) as closed:
+            websocket.receive_text()
+    assert closed.value.code == 1008

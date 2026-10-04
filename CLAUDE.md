@@ -1044,7 +1044,8 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   decisions) were stated twice. **The two `_normalize_decomposition` functions
   are still separate and do differ**: the runner's rebuilds every slice and
   reads the legacy `slices_planned` key, the endpoint's keeps unknown slice
-  fields. Merging them is a behaviour decision, not a cleanup.
+  fields. Decided 2026-10-04: **they stay separate** -- they serve different
+  writers, and merging would change one of them.
   `services/config_values.py` holds the clamped config readers the executor
   and two policy modules each redefined as closures over `cfg`
   (`clamped_int`, `clamped_float`, `string_list`) plus the never-raising
@@ -1254,6 +1255,11 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   delete_document(..., warnings=[...])`: a file or vectors that could not be
   removed) rather than a bare success; and **document sources are shared**,
   so no source tool checks who requested the source.
+  Decided 2026-10-04, following from those: the chat widget's delete confirm
+  **keeps the approval gate** (with `AGENT_REQUIRE_TOOL_APPROVAL` on it
+  creates an approval request rather than deleting), and source-ingestion
+  progress is open to **any signed-in user** (it was requester-only, which
+  contradicted "sources are shared").
   - **The scraper connects only to an address it checked**
     (`web_scraper_service.PinnedNetworkBackend`). The URL check resolved a
     name and httpx resolved it again to connect, so a name answering public

@@ -2138,38 +2138,24 @@ async def document_source_ingestion_progress(
     websocket: WebSocket,
     source_id: UUID,
 ):
-    """WebSocket endpoint for ingestion progress updates (requesting user or admin)."""
+    """WebSocket endpoint for ingestion progress updates (any signed-in user)."""
     try:
-        user = await require_websocket_auth(websocket)
+        await require_websocket_auth(websocket)
     except WebSocketDisconnect:
         return
     except Exception:
         await websocket.close(code=1008, reason="Authentication failed")
         return
 
-    # Verify access rights to the source
+    # Sources are shared, so anyone signed in may watch one ingest; the
+    # source only has to exist. (This used to admit only the requester.)
     try:
         async with AsyncSessionLocal() as session:
             source = await session.get(_DocumentSource, source_id)
     except Exception:
         source = None
-
     if not source:
         await websocket.close(code=1008, reason="Source not found")
-        return
-
-    config = source.config or {}
-    requested_by = None
-    if isinstance(config, dict):
-        requested_by = config.get("requested_by") or config.get("requestedBy")
-
-    if not user.is_admin() and requested_by and requested_by != user.username:
-        await websocket.close(code=1008, reason="Not authorized to view this source")
-        return
-    if not user.is_admin() and not requested_by:
-        await websocket.close(
-            code=1008, reason="Progress available only to source owner"
-        )
         return
 
     await _relay_progress(websocket, str(source_id))

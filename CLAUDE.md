@@ -1417,6 +1417,16 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
     imported inside the `try`), and left `is_transcribing` set when queueing
     failed.
   - A real sync ignored a failed `initialize()`, just as the dry run had.
+  Decided 2026-10-06:
+  - **Per-source sync settings beat the sweeps.** The hourly and daily sweeps
+    skip a source that is already syncing, one whose Auto Sync is off, and one
+    the 5-minute scan schedules (interval or cron). A source whose config
+    never set `auto_sync` is still swept. That covers every source created
+    from the Documents page, where the request's `auto_sync` means "ingest
+    now" and is not stored. (`sync_tasks._sweep_skips`)
+  - **Memories outlive the chat they came from.** The year-old session
+    cleanup detaches their memories (`session_id` set to NULL) before
+    deleting sessions. Previously the delete-orphan cascade took them too.
 - **A setting must be read, or admitted inert.** `TRAINING_ENABLED` was the
   documented gate on training and nothing read it; the concurrency limit and
   two dataset limits beside it were the same. They are enforced now (the gate

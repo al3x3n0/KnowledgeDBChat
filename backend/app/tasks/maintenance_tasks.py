@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict
 
 from loguru import logger
-from sqlalchemy import and_, select
+from sqlalchemy import and_, select, update
 
 from app.core.celery import celery_app
 from app.core.database import create_celery_session
@@ -69,6 +69,25 @@ async def _async_cleanup_old_data() -> Dict[str, Any]:
                 )
             )
             old_sessions = old_sessions_result.scalars().all()
+
+            # Memories outlive the chat they came from (decided 2026-10-06).
+            # ChatSession.memories cascades delete-orphan, so deleting a
+            # year-old session also deleted the long-term memories made in
+            # it, though memories have their own retention. Detached first,
+            # with session_id cleared (it is nullable), nothing cascades.
+            if old_sessions:
+                from app.models.memory import ConversationMemory
+
+                await db.execute(
+                    update(ConversationMemory)
+                    .where(
+                        ConversationMemory.session_id.in_(
+                            [session.id for session in old_sessions]
+                        )
+                    )
+                    .values(session_id=None)
+                    .execution_options(synchronize_session=False)
+                )
 
             for session in old_sessions:
                 try:

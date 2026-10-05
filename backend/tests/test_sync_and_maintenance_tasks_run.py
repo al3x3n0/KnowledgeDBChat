@@ -395,6 +395,53 @@ async def test_type_sweep_queues_every_active_source_of_that_type_only(
     assert (await _reload(db_session, DocumentSource, first.id)).last_sync is None
 
 
+@pytest.mark.parametrize(
+    "config, syncing, swept",
+    [
+        ({}, False, True),  # never configured (created from Documents): swept
+        ({"auto_sync": True}, False, True),  # on, but no schedule of its own
+        ({"auto_sync": False}, False, False),  # switched off in Admin
+        ({"auto_sync": True, "sync_interval_minutes": 30}, False, False),
+        ({"auto_sync": True, "cron": "0 * * * *"}, False, False),
+        ({}, True, False),  # already syncing: never started twice
+    ],
+    ids=[
+        "unset",
+        "on-unscheduled",
+        "off",
+        "on-interval",
+        "on-cron",
+        "already-syncing",
+    ],
+)
+async def test_type_sweep_respects_the_sources_own_settings(
+    db_session, task_sessions, edges, ingest_queue, config, syncing, swept
+):
+    # Decided 2026-10-06: per-source settings win over the hourly sweep.
+    source = await _source(db_session, "gitlab", config=config, is_syncing=syncing)
+
+    result = await sync_tasks._async_sync_sources_by_type("gitlab")
+
+    assert (str(source.id) in ingest_queue.firsts()) is swept
+    if not swept:
+        (row,) = result["results"]
+        assert row["status"] == "skipped" and row["reason"]
+
+
+async def test_sync_all_sources_respects_the_sources_own_settings(
+    db_session, task_sessions, edges, ingest_queue
+):
+    kept = await _source(db_session, "gitlab")
+    off = await _source(db_session, "web", config={"auto_sync": False})
+    busy = await _source(db_session, "confluence", is_syncing=True)
+
+    await sync_tasks._async_sync_all_sources()
+
+    assert ingest_queue.firsts() == [str(kept.id)]
+    assert str(off.id) not in ingest_queue.firsts()
+    assert str(busy.id) not in ingest_queue.firsts()
+
+
 async def test_type_sweep_with_no_sources_queues_nothing(
     db_session, task_sessions, edges, ingest_queue
 ):
@@ -785,6 +832,33 @@ async def test_cleanup_deletes_old_logs_and_old_inactive_chats_only(
         db_session, ChatMessage, ChatMessage.session_id == recent_inactive.id
     )
     assert len(kept) == 1
+
+
+async def test_cleanup_keeps_the_memories_of_a_chat_it_deletes(
+    db_session, test_user, task_sessions, log_dir
+):
+    # Decided 2026-10-06: memories outlive the chat they came from. The
+    # session's delete-orphan cascade used to take them with it.
+    from app.models.memory import ConversationMemory
+
+    stale = await _chat(
+        db_session, test_user, last_message_at=_ago(days=500), is_active=False
+    )
+    memory = ConversationMemory(
+        user_id=test_user.id,
+        session_id=stale.id,
+        memory_type="fact",
+        content="prefers concise answers",
+    )
+    db_session.add(memory)
+    await db_session.commit()
+
+    await maintenance_tasks._async_cleanup_old_data()
+
+    assert await _reload(db_session, ChatSession, stale.id) is None
+    kept = await _reload(db_session, ConversationMemory, memory.id)
+    assert kept is not None and kept.session_id is None
+    assert kept.content == "prefers concise answers"
 
 
 async def test_cleanup_with_nothing_to_clean(

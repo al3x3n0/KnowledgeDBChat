@@ -212,9 +212,15 @@ async def _async_scan_scheduled_sources() -> Dict[str, Any]:
             )
             sources = result.scalars().all()
             triggered = []
-            from datetime import datetime, timedelta
+            from datetime import datetime, timedelta, timezone
 
-            now = datetime.utcnow()
+            # Aware UTC throughout. `last_sync` is TIMESTAMP WITH TIME ZONE,
+            # which Postgres returns aware; against a naive utcnow() both the
+            # interval and the cron comparison raised TypeError, swallowed
+            # per source below -- so a source that had synced once was never
+            # synced by this scan again. (SQLite returns it naive, which is
+            # why no test saw it.)
+            now = datetime.now(timezone.utc)
             for src in sources:
                 try:
                     cfg = src.config or {}
@@ -226,6 +232,8 @@ async def _async_scan_scheduled_sources() -> Dict[str, Any]:
                     if getattr(src, "is_syncing", False):
                         continue
                     last = src.last_sync
+                    if last is not None and last.tzinfo is None:
+                        last = last.replace(tzinfo=timezone.utc)
                     due = False
                     # Interval-based due
                     if interval_min and interval_min > 0:

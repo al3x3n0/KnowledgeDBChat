@@ -1781,16 +1781,36 @@ Citation format:
         Returns:
             True if service is healthy, False otherwise
         """
+        # Each provider asked at its own models endpoint. Everything but
+        # DeepSeek used to be checked at Ollama's /api/tags, so an OpenAI or
+        # Anthropic deployment with its provider up reported "unavailable"
+        # and the whole stack "degraded" on every scheduled check.
+        openai_compatible = {
+            "deepseek": (settings.DEEPSEEK_API_BASE, settings.DEEPSEEK_API_KEY),
+            "openai": (settings.OPENAI_API_BASE, settings.OPENAI_API_KEY),
+            "qwen": (settings.QWEN_API_BASE, settings.QWEN_API_KEY),
+            "kimi": (settings.KIMI_API_BASE, settings.KIMI_API_KEY),
+            "glm": (settings.GLM_API_BASE, settings.GLM_API_KEY),
+        }
         try:
-            if self.provider == "deepseek":
-                # Ping DeepSeek models list (OpenAI-compatible) to verify auth and availability
-                url = f"{settings.DEEPSEEK_API_BASE.rstrip('/')}/models"
-                headers = {"Authorization": f"Bearer {settings.DEEPSEEK_API_KEY}"}
-                response = await self.client.get(url, headers=headers)
+            if self.provider in openai_compatible:
+                base, key = openai_compatible[self.provider]
+                response = await self.client.get(
+                    f"{base.rstrip('/')}/models",
+                    headers={"Authorization": f"Bearer {key}"},
+                )
                 return response.status_code == 200
-            else:
-                response = await self.client.get(f"{self.base_url}/api/tags")
+            if self.provider == "anthropic":
+                response = await self.client.get(
+                    "https://api.anthropic.com/v1/models",
+                    headers={
+                        "x-api-key": settings.ANTHROPIC_API_KEY or "",
+                        "anthropic-version": "2023-06-01",
+                    },
+                )
                 return response.status_code == 200
+            response = await self.client.get(f"{self.base_url}/api/tags")
+            return response.status_code == 200
         except Exception as e:
             logger.error(f"LLM health check failed: {e}")
             return False

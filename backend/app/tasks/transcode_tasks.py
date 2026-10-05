@@ -4,6 +4,7 @@ Background task to transcode uploaded videos to MP4 (H.264/AAC) for broad browse
 
 import asyncio
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any, Dict
@@ -93,11 +94,22 @@ async def _async_transcode_to_mp4(task, document_id: str) -> Dict[str, Any]:
                 document_id,
                 {"stage": "transcoding", "message": "Preparing...", "progress": 5},
             )
-            await storage_service.download_file(document.file_path, str(temp_src))
+            # download_file answers False rather than raising. Ignored, ffmpeg
+            # ran on an empty file and the document recorded its exit status
+            # instead of the missing original.
+            if not await storage_service.download_file(
+                document.file_path, str(temp_src)
+            ):
+                raise RuntimeError(
+                    f"Could not download the original {document.file_path} "
+                    "from storage"
+                )
 
-            # Run ffmpeg to H.264/AAC with browser-friendly settings
-            # Use subprocess for reliable binary invocation
-            import subprocess
+            # Run ffmpeg to H.264/AAC with browser-friendly settings. subprocess
+            # is imported at module level: imported here, it was a local name,
+            # and any failure before this line turned the
+            # `except subprocess.CalledProcessError` below into an
+            # UnboundLocalError, so no transcode_error was recorded.
 
             cmd = [
                 "ffmpeg",
@@ -206,7 +218,16 @@ async def _async_transcode_to_mp4(task, document_id: str) -> Dict[str, Any]:
                 logger.error(
                     f"Transcode: failed to dispatch transcription for {document_id}: {e}"
                 )
+                # Nothing is transcribing. Left set, the document said so for
+                # ever with nothing running.
+                document.extra_metadata = {
+                    **(document.extra_metadata or {}),
+                    "is_transcribing": False,
+                    "transcription_error": f"Could not queue transcription: {e}",
+                }
+                await db.commit()
                 _publish_error(document_id, f"dispatch_transcription_failed: {e}")
+                _publish_status(document_id, {"is_transcribing": False})
 
             return {
                 "success": True,
@@ -214,7 +235,7 @@ async def _async_transcode_to_mp4(task, document_id: str) -> Dict[str, Any]:
                 "stream_file_path": new_object_path,
             }
 
-        except subprocess.CalledProcessError as e:  # type: ignore[name-defined]
+        except subprocess.CalledProcessError as e:
             logger.error(f"Transcode failed for {document_id}: {e}")
             document.extra_metadata = {
                 **meta,

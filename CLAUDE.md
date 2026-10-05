@@ -1392,6 +1392,31 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
     outages. A literature review read earlier reviews in as papers.
   `test_calls_fit_signatures` also follows `self.x = <imported singleton>`,
   which is how the dataset export call had escaped it.
+  A third pass ran the beat-scheduled and remaining tasks
+  (`test_sync_and_maintenance_tasks_run.py`,
+  `test_monitoring_latex_transcode_tasks_run.py`). **Timestamps from Postgres
+  are aware, `utcnow()` is not, and SQLite hides the difference.**
+  `document_sources.last_sync` and `notifications.created_at` are
+  `TIMESTAMP WITH TIME ZONE`. Compared with a naive `utcnow()`, they raised a
+  TypeError that a per-item `except` swallowed. As a result an auto-sync
+  source that had synced once was never scanned again, a user who had one
+  overdue queue alert got no alert after it, and the admin next-run times came
+  back None. Those comparisons now run in aware UTC. A test reproducing this
+  has to feed rows as Postgres returns them, since SQLite returns naive values.
+  Also:
+  - The LLM health check pinged Ollama for every provider except DeepSeek, so
+    OpenAI and Anthropic deployments read "degraded".
+  - The citation lint's own write bumped `updated_at` (`onupdate`), so notes
+    were re-linted and their owners re-notified indefinitely.
+  - `blocked_run` queue rows were never alerted on.
+  - When only the PDF upload failed, LaTeX reported "server error" and lost
+    the compiler log. The source-based BibTeX trigger never matched (the
+    regex was double-escaped in a raw string).
+  - Transcoding ran ffmpeg on an empty file when the original was missing,
+    crashed with UnboundLocalError on an early failure (`subprocess`
+    imported inside the `try`), and left `is_transcribing` set when queueing
+    failed.
+  - A real sync ignored a failed `initialize()`, just as the dry run had.
 - **A setting must be read, or admitted inert.** `TRAINING_ENABLED` was the
   documented gate on training and nothing read it; the concurrency limit and
   two dataset limits beside it were the same. They are enforced now (the gate

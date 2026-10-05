@@ -85,8 +85,17 @@ async def _async_ingest_from_source(task, source_id: str) -> Dict[str, Any]:
                     f"No connector available for source type: {source.source_type}"
                 )
 
-            # Initialize connector
-            await connector.initialize(source.config)
+            # Initialize connector. It answers False rather than raising, and
+            # ignored, a revoked token was recorded on the source and its sync
+            # log as "Connector not initialized" instead of the 401.
+            if not await connector.initialize(source.config):
+                raise ValueError(
+                    f"Could not connect to this {source.source_type} source: "
+                    + (
+                        getattr(connector, "last_error", None)
+                        or "check its URL and credentials"
+                    )
+                )
 
             # Get document list (incremental when possible)
             task.update_state(

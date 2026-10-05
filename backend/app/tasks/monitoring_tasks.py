@@ -3,11 +3,12 @@ Monitoring and maintenance tasks.
 """
 
 from copy import deepcopy
-from datetime import datetime, timedelta
-from typing import Any, Dict
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Optional
 
 from loguru import logger
 from sqlalchemy import and_, func, select
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.endpoints.agent_jobs import _build_checkpoint_queue_items
 from app.core.celery import celery_app
@@ -440,6 +441,15 @@ def _summarize_customer_budget_notification(item: Dict[str, Any]) -> Dict[str, A
     }
 
 
+def _aware_utc(value: Optional[datetime]) -> datetime:
+    """`value` as an aware UTC datetime; None is the earliest possible time."""
+    if value is None:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _customer_budget_alert_should_emit(
     *,
     item: Dict[str, Any],
@@ -458,7 +468,7 @@ def _customer_budget_alert_should_emit(
             matching.append(notification)
     if not matching:
         return True
-    matching.sort(key=lambda n: n.created_at or datetime.min, reverse=True)
+    matching.sort(key=lambda n: _aware_utc(n.created_at), reverse=True)
     latest = matching[0]
     latest_data = latest.data if isinstance(latest.data, dict) else {}
     latest_state = (
@@ -499,7 +509,7 @@ def _queue_alert_should_emit(
     if item_type in {"policy_review", "budget_review"}:
         return False
 
-    matching.sort(key=lambda n: n.created_at or datetime.min, reverse=True)
+    matching.sort(key=lambda n: _aware_utc(n.created_at), reverse=True)
     latest = matching[0]
     latest_data = latest.data if isinstance(latest.data, dict) else {}
     latest_sla = str(latest_data.get("sla_bucket") or "").strip().lower()
@@ -510,8 +520,12 @@ def _queue_alert_should_emit(
 
     if sla_bucket == "overdue":
         cooldown = max(1, int(reminder_cooldown_hours or 6))
-        created_at = latest.created_at or datetime.min
-        if (now - created_at) >= timedelta(hours=cooldown):
+        # Aware UTC on both sides: Notification.created_at comes back aware
+        # from Postgres, and against the naive `now` this raised -- caught per
+        # user by the caller, so after one overdue alert that user got no
+        # queue, policy or budget alert again.
+        created_at = _aware_utc(latest.created_at)
+        if (_aware_utc(now) - created_at) >= timedelta(hours=cooldown):
             return True
 
     return False
@@ -963,7 +977,16 @@ async def _async_lint_recent_research_notes_citations() -> Dict[str, Any]:
                     lint_report["notified_reasons"] = reasons
                     notified += 1
 
+                # Writing the lint must not count as editing the note.
+                # `updated_at` has an onupdate, so this write moved it past the
+                # lint's own timestamp: the "already linted" skip never fired,
+                # every note was re-linted on every run and stayed inside the
+                # 24h window, and its owner was re-notified indefinitely. Sent
+                # explicitly with its old value, the onupdate does not apply.
+                edited_at = note.updated_at
                 note.attribution = {**attribution, "lint": lint_report}
+                note.updated_at = edited_at
+                flag_modified(note, "updated_at")
                 updated += 1
             except Exception as exc:
                 logger.warning(
@@ -1401,8 +1424,11 @@ async def _async_emit_queue_urgency_alerts() -> Dict[str, Any]:
                     item
                     for item in queue_items
                     if (
+                        # blocked_run: a run that stopped needing a person is
+                        # the case its queue row exists for ("stopped with
+                        # nobody told"), and it was never alerted on.
                         str(item.item_type or "")
-                        in {"approval_checkpoint", "job_recovery"}
+                        in {"approval_checkpoint", "job_recovery", "blocked_run"}
                         and str(item.sla_bucket or "") in {"at_risk", "overdue"}
                     )
                     or str(item.item_type or "") in {"policy_review", "budget_review"}

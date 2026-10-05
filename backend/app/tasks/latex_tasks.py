@@ -98,12 +98,28 @@ async def _async_compile_latex_project_job(task, job_id: str) -> Dict[str, Any]:
                 return {"job_id": job_id, "status": job.status, "success": False}
 
             task.update_state(state="PROGRESS", meta={"status": "Uploading PDF"})
-            pdf_path = await storage_service.upload_file(
-                document_id=project.id,
-                filename="paper.pdf",
-                content=result.pdf_bytes,
-                content_type="application/pdf",
-            )
+            try:
+                pdf_path = await storage_service.upload_file(
+                    document_id=project.id,
+                    filename="paper.pdf",
+                    content=result.pdf_bytes,
+                    content_type="application/pdf",
+                )
+            except Exception as upload_exc:
+                # The compile succeeded; only storing the PDF failed. The
+                # catch-all below said "Compilation failed due to a server
+                # error" and replaced the compiler's log with that sentence.
+                logger.error(f"LaTeX PDF upload failed ({job_id}): {upload_exc}")
+                job.status = "failed"
+                job.log = (
+                    f"{job.log or ''}\n\nThe document compiled, but the PDF "
+                    f"could not be stored: {upload_exc}"
+                ).strip()
+                job.finished_at = datetime.utcnow()
+                project.last_compile_log = job.log
+                project.last_compiled_at = datetime.utcnow()
+                await db.commit()
+                return {"job_id": job_id, "status": job.status, "success": False}
             job.pdf_file_path = pdf_path
             job.status = "succeeded"
             job.finished_at = datetime.utcnow()

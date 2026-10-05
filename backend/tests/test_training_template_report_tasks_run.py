@@ -1571,8 +1571,31 @@ async def test_repo_presentation_has_its_slides_and_diagram(
 async def test_repo_presentation_diagram_stays_on_the_configured_renderer(
     db_session, test_user, task_sessions, redis_fake, minio, github, monkeypatch
 ):
+    import inspect
+
+    from app.services import mermaid_renderer
+
     monkeypatch.setattr(settings, "KROKI_URL", "http://kroki-mermaid:8000")
     monkeypatch.setattr(settings, "KROKI_USE_FALLBACK", False)
+    # A fresh singleton, and the render recorded at the renderer's own seam:
+    # which base URL it chose is the claim, and it does not depend on how an
+    # HTTP client was patched or which earlier test built the singleton.
+    monkeypatch.setattr(mermaid_renderer, "_renderer", None)
+    real = mermaid_renderer.MermaidRenderer._render_via_kroki
+    chosen = []
+
+    async def render_via_kroki(*args, **kwargs):
+        bound = inspect.signature(real).bind(*args, **kwargs)
+        chosen.append(bound.arguments["base_url"])
+        from PIL import Image
+
+        png = io.BytesIO()
+        Image.new("RGB", (1, 1)).save(png, format="PNG")
+        return png.getvalue()
+
+    monkeypatch.setattr(
+        mermaid_renderer.MermaidRenderer, "_render_via_kroki", render_via_kroki
+    )
     FakeModel(_insights_answer).install(monkeypatch)
     job = await _repo_job(db_session, test_user, output_format="pptx")
 
@@ -1580,8 +1603,7 @@ async def test_repo_presentation_diagram_stays_on_the_configured_renderer(
 
     row = await _reload(db_session, RepoReportJob, job.id)
     assert row.status == "completed", row.error
-    renderers = [h for h in github.hosts() if h != "api.github.com"]
-    assert renderers and "kroki.io" not in renderers
+    assert chosen == ["http://kroki-mermaid:8000"]
 
 
 async def test_repo_report_docx_applies_the_requested_theme(

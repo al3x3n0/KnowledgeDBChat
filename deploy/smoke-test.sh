@@ -32,7 +32,7 @@ TIMEOUT="${TIMEOUT:-10m}"
 # exists" failed against an error message instead of a bucket listing.
 MC_IMAGE="$(awk '/^  mcImage:/{f=1} f&&/repository:/{r=$2} f&&/tag:/{print r":"$2; exit}' \
   "$(dirname "$0")/helm/knowledgedbchat/values.yaml")"
-[[ -n "$MC_IMAGE" ]] || MC_IMAGE="quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z"
+[[ -n "$MC_IMAGE" ]] || MC_IMAGE="docker.io/pgsty/mc:RELEASE.2026-09-16T00-00-00Z"
 FULLNAME="${RELEASE}-knowledgedbchat"
 
 # Must match ci/values-smoke.yaml.

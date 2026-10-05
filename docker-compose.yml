@@ -49,10 +49,12 @@ services:
 
   # MinIO for object storage
   minio:
-    # quay.io, and pinned: MinIO withdrew these images from Docker Hub, so
-    # `minio/minio:latest` resolves only on a machine that cached it before
-    # the removal. A fresh clone could not start the stack at all.
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    # pgsty's community build, pinned. MinIO no longer serves its images to
+    # anonymous pulls (Docker Hub, then quay.io from 2026-10), so a fresh
+    # clone could not start the stack; a cached image hides that. Built like
+    # the official image (same entrypoint, curl for the healthcheck), and it
+    # reads data the official server wrote. See the chart's values.yaml.
+    image: docker.io/pgsty/minio:RELEASE.2026-08-04T00-00-00Z
     container_name: knowledge_db_minio
     ports:
       - "${KDBC_MINIO_PORT:-29000}:9000"  # API

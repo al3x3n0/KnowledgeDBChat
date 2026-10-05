@@ -512,17 +512,33 @@ async def _async_process_uploaded_document(task, document_id: str) -> Dict[str, 
 
             document_service = DocumentService()
 
-            # Process the document
-            await document_service._process_document_async(document, db)
+            # Through reprocess_document: it removes the chunks and vectors a
+            # previous version left before indexing this one, and says whether
+            # indexing worked. Processing directly kept both versions after a
+            # sync changed the text (search returned the stale one), and it
+            # swallows its own failure, so this reported success regardless.
+            title = document.title
+            indexed = await document_service.reprocess_document(document.id, db)
 
             task.update_state(
                 state="PROGRESS",
                 meta={"current": 4, "total": 4, "status": "Processing completed"},
             )
 
+            if not indexed:
+                refreshed = await db.get(Document, document.id)
+                return {
+                    "document_id": document_id,
+                    "title": title,
+                    "success": False,
+                    "processed": False,
+                    "error": getattr(refreshed, "processing_error", None)
+                    or "Indexing failed",
+                }
+
             result = {
                 "document_id": document_id,
-                "title": document.title,
+                "title": title,
                 "success": True,
                 "processed": True,
             }
@@ -588,7 +604,17 @@ async def _async_dry_run_source(
             connector = _get_connector(source)
             if not connector:
                 raise ValueError(f"No connector for type {source.source_type}")
-            await connector.initialize(source.config)
+            # initialize() answers False rather than raising; ignored, the run
+            # failed later with "Connector not initialized", which hides the
+            # real cause (bad config, rejected credentials).
+            if not await connector.initialize(source.config):
+                raise ValueError(
+                    f"Could not connect to this {source.source_type} source: "
+                    + (
+                        getattr(connector, "last_error", None)
+                        or "check its URL and credentials"
+                    )
+                )
             # Apply temporary include_* overrides for dry-run if provided
             try:
                 for key in [

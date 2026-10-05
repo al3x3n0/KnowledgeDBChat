@@ -95,8 +95,14 @@ class TemplateFillService:
 
             # Search vector store with the section title as query
             # Filter by document IDs
+            # Scoped to the source documents. Searching the whole knowledge
+            # base and filtering afterwards lost every match outranked by
+            # some other document's chunks, and the section fell back to the
+            # document's first 3000 characters.
             search_results = await self.vector_store.search(
-                query=section_title, limit=max_results * 2  # Get more to filter
+                query=section_title,
+                limit=max_results * 2,
+                document_ids=[str(d.id) for d in documents],
             )
 
             # Filter results to only include our source documents
@@ -210,10 +216,14 @@ Write the content for "{section_title}":"""
             return response.strip()
 
         except Exception as e:
+            # Raised, not returned: as section text the error string was
+            # written into the delivered document and the job ended completed.
             logger.error(
                 f"Failed to generate content for section '{section_title}': {e}"
             )
-            return f"[Error generating content for '{section_title}': {str(e)}]"
+            raise RuntimeError(
+                f"Could not generate section '{section_title}': {e}"
+            ) from e
 
     async def fill_template(
         self, template_path: str, sections_content: Dict[str, str], output_path: str
@@ -274,9 +284,16 @@ Write the content for "{section_title}":"""
             temp_template.close()
 
             await storage_service.initialize()
-            await storage_service.download_file(
+            # download_file answers False rather than raising. Ignored, the
+            # failure surfaced as "Package not found at /var/.../tmpXXXX.docx",
+            # naming a temp file instead of the missing template.
+            if not await storage_service.download_file(
                 job.template_file_path, temp_template.name
-            )
+            ):
+                raise ValueError(
+                    f"Template file {job.template_file_path} could not be "
+                    "read from storage"
+                )
 
             # Analyze template
             sections = await self.analyze_template(temp_template.name)

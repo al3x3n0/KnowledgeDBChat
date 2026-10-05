@@ -50,13 +50,11 @@ async def _async_generate_chat_title(task, session_id: str) -> Dict[str, Any]:
                     "error": "Session not found",
                 }
 
-            # Check if title is already generated (not a default date-based title)
-            # Allow regeneration if title starts with "Chat " (default format) or matches date pattern
-            if (
-                session.title
-                and not session.title.startswith("Chat ")
-                and " - " in session.title
-            ):
+            # Only the placeholder title is replaced; anything a person (or an
+            # earlier run) chose stays.
+            from app.services.chat_service import has_default_title
+
+            if not has_default_title(session.title):
                 # Title already has date format with generated content, skip
                 logger.info(
                     f"Session {session_id} already has a generated title: {session.title}"

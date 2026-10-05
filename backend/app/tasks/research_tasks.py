@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.core.celery import celery_app
 from app.core.database import create_celery_session
@@ -45,9 +45,17 @@ async def _async_generate_literature_review(
             if src.source_type != "arxiv":
                 raise ValueError("Literature review only supported for arXiv sources")
 
+            # The papers, not earlier reviews stored in the same source: a
+            # second review read the first back in as a paper and counted it.
             result = await db.execute(
                 select(Document)
-                .where(Document.source_id == src.id)
+                .where(
+                    Document.source_id == src.id,
+                    or_(
+                        Document.source_identifier.is_(None),
+                        ~Document.source_identifier.like("literature_review:%"),
+                    ),
+                )
                 .order_by(Document.created_at.desc())
             )
             docs = list(result.scalars().all())

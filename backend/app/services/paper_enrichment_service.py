@@ -83,12 +83,21 @@ class PaperEnrichmentService:
         )
 
         bibtex = None
-        if arxiv_id and (force or not paper_meta.get("bibtex")):
+        wanted_bibtex = bool(arxiv_id and (force or not paper_meta.get("bibtex")))
+        if wanted_bibtex:
             bibtex = await self._fetch_arxiv_bibtex(arxiv_id)
 
         crossref = None
-        if doi and (force or not paper_meta.get("venue")):
+        wanted_crossref = bool(doi and (force or not paper_meta.get("venue")))
+        if wanted_crossref:
             crossref = await self._fetch_crossref(doi)
+
+        # Done only when every lookup it tried answered. Both fetchers swallow
+        # their errors, and stamping regardless meant a paper enriched during
+        # an outage was skipped as already enriched on every later run.
+        lookups_answered = (not wanted_bibtex or bibtex is not None) and (
+            not wanted_crossref or crossref is not None
+        )
 
         if crossref:
             (
@@ -126,7 +135,11 @@ class PaperEnrichmentService:
             "author_affiliations": author_affiliations
             or paper_meta.get("author_affiliations")
             or [],
-            "enriched_at": _dt.utcnow().isoformat(),
+            "enriched_at": (
+                _dt.utcnow().isoformat()
+                if lookups_answered
+                else paper_meta.get("enriched_at")
+            ),
         }
 
         # Write back
@@ -159,7 +172,13 @@ class PaperEnrichmentService:
             logger.debug(f"arXiv bibtex fetch failed for {arxiv_id}: {exc}")
             return None
 
-        # Page contains bibtex inside <pre>...</pre>
+        # arxiv.org/bibtex/<id> serves the entry as plain text. Looking only
+        # for a <pre> block meant no document ever received its bibtex.
+        body = html.strip()
+        if body.startswith("@"):
+            return body
+
+        # Older pages wrapped it in <pre>...</pre>
         start = html.find("<pre")
         if start == -1:
             return None

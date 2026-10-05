@@ -13,6 +13,10 @@ class BaseConnector(ABC):
     def __init__(self):
         self.config = {}
         self.is_initialized = False
+        #: Why initialize() returned False, when a connector knows. It used to
+        #: be logged only, so callers reported "Connector not initialized"
+        #: instead of a missing query or a rejected token.
+        self.last_error: Optional[str] = None
 
     @abstractmethod
     async def initialize(self, config: Dict[str, Any]) -> bool:

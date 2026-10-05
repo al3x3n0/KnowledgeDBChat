@@ -4,6 +4,7 @@ Mermaid diagram rendering service.
 Renders Mermaid diagram code to PNG images using local or external Kroki service.
 """
 
+import asyncio
 import base64
 import zlib
 from typing import Optional
@@ -31,16 +32,54 @@ class MermaidRenderer:
 
     def __init__(self):
         self._client: Optional[httpx.AsyncClient] = None
-        # Primary: local Kroki Docker container
-        self._kroki_url = settings.KROKI_URL.rstrip("/")
-        # Fallback: external kroki.io
-        self._fallback_url = settings.KROKI_FALLBACK_URL.rstrip("/")
-        self._use_fallback = settings.KROKI_USE_FALLBACK
+        self._client_loop: Optional[asyncio.AbstractEventLoop] = None
+
+    # Read when used, not when the singleton is built: the singleton outlives
+    # whatever configuration the process had when it was first asked for. An
+    # instance may still be told a value explicitly, which then wins.
+    def _setting(self, name: str, value: object) -> object:
+        return self.__dict__.get(f"_override{name}", value)
+
+    @property
+    def _kroki_url(self) -> str:
+        """Primary: the stack's own renderer."""
+        return str(self._setting("_kroki_url", settings.KROKI_URL)).rstrip("/")
+
+    @_kroki_url.setter
+    def _kroki_url(self, value: str) -> None:
+        self.__dict__["_override_kroki_url"] = value
+
+    @property
+    def _fallback_url(self) -> str:
+        """Fallback: external kroki.io."""
+        return str(self._setting("_fallback_url", settings.KROKI_FALLBACK_URL)).rstrip(
+            "/"
+        )
+
+    @_fallback_url.setter
+    def _fallback_url(self, value: str) -> None:
+        self.__dict__["_override_fallback_url"] = value
+
+    @property
+    def _use_fallback(self) -> bool:
+        return bool(self._setting("_use_fallback", settings.KROKI_USE_FALLBACK))
+
+    @_use_fallback.setter
+    def _use_fallback(self, value: bool) -> None:
+        self.__dict__["_override_use_fallback"] = value
 
     async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create HTTP client."""
-        if self._client is None:
+        """An HTTP client bound to the running event loop.
+
+        The renderer is a process-wide singleton, and a Celery task runs each
+        job under its own `asyncio.run`. A client kept from an earlier task is
+        bound to a loop that has closed, so in a worker every render after the
+        first failed and the diagram was quietly left out.
+        """
+        loop = asyncio.get_running_loop()
+        if self._client is None or self._client_loop is not loop:
             self._client = httpx.AsyncClient(timeout=self.TIMEOUT)
+            self._client_loop = loop
         return self._client
 
     async def close(self):

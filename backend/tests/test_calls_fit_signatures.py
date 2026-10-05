@@ -333,6 +333,15 @@ def test_calls_on_held_services_pass_arguments_they_accept():
                         ):
                             counts[target.attr] = counts.get(target.attr, 0) + 1
                             cls = instance_of(node.value)
+                            if (
+                                cls is None
+                                and isinstance(node.value, ast.Name)
+                                and node.value.id in imported
+                            ):
+                                # `self.storage = storage_service`: a held
+                                # singleton, which is how the dataset export's
+                                # upload_file call went unchecked.
+                                cls = imported[node.value.id]
                             if cls:
                                 held[target.attr] = cls
             held = {k: v for k, v in held.items() if counts.get(k) == 1}

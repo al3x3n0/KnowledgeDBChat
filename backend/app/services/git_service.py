@@ -101,7 +101,13 @@ class GitService:
             connector = GitLabConnector()
         else:
             raise ValueError("Source does not support git operations")
-        await connector.initialize(source.config or {})
+        # initialize() answers False rather than raising: a revoked token
+        # (401) was recorded as "Connector not initialized" on the diff.
+        if not await connector.initialize(source.config or {}):
+            raise ValueError(
+                f"Could not connect to this {source.source_type} source: "
+                + (getattr(connector, "last_error", None) or "check its URL and token")
+            )
         payload = self._resolve_repository_payload(source, repository)
         return connector, payload
 
@@ -132,15 +138,23 @@ class GitService:
         projects = config.get("projects") or []
         if not projects:
             return repository
-        # Accept id match, path match, or name match
+        # Accept id match, path match, or name match -- each on its own. The
+        # identifiers were joined with `or`, so a project with an id was never
+        # matched by its name and the name went to GitLab as a project id.
         repo_lower = str(repository).lower()
         for project in projects:
-            pid = str(project.get("id") or project.get("name") or project.get("path"))
-            if pid.lower() == repo_lower:
-                return project.get("id") or repo_lower
-            path = str(project.get("path") or project.get("path_with_namespace") or "")
-            if path and path.lower() == repo_lower:
-                return project.get("id") or path
+            candidates = [
+                project.get("id"),
+                project.get("name"),
+                project.get("path"),
+                project.get("path_with_namespace"),
+            ]
+            if any(c is not None and str(c).lower() == repo_lower for c in candidates):
+                return (
+                    project.get("id")
+                    or project.get("path_with_namespace")
+                    or (project.get("path") or repository)
+                )
         return repository
 
     def build_diff_summary(self, compare_payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -149,6 +163,24 @@ class GitService:
         files = compare_payload.get("files") or compare_payload.get("diffs") or []
         normalized_files: List[Dict[str, Any]] = []
         for entry in files:
+            # GitLab's compare returns each file's diff text, not counts;
+            # every GitLab file was summarised as +0/-0.
+            diff_text = entry.get("diff")
+            if isinstance(diff_text, str) and "additions" not in entry:
+                lines = diff_text.splitlines()
+                entry = {
+                    **entry,
+                    "additions": sum(
+                        1
+                        for x in lines
+                        if x.startswith("+") and not x.startswith("+++")
+                    ),
+                    "deletions": sum(
+                        1
+                        for x in lines
+                        if x.startswith("-") and not x.startswith("---")
+                    ),
+                }
             normalized_files.append(
                 {
                     "filename": entry.get("filename")

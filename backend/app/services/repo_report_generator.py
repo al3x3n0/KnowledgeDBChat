@@ -12,6 +12,27 @@ from app.services.docx_builder import DOCXBuilder
 from app.services.pdf_builder import PDFBuilder
 
 
+def _flat_document_theme(theme: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The DOCX/PDF builders' flat theme, from the nested one reports store.
+
+    A report's theme is the presentation shape (`colors` / `fonts` / `sizes`),
+    and the document builders read flat keys only, so every DOCX and PDF
+    report ignored the chosen theme. Colours and fonts carry over under the
+    same names. Sizes do not: they are slide sizes (a 44pt title, 20pt body)
+    and laid on a document they would be absurd, so the style keeps its own.
+    """
+    if not isinstance(theme, dict):
+        return theme
+    if not any(isinstance(theme.get(k), dict) for k in ("colors", "fonts", "sizes")):
+        return theme  # already flat
+    flat: Dict[str, Any] = {}
+    for group in ("colors", "fonts"):
+        values = theme.get(group)
+        if isinstance(values, dict):
+            flat.update({k: v for k, v in values.items() if v is not None})
+    return flat
+
+
 class RepoReportGenerator:
     """
     Generates DOCX/PDF reports from repository analysis data.
@@ -31,7 +52,7 @@ class RepoReportGenerator:
             custom_theme: Custom theme configuration
         """
         self.style = style
-        self.custom_theme = custom_theme
+        self.custom_theme = _flat_document_theme(custom_theme)
 
     async def generate_docx(
         self,

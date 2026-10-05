@@ -47,3 +47,40 @@ async def test_falling_back_is_recorded(monkeypatch, caplog):
 
     assert out == b"\x89PNG remote"
     assert renderer.last_render_used_fallback is True
+
+
+def test_each_event_loop_gets_its_own_client():
+    """A Celery task runs each job under its own `asyncio.run`. A client kept
+    from an earlier job is bound to a loop that has closed, so in a worker
+    every render after the first failed and the diagram was left out."""
+    import asyncio
+
+    from app.services.mermaid_renderer import MermaidRenderer
+
+    renderer = MermaidRenderer()
+
+    async def client():
+        return await renderer._get_client()
+
+    first = asyncio.run(client())
+    second = asyncio.run(client())
+
+    assert first is not second
+
+    async def twice():
+        return await renderer._get_client(), await renderer._get_client()
+
+    a, b = asyncio.run(twice())
+    assert a is b, "one loop keeps one client"
+
+
+def test_settings_are_read_when_used(monkeypatch):
+    from app.core.config import settings
+    from app.services.mermaid_renderer import MermaidRenderer
+
+    renderer = MermaidRenderer()
+    monkeypatch.setattr(settings, "KROKI_URL", "http://renderer.internal:8000/")
+    monkeypatch.setattr(settings, "KROKI_USE_FALLBACK", False)
+
+    assert renderer._kroki_url == "http://renderer.internal:8000"
+    assert renderer._use_fallback is False

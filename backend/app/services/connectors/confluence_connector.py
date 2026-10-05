@@ -66,12 +66,18 @@ class ConfluenceConnector(BaseConnector):
 
         except Exception as e:
             logger.error(f"Failed to initialize Confluence connector: {e}")
+            self.last_error = str(e)
             return False
 
     async def test_connection(self) -> bool:
         """Test connection to Confluence."""
         try:
             response = await self.client.get(f"{self.base_url}/rest/api/user/current")
+            if response.status_code != 200:
+                self.last_error = (
+                    "Confluence rejected the credentials "
+                    f"(HTTP {response.status_code})"
+                )
             return response.status_code == 200
         except Exception as e:
             logger.error(f"Confluence connection test failed: {e}")

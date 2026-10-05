@@ -255,12 +255,20 @@ async def _execute_training_async(job_id: str, user_id: str):
                         await consumer_task
                 except Exception:
                     pass
+                # The dataset copy goes whatever happened: removed only after
+                # a trainer that returned, every failed job left one behind.
+                try:
+                    os.unlink(local_dataset_path)
+                except Exception:
+                    pass
 
-            # Clean up temp file
-            try:
-                os.unlink(local_dataset_path)
-            except Exception:
-                pass
+            # Someone may have cancelled while it trained. The trainer then
+            # returns a failure ("Cancelled"), and writing that over the row
+            # turned a cancelled job into a failed one.
+            await db.refresh(job)
+            if job.status == TrainingJobStatus.CANCELLED.value:
+                logger.info(f"Training job {job_id} was cancelled while running")
+                return
 
             if training_result.success:
                 # Update status to saving (adapter upload/registration)
@@ -440,10 +448,18 @@ def cleanup_old_checkpoints_task(job_id: str, keep_last: int = 3):
             deleted = 0
             for checkpoint in checkpoints[keep_last:]:
                 if checkpoint.checkpoint_path:
+                    # delete_file answers False rather than raising. Deleting
+                    # the row anyway orphaned the weights in storage with
+                    # nothing left pointing at them; keep it for next time.
                     try:
-                        await storage_service.delete_file(checkpoint.checkpoint_path)
+                        removed = await storage_service.delete_file(
+                            checkpoint.checkpoint_path
+                        )
                     except Exception as e:
                         logger.warning(f"Failed to delete checkpoint file: {e}")
+                        removed = False
+                    if not removed:
+                        continue
 
                 await db.delete(checkpoint)
                 deleted += 1

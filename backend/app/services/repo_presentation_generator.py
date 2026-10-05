@@ -441,42 +441,16 @@ class RepoPresentationGenerator:
         return mermaid
 
     async def _render_mermaid_to_png(self, mermaid_code: str) -> Optional[bytes]:
+        """Render a Mermaid diagram to PNG through the deployment's renderer.
+
+        It fetched from https://kroki.io directly, ignoring KROKI_URL and
+        KROKI_USE_FALLBACK=False -- sending a possibly private repository's
+        directory names to a public service. The shared renderer honours both.
         """
-        Render Mermaid diagram to PNG.
+        from app.services.mermaid_renderer import get_mermaid_renderer
 
-        This is a placeholder - in production, you'd use:
-        - mermaid-cli (mmdc)
-        - A Mermaid API service
-        - Kroki.io
-
-        Args:
-            mermaid_code: Mermaid diagram code
-
-        Returns:
-            PNG bytes or None if rendering fails
-        """
         try:
-            # Use Kroki.io for rendering (public service)
-            # In production, consider self-hosting Kroki
-            import base64
-            import zlib
-
-            import httpx
-
-            # Compress and encode for Kroki
-            compressed = zlib.compress(mermaid_code.encode("utf-8"), 9)
-            encoded = base64.urlsafe_b64encode(compressed).decode("utf-8")
-
-            kroki_url = f"https://kroki.io/mermaid/png/{encoded}"
-
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(kroki_url)
-                if response.status_code == 200:
-                    return response.content
-                else:
-                    logger.warning(f"Kroki returned status {response.status_code}")
-                    return None
-
+            return await get_mermaid_renderer().render_to_png(mermaid_code)
         except Exception as e:
             logger.warning(f"Failed to render Mermaid diagram: {e}")
             return None

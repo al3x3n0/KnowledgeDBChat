@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from docx import Document
+from docx.oxml import OxmlElement
+from docx.text.paragraph import Paragraph
 from loguru import logger
 
 
@@ -129,56 +131,54 @@ class TemplateParser:
         """
         doc = Document(template_path)
         current_section_title: Optional[str] = None
-        paragraphs_to_clear: List[int] = []
-        first_content_para: Dict[
-            str, int
-        ] = {}  # section_title -> first content paragraph index
+        # Paragraph objects, not indices: filling a heading that has nothing
+        # under it inserts a paragraph, which would shift every index after.
+        paragraphs_to_clear: List[Any] = []
+        first_content_para: Dict[str, Any] = {}
+        heading_para: Dict[str, Any] = {}
 
         # First pass: identify sections and content paragraphs
-        for i, para in enumerate(doc.paragraphs):
+        for para in doc.paragraphs:
             text = para.text.strip()
             if not text:
                 continue
 
-            is_heading = TemplateParser._is_heading(para)
-
-            if is_heading:
+            if TemplateParser._is_heading(para):
                 section_title = text.rstrip(":").strip()
                 if section_title in sections_content:
                     current_section_title = section_title
                     first_content_para[section_title] = None
+                    heading_para[section_title] = para
                 else:
                     current_section_title = None
             elif current_section_title:
                 if first_content_para.get(current_section_title) is None:
-                    first_content_para[current_section_title] = i
+                    first_content_para[current_section_title] = para
                 else:
                     # Mark additional paragraphs for clearing
-                    paragraphs_to_clear.append(i)
+                    paragraphs_to_clear.append(para)
 
         # Second pass: fill content
         for section_title, content in sections_content.items():
-            if (
-                section_title in first_content_para
-                and first_content_para[section_title] is not None
-            ):
-                idx = first_content_para[section_title]
-                # Replace content of the first paragraph
-                para = doc.paragraphs[idx]
-                para.clear()
-                # Add content, preserving paragraph breaks
-                lines = content.split("\n")
-                for j, line in enumerate(lines):
-                    if j == 0:
-                        para.add_run(line)
-                    else:
-                        # Add line break for subsequent lines within the same paragraph
-                        para.add_run("\n" + line)
+            para = first_content_para.get(section_title)
+            if para is None:
+                heading = heading_para.get(section_title)
+                if heading is None:
+                    continue
+                # A heading with no placeholder under it. It used to get
+                # nothing: a template of bare headings came back unchanged and
+                # the job reported it filled.
+                new_p = OxmlElement("w:p")
+                heading._p.addnext(new_p)
+                para = Paragraph(new_p, heading._parent)
+            para.clear()
+            # Add content, preserving paragraph breaks
+            for j, line in enumerate(content.split("\n")):
+                para.add_run(line if j == 0 else "\n" + line)
 
-        # Clear extra paragraphs (mark as empty)
-        for idx in paragraphs_to_clear:
-            if idx < len(doc.paragraphs):
-                doc.paragraphs[idx].clear()
+        # Clear extra paragraphs
+        for para in paragraphs_to_clear:
+            para.clear()
 
         # Save the document
         doc.save(output_path)

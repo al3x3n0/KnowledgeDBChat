@@ -432,11 +432,10 @@ class TrainingDatasetService:
 
         # Upload to MinIO
         file_path = f"training/datasets/{dataset_id}/dataset.jsonl"
-        await self.storage.upload_file(
-            object_name=file_path,
-            data=file_bytes,
-            content_type="application/jsonl",
-        )
+        # upload_to_path stores at this path. upload_file takes a document id
+        # and a filename and raised TypeError here, so a dataset was never
+        # exported -- and a training job on one never started.
+        await self.storage.upload_to_path(file_path, file_bytes, "application/jsonl")
 
         # Update dataset record
         dataset.file_path = file_path

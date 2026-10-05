@@ -77,12 +77,17 @@ class GitLabConnector(RepoTreeMixin, BaseConnector):
 
         except Exception as e:
             logger.error(f"Failed to initialize GitLab connector: {e}")
+            self.last_error = str(e)
             return False
 
     async def test_connection(self) -> bool:
         """Test connection to GitLab."""
         try:
             response = await self.client.get(f"{self.base_url}/api/v4/user")
+            if response.status_code != 200:
+                self.last_error = (
+                    f"GitLab rejected the credentials (HTTP {response.status_code})"
+                )
             return response.status_code == 200
         except Exception as e:
             logger.error(f"GitLab connection test failed: {e}")

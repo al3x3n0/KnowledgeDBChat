@@ -1364,6 +1364,34 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   (`storage_service.download_file`). It found the DOCX editor and training
   calling `download_file(path)` for bytes it never returns (the editor could
   open and save nothing, and every training job failed reading its dataset).
+  A second pass ran the user-triggered tasks no test named
+  (`test_training_template_report_tasks_run.py`,
+  `test_document_and_paper_tasks_run.py`):
+  - **Training:** metrics were edited in place on a plain JSON column, so only
+    step 1 was stored. Dataset export called `upload_file` wrongly, so a
+    dataset that was never exported could not be trained on. A job cancelled
+    mid-run was recorded `failed`. Checkpoint cleanup orphaned weights, and a
+    failed run leaked its dataset copy.
+  - **Template fill:** a model failure was written into the delivered
+    document as text, and the job completed. A heading with no placeholder
+    under it got nothing. The section search ignored the source documents.
+  - **Repo reports:** diagrams went straight to public kroki.io, now through
+    `mermaid_renderer`. That renderer cached its HTTP client across Celery
+    tasks' event loops, so in a worker every render after the first failed;
+    it is now per loop. DOCX and PDF ignored the chosen theme.
+  - **Documents:** `process_document` counted chunks through a lazy
+    relationship (MissingGreenlet), then marked a well-indexed document
+    failed. Both processing tasks reported success when indexing had failed.
+    A re-synced document kept its old chunks.
+  - **Connectors:** `initialize()` returning False was ignored. They now keep
+    `last_error`, and dry runs and git compares report it.
+  - **Smaller ones:** GitLab projects with an id could not be matched by
+    name, and their diffs were counted +0/-0. Any title starting "Chat " was
+    treated as the default and overwritten. arXiv BibTeX (plain text, not
+    `<pre>`) was never parsed. Enrichment stamped `enriched_at` during
+    outages. A literature review read earlier reviews in as papers.
+  `test_calls_fit_signatures` also follows `self.x = <imported singleton>`,
+  which is how the dataset export call had escaped it.
 - **A setting must be read, or admitted inert.** `TRAINING_ENABLED` was the
   documented gate on training and nothing read it; the concurrency limit and
   two dataset limits beside it were the same. They are enforced now (the gate

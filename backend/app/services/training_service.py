@@ -379,19 +379,19 @@ class TrainingService:
         job.current_epoch = progress.epoch
         job.total_epochs = progress.total_epochs
 
-        # Update metrics
-        if job.training_metrics is None:
-            job.training_metrics = {}
-
-        job.training_metrics["current_loss"] = progress.loss
-        job.training_metrics["learning_rate"] = progress.learning_rate
-
-        if "loss_history" not in job.training_metrics:
-            job.training_metrics["loss_history"] = []
-        job.training_metrics["loss_history"].append(progress.loss)
-
-        if progress.loss < job.training_metrics.get("best_loss", float("inf")):
-            job.training_metrics["best_loss"] = progress.loss
+        # A new dict, assigned. The column is plain JSON, so an in-place edit
+        # is invisible to SQLAlchemy -- and the worker reloads the row before
+        # each update -- so only the first step's metrics were ever stored:
+        # loss_history ended as one value and current_loss never moved.
+        metrics = dict(job.training_metrics or {})
+        metrics["current_loss"] = progress.loss
+        metrics["learning_rate"] = progress.learning_rate
+        metrics["loss_history"] = list(metrics.get("loss_history") or []) + [
+            progress.loss
+        ]
+        if progress.loss < metrics.get("best_loss", float("inf")):
+            metrics["best_loss"] = progress.loss
+        job.training_metrics = metrics
 
         await db.commit()
 

@@ -95,6 +95,7 @@ class GitHubConnector(RepoTreeMixin, BaseConnector):
             return False
         except Exception as e:
             logger.error(f"Failed to initialize GitHub connector: {e}")
+            self.last_error = str(e)
             return False
 
     async def test_connection(self) -> bool:
@@ -105,6 +106,10 @@ class GitHubConnector(RepoTreeMixin, BaseConnector):
                     return True
                 logger.warning(
                     f"GitHub auth check failed: {resp.status_code} - {resp.text[:200]}"
+                )
+                self.last_error = (
+                    f"GitHub rejected the token (HTTP {resp.status_code}): "
+                    f"{resp.text[:200]}"
                 )
                 return False
             if not self.repos:

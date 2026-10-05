@@ -29,11 +29,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.models.agent_job import AgentJobStatus
+from app.models.agent_job import AgentJobChainDefinition, AgentJobStatus
 from app.models.agent_pipeline import AgentPipeline
 from app.models.user import User
 from app.schemas.agent_job import AgentJobCreate
 from app.schemas.agent_pipeline import (
+    ChainImportCandidate,
+    ChainImportRequest,
+    ChainImportSurveyResponse,
+    ContractSuggestionsRequest,
+    ContractSuggestionsResponse,
     PipelineBindResponse,
     PipelineCheckResponse,
     PipelineDraftRequest,
@@ -62,6 +67,11 @@ from app.services import (
     agent_pipeline_spec,
     agent_pipeline_vocabulary,
 )
+from app.services.agent_chain_to_pipeline import ChainNotConvertible
+from app.services.agent_chain_to_pipeline import convert as chain_to_pipeline_spec
+from app.services.agent_chain_to_pipeline import describe as chain_import_blockers
+from app.services.agent_chain_to_pipeline import placeholders as chain_placeholders
+from app.services.agent_contract_suggestions import suggest_for_spec
 from app.services.agent_job_creation_service import agent_job_creation_service
 from app.services.auth_service import get_current_user
 from app.tasks.agent_job_tasks import execute_agent_job_task
@@ -100,10 +110,28 @@ def _normalized(spec):
         raise HTTPException(status_code=400, detail=f"Not a pipeline spec: {error}")
 
 
+async def _skill_problems(db: AsyncSession, user: User, pipeline) -> list[str]:
+    """Skill evidence a stage requires that this user has no active skill for.
+
+    `validate()` has no user, so it accepts any `skill_*` type as producible in
+    principle. This is the half of the check that knows whose skills exist --
+    without it a stage requiring a skill nobody activated validates, plans,
+    launches, and then waits on evidence nothing can produce.
+    """
+    from app.services import sandbox_skill_service
+
+    available = [
+        entry.name
+        for entry in await sandbox_skill_service.evidence_types_for_user(db, user.id)
+    ]
+    return agent_pipeline_draft.skill_problems(pipeline, available)
+
+
 @router.post("/check", response_model=PipelineCheckResponse)
 async def check_pipeline(
     payload: PipelineSpecRequest,
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Say everything that is wrong with a pipeline, without running it.
 
@@ -113,6 +141,7 @@ async def check_pipeline(
     """
     pipeline = _normalized(payload.spec)
     problems = agent_pipeline_spec.validate(pipeline)
+    problems.extend(await _skill_problems(db, current_user, pipeline))
     valid = not problems
 
     # Only ask the later questions once the earlier ones are settled: binding
@@ -160,6 +189,7 @@ async def check_pipeline(
 @router.get("/vocabulary", response_model=PipelineVocabularyResponse)
 async def get_pipeline_vocabulary(
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """The finding types a contract may require, and the job types available.
 
@@ -168,10 +198,16 @@ async def get_pipeline_vocabulary(
     the failure it causes -- a contract asking for evidence nothing produces --
     is the most common way an authored pipeline fails its own check.
     """
+    from app.services import sandbox_skill_service
+
     vocabulary = agent_pipeline_vocabulary.as_dict()
+    # The static vocabulary is derived from the tool specs and has no user.
+    # What this user's active sandbox skills yield is the part it cannot know.
+    skills = await sandbox_skill_service.evidence_types_for_user(db, current_user.id)
     return PipelineVocabularyResponse(
         evidence_types=[
-            PipelineEvidenceType(**e) for e in vocabulary["evidence_types"]
+            PipelineEvidenceType(**e)
+            for e in [*vocabulary["evidence_types"], *(s.as_dict() for s in skills)]
         ],
         job_types=list(vocabulary["job_types"]),
     )
@@ -190,6 +226,7 @@ async def draft_pipeline(
     them. The draft lands in the editor and is checked there like anything
     else -- this endpoint spends one LLM call and starts no run.
     """
+    from app.services import sandbox_skill_service
     from app.services.llm_service import LLMService
 
     try:
@@ -199,6 +236,9 @@ async def draft_pipeline(
             user_id=current_user.id,
             db=db,
             budget_seconds=payload.budget_seconds,
+            extra_evidence=await sandbox_skill_service.evidence_types_for_user(
+                db, current_user.id
+            ),
         )
     except agent_pipeline_draft.PipelineDraftError as error:
         raise HTTPException(status_code=502, detail=str(error))
@@ -214,6 +254,7 @@ async def draft_pipeline(
 async def bind_pipeline(
     payload: PipelineSpecRequest,
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Compile a pipeline to the job chain it would run as.
 
@@ -222,6 +263,7 @@ async def bind_pipeline(
     """
     pipeline = _normalized(payload.spec)
     problems = agent_pipeline_spec.validate(pipeline)
+    problems.extend(await _skill_problems(db, current_user, pipeline))
     if problems:
         # 422 rather than 400: the request was well-formed and the pipeline is
         # not, which is a different thing for a caller to handle.
@@ -262,6 +304,7 @@ async def launch_pipeline(
     pipeline = _normalized(payload.spec)
 
     problems = agent_pipeline_spec.validate(pipeline)
+    problems.extend(await _skill_problems(db, current_user, pipeline))
     if problems:
         raise HTTPException(status_code=422, detail="; ".join(problems))
 
@@ -390,7 +433,7 @@ async def get_pipeline_run_stages(
         raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
 
     owner_ids = {str(stage.job.user_id) for stage in stages}
-    if owner_ids != {str(current_user.id)} and not current_user.is_admin:
+    if owner_ids != {str(current_user.id)} and not current_user.is_admin():
         raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
 
     latest = agent_pipeline_restart.latest_per_stage(stages)
@@ -520,7 +563,7 @@ async def restart_pipeline_run(
     if not stages:
         raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
     owner_ids = {str(stage.job.user_id) for stage in stages}
-    if owner_ids != {str(current_user.id)} and not current_user.is_admin:
+    if owner_ids != {str(current_user.id)} and not current_user.is_admin():
         raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
 
     from app.services.autonomous_agent_executor import AutonomousAgentExecutor
@@ -565,7 +608,7 @@ async def insert_pipeline_stage(
     if not stages:
         raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
     owner_ids = {str(stage.job.user_id) for stage in stages}
-    if owner_ids != {str(current_user.id)} and not current_user.is_admin:
+    if owner_ids != {str(current_user.id)} and not current_user.is_admin():
         raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
 
     from app.services.autonomous_agent_executor import AutonomousAgentExecutor
@@ -672,6 +715,178 @@ async def save_pipeline(
         ) from error
     await db.refresh(row)
     return SavedPipelineResponse.of(row)
+
+
+@router.post("/suggest-contracts", response_model=ContractSuggestionsResponse)
+async def suggest_contracts(
+    payload: ContractSuggestionsRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Evidence types each contract-less stage is probably asking for.
+
+    The hardest step in authoring a pipeline is naming the evidence a stage must
+    produce: it means knowing which of the evidence types exists, which tool
+    produces it, and whether that tool may run under the stage's job type. The
+    words in a goal and in a producing tool come from the same small domain, so
+    this proposes from that overlap.
+
+    It suggests and never applies, and every suggestion carries the tool behind
+    it and the words that matched -- a goal sharing only a generic word with the
+    vocabulary produces suggestions a person should dismiss, and they can only
+    do that if they can see why it was offered.
+
+    No model call: this runs while someone types and returns the same answer
+    twice. Drafting a whole pipeline is where a model earns its keep.
+    """
+    if not isinstance(payload.spec, dict):
+        raise HTTPException(status_code=400, detail="spec must be an object")
+    return ContractSuggestionsResponse(suggestions=suggest_for_spec(payload.spec))
+
+
+@router.get("/import/chains", response_model=ChainImportSurveyResponse)
+async def survey_chains_for_import(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Every saved chain, and whether it can become a pipeline.
+
+    A survey rather than a conversion, because two of the answers need a person.
+    A chain that converts still arrives with empty contracts — the chain never
+    said what a step had to achieve — so someone has to write them before it
+    runs. A chain that does not convert needs a decision about what to do
+    instead, and this says which step blocks it and why.
+    """
+    rows = (
+        (
+            await db.execute(
+                select(AgentJobChainDefinition).order_by(AgentJobChainDefinition.name)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    candidates: list[ChainImportCandidate] = []
+    for row in rows:
+        steps = row.chain_steps if isinstance(row.chain_steps, list) else []
+        blockers = chain_import_blockers(steps)
+        contracts = 0
+        if not blockers:
+            spec = chain_to_pipeline_spec(
+                name=row.name,
+                chain_steps=steps,
+                default_config=getattr(row, "default_config", None),
+            )
+            # Every converted stage needs one; saying how many is more useful
+            # than saying that some do.
+            contracts = len(spec.get("stages", []))
+        candidates.append(
+            ChainImportCandidate(
+                chain_id=row.id,
+                name=row.name,
+                description=getattr(row, "description", None),
+                steps=len(steps),
+                convertible=not blockers,
+                blockers=[
+                    {"step": step, "trigger": trigger, "reason": why}
+                    for step, trigger, why in blockers
+                ],
+                contracts_to_write=contracts,
+                variables=chain_placeholders(steps),
+            )
+        )
+    return ChainImportSurveyResponse(candidates=candidates)
+
+
+@router.post("/import/chains", response_model=SavedPipelineResponse, status_code=201)
+async def import_chain_as_pipeline(
+    payload: ChainImportRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save one chain as a pipeline. The chain is left alone.
+
+    Copying rather than moving is deliberate: the converted pipeline cannot run
+    until its contracts are written, so deleting the chain here would take away
+    the working thing before the replacement works. Removing the chain is a
+    separate decision, made once its pipeline is ready.
+    """
+    row = (
+        await db.execute(
+            select(AgentJobChainDefinition).where(
+                AgentJobChainDefinition.id == payload.chain_id
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="No such chain")
+
+    # A chain is often a template. Importing one without its variables would
+    # produce a pipeline whose goal reads "Research {topic} comprehensively" --
+    # which looks converted and would run against those characters.
+    missing = [
+        name
+        for name in chain_placeholders(row.chain_steps)
+        if name not in (payload.variables or {})
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": (
+                    f"{row.name} is a template: supply "
+                    + ", ".join(sorted(missing))
+                    + " so the goals are not left with placeholders in them."
+                ),
+                "chain": row.name,
+                "missing_variables": sorted(missing),
+            },
+        )
+
+    try:
+        spec = chain_to_pipeline_spec(
+            name=(payload.name or row.name).strip(),
+            chain_steps=row.chain_steps,
+            default_config=getattr(row, "default_config", None),
+            variables=payload.variables,
+        )
+    except ChainNotConvertible as error:
+        # 422 rather than 400: the request is well formed, the chain is what
+        # cannot be expressed. The body names which step and why.
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": str(error),
+                "chain": error.chain_name,
+                "blockers": [
+                    {"step": step, "trigger": trigger, "reason": why}
+                    for step, trigger, why in error.reasons
+                ],
+            },
+        ) from error
+
+    verdict, estimate = _verdict_for(spec)
+    pipeline = AgentPipeline(
+        user_id=current_user.id,
+        name=spec["name"],
+        description=(
+            getattr(row, "description", None)
+            or f"Imported from the job chain '{row.name}'."
+        ),
+        spec=spec,
+        last_check_valid=verdict,
+        last_estimated_seconds=estimate,
+    )
+    db.add(pipeline)
+    try:
+        await db.commit()
+    except IntegrityError as error:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409, detail="You already have a pipeline with that name"
+        ) from error
+    await db.refresh(pipeline)
+    return SavedPipelineResponse.of(pipeline)
 
 
 @router.get("/{pipeline_id}", response_model=SavedPipelineResponse)

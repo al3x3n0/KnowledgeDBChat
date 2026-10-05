@@ -88,10 +88,6 @@ export type AgentJobsTab =
   | 'profiles'
   | 'templates'
   | 'chains'
-  | 'inbox'
-  | 'backlog'
-  | 'domain'
-  | 'fleet'
   | 'create';
 
 /** What the demo-check availability badge carries. */

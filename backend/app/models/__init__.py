@@ -76,6 +76,7 @@ from .research_note import ResearchNote
 from .research_paper import PaperClaim, PaperExtractionJob, ResearchPaper
 from .research_portfolio import ResearchPortfolio
 from .retrieval_trace import RetrievalTrace
+from .sandbox_skill import SandboxSkill, SandboxSkillImage
 from .saved_search import SavedSearch, SearchShare
 from .scientific_sandbox_profile import ScientificSandboxProfile
 from .secret import UserSecret
@@ -112,6 +113,8 @@ __all__ = [
     "AgentPipeline",
     "Plugin",
     "PluginInstallation",
+    "SandboxSkill",
+    "SandboxSkillImage",
     "Document",
     "DocumentFolder",
     "DocumentFolderItem",

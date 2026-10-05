@@ -15,6 +15,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.services import llm_structured
+from app.services.agent_runner_progress import phase_reporter
+from app.services.coding_backlog_decomposition import (
+    append_artifact_history,
+    append_backlog_timeline,
+    append_lineage_id,
+    append_slice_timeline,
+    append_unique,
+    find_slice,
+    timeline_entry,
+    upsert_promotion_decision,
+)
 from app.services.project_profile_service import infer_project_profile_from_paths
 
 # Keys the code-agent prompt asks for. Flat and well defined, so providers that
@@ -58,14 +69,7 @@ class AgentCodingRunnerService:
         from app.models.code_patch_proposal import CodePatchProposal
         from app.models.document import Document, DocumentSource
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "code_patch_proposer", "result": details}
-            )
+        _emit = phase_reporter(job, "code_patch_proposer")
 
         source_id_raw = None
         if isinstance(job.config, dict):
@@ -524,7 +528,7 @@ class AgentCodingRunnerService:
             title=title,
             summary=summary,
             diff_unified=diff_unified,
-            metadata={
+            proposal_metadata={
                 "goal": (job.goal or "").strip(),
                 "source_id": str(source.id),
                 "target_source_name": source.name,
@@ -664,14 +668,7 @@ class AgentCodingRunnerService:
         )
         from app.services.document_service import DocumentService
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "code_patch_apply_to_kb", "result": details}
-            )
+        _emit = phase_reporter(job, "code_patch_apply_to_kb")
 
         cfg = job.config if isinstance(job.config, dict) else {}
         inherited = (cfg or {}).get("inherited_data") if isinstance(cfg, dict) else None
@@ -1139,18 +1136,7 @@ class AgentCodingRunnerService:
         )
         from app.tasks.agent_job_tasks import execute_agent_job_task
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {
-                    "phase": phase,
-                    "action": "coding_backlog_orchestrator",
-                    "result": details,
-                }
-            )
+        _emit = phase_reporter(job, "coding_backlog_orchestrator")
 
         def _normalize_ids(values: Any) -> list[str]:
             if not isinstance(values, list):
@@ -1412,135 +1398,8 @@ class AgentCodingRunnerService:
         def _save_decomposition(dec: dict[str, Any]) -> None:
             item.decomposition = dec
 
-        def _timeline_entry(
-            *,
-            actor: str,
-            action: str,
-            previous_status: Optional[str] = None,
-            new_status: Optional[str] = None,
-            note: Optional[str] = None,
-            related_job_id: Optional[str] = None,
-            related_proposal_id: Optional[str] = None,
-            related_patch_pr_id: Optional[str] = None,
-            metadata: Optional[dict[str, Any]] = None,
-        ) -> dict[str, Any]:
-            row = {
-                "at": datetime.utcnow().isoformat(),
-                "actor": actor,
-                "action": action,
-                "previous_status": previous_status,
-                "new_status": new_status,
-            }
-            if note:
-                row["note"] = note
-            if related_job_id:
-                row["job_id"] = related_job_id
-            if related_proposal_id:
-                row["proposal_id"] = related_proposal_id
-            if related_patch_pr_id:
-                row["patch_pr_id"] = related_patch_pr_id
-            if metadata:
-                row["metadata"] = metadata
-            return row
-
-        def _append_backlog_timeline(
-            dec: dict[str, Any], entry: dict[str, Any]
-        ) -> None:
-            rows = (
-                dec.get("backlog_timeline")
-                if isinstance(dec.get("backlog_timeline"), list)
-                else []
-            )
-            rows.append(entry)
-            dec["backlog_timeline"] = rows[-100:]
-
-        def _append_slice_timeline(
-            slice_state: dict[str, Any], entry: dict[str, Any]
-        ) -> None:
-            rows = (
-                slice_state.get("timeline")
-                if isinstance(slice_state.get("timeline"), list)
-                else []
-            )
-            rows.append(entry)
-            slice_state["timeline"] = rows[-60:]
-
-        def _append_lineage_id(
-            slice_state: dict[str, Any], lineage_key: str, value: Optional[str]
-        ) -> None:
-            lineage = (
-                slice_state.get("job_lineage")
-                if isinstance(slice_state.get("job_lineage"), dict)
-                else {}
-            )
-            existing = (
-                lineage.get(lineage_key)
-                if isinstance(lineage.get(lineage_key), list)
-                else []
-            )
-            lineage[lineage_key] = _append_unique(existing, value)
-            slice_state["job_lineage"] = lineage
-
-        def _append_artifact_history(
-            slice_state: dict[str, Any],
-            artifact_type: str,
-            artifact_id: Optional[str],
-            label: Optional[str] = None,
-        ) -> None:
-            if not artifact_id:
-                return
-            rows = (
-                slice_state.get("artifact_history")
-                if isinstance(slice_state.get("artifact_history"), list)
-                else []
-            )
-            rows.append(
-                {
-                    "at": datetime.utcnow().isoformat(),
-                    "artifact_type": artifact_type,
-                    "artifact_id": artifact_id,
-                    "label": label or artifact_type,
-                }
-            )
-            slice_state["artifact_history"] = rows[-40:]
-
         def _current_portfolio_progress() -> dict[str, Any]:
             return _normalize_decomposition(item).get("portfolio_progress") or {}
-
-        def _find_slice(
-            dec: dict[str, Any], slice_id: Optional[str]
-        ) -> Optional[dict[str, Any]]:
-            sid = str(slice_id or "").strip()
-            if not sid:
-                return None
-            for entry in dec.get("planned_slices") or []:
-                if str(entry.get("slice_id") or "").strip() == sid:
-                    return entry
-            return None
-
-        def _append_unique(values: list[str], value: Optional[str]) -> list[str]:
-            next_values = [str(v).strip() for v in values if str(v).strip()]
-            current = str(value or "").strip()
-            if current and current not in next_values:
-                next_values.append(current)
-            return next_values
-
-        def _upsert_promotion_decision(
-            dec: dict[str, Any], entry: dict[str, Any]
-        ) -> None:
-            slice_id = str(entry.get("slice_id") or "").strip()
-            decisions = (
-                dec.get("promotion_decisions")
-                if isinstance(dec.get("promotion_decisions"), list)
-                else []
-            )
-            kept = [
-                row
-                for row in decisions
-                if str((row or {}).get("slice_id") or "").strip() != slice_id
-            ]
-            kept.append(entry)
-            dec["promotion_decisions"] = kept[-12:]
 
         def _next_pending_slice(dec: dict[str, Any]) -> Optional[dict[str, Any]]:
             for entry in dec.get("planned_slices") or []:
@@ -1896,9 +1755,9 @@ class AgentCodingRunnerService:
             slice_state["started_at"] = (
                 slice_state.get("started_at") or datetime.utcnow().isoformat()
             )
-            _append_slice_timeline(
+            append_slice_timeline(
                 slice_state,
-                _timeline_entry(
+                timeline_entry(
                     actor="system",
                     action="repair_job_started",
                     previous_status="retrying" if retry_from else "pending",
@@ -1909,15 +1768,13 @@ class AgentCodingRunnerService:
                     },
                 ),
             )
-            _append_lineage_id(slice_state, "repair_job_ids", str(repair_job.id))
+            append_lineage_id(slice_state, "repair_job_ids", str(repair_job.id))
             if retry_from:
-                _append_lineage_id(
-                    slice_state, "retry_from_job_ids", str(retry_from.id)
-                )
+                append_lineage_id(slice_state, "retry_from_job_ids", str(retry_from.id))
             dec["active_slice_id"] = str(slice_state.get("slice_id") or "")
-            _append_backlog_timeline(
+            append_backlog_timeline(
                 dec,
-                _timeline_entry(
+                timeline_entry(
                     actor="system",
                     action="repair_job_started",
                     previous_status=str(item.status or "").strip() or None,
@@ -1992,9 +1849,9 @@ class AgentCodingRunnerService:
             slice_state["files_touched"] = _normalize_ids(
                 promotion_eval.get("files_touched")
             )
-            _append_slice_timeline(
+            append_slice_timeline(
                 slice_state,
-                _timeline_entry(
+                timeline_entry(
                     actor="system",
                     action="auto_apply_started",
                     previous_status="auto_applied",
@@ -2003,9 +1860,9 @@ class AgentCodingRunnerService:
                     related_proposal_id=proposal_id,
                 ),
             )
-            _append_lineage_id(slice_state, "apply_job_ids", str(apply_job.id))
-            _append_lineage_id(slice_state, "proposal_ids", proposal_id)
-            _append_artifact_history(
+            append_lineage_id(slice_state, "apply_job_ids", str(apply_job.id))
+            append_lineage_id(slice_state, "proposal_ids", proposal_id)
+            append_artifact_history(
                 slice_state, "proposal", proposal_id, "Selected proposal"
             )
             dec["active_slice_id"] = str(slice_state.get("slice_id") or "")
@@ -2021,7 +1878,7 @@ class AgentCodingRunnerService:
                     promotion_eval.get("proposal_confidence", 0.0) or 0.0
                 ),
             }
-            _upsert_promotion_decision(dec, decision_row)
+            upsert_promotion_decision(dec, decision_row)
             _save_decomposition(dec)
             item.latest_summary = {
                 "status": "apply_started",
@@ -2101,7 +1958,7 @@ class AgentCodingRunnerService:
             elif kb_apply.get("ok") is True:
                 effective_status = AgentJobStatus.COMPLETED.value
         item.current_job_id = last_child.id
-        active_slice = _find_slice(dec, dec.get("active_slice_id")) or _find_slice(
+        active_slice = find_slice(dec, dec.get("active_slice_id")) or find_slice(
             dec, (last_child.config or {}).get("coding_backlog_slice_id")
         )
 
@@ -2135,9 +1992,9 @@ class AgentCodingRunnerService:
                 if apply_ok:
                     active_slice["status"] = "auto_applied"
                     active_slice["status_reason"] = "auto_apply_complete"
-                    _append_slice_timeline(
+                    append_slice_timeline(
                         active_slice,
-                        _timeline_entry(
+                        timeline_entry(
                             actor="system",
                             action="auto_apply_completed",
                             previous_status="applying",
@@ -2149,13 +2006,13 @@ class AgentCodingRunnerService:
                             or None,
                         ),
                     )
-                    dec["completed_slices"] = _append_unique(
+                    dec["completed_slices"] = append_unique(
                         dec.get("completed_slices") or [], active_slice.get("slice_id")
                     )
                     dec["active_slice_id"] = None
-                    _append_backlog_timeline(
+                    append_backlog_timeline(
                         dec,
-                        _timeline_entry(
+                        timeline_entry(
                             actor="system",
                             action="auto_apply_completed",
                             previous_status="running",
@@ -2230,9 +2087,9 @@ class AgentCodingRunnerService:
                 active_slice["awaiting_operator_action"] = True
                 active_slice["allowed_slice_actions"] = ["relaunch_slice", "skip_slice"]
                 active_slice["recommended_next_action"] = "relaunch_slice"
-                _append_slice_timeline(
+                append_slice_timeline(
                     active_slice,
-                    _timeline_entry(
+                    timeline_entry(
                         actor="system",
                         action="repair_failed",
                         previous_status="retrying" if retry_count else "repairing",
@@ -2240,13 +2097,13 @@ class AgentCodingRunnerService:
                         related_job_id=str(last_child.id),
                     ),
                 )
-                dec["failed_slices"] = _append_unique(
+                dec["failed_slices"] = append_unique(
                     dec.get("failed_slices") or [], active_slice.get("slice_id")
                 )
                 dec["active_slice_id"] = None
-                _append_backlog_timeline(
+                append_backlog_timeline(
                     dec,
-                    _timeline_entry(
+                    timeline_entry(
                         actor="system",
                         action="repair_failed",
                         previous_status="running",
@@ -2334,8 +2191,8 @@ class AgentCodingRunnerService:
             active_slice["blocked_reason"] = (
                 str(promotion_eval.get("blocked_reason") or "").strip() or None
             )
-            _append_lineage_id(active_slice, "proposal_ids", proposal_id)
-            _append_artifact_history(
+            append_lineage_id(active_slice, "proposal_ids", proposal_id)
+            append_artifact_history(
                 active_slice, "proposal", proposal_id, "Selected proposal"
             )
         decision_row = {
@@ -2353,7 +2210,7 @@ class AgentCodingRunnerService:
                 promotion_eval.get("files_touched_count", 0) or 0
             ),
         }
-        _upsert_promotion_decision(dec, decision_row)
+        upsert_promotion_decision(dec, decision_row)
         _save_decomposition(dec)
 
         if decision == "auto_applied":
@@ -2399,9 +2256,9 @@ class AgentCodingRunnerService:
                 == "confidence_below_threshold"
                 else "keep_proposal_only"
             )
-            _append_slice_timeline(
+            append_slice_timeline(
                 active_slice,
-                _timeline_entry(
+                timeline_entry(
                     actor="system",
                     action="promotion_waiting_on_operator",
                     previous_status="repairing",
@@ -2417,9 +2274,9 @@ class AgentCodingRunnerService:
                 ),
             )
             dec["active_slice_id"] = None
-            _append_backlog_timeline(
+            append_backlog_timeline(
                 dec,
-                _timeline_entry(
+                timeline_entry(
                     actor="system",
                     action="awaiting_operator",
                     previous_status="running",

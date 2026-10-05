@@ -5,6 +5,9 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Dict, List, Mapping
 
+from app.services.config_values import positive_int as _positive_int
+from app.services.config_values import string_list
+
 
 class AutonomousRnDEvidenceVerifier:
     """Promote external evidence only through explicit, locally grounded links."""
@@ -111,7 +114,7 @@ class AutonomousRnDEvidenceVerifier:
         for link in links:
             local_evidence_ids = [
                 item
-                for item in _string_list(link.get("local_evidence_ids"))
+                for item in string_list(link.get("local_evidence_ids"), split=False)
                 if item != evidence_id
                 and item in evidence_by_id
                 and str(evidence_by_id[item].get("kind") or "").strip()
@@ -121,12 +124,12 @@ class AutonomousRnDEvidenceVerifier:
             ]
             valid_artifact_ids = [
                 item
-                for item in _string_list(link.get("artifact_ids"))
+                for item in string_list(link.get("artifact_ids"), split=False)
                 if item in artifact_ids
             ]
             valid_artifact_kinds = [
                 item
-                for item in _string_list(link.get("artifact_kinds"))
+                for item in string_list(link.get("artifact_kinds"), split=False)
                 if item in artifact_kinds
             ]
             grounded = bool(
@@ -255,20 +258,6 @@ def _records(value: Any) -> List[Dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [dict(item) for item in value if isinstance(item, Mapping)]
-
-
-def _string_list(value: Any) -> List[str]:
-    if not isinstance(value, list):
-        return []
-    return [str(item).strip() for item in value if str(item).strip()]
-
-
-def _positive_int(value: Any, default: int) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return parsed if parsed > 0 else default
 
 
 autonomous_rnd_evidence_verifier = AutonomousRnDEvidenceVerifier()

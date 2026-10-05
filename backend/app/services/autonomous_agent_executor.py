@@ -18,6 +18,7 @@ import random
 import re
 from copy import deepcopy
 from datetime import datetime, timedelta
+from functools import partial
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from uuid import UUID
 
@@ -36,7 +37,6 @@ from app.models.agent_job import (
     ChainTriggerCondition,
 )
 from app.models.agent_tool_prior import AgentToolPrior
-from app.models.memory import UserPreferences
 from app.services import (
     agent_decision_parser,
     agent_evidence_map,
@@ -48,6 +48,7 @@ from app.services import (
     agent_prompt_sections,
     agent_repeated_success,
     agent_tool_scoring,
+    agent_unproductive_cycle,
 )
 from app.services.agent_action_service import AgentActionService
 from app.services.agent_chain_orchestration_service import (
@@ -63,6 +64,7 @@ from app.services.agent_deterministic_runner_registry import (
     build_deterministic_runner_registry,
 )
 from app.services.agent_execution_journal_service import agent_execution_journal_service
+from app.services.agent_execution_lease_service import ExecutionLeaseLostError
 from app.services.agent_execution_planner import (
     AgentExecutionPlanner,
     ExecutionPlan,
@@ -118,6 +120,7 @@ from app.services.agent_tool_dispatch import (
     build_autonomous_project_bootstrap_provider,
     build_autonomous_reasoning_provider,
     build_autonomous_research_provider,
+    build_autonomous_sandbox_skill_provider,
     build_autonomous_scheduling_provider,
     build_autonomous_snapshot_provider,
     build_autonomous_symbol_retrieval_provider,
@@ -128,8 +131,14 @@ from app.services.agent_tool_dispatch import (
 )
 from app.services.agent_tools import AGENT_TOOLS
 from app.services.arxiv_search_service import ArxivSearchService
+from app.services.config_values import (
+    bounded_int,
+    clamped_float,
+    clamped_int,
+    string_list,
+)
 from app.services.data_analysis_tools import DataAnalysisTools
-from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.llm_service import LLMService, UserLLMSettings, load_user_llm_settings
 from app.services.project_profile_service import (
     build_project_profile,
     format_project_profile_for_prompt,
@@ -146,10 +155,15 @@ def _tool_requires_params(tool_name: str) -> bool:
     """
     try:
         from app.agent_core.tool_catalog import get_tool_metadata
+        from app.services.agent_tool_validation import ALTERNATIVE_FIELDS
 
         metadata = get_tool_metadata(tool_name)
         schema = getattr(metadata, "input_schema", None) or {}
-        return bool(schema.get("required"))
+        # A tool that needs ONE OF two fields declares neither as required,
+        # so `required` alone said "no arguments needed" and the critic's
+        # pivot called clone_and_index_repo and scan_for_optimizations with
+        # {} -- three wasted actions in one live run, each a certain refusal.
+        return bool(schema.get("required")) or tool_name in ALTERNATIVE_FIELDS
     except Exception:
         return False
 
@@ -481,9 +495,12 @@ class _AutonomousRuntimeAdapter:
         if decision.get("goal_achieved"):
             await self._close_instrument_bracket()
 
-        contract_before = self.executor._evaluate_goal_contract(
-            self.job, self.state, include_result_keys=False
-        )
+        # The run has to be able to see every requirement it is judged on.
+        # Result keys are staged in state until the finalizer copies them, so
+        # the evaluator reads both -- skipping them here let a run stop at
+        # "three finding types exist" and be marked contract-unmet afterwards
+        # for a key nothing had told it to write.
+        contract_before = self.executor._evaluate_goal_contract(self.job, self.state)
         self.state["goal_contract_last"] = contract_before
 
         if decision.get("goal_achieved"):
@@ -548,6 +565,17 @@ class _AutonomousRuntimeAdapter:
                     }
                 )
                 self.state["goal_progress"] = 100
+
+        if decision.get("should_stop") and decision.get("provider_unreachable"):
+            # An outage is not the run giving up, so the contract does not argue
+            # with it: blocking the stop would only spend another three minutes
+            # of retries per attempt. Recorded as a policy stop, which the
+            # finaliser treats as a run that ended itself -- paused with this
+            # reason, and resumable once the provider answers.
+            reason = str(decision.get("stop_reason") or "model provider unreachable")
+            self.job.add_log_entry({"phase": "provider_unreachable", "reason": reason})
+            self.state["loop_policy_stop_reason"] = reason
+            return decision
 
         if decision.get("should_stop"):
             # A contract gates goal_achieved but used to leave this path open,
@@ -904,6 +932,41 @@ class _AutonomousRuntimeAdapter:
                     }
                 )
 
+            # A cycle of DIFFERENT calls that all succeed defeats the check
+            # above, which keys on identical arguments. Measured: three
+            # progress reports carrying three different texts, alternating
+            # with recalls that returned the same ten findings each time --
+            # the recalls were flagged and ignored, the reports were never
+            # flagged at all. What they share is that neither tool declares
+            # evidence, so no number of them could satisfy the contract.
+            outstanding = (self.state.get("goal_contract_last") or {}).get(
+                "missing"
+            ) or ()
+            cycle = agent_unproductive_cycle.analyze(
+                self.state,
+                missing=outstanding,
+                # Which tool yields it, picked for this job type -- the same
+                # derivation the thinking prompt uses, so the loop's way out
+                # and the plan's chain cannot name different tools.
+                producers=agent_evidence_map.chain_for(
+                    [
+                        str(m).split(":", 1)[-1]
+                        for m in outstanding
+                        if str(m).startswith("finding_type:")
+                    ],
+                    job_type=getattr(self.job, "job_type", None),
+                ),
+            )
+            if cycle:
+                action_result = {**action_result, "unproductive_cycle": cycle}
+                self.job.add_log_entry(
+                    {
+                        "phase": "unproductive_cycle",
+                        "streak": cycle["streak"],
+                        "tools": cycle["tools"],
+                    }
+                )
+
             self.state["actions_taken"].append(
                 {
                     "action": action,
@@ -1200,9 +1263,7 @@ class _AutonomousRuntimeAdapter:
             iteration=int(self.job.iteration or 0),
         )
 
-        contract_after = self.executor._evaluate_goal_contract(
-            self.job, self.state, include_result_keys=False
-        )
+        contract_after = self.executor._evaluate_goal_contract(self.job, self.state)
         self.state["goal_contract_last"] = contract_after
         if bool(contract_after.get("enabled")) and bool(
             contract_after.get("satisfied")
@@ -1397,6 +1458,7 @@ class _AutonomousRuntimeAdapter:
         evaluation: Dict[str, Any],
     ) -> None:
         action = action_bundle.get("action")
+        action_result = action_bundle.get("action_result")
         verification_action = action_bundle.get("verification_action")
         verification_result = action_bundle.get("verification_result")
         summarize_action = action_bundle.get("summarize_action")
@@ -1408,6 +1470,16 @@ class _AutonomousRuntimeAdapter:
             {
                 "phase": "iteration_complete",
                 "action": action.get("tool") if isinstance(action, dict) else None,
+                # Whether the call worked, and why not. Without these the
+                # entry looked the same for a success and a failure, and the
+                # analytics tools that read this log reported every tool at
+                # a 100% success rate.
+                "success": agent_repeated_success.succeeded(action_result)
+                if isinstance(action, dict)
+                else None,
+                "error": str(action_result.get("error"))[:300]
+                if isinstance(action_result, dict) and action_result.get("error")
+                else None,
                 "progress": progress,
                 "findings_count": findings_count,
                 "verify_tool": verification_action.get("tool")
@@ -1546,6 +1618,91 @@ def _how_to_record_bounded_findings(validity: Any) -> str:
     return "HOW TO RECORD THE BOUNDED RESULTS:\n" + "\n".join(lines)
 
 
+#: Support actions the runtime adds after every step; they say nothing about
+#: what the run has done, and they crowded the real steps out of the critic's
+#: window.
+_LEDGER_SKIP_TOOLS = frozenset({"write_progress_report"})
+
+
+def _ledger_arg(value: Any) -> str:
+    if isinstance(value, str):
+        return repr(value) if len(value) <= 48 else f"<{len(value)} chars>"
+    if isinstance(value, (list, tuple)):
+        inner = ", ".join(_ledger_arg(v) for v in list(value)[:4])
+        return f"[{inner}{', ...' if len(value) > 4 else ''}]"
+    if isinstance(value, dict):
+        return f"<object: {', '.join(list(value)[:4])}>"
+    return repr(value)
+
+
+def _critic_action_ledger(actions: Sequence[Any], max_lines: int = 60) -> str:
+    """Every substantive call this run made, one line each, oldest first.
+
+    The critic used to see the last six raw action records, serialised and cut
+    at 5,000 characters. Support records interleave with real ones and a
+    single scan result or function body fills the budget, so by iteration 7 a
+    run's scan (iteration 2) and symbol lookup (iteration 3) had fallen out of
+    view. The critic then asserted, at 0.9 confidence, that the scan had never
+    run and forced a pivot -- overriding the model's decision with the same
+    parameterless browse_repo_files, twice.
+    """
+    lines: List[str] = []
+    for entry in actions:
+        if not isinstance(entry, dict) or entry.get("node") == "summarize":
+            continue
+        action = entry.get("action") if isinstance(entry.get("action"), dict) else {}
+        tool = str(action.get("tool") or entry.get("tool") or "").strip()
+        if not tool or tool in _LEDGER_SKIP_TOOLS:
+            continue
+        result = entry.get("result") if isinstance(entry.get("result"), dict) else {}
+        ok = bool(result.get("success", entry.get("success")))
+        params = action.get("params") if isinstance(action.get("params"), dict) else {}
+        args = ", ".join(
+            f"{k}={_ledger_arg(v)}"
+            for k, v in list(params.items())[:6]
+            if not k.startswith("_")
+        )
+        line = f"it{entry.get('iteration', '?')} {tool}({args}) -> {'ok' if ok else 'FAILED'}"
+        if not ok and result.get("error"):
+            line += f": {str(result.get('error'))[:160]}"
+        purpose = str(action.get("purpose") or "")
+        if "pivot" in purpose.lower() or "recover" in purpose.lower():
+            line += f"  [{purpose[:40]}]"
+        lines.append(line)
+    if len(lines) > max_lines:
+        dropped = len(lines) - max_lines
+        lines = [f"... {dropped} earlier call(s) omitted"] + lines[-max_lines:]
+    return "\n".join(lines) or "(no substantive calls yet)"
+
+
+def _repeats_recent_call(
+    state: Mapping[str, Any], action: Mapping[str, Any], window: int = 8
+) -> bool:
+    """Whether the run made this exact call (tool and arguments) recently.
+
+    A pivot that repeats a call already made learns nothing new: a run's
+    critic pivot listed the repository root with identical arguments on two
+    consecutive iterations, overriding the model both times.
+    """
+    tool = str(action.get("tool") or "")
+    params = action.get("params") if isinstance(action.get("params"), dict) else {}
+    taken = (
+        state.get("actions_taken")
+        if isinstance(state.get("actions_taken"), list)
+        else []
+    )
+    for entry in taken[-window * 2 :]:
+        if not isinstance(entry, dict):
+            continue
+        prior = entry.get("action") if isinstance(entry.get("action"), dict) else {}
+        if (
+            str(prior.get("tool") or "") == tool
+            and (prior.get("params") or {}) == params
+        ):
+            return True
+    return False
+
+
 def _tools_with_params(tool_names: Sequence[str], limit: int = 6000) -> str:
     """Render each tool as ``name(param, param)`` for the critic.
 
@@ -1614,6 +1771,7 @@ class AutonomousAgentExecutor:
                 build_autonomous_media_provider(self),
                 build_autonomous_snapshot_provider(self),
                 build_autonomous_project_bootstrap_provider(self),
+                build_autonomous_sandbox_skill_provider(self),
                 # Last: it claims the reserved `p_` namespace, which no
                 # built-in may occupy, so ordering cannot matter -- but a
                 # contributed tool should never be ahead of a first-party one
@@ -1789,6 +1947,7 @@ class AutonomousAgentExecutor:
         job.last_activity_at = datetime.utcnow()
         await db.commit()
 
+        lease_lost = False
         try:
             det = (job.config or {}).get("deterministic_runner")
             (
@@ -1847,6 +2006,20 @@ class AutonomousAgentExecutor:
 
             return result
 
+        except ExecutionLeaseLostError:
+            # Another execution owns this job now. Writing anything to it --
+            # status, error, artifacts, a chain event -- is exactly what the
+            # fence exists to prevent. Measured: a worker frozen for two hours
+            # woke, found its lease gone, and wrote status='failed' over a job
+            # a newer execution had resumed 13 seconds earlier; that execution
+            # completed and the row still said failed. The task layer abandons
+            # the stale execution; nothing here touches the row.
+            lease_lost = True
+            logger.warning(
+                f"Job {job_id}: execution lease lost; leaving the job to its "
+                "current owner"
+            )
+            raise
         except Exception as e:
             logger.error(f"Autonomous job execution failed: {e}")
             job.status = AgentJobStatus.FAILED.value
@@ -1861,9 +2034,15 @@ class AutonomousAgentExecutor:
                 pass
             return {"error": str(e), "status": "failed"}
         finally:
-            # Persist workspace artifacts to MinIO before cleanup
+            # Persist workspace artifacts to MinIO before cleanup -- unless the
+            # lease was lost, when the job row is no longer this worker's to
+            # write.
             try:
-                for _wid, _ws in list(self.workspace_manager._workspaces.items()):
+                for _wid, _ws in (
+                    []
+                    if lease_lost
+                    else list(self.workspace_manager._workspaces.items())
+                ):
                     if _ws.owner_job_id and _ws.owner_job_id != str(job_id):
                         continue
                     existing_workspace_ids = {
@@ -3658,6 +3837,7 @@ class AutonomousAgentExecutor:
         # Walk up the chain: a stage may assume evidence from further back than
         # its immediate parent.
         inherited: List[Dict[str, Any]] = []
+        flagged_perishable: set = set()
         seen_jobs = 0
         current_id = parent_id
         while current_id is not None and seen_jobs < 10:
@@ -3672,6 +3852,13 @@ class AutonomousAgentExecutor:
                 if not isinstance(finding, dict):
                     continue
                 if str(finding.get("type") or "") not in durable:
+                    continue
+                if finding.get("perishable") is True:
+                    # The type is durable as far as the evidence map knows,
+                    # but this finding says otherwise for itself: a sandbox
+                    # skill declared its result perishable, and the map --
+                    # fixed at import -- cannot know one user's skills.
+                    flagged_perishable.add(str(finding.get("type")))
                     continue
                 carried = dict(finding)
                 carried["inherited_from_job_id"] = str(ancestor.id)
@@ -3690,7 +3877,7 @@ class AutonomousAgentExecutor:
                 "phase": "assumed_evidence_inherited",
                 "inherited": len(inherited),
                 "types": sorted({str(f.get("type")) for f in inherited}),
-                "not_inherited_perishable": skipped,
+                "not_inherited_perishable": sorted({*skipped, *flagged_perishable}),
             }
         )
         logger.info(
@@ -3813,12 +4000,7 @@ class AutonomousAgentExecutor:
         """Get normalized source-scope guard settings."""
         cfg = job.config if isinstance(job.config, dict) else {}
 
-        def _as_list(value: Any) -> List[str]:
-            if isinstance(value, list):
-                return [str(x).strip() for x in value if str(x).strip()]
-            if isinstance(value, str):
-                return [str(x).strip() for x in value.split(",") if str(x).strip()]
-            return []
+        _as_list = string_list
 
         default_write_tools = [
             "create_synthesis_document",
@@ -4955,19 +5137,9 @@ class AutonomousAgentExecutor:
         """Get normalized critic-pass settings."""
         cfg = job.config if isinstance(job.config, dict) else {}
 
-        def _as_int(key: str, default: int, lo: int, hi: int) -> int:
-            try:
-                val = int(cfg.get(key, default))
-            except Exception:
-                val = default
-            return max(lo, min(val, hi))
+        _as_int = partial(clamped_int, cfg)
 
-        def _as_float(key: str, default: float, lo: float, hi: float) -> float:
-            try:
-                val = float(cfg.get(key, default))
-            except Exception:
-                val = default
-            return max(lo, min(val, hi))
+        _as_float = partial(clamped_float, cfg)
 
         return {
             "enabled": bool(cfg.get("critic_enabled", True)),
@@ -5246,7 +5418,21 @@ class AutonomousAgentExecutor:
             if isinstance(state.get("actions_taken"), list)
             else []
         )
-        recent = recent_actions[-6:]
+        ledger = _critic_action_ledger(recent_actions)
+        substantive = [
+            a
+            for a in recent_actions
+            if isinstance(a, dict)
+            and a.get("node") != "summarize"
+            and str(
+                (
+                    (a.get("action") or {}) if isinstance(a.get("action"), dict) else {}
+                ).get("tool")
+                or ""
+            )
+            not in _LEDGER_SKIP_TOOLS
+        ]
+        recent = substantive[-2:]
         system_prompt = (
             "You are a strict critic for an autonomous agent.\n"
             "Assess trajectory quality, identify risks, and propose a concrete pivot when needed.\n"
@@ -5257,7 +5443,11 @@ class AutonomousAgentExecutor:
             f"Iteration: {job.iteration}/{job.max_iterations}\n"
             f"Progress: {state.get('goal_progress', 0)}\n"
             f"Stalled iterations: {state.get('stalled_iterations', 0)}\n"
-            f"Recent actions: {json.dumps(recent, default=str)[:5000]}\n"
+            "Every substantive call this run has made, oldest first -- judge "
+            "the trajectory from THIS, and never claim a step has not "
+            "happened when it appears here:\n"
+            f"{ledger}\n"
+            f"The last two calls in detail: {json.dumps(recent, default=str)[:3000]}\n"
             f"Current observation: {json.dumps(observation, default=str)[:2500]}\n"
             f"Available tools (with their parameters): "
             f"{_tools_with_params(available_tools)}\n"
@@ -5410,7 +5600,7 @@ class AutonomousAgentExecutor:
                 doc_ids=doc_ids,
                 purpose="Critic-directed pivot.",
             )
-            if action:
+            if action and not _repeats_recent_call(state, action):
                 return action
         return None
 
@@ -6140,12 +6330,7 @@ class AutonomousAgentExecutor:
         """Get forced exploration settings used during stall recovery."""
         cfg = job.config if isinstance(job.config, dict) else {}
 
-        def _as_int(key: str, default: int, lo: int, hi: int) -> int:
-            try:
-                val = int(cfg.get(key, default))
-            except Exception:
-                val = default
-            return max(lo, min(val, hi))
+        _as_int = partial(clamped_int, cfg)
 
         tools = cfg.get("tool_selection_forced_exploration_tools")
         if isinstance(tools, str):
@@ -6187,12 +6372,7 @@ class AutonomousAgentExecutor:
         """Get post-recovery tool cooldown settings."""
         cfg = job.config if isinstance(job.config, dict) else {}
 
-        def _as_int(key: str, default: int, lo: int, hi: int) -> int:
-            try:
-                val = int(cfg.get(key, default))
-            except Exception:
-                val = default
-            return max(lo, min(val, hi))
+        _as_int = partial(clamped_int, cfg)
 
         return {
             "enabled": bool(cfg.get("tool_selection_cooldown_enabled", True)),
@@ -6519,12 +6699,7 @@ class AutonomousAgentExecutor:
         """Get decay configuration for persistent tool priors."""
         cfg = job.config if isinstance(job.config, dict) else {}
 
-        def _as_float(key: str, default: float, lo: float, hi: float) -> float:
-            try:
-                val = float(cfg.get(key, default))
-            except Exception:
-                val = default
-            return max(lo, min(val, hi))
+        _as_float = partial(clamped_float, cfg)
 
         return {
             "enabled": bool(cfg.get("tool_prior_decay_enabled", True)),
@@ -7190,12 +7365,7 @@ class AutonomousAgentExecutor:
         """Get normalized plan->act->verify->summarize settings."""
         cfg = job.config if isinstance(job.config, dict) else {}
 
-        def _as_list(value: Any) -> List[str]:
-            if isinstance(value, list):
-                return [str(x).strip() for x in value if str(x).strip()]
-            if isinstance(value, str):
-                return [str(x).strip() for x in value.split(",") if str(x).strip()]
-            return []
+        _as_list = string_list
 
         verify_tools_default = [
             "create_synthesis_document",
@@ -7797,7 +7967,12 @@ what THIS run establishes.
             required_types.append("prediction_settled")
         if validity_spec.get("records_method"):
             required_types.append("method_recorded")
-        chain_lines = agent_evidence_map.describe_chain(required_types)
+        # Filtered by what this job type may call: naming a tool the
+        # runtime will refuse is worse than naming none, because the run
+        # plans around it.
+        chain_lines = agent_evidence_map.describe_chain(
+            required_types, job_type=str(job.job_type or "")
+        )
         if chain_lines:
             base_prompt += (
                 "HOW THIS RUN'S REQUIRED EVIDENCE IS PRODUCED (in an order "
@@ -8116,6 +8291,13 @@ RESPONSE FORMAT:
                     + "\n".join(rendered)
                 )
 
+        # What the contract still owes, every iteration -- the executor
+        # already computes this to decide whether the run may stop, and it
+        # used to reach the finalizer but never the model.
+        contract_text = agent_prompt_sections.format_unmet_contract(state)
+        if contract_text:
+            parts.append(contract_text)
+
         compressed_history = state.get("compressed_history", "")
         if compressed_history:
             parts.append(
@@ -8125,6 +8307,10 @@ RESPONSE FORMAT:
         focus_directive = state.get("focus_directive", "")
         if focus_directive:
             parts.append(f"FOCUS DIRECTIVE (set by agent):\n{focus_directive}")
+
+        reasoning_notes = agent_prompt_sections.format_reasoning_notes(state)
+        if reasoning_notes:
+            parts.append(reasoning_notes)
 
         # The exact finding types this run has produced. Tools that ask what a
         # claim derives from -- record_prediction, record_method -- check the
@@ -8279,12 +8465,7 @@ RESPONSE FORMAT:
         """Get normalized stall-detection settings from job config."""
         cfg = job.config if isinstance(job.config, dict) else {}
 
-        def _as_int(key: str, default: int, lo: int, hi: int) -> int:
-            try:
-                val = int(cfg.get(key, default))
-            except Exception:
-                val = default
-            return max(lo, min(val, hi))
+        _as_int = partial(clamped_int, cfg)
 
         return {
             "enabled": bool(cfg.get("stall_detection_enabled", True)),
@@ -8314,13 +8495,6 @@ RESPONSE FORMAT:
         raw = cfg.get("goal_contract")
         raw = raw if isinstance(raw, dict) else {}
 
-        def _as_int(value: Any, default: int, lo: int, hi: int) -> int:
-            try:
-                iv = int(value if value is not None else default)
-            except Exception:
-                iv = default
-            return max(lo, min(iv, hi))
-
         def _as_str_list(value: Any) -> List[str]:
             items: List[str] = []
             if isinstance(value, list):
@@ -8348,7 +8522,7 @@ RESPONSE FORMAT:
                 for key, raw_count in value.items():
                     name = str(key).strip()
                     if name:
-                        counts[name] = _as_int(raw_count, 1, 1, 100_000)
+                        counts[name] = bounded_int(raw_count, 1, 1, 100_000)
                 return counts
             return {name: 1 for name in _as_str_list(value)}
 
@@ -8390,6 +8564,15 @@ RESPONSE FORMAT:
                                 entry[edge] = float(rule.get(edge))
                         except (TypeError, ValueError):
                             continue
+                    # The flags that change what a bound means. Dropping them
+                    # here is silent: `latest: false` was documented and never
+                    # reached the checker, and `any` would have turned "some
+                    # proposal won" back into "the last one did".
+                    for flag in ("latest", "any"):
+                        if rule.get(flag) is not None:
+                            entry[flag] = self._coerce_bool(
+                                rule.get(flag), default=False
+                            )
                     # A bound with neither edge constrains nothing; keeping it
                     # would advertise a check that never fires.
                     if "min" in entry or "max" in entry:
@@ -8415,14 +8598,26 @@ RESPONSE FORMAT:
             raw.get("enabled", cfg.get("goal_contract_enabled", enabled_default)),
             default=enabled_default,
         )
+        # Both spellings, because both are written. A contract may name its
+        # evidence as `required_finding_types` (a list, or a mapping of counts)
+        # or as the normalised `required_finding_type_counts` -- which is the
+        # key `agent_pipeline_spec` reads *first* and the one the pipeline
+        # authoring path emits. Reading only the former made every such
+        # contract vacuous but still `enabled`: nothing was required, so it was
+        # satisfied on the spot, autocompleted, and the stage reported progress
+        # 100 having produced none of the evidence it named. Measured on a live
+        # pipeline stage whose contract asked for three fusion candidates and
+        # completed with zero.
         required_finding_type_counts = _as_type_counts(
-            raw.get(
+            raw.get("required_finding_type_counts")
+            or raw.get(
                 "required_finding_types",
                 cfg.get("goal_contract_required_finding_types", []),
             )
         )
         required_artifact_type_counts = _as_type_counts(
-            raw.get(
+            raw.get("required_artifact_type_counts")
+            or raw.get(
                 "required_artifact_types",
                 cfg.get("goal_contract_required_artifact_types", []),
             )
@@ -8457,7 +8652,7 @@ RESPONSE FORMAT:
         default_min_progress = 0 if names_evidence else 100
         return {
             "enabled": bool(enabled),
-            "min_progress": _as_int(
+            "min_progress": bounded_int(
                 raw.get(
                     "min_progress",
                     cfg.get("goal_contract_min_progress", default_min_progress),
@@ -8466,13 +8661,13 @@ RESPONSE FORMAT:
                 0,
                 100,
             ),
-            "min_findings": _as_int(
+            "min_findings": bounded_int(
                 raw.get("min_findings", cfg.get("goal_contract_min_findings", 0)),
                 0,
                 0,
                 100_000,
             ),
-            "min_artifacts": _as_int(
+            "min_artifacts": bounded_int(
                 raw.get("min_artifacts", cfg.get("goal_contract_min_artifacts", 0)),
                 0,
                 0,
@@ -9313,16 +9508,7 @@ RESPONSE FORMAT:
         db: AsyncSession,
     ) -> Optional[UserLLMSettings]:
         """Load user LLM settings."""
-        try:
-            result = await db.execute(
-                select(UserPreferences).where(UserPreferences.user_id == user_id)
-            )
-            prefs = result.scalar_one_or_none()
-            if prefs:
-                return UserLLMSettings.from_preferences(prefs)
-        except Exception as e:
-            logger.warning(f"Failed to load user settings: {e}")
-        return None
+        return await load_user_llm_settings(db, user_id)
 
     async def pause_job(self, job_id: UUID, db: AsyncSession) -> bool:
         """Pause a running job."""

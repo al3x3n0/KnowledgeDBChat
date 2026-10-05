@@ -33,6 +33,7 @@ const SearchPage = lazy(() => import('./pages/SearchPage'));
 const PapersPage = lazy(() => import('./pages/PapersPage'));
 const LatexStudioPage = lazy(() => import('./pages/LatexStudioPage'));
 const ReadingListsPage = lazy(() => import('./pages/ReadingListsPage'));
+const ResearchInboxPage = lazy(() => import('./pages/ResearchInboxPage'));
 const ReadingListDetailPage = lazy(() => import('./pages/ReadingListDetailPage'));
 const ContextPackPage = lazy(() => import('./pages/ContextPackPage'));
 const UsagePage = lazy(() => import('./pages/UsagePage'));
@@ -44,6 +45,9 @@ const AgentBuilderPage = lazy(() => import('./pages/AgentBuilderPage'));
 const AgentControlPlanePage = lazy(() => import('./pages/AgentControlPlanePage'));
 const RepoReportsPage = lazy(() => import('./pages/RepoReportsPage'));
 const AutonomousAgentsPage = lazy(() => import('./pages/AutonomousAgentsPage'));
+const CodingBacklogPage = lazy(() => import('./pages/CodingBacklogPage'));
+const ResearchFleetPage = lazy(() => import('./pages/ResearchFleetPage'));
+const DomainProfilesPage = lazy(() => import('./pages/DomainProfilesPage'));
 const PatchPRsPage = lazy(() => import('./pages/PatchPRsPage'));
 const ArtifactDraftsPage = lazy(() => import('./pages/ArtifactDraftsPage'));
 const SynthesisPage = lazy(() => import('./pages/SynthesisPage'));
@@ -191,6 +195,30 @@ const AppRoutes: React.FC = () => {
             element={
               <Suspense fallback={<PageLoader />}>
                 <LatexStudioPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="research/fleet"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <ResearchFleetPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="settings/domain-profiles"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <DomainProfilesPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="research/inbox"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <ResearchInboxPage />
               </Suspense>
             }
           />
@@ -394,6 +422,14 @@ const AppRoutes: React.FC = () => {
             element={
               <Suspense fallback={<PageLoader />}>
                 <AutonomousAgentsPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="coding-backlog"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <CodingBacklogPage />
               </Suspense>
             }
           />

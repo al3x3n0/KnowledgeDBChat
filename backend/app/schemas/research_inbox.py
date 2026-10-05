@@ -27,6 +27,7 @@ class ResearchInboxItemResponse(BaseModel):
 
     status: str
     feedback: Optional[str] = None
+    rejection_reason: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = Field(
         default=None, validation_alias="item_metadata"
     )
@@ -72,6 +73,13 @@ class ResearchInboxListResponse(BaseModel):
 class ResearchInboxItemUpdateRequest(BaseModel):
     status: Optional[str] = Field(None, description="new | accepted | rejected")
     feedback: Optional[str] = Field(None, max_length=4000)
+    rejection_reason: Optional[str] = Field(
+        None,
+        description=(
+            "Why the item was rejected. Decides what the monitor profile "
+            "learns; see /research/inbox/rejection-reasons for the vocabulary."
+        ),
+    )
     metadata_patch: Optional[Dict[str, Any]] = Field(
         None,
         description="Merge patch for item.metadata (allowlisted keys only)",

@@ -139,7 +139,6 @@ class AgentJob(Base):
     # Example results for research job:
     # {
     #   "papers_found": 45,
-    #   "papers_analyzed": 30,
     #   "key_findings": [...],
     #   "synthesis_document_id": "...",
     #   "knowledge_graph_nodes_added": 150
@@ -458,10 +457,13 @@ class AgentJobCheckpoint(Base):
 
 
 class AgentJobTemplate(Base):
-    """
-    Template for creating autonomous agent jobs.
+    """A saved starting point for creating an agent job.
 
-    Pre-configured job templates for common autonomous tasks.
+    NOT a document template. This holds a job_type, a default goal and config,
+    an agent definition and an iteration budget -- everything needed to create
+    one `AgentJob` without retyping it. The similarly-named `TemplateJob`
+    (models/template.py, table `template_jobs`) is the document subsystem:
+    a DOCX whose sections get filled from source documents.
     """
 
     __tablename__ = "agent_job_templates"

@@ -24,6 +24,8 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from app.services.document_styles import FlatThemeMixin
+
 
 def hex_to_color(hex_color: str) -> colors.Color:
     """Convert hex color string to reportlab Color."""
@@ -34,7 +36,7 @@ def hex_to_color(hex_color: str) -> colors.Color:
     return colors.Color(r, g, b)
 
 
-class PDFBuilder:
+class PDFBuilder(FlatThemeMixin):
     """
     Builds PDF documents from structured content.
 
@@ -110,52 +112,6 @@ class PDFBuilder:
             self.style_config = self.STYLES.get(style, self.STYLES["professional"])
 
         self._styles = None
-
-    def _parse_custom_theme(self, theme: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Parse custom theme configuration into style config.
-
-        Args:
-            theme: Custom theme dict
-
-        Returns:
-            Style config dict compatible with built-in styles
-        """
-        # Start with professional defaults
-        config = dict(self.STYLES["professional"])
-
-        # Override with custom values
-        for key in theme:
-            if key in config:
-                config[key] = theme[key]
-
-        return config
-
-    @classmethod
-    def get_available_styles(cls) -> Dict[str, Dict[str, str]]:
-        """
-        Get list of available built-in styles with descriptions.
-
-        Returns:
-            Dict mapping style name to description
-        """
-        return {
-            "professional": {
-                "name": "Professional",
-                "description": "Clean, corporate look with dark blue accents",
-                "primary_color": "#1a365d",
-            },
-            "casual": {
-                "name": "Casual",
-                "description": "Friendly and approachable with warm colors",
-                "primary_color": "#4a90d9",
-            },
-            "technical": {
-                "name": "Technical",
-                "description": "Developer-focused with monospace code blocks",
-                "primary_color": "#007acc",
-            },
-        }
 
     def _get_styles(self) -> Dict[str, ParagraphStyle]:
         """Get configured paragraph styles."""

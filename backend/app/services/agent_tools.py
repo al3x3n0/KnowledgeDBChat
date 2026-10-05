@@ -15,8 +15,15 @@ from app.agent_core import tool_specs
 AGENT_TOOLS: List[Dict[str, Any]] = tool_specs.schemas()
 
 
-def get_tools_description(extra: Optional[Sequence[Dict[str, Any]]] = None) -> str:
+def get_tools_description(
+    extra: Optional[Sequence[Dict[str, Any]]] = None,
+    *,
+    tools: Optional[Sequence[Dict[str, Any]]] = None,
+) -> str:
     """Generate a text description of available tools for the LLM prompt.
+
+    ``tools`` is the built-in menu to describe, for a surface that cannot run
+    all of them; it defaults to every declared tool.
 
     ``extra`` is what the *caller's* plugins contribute. It is a parameter
     rather than a lookup because `AgentService` is a module-level singleton:
@@ -24,7 +31,7 @@ def get_tools_description(extra: Optional[Sequence[Dict[str, Any]]] = None) -> s
     person who opened a chat.
     """
     descriptions = []
-    for tool in list(AGENT_TOOLS) + list(extra or []):
+    for tool in list(AGENT_TOOLS if tools is None else tools) + list(extra or []):
         # Read defensively. Every built-in schema is hand-written here and has
         # a type and a description on every property; a *contributed* one is
         # whatever its author typed, and the first tool missing a key would

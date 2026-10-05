@@ -21,16 +21,9 @@ from app.schemas.llm_call_snapshot import (
     LLMCallSnapshotResponse,
     LLMCallSnapshotSummary,
 )
-from app.services.auth_service import get_current_user
+from app.services.auth_service import get_current_user, is_admin
 
 router = APIRouter()
-
-
-def _is_admin(user: User) -> bool:
-    try:
-        return bool(user.is_admin())
-    except Exception:
-        return str(getattr(user, "role", "") or "").lower() == "admin"
 
 
 @router.get("/", response_model=list[LLMCallSnapshotSummary])
@@ -43,7 +36,7 @@ async def list_llm_snapshots(
     db: AsyncSession = Depends(get_db),
 ):
     query = select(LLMCallSnapshot)
-    if not _is_admin(current_user):
+    if not is_admin(current_user):
         query = query.where(LLMCallSnapshot.user_id == current_user.id)
     if job_id is not None:
         query = query.where(LLMCallSnapshot.job_id == job_id)
@@ -64,6 +57,6 @@ async def get_llm_snapshot(
     snapshot = await db.get(LLMCallSnapshot, snapshot_id)
     if not snapshot:
         raise HTTPException(status_code=404, detail="Not found")
-    if snapshot.user_id != current_user.id and not _is_admin(current_user):
+    if snapshot.user_id != current_user.id and not is_admin(current_user):
         raise HTTPException(status_code=404, detail="Not found")
     return LLMCallSnapshotResponse.model_validate(snapshot)

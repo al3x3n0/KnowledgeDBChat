@@ -175,6 +175,36 @@ async def test_finalize_job_completed_path_updates_results(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_recorded_methods_reach_the_results_the_run_record_reads(monkeypatch):
+    """`_record_what_the_run_established` lists results["methods"]; nothing
+    wrote that key, so a run's methods never appeared in its own record."""
+    monkeypatch.setattr(
+        agent_runtime_finalizer.agent_job_memory_service,
+        "extract_memories_from_job",
+        AsyncMock(return_value=[]),
+    )
+    method = {
+        "name": "independent chains",
+        "procedure": ["run N chains"],
+        "prevents": "latency read as throughput",
+        "status": "validated",
+        "evidence": ["cycle_model_measurement"],
+    }
+    state = {
+        "goal_progress": 100,
+        "findings": [],
+        "actions_taken": [],
+        "recorded_methods": [method],
+        "memory_extraction_policy": {"extract_on_statuses": []},
+    }
+    job = _DummyJob(status="running")
+
+    await finalize_job(_DummyExecutor(), job, state, _DummyDb())
+
+    assert job.results["methods"] == [method]
+
+
+@pytest.mark.asyncio
 async def test_finalize_job_paused_path_preserves_paused_status(monkeypatch):
     monkeypatch.setattr(
         agent_runtime_finalizer.agent_job_memory_service,

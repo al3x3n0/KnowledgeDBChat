@@ -104,6 +104,7 @@ class ArxivConnector(BaseConnector):
             return True
         except Exception as exc:
             logger.error(f"Failed to initialize ArXiv connector: {exc}")
+            self.last_error = str(exc)
             return False
 
     async def test_connection(self) -> bool:

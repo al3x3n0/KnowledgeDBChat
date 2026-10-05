@@ -15,7 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.models.user import User
+from app.services import agent_sandbox_runtime
 from app.services.agent_artifact_paths import safe_relpath
+from app.services.agent_runner_progress import phase_reporter
+from app.services.auth_service import is_admin as auth_service_is_admin
 
 
 class AgentIngestionDemoRunnerService:
@@ -34,18 +37,7 @@ class AgentIngestionDemoRunnerService:
 
         from app.models.research_inbox import ResearchInboxItem
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {
-                    "phase": phase,
-                    "action": "arxiv_inbox_extract_repos",
-                    "result": details,
-                }
-            )
+        _emit = phase_reporter(job, "arxiv_inbox_extract_repos")
 
         def _extract(text: str) -> list[dict]:
             s = text or ""
@@ -186,14 +178,7 @@ class AgentIngestionDemoRunnerService:
         from app.services.document_service import DocumentService
         from app.tasks.ingestion_tasks import ingest_from_source
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "git_repo_ingest_wait", "result": details}
-            )
+        _emit = phase_reporter(job, "git_repo_ingest_wait")
 
         def _normalize_repo(provider: str, raw: str) -> str:
             s = (raw or "").strip()
@@ -459,18 +444,7 @@ class AgentIngestionDemoRunnerService:
         from app.core.feature_flags import get_str as get_feature_str
         from app.models.document import Document, DocumentSource
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {
-                    "phase": phase,
-                    "action": "generated_project_demo_check",
-                    "result": details,
-                }
-            )
+        _emit = phase_reporter(job, "generated_project_demo_check")
 
         cfg = job.config if isinstance(job.config, dict) else {}
         source_id_raw = cfg.get("source_id")
@@ -505,7 +479,7 @@ class AgentIngestionDemoRunnerService:
 
         # Access control: admin or requested_by_user_id matches.
         user = await db.get(User, job.user_id)
-        is_admin = bool(user and getattr(user, "role", None) == "admin")
+        is_admin = auth_service_is_admin(user)
         requested_by_user_id = str(
             (source.config or {}).get("requested_by_user_id") or ""
         ).strip()
@@ -658,6 +632,7 @@ class AgentIngestionDemoRunnerService:
                     "LANG": os.environ.get("LANG", "C.UTF-8"),
                     "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
                 }
+                container_name = ""
                 if backend_effective == "docker":
                     mem_mb = int(
                         getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_MEMORY_MB", 512)
@@ -669,34 +644,16 @@ class AgentIngestionDemoRunnerService:
                     pids = int(
                         getattr(app_settings, "UNSAFE_CODE_EXEC_DOCKER_PIDS_LIMIT", 128)
                     )
-                    cmd = [
-                        "docker",
-                        "run",
-                        "--rm",
-                        "--network",
-                        "none",
-                        "--cap-drop",
-                        "ALL",
-                        "--security-opt",
-                        "no-new-privileges",
-                        "--pids-limit",
-                        str(max(32, min(pids, 1024))),
-                        "--memory",
-                        f"{max(64, min(mem_mb, 4096))}m",
-                        "--cpus",
-                        str(max(0.25, min(cpus, 4.0))),
-                        "--user",
-                        "65534:65534",
-                        "-v",
-                        f"{tmp}:/work:rw",
-                        "-w",
-                        "/work",
-                        image_effective,
-                        "python",
-                        "-I",
-                        "-S",
-                        ep,
-                    ]
+                    container_name = agent_sandbox_runtime.new_container_name()
+                    cmd = agent_sandbox_runtime.docker_command(
+                        image=image_effective,
+                        workdir=str(tmp),
+                        argv=["python", "-I", "-S", ep],
+                        memory=f"{max(64, min(mem_mb, 4096))}m",
+                        cpus=str(max(0.25, min(cpus, 4.0))),
+                        pids_limit=str(max(32, min(pids, 1024))),
+                        name=container_name,
+                    )
                     preexec = None
                 else:
                     cmd = [sys.executable, "-I", "-S", ep]
@@ -724,6 +681,10 @@ class AgentIngestionDemoRunnerService:
                     behavior["stderr"] = (completed.stderr or "")[:stderr_cap]
                     behavior["ok"] = completed.returncode == 0
                 except subprocess.TimeoutExpired as e:
+                    # The client was killed; the container was not.
+                    await asyncio.to_thread(
+                        agent_sandbox_runtime.remove_container_sync, container_name
+                    )
                     behavior["ran"] = True
                     behavior["timed_out"] = True
                     behavior["stdout"] = str(getattr(e, "stdout", "") or "")[
@@ -800,14 +761,7 @@ class AgentIngestionDemoRunnerService:
         from app.models.document import Document, DocumentSource
         from app.models.research_inbox import ResearchInboxItem
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "paper_algorithm_project", "result": details}
-            )
+        _emit = phase_reporter(job, "paper_algorithm_project")
 
         inbox_item_id = (
             (job.config or {}).get("inbox_item_id")
@@ -1165,6 +1119,7 @@ class AgentIngestionDemoRunnerService:
 
                 backend = str(effective_backend or "subprocess").strip().lower()
                 cmd: list[str]
+                container_name = ""
                 if backend == "docker":
                     image = str(effective_image or "python:3.11-slim")
                     mem_mb = int(
@@ -1178,34 +1133,16 @@ class AgentIngestionDemoRunnerService:
                         getattr(app_settings, "UNSAFE_CODE_EXEC_DOCKER_PIDS_LIMIT", 128)
                     )
                     # Docker sandbox: no network, drop caps, no-new-privileges, resource caps, run as nobody.
-                    cmd = [
-                        "docker",
-                        "run",
-                        "--rm",
-                        "--network",
-                        "none",
-                        "--cap-drop",
-                        "ALL",
-                        "--security-opt",
-                        "no-new-privileges",
-                        "--pids-limit",
-                        str(max(32, min(pids, 1024))),
-                        "--memory",
-                        f"{max(64, min(mem_mb, 4096))}m",
-                        "--cpus",
-                        str(max(0.25, min(cpus, 4.0))),
-                        "--user",
-                        "65534:65534",
-                        "-v",
-                        f"{tmp}:/work:rw",
-                        "-w",
-                        "/work",
-                        image,
-                        "python",
-                        "-I",
-                        "-S",
-                        ep,
-                    ]
+                    container_name = agent_sandbox_runtime.new_container_name()
+                    cmd = agent_sandbox_runtime.docker_command(
+                        image=image,
+                        workdir=str(tmp),
+                        argv=["python", "-I", "-S", ep],
+                        memory=f"{max(64, min(mem_mb, 4096))}m",
+                        cpus=str(max(0.25, min(cpus, 4.0))),
+                        pids_limit=str(max(32, min(pids, 1024))),
+                        name=container_name,
+                    )
                     # For docker backend, don't apply RLIMITs in the host process.
                     local_preexec = None
                 else:
@@ -1230,6 +1167,8 @@ class AgentIngestionDemoRunnerService:
                     result["stderr"] = err[:stderr_cap]
                     result["ok"] = completed.returncode == 0
                 except subprocess.TimeoutExpired as e:
+                    # The client was killed; the container was not.
+                    agent_sandbox_runtime.remove_container_sync(container_name)
                     result["ran"] = True
                     result["timed_out"] = True
                     result["exit_code"] = None

@@ -182,6 +182,9 @@ from app.services.autonomy_service import (
     current_domain_profile_policy_snapshot,
     resolve_domain_profile_automation_contract,
 )
+from app.services.collaboration_service import (
+    build_collaboration_user_lookup as _build_collaboration_user_lookup,
+)
 from app.services.collaboration_service import list_collaboration_user_ids
 from app.services.research_monitor_profile_service import (
     research_monitor_profile_service,
@@ -1083,22 +1086,6 @@ async def _validate_trace_assignee(
         .first()
     )
     return user.id if user is not None else None
-
-
-async def _build_collaboration_user_lookup(
-    db: AsyncSession,
-    *,
-    current_user: User,
-) -> dict[str, User]:
-    visible_user_ids = await list_collaboration_user_ids(db, current_user=current_user)
-    if current_user.id not in visible_user_ids:
-        visible_user_ids.add(current_user.id)
-    rows = list(
-        (await db.execute(select(User).where(User.id.in_(visible_user_ids))))
-        .scalars()
-        .all()
-    )
-    return {str(row.id): row for row in rows}
 
 
 def _build_decision_trace_from_queue_items(

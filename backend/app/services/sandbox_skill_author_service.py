@@ -1,0 +1,291 @@
+"""Drafting a sandbox skill from a description, and running it before anyone sees it.
+
+A skill has one closed vocabulary -- the images it may run in -- and one thing
+no model can know in advance: whether the commands it wrote actually work in
+that image. A toolchain that is not installed, a helper script with a typo, a
+judge that writes `speed_up` where the skill declared `speedup`: each validates
+perfectly and fails the first time a run uses it, in a way that reads as the
+run's mistake.
+
+So, as with plugins, this does two things rather than one.
+
+**It repairs against the real validator.** `validate_skill` decides here
+exactly as it decides on create, and its refusal goes back to the model
+verbatim. Nothing in this module restates a rule.
+
+**It runs the control it wrote.** A draft that validates is dry-run in the
+sandbox, and when the control fails, what the sandbox said goes back to the
+model. That is safe for the reason a transform is safe to dry-run in the
+plugin drafter and a webhook is not: the sandbox has no network and no
+capabilities, so running an unreviewed draft reaches nothing.
+
+When the sandbox cannot run at all -- execution disabled, no daemon -- the
+draft is returned *unverified and saying so*. Looping on a failure no edit can
+fix would spend three model calls to learn nothing.
+
+Passing ``current`` makes it a **revision**: the instruction is applied to the
+skill the author has in the editor, not to the model's memory of its own last
+answer, so a hand edit between passes is kept. A revision keeps its id, since
+the evidence a skill yields is named after it.
+
+Drafting never stores anything. The skill comes back for review with ``notes``
+saying what had to be repaired.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any, Callable, Dict, List, Mapping, Optional
+
+from app.services import (
+    draft_repair_loop,
+    sandbox_skill_manifest,
+    sandbox_skill_runtime,
+    sandbox_skill_service,
+)
+from app.services.sandbox_skill_manifest import SkillError
+
+#: The same bound the plugin drafter uses, for the same observed reason: the
+#: mistakes that happen are fixed by the third attempt or not at all.
+MAX_ATTEMPTS = 3
+
+DRAFT_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string"},
+        "name": {"type": "string"},
+        "description": {"type": "string"},
+        "image": {"type": "string"},
+        "procedure": {"type": "string"},
+        "files": {"type": "object"},
+        "result": {
+            "type": "object",
+            "properties": {"fields": {"type": "object"}},
+        },
+        "judge_command": {"type": "string"},
+        "control": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "files": {"type": "object"},
+            },
+        },
+        "timeout_seconds": {"type": "integer"},
+        "perishable": {"type": "boolean"},
+    },
+    "required": [
+        "id",
+        "name",
+        "description",
+        "image",
+        "procedure",
+        "result",
+        "control",
+    ],
+}
+
+
+def _image_lines(images: List[str], contents: Mapping[str, List[str]]) -> str:
+    """Each allowed image, with what it was found to contain.
+
+    An image whose contents could not be asked is listed without any, and the
+    prompt says what that means: unknown, not empty.
+    """
+    if not images:
+        return "            (none available)"
+    lines = []
+    for image in images:
+        tools = contents.get(image) or []
+        lines.append(
+            f"            {image}"
+            + (f"\n              has: {', '.join(tools)}" if tools else "")
+        )
+    return "\n".join(lines)
+
+
+def _system_prompt(
+    images: List[str], contents: Optional[Mapping[str, List[str]]] = None
+) -> str:
+    m = sandbox_skill_manifest
+    image_lines = _image_lines(images, contents or {})
+    return f"""You write sandbox skills for an autonomous research agent.
+
+A skill packages ONE kind of sandboxed work: a procedure the agent follows,
+helper files, the image it runs in, and the result it must leave behind. The
+agent reads the procedure and decides which commands to run; the platform
+checks the result. Write for an agent that has never seen this work before.
+
+Return ONE JSON object with these keys and no others:
+{', '.join(m.KNOWN_KEYS)}
+
+id          lowercase letters, digits, underscore; starts with a letter; 2-32
+            characters. The evidence is named {m.EVIDENCE_PREFIX}<id>.
+name        a short human name.
+description WHEN to use the skill, in one or two sentences. This is all the
+            agent sees before deciding to load it.
+image       exactly one of these, spelled in full:
+{image_lines}
+            Where an image lists what it has, call ONLY those programs: a
+            program not listed (gcc, where only clang is) is not installed.
+            Where it lists nothing, its contents are unknown.
+procedure   the steps, as text. Say what to write, what to run, what the
+            output means, and what commonly goes wrong.
+files       {{relative_path: text}} helper files. They appear in the sandbox
+            under ./{m.SKILL_DIR}/ -- so a file "judge.py" is run as
+            "python3 {m.SKILL_DIR}/judge.py".
+result      {{"fields": {{name: type}}}} where type is one of
+            {', '.join(m.FIELD_TYPES)}. These are the fields ./{m.RESULT_FILE}
+            must contain for a run to count.
+judge_command   optional but preferred: a command that computes
+            ./{m.RESULT_FILE} from what the agent's run left in the working
+            directory. With a judge, the agent is not the author of its own
+            result.
+control     {{"command": "...", "files": {{...}}}} -- the SMALLEST invocation
+            that should succeed and leave a valid ./{m.RESULT_FILE}. It is
+            executed to prove the skill works before anyone can use it, so it
+            must be self-contained and finish in well under
+            {sandbox_skill_runtime.DRY_RUN_TIMEOUT_SECONDS} seconds.
+perishable  optional boolean. true when the result describes files that a
+            later change invalidates -- a test run, a binary's size, a timing
+            -- so a later pipeline stage must take it again rather than reuse
+            it. false (the default) for a fact that stays true, such as what a
+            source file contains.
+timeout_seconds  optional, {m.MIN_TIMEOUT_SECONDS}-{m.MAX_TIMEOUT_SECONDS}.
+
+Facts about the sandbox that decide whether a skill works:
+- There is NO network. Nothing can be downloaded or installed at run time, so
+  use only what the image already contains.
+- Commands run with /bin/sh in a working directory that is the only writable
+  path, as an unprivileged user.
+- The working directory persists between the agent's calls for one skill.
+- ./{m.SKILL_DIR}/ is restored before every call; do not write results there.
+- ./{m.RESULT_FILE} is deleted before every call, and before the judge runs.
+
+Keep it small: a procedure, at most a few short helper files, a handful of
+result fields. Output JSON only, no prose and no code fences."""
+
+
+def _control_complaint(outcome: Mapping[str, Any]) -> str:
+    """What the sandbox said, in the form a repair can act on."""
+    parts = [f"The control did not pass: {outcome.get('detail')}"]
+    stdout = str(outcome.get("stdout") or "").strip()
+    stderr = str(outcome.get("stderr") or "").strip()
+    if stderr:
+        parts.append(f"stderr:\n{stderr[-1200:]}")
+    if stdout:
+        parts.append(f"stdout:\n{stdout[-800:]}")
+    return "\n".join(parts)
+
+
+async def draft_skill(
+    description: str,
+    *,
+    db: Any,
+    user_id: Any = None,
+    current: Optional[Mapping[str, Any]] = None,
+    on_progress: Optional[Callable[[str, int, List[str]], None]] = None,
+) -> Dict[str, Any]:
+    """Draft a skill, repair it against the validator, and run its control.
+
+    Returns ``{manifest, notes, attempts, dry_run}``. ``manifest`` is None when
+    no attempt validated. ``dry_run`` is the last control outcome, or None when
+    none was attempted -- a draft with ``dry_run.ok`` false is still returned,
+    because a flaw a person can see is worth more than nothing.
+    """
+    text = str(description or "").strip()
+    if not text:
+        return {
+            "manifest": None,
+            "notes": ["Describe what the skill should do."],
+            "attempts": 0,
+            "dry_run": None,
+        }
+
+    images = await sandbox_skill_service.known_images(db)
+    # Ask each image what it has, so the model is not left to guess. Probing
+    # is best-effort: an image that cannot be asked is simply listed bare.
+    contents = {
+        image: await sandbox_skill_runtime.probe_tools(image) for image in images
+    }
+    revising = isinstance(current, Mapping) and bool(current)
+    if revising:
+        message = (
+            "Revise this skill as asked, and return the whole skill. Keep its "
+            f"id ({current.get('id')!r}) unchanged.\n\nThe skill now:\n"
+            f"{json.dumps(dict(current), indent=2)}\n\nThe change wanted:\n{text}"
+        )
+    else:
+        message = f"Write a sandbox skill for this request:\n\n{text}"
+
+    last_dry_run: Dict[str, Any] = {}
+
+    async def judge(
+        payload: Dict[str, Any], _attempt: int
+    ) -> draft_repair_loop.Verdict:
+        try:
+            candidate = sandbox_skill_manifest.validate_skill(
+                payload, known_images=images
+            )
+            if revising and candidate["id"] != str(current.get("id")):
+                raise SkillError(
+                    f"id changed from {current.get('id')!r} to "
+                    f"{candidate['id']!r}; a revision keeps its id"
+                )
+        except SkillError as exc:
+            return draft_repair_loop.Verdict(
+                complaint=f"Your last skill was rejected:\n{exc}",
+                note=str(exc),
+                instruction="Fix exactly that and return the whole skill again.",
+            )
+
+        outcome = await sandbox_skill_runtime.dry_run(candidate, image_allowed=True)
+        last_dry_run.clear()
+        last_dry_run.update(outcome)
+        if outcome["ok"]:
+            return draft_repair_loop.Verdict(value=candidate)
+        if not outcome.get("ran"):
+            # Nothing could be tested, so there is nothing to repair. Say that
+            # the draft is unverified and why, and stop spending model calls.
+            return draft_repair_loop.Verdict(
+                value=candidate,
+                complaint="not run",
+                note=(
+                    "The control was not run, so this draft is unverified: "
+                    f"{outcome.get('detail')}"
+                ),
+                stop=True,
+            )
+        # The manifest is kept: a control that fails is a flaw a person can
+        # read and fix, and handing back nothing would be worse.
+        return draft_repair_loop.Verdict(
+            value=candidate,
+            complaint=(
+                "The skill validates, but running its control in the sandbox "
+                f"showed:\n{_control_complaint(outcome)}"
+            ),
+            note=str(outcome.get("detail")),
+            instruction=(
+                "Fix the skill so its control passes and return the whole skill "
+                "again. Remember there is no network and only what the image "
+                "already contains is available."
+            ),
+        )
+
+    outcome = await draft_repair_loop.run(
+        system=_system_prompt(images, contents),
+        message=message,
+        schema=DRAFT_SCHEMA,
+        judge=judge,
+        max_attempts=MAX_ATTEMPTS,
+        user_id=user_id,
+        db=db,
+        on_progress=on_progress,
+        snapshot_phase="sandbox_skill_draft",
+        what="Skill draft",
+    )
+    return {
+        "manifest": outcome.value,
+        "notes": outcome.notes,
+        "attempts": outcome.attempts,
+        "dry_run": dict(last_dry_run) or None,
+    }

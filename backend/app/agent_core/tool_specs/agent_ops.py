@@ -729,6 +729,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": ["title"],
         },
+        effects="write",
     ),
     ToolSpec(
         name="set_output_schema",

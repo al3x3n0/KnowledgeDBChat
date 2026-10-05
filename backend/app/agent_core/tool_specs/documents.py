@@ -402,7 +402,20 @@ SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="get_knowledge_base_stats",
         description="Get statistics about the knowledge base including document counts, storage usage, and processing status.",
-        parameters={"type": "object", "properties": {}, "required": []},
+        parameters={
+            "type": "object",
+            "properties": {
+                "source_id": {
+                    "type": "string",
+                    "description": "Limit the statistics to one document source (autonomous jobs)",
+                },
+                "recent_limit": {
+                    "type": "integer",
+                    "description": "How many recent documents to list (default 25, max 100; autonomous jobs)",
+                },
+            },
+            "required": [],
+        },
         job_types=("research", "monitor", "knowledge_expansion"),
     ),
     ToolSpec(
@@ -447,6 +460,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["document_ids"],
         },
         job_types=(),
+        effects="write",
     ),
     ToolSpec(
         name="search_by_tags",
@@ -600,6 +614,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["source_id"],
         },
         job_types=(),
+        effects="write",
     ),
     ToolSpec(
         name="faceted_search",
@@ -715,10 +730,6 @@ SPECS: tuple[ToolSpec, ...] = (
                     "type": "string",
                     "description": "UUID of the audio/video document to transcribe",
                 },
-                "language": {
-                    "type": "string",
-                    "description": "Language code (e.g. 'en', 'ru') or 'auto' for detection (default 'auto')",
-                },
             },
             "required": ["document_id"],
         },
@@ -747,6 +758,8 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["document_id"],
         },
         cost_tier="medium",
+        # It posts the image to an Ollama server.
+        network="egress",
     ),
     ToolSpec(
         name="get_media_info",

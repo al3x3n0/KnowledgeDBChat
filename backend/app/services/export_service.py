@@ -155,8 +155,11 @@ class ExportService:
                 if job.output_format == "docx"
                 else "application/pdf"
             )
-            await self.storage.upload_file(
-                file_bytes, file_path, content_type=content_type
+            # upload_to_path stores under the path given. upload_file is
+            # (document_id, filename, content) and raised TypeError here, after
+            # the document was built -- so no export has ever completed.
+            await self.storage.upload_to_path(
+                file_path, file_bytes, content_type=content_type
             )
 
             update_progress(90, "Finalizing")
@@ -212,9 +215,10 @@ class ExportService:
 
         content_items = []
 
-        # Add session topic as heading if available
-        if session.topic:
-            content_items.append({"type": "heading", "level": 1, "text": session.topic})
+        # The session's title as heading. It read `session.topic`, which
+        # ChatSession does not have, so every chat export raised.
+        if session.title:
+            content_items.append({"type": "heading", "level": 1, "text": session.title})
             content_items.append({"type": "horizontal_rule"})
 
         # Convert messages to content items
@@ -239,12 +243,13 @@ class ExportService:
             content_items.extend(message_items)
 
             # Add sources if available
-            if msg.sources:
+            # `source_documents` is the column; `msg.sources` does not exist.
+            if msg.source_documents:
                 content_items.append(
                     {"type": "heading", "level": 3, "text": "Sources:"}
                 )
                 source_items = []
-                for source in msg.sources:
+                for source in msg.source_documents:
                     if isinstance(source, dict):
                         source_text = source.get("title") or source.get(
                             "source", str(source)

@@ -8,7 +8,11 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.schemas.domain_research_profile import DomainResearchProfileResponse
+from app.schemas.domain_research_profile import (
+    DomainResearchProfileResponse,
+    _normalize_track_type,
+    normalize_research_mode,
+)
 from app.schemas.research_portfolio import ResearchPortfolioResponse
 from app.services.agent_scope_service import normalize_scope_config
 from app.services.scientific_validation_service import (
@@ -77,15 +81,6 @@ def _normalize_domain_source_scope(value: Any) -> str:
         "kb_plus_arxiv_plus_repo",
     }:
         text = "kb_plus_arxiv"
-    return text
-
-
-def _normalize_track_type(value: Any) -> str:
-    text = str(value or "generic").strip().lower().replace("-", "_").replace(" ", "_")
-    if text in {"micro_arch", "microarch", "uarch"}:
-        return "microarchitecture"
-    if text not in {"compiler", "microarchitecture", "generic"}:
-        return "generic"
     return text
 
 
@@ -538,16 +533,7 @@ class AgentJobQuickStartDomainResearchRequest(BaseModel):
     @field_validator("research_mode", mode="before")
     @classmethod
     def _normalize_research_mode(cls, value: Any) -> Any:
-        text = (
-            str(value or "literature_to_hypothesis")
-            .strip()
-            .lower()
-            .replace("-", "_")
-            .replace(" ", "_")
-        )
-        if text not in {"literature_to_hypothesis"}:
-            return "literature_to_hypothesis"
-        return text
+        return normalize_research_mode(value)
 
     @field_validator("report_format", mode="before")
     @classmethod
@@ -654,16 +640,7 @@ class AgentJobPromoteDomainResearchProfileRequest(BaseModel):
     def _normalize_research_mode_field(cls, value: Any) -> Any:
         if value is None:
             return None
-        text = (
-            str(value or "literature_to_hypothesis")
-            .strip()
-            .lower()
-            .replace("-", "_")
-            .replace(" ", "_")
-        )
-        if text not in {"literature_to_hypothesis"}:
-            return "literature_to_hypothesis"
-        return text
+        return normalize_research_mode(value)
 
     @field_validator("report_format", mode="before")
     @classmethod

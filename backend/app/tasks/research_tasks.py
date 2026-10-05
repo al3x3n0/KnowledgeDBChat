@@ -9,32 +9,19 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.core.celery import celery_app
 from app.core.database import create_celery_session
 from app.models.document import Document, DocumentSource
 from app.services.document_service import DocumentService
-from app.services.llm_service import UserLLMSettings
+from app.services.llm_service import UserLLMSettings, load_user_llm_settings
 from app.tasks.ingestion_tasks import process_uploaded_document
 
 
 async def _load_user_settings(db, user_id: Optional[str]) -> Optional[UserLLMSettings]:
     """Load user LLM settings from preferences."""
-    if not user_id:
-        return None
-    try:
-        from app.models.memory import UserPreferences
-
-        result = await db.execute(
-            select(UserPreferences).where(UserPreferences.user_id == UUID(user_id))
-        )
-        user_prefs = result.scalar_one_or_none()
-        if user_prefs:
-            return UserLLMSettings.from_preferences(user_prefs)
-    except Exception as e:
-        logger.debug(f"Could not load user preferences for research task: {e}")
-    return None
+    return await load_user_llm_settings(db, user_id)
 
 
 @celery_app.task(bind=True, name="app.tasks.research_tasks.generate_literature_review")
@@ -58,9 +45,17 @@ async def _async_generate_literature_review(
             if src.source_type != "arxiv":
                 raise ValueError("Literature review only supported for arXiv sources")
 
+            # The papers, not earlier reviews stored in the same source: a
+            # second review read the first back in as a paper and counted it.
             result = await db.execute(
                 select(Document)
-                .where(Document.source_id == src.id)
+                .where(
+                    Document.source_id == src.id,
+                    or_(
+                        Document.source_identifier.is_(None),
+                        ~Document.source_identifier.like("literature_review:%"),
+                    ),
+                )
                 .order_by(Document.created_at.desc())
             )
             docs = list(result.scalars().all())

@@ -7,6 +7,7 @@ pipeline is refused *here*, before anything expensive starts, and that the
 refusal says enough for the author to fix it.
 """
 
+import pytest
 
 CHECK = "/api/v1/agent-pipelines/check"
 BIND = "/api/v1/agent-pipelines/bind"
@@ -706,3 +707,117 @@ class TestCodingWorkIsExpressible:
         tools = {s["stage_id"]: s["tools"] for s in body["plan"]["stages"]}
         assert "retrieve_repo_symbols" in tools["tests"]
         assert "find_tests_for_symbol" in tools["tests"]
+
+
+class TestAContractRequiringAResultNothingWrites:
+    """The other half of "evidence no producer can make".
+
+    Nothing writes arbitrary top-level result keys -- the finalizer builds
+    `job.results` from a fixed vocabulary -- so a contract asking for
+    `fraction_removed` can never be satisfied however well the run performs.
+    It exhausts its budget and finishes `completed` with the contract unmet,
+    which reads as underperformance rather than an impossible question.
+    """
+
+    def _stage(self, keys):
+        from app.services import agent_pipeline_spec as spec
+
+        return spec.PipelineStage(
+            id="s1",
+            goal="measure something",
+            job_type="research",
+            contract={"required_result_keys": keys},
+        )
+
+    def test_a_key_nothing_writes_is_refused(self):
+        from app.services import agent_pipeline_spec as spec
+
+        assert spec._result_keys_nothing_can_write(
+            self._stage(["fraction_removed"])
+        ) == ["fraction_removed"]
+
+    def test_a_key_a_tool_produces_is_allowed(self):
+        from app.services import agent_pipeline_spec as spec
+
+        assert not spec._result_keys_nothing_can_write(
+            self._stage(["structured_output", "formatted_outputs"])
+        )
+
+    def test_a_key_the_finalizer_always_writes_is_allowed(self):
+        """Vacuous, but not impossible -- a different complaint."""
+        from app.services import agent_pipeline_spec as spec
+
+        assert not spec._result_keys_nothing_can_write(self._stage(["summary"]))
+
+    def test_no_requirement_is_not_a_problem(self):
+        from app.services import agent_pipeline_spec as spec
+
+        assert not spec._result_keys_nothing_can_write(self._stage([]))
+        assert not spec._result_keys_nothing_can_write(self._stage(None))
+
+
+class TestARunBelongsToWhoeverLaunchedIt:
+    """Someone else's run does not exist, as far as these endpoints say.
+
+    The check read ``not current_user.is_admin`` -- a bound method, which is
+    always truthy -- so it never refused anybody: any signed-in user could read
+    another user's stages, restart them, or insert a stage into their run. It
+    type-checked and every existing test passed, because every existing test
+    asked as the owner.
+    """
+
+    @pytest.fixture
+    async def stranger_headers(self, client, db_session):
+        from app.services.auth_service import AuthService
+
+        stranger = await AuthService().create_user(
+            username="stranger",
+            email="stranger@example.com",
+            password="strangerpassword123",
+            full_name="A Stranger",
+            db=db_session,
+        )
+        token = AuthService().create_access_token(stranger.id)
+        return {"Authorization": f"Bearer {token}"}
+
+    def _launched(self, client, auth_headers):
+        spec = _spec(_stage("measure", ["benchmark_measurement"]), name="mine")
+        response = client.post(LAUNCH, json={"spec": spec}, headers=auth_headers)
+        assert response.status_code == 201, response.text
+        return f"/api/v1/agent-pipelines/runs/{response.json()['job_id']}"
+
+    def test_the_owner_can_see_their_stages(self, client, auth_headers):
+        run = self._launched(client, auth_headers)
+        assert client.get(f"{run}/stages", headers=auth_headers).status_code == 200
+
+    def test_a_stranger_cannot_see_them(self, client, auth_headers, stranger_headers):
+        run = self._launched(client, auth_headers)
+        # 404 rather than 403: confirming the run exists is what is withheld.
+        assert client.get(f"{run}/stages", headers=stranger_headers).status_code == 404
+
+    def test_a_stranger_cannot_restart_a_stage(
+        self, client, auth_headers, stranger_headers
+    ):
+        run = self._launched(client, auth_headers)
+        response = client.post(
+            f"{run}/restart", json={"stage": "measure"}, headers=stranger_headers
+        )
+        assert response.status_code == 404
+
+    def test_a_stranger_cannot_insert_a_stage(
+        self, client, auth_headers, stranger_headers
+    ):
+        run = self._launched(client, auth_headers)
+        response = client.post(
+            f"{run}/insert-stage",
+            json={
+                "after": "measure",
+                "stage": _stage("extra", ["bottleneck_attribution"]),
+            },
+            headers=stranger_headers,
+        )
+        assert response.status_code == 404
+
+    def test_an_administrator_still_can(self, client, auth_headers, admin_headers):
+        run = self._launched(client, auth_headers)
+        assert client.get(f"{run}/stages", headers=admin_headers).status_code == 200

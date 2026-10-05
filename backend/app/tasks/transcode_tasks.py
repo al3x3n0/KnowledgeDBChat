@@ -3,22 +3,20 @@ Background task to transcode uploaded videos to MP4 (H.264/AAC) for broad browse
 """
 
 import asyncio
-import json
 import os
 import tempfile
 from pathlib import Path
 from typing import Any, Dict
 from uuid import UUID
 
-import redis
 from loguru import logger
 from sqlalchemy import select
 
 from app.core.celery import celery_app
-from app.core.config import settings
 from app.core.database import create_celery_session
 from app.models.document import Document
 from app.services.storage_service import storage_service
+from app.tasks import job_support
 
 
 @celery_app.task(bind=True, name="app.tasks.transcode_tasks.transcode_to_mp4")
@@ -259,65 +257,29 @@ async def _async_transcode_to_mp4(task, document_id: str) -> Dict[str, Any]:
                     pass
 
 
-def _get_redis_client():
-    try:
-        return redis.from_url(settings.REDIS_URL, decode_responses=True)
-    except Exception as e:
-        logger.warning(f"Transcode: Failed to connect to Redis for progress: {e}")
-        return None
-
-
 def _publish_progress(document_id: str, progress: dict):
-    try:
-        rc = _get_redis_client()
-        if not rc:
-            return
-        channel = f"transcription_progress:{document_id}"
-        message = json.dumps(
-            {"type": "progress", "document_id": document_id, "progress": progress}
-        )
-        rc.publish(channel, message)
-    except Exception as e:
-        logger.warning(f"Transcode: failed to publish progress: {e}")
+    job_support.publish_sync(
+        f"transcription_progress:{document_id}",
+        {"type": "progress", "document_id": document_id, "progress": progress},
+    )
 
 
 def _publish_complete(document_id: str, result: dict):
-    try:
-        rc = _get_redis_client()
-        if not rc:
-            return
-        channel = f"transcription_progress:{document_id}"
-        message = json.dumps(
-            {"type": "complete", "document_id": document_id, "result": result}
-        )
-        rc.publish(channel, message)
-    except Exception as e:
-        logger.warning(f"Transcode: failed to publish complete: {e}")
+    job_support.publish_sync(
+        f"transcription_progress:{document_id}",
+        {"type": "complete", "document_id": document_id, "result": result},
+    )
 
 
 def _publish_error(document_id: str, error: str):
-    try:
-        rc = _get_redis_client()
-        if not rc:
-            return
-        channel = f"transcription_progress:{document_id}"
-        message = json.dumps(
-            {"type": "error", "document_id": document_id, "error": error}
-        )
-        rc.publish(channel, message)
-    except Exception as e:
-        logger.warning(f"Transcode: failed to publish error: {e}")
+    job_support.publish_sync(
+        f"transcription_progress:{document_id}",
+        {"type": "error", "document_id": document_id, "error": error},
+    )
 
 
 def _publish_status(document_id: str, status: dict):
-    try:
-        rc = _get_redis_client()
-        if not rc:
-            return
-        channel = f"transcription_progress:{document_id}"
-        message = json.dumps(
-            {"type": "status", "document_id": document_id, "status": status}
-        )
-        rc.publish(channel, message)
-    except Exception as e:
-        logger.warning(f"Transcode: failed to publish status: {e}")
+    job_support.publish_sync(
+        f"transcription_progress:{document_id}",
+        {"type": "status", "document_id": document_id, "status": status},
+    )

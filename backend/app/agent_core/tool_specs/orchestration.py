@@ -271,7 +271,7 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="request_review",
-        description="Ask another agent job or a human operator to review the current work. Creates a review checkpoint.",
+        description="Ask for a review of the current work. `peer_agent` starts a reviewer job; `human` notifies the job's owner. Neither pauses this run.",
         parameters={
             "type": "object",
             "properties": {
@@ -288,10 +288,6 @@ SPECS: tuple[ToolSpec, ...] = (
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Criteria for the reviewer to evaluate",
-                },
-                "reviewer_job_id": {
-                    "type": "string",
-                    "description": "Specific sibling job to request review from (for peer_agent type)",
                 },
             },
             "required": ["content_to_review"],

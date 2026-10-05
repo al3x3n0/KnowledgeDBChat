@@ -28,11 +28,22 @@ from app.services.agent_job_templates import (
     get_builtin_agent_job_template,
 )
 from app.services.auth_service import get_current_user
-from app.services.collaboration_service import (
-    build_collaboration_summary,
-    list_collaboration_user_ids,
-    normalize_collaboration_visibility,
+from app.services.coding_backlog_decomposition import (
+    append_artifact_history,
+    append_backlog_timeline,
+    append_lineage_id,
+    append_slice_timeline,
+    append_unique,
+    find_slice,
+    timeline_entry,
+    upsert_promotion_decision,
 )
+from app.services.collaboration_service import build_collaboration_summary
+from app.services.collaboration_service import (
+    build_collaboration_user_lookup as _build_backlog_user_lookup,
+)
+from app.services.collaboration_service import normalize_collaboration_visibility
+from app.services.config_values import uuid_list
 from app.tasks.agent_job_tasks import execute_agent_job_task
 
 router = APIRouter()
@@ -63,22 +74,7 @@ def _normalize_policy(policy: Any) -> dict[str, Any]:
 
 
 def _normalize_uuid_list(values: Any, limit: int = 200) -> list[str]:
-    if not isinstance(values, list):
-        return []
-    out: list[str] = []
-    seen: set[str] = set()
-    for raw in values:
-        try:
-            value = str(UUID(str(raw))).strip()
-        except Exception:
-            continue
-        if not value or value in seen:
-            continue
-        seen.add(value)
-        out.append(value)
-        if len(out) >= limit:
-            break
-    return out
+    return uuid_list(values, limit)
 
 
 def _normalize_visibility(value: Any) -> str:
@@ -295,96 +291,6 @@ def _normalize_decomposition(item: CodingBacklogItem) -> dict[str, Any]:
     return dec
 
 
-def _timeline_entry(
-    *,
-    actor: str,
-    action: str,
-    previous_status: Optional[str] = None,
-    new_status: Optional[str] = None,
-    note: Optional[str] = None,
-    related_job_id: Optional[str] = None,
-    related_proposal_id: Optional[str] = None,
-    related_patch_pr_id: Optional[str] = None,
-    metadata: Optional[dict[str, Any]] = None,
-) -> dict[str, Any]:
-    entry = {
-        "at": datetime.utcnow().isoformat(),
-        "actor": actor,
-        "action": action,
-        "previous_status": previous_status,
-        "new_status": new_status,
-    }
-    if note:
-        entry["note"] = note
-    if related_job_id:
-        entry["job_id"] = related_job_id
-    if related_proposal_id:
-        entry["proposal_id"] = related_proposal_id
-    if related_patch_pr_id:
-        entry["patch_pr_id"] = related_patch_pr_id
-    if metadata:
-        entry["metadata"] = metadata
-    return entry
-
-
-def _append_backlog_timeline(
-    decomposition: dict[str, Any], entry: dict[str, Any]
-) -> None:
-    rows = (
-        decomposition.get("backlog_timeline")
-        if isinstance(decomposition.get("backlog_timeline"), list)
-        else []
-    )
-    rows.append(entry)
-    decomposition["backlog_timeline"] = rows[-100:]
-
-
-def _append_slice_timeline(slice_state: dict[str, Any], entry: dict[str, Any]) -> None:
-    rows = (
-        slice_state.get("timeline")
-        if isinstance(slice_state.get("timeline"), list)
-        else []
-    )
-    rows.append(entry)
-    slice_state["timeline"] = rows[-60:]
-
-
-def _append_lineage_id(
-    slice_state: dict[str, Any], lineage_key: str, value: Optional[str]
-) -> None:
-    lineage = (
-        slice_state.get("job_lineage")
-        if isinstance(slice_state.get("job_lineage"), dict)
-        else {}
-    )
-    lineage[lineage_key] = _append_unique(lineage.get(lineage_key), value)
-    slice_state["job_lineage"] = lineage
-
-
-def _append_artifact_history(
-    slice_state: dict[str, Any],
-    artifact_type: str,
-    artifact_id: Optional[str],
-    label: Optional[str] = None,
-) -> None:
-    if not artifact_id:
-        return
-    rows = (
-        slice_state.get("artifact_history")
-        if isinstance(slice_state.get("artifact_history"), list)
-        else []
-    )
-    rows.append(
-        {
-            "at": datetime.utcnow().isoformat(),
-            "artifact_type": artifact_type,
-            "artifact_id": artifact_id,
-            "label": label or artifact_type,
-        }
-    )
-    slice_state["artifact_history"] = rows[-40:]
-
-
 def _append_manual_promotion_history(
     slice_state: dict[str, Any],
     *,
@@ -410,48 +316,6 @@ def _append_manual_promotion_history(
         }
     )
     slice_state["manual_promotion_history"] = rows[-40:]
-
-
-def _find_slice(
-    decomposition: dict[str, Any], slice_id: Optional[str]
-) -> Optional[dict[str, Any]]:
-    target = str(slice_id or "").strip()
-    if not target:
-        return None
-    for row in decomposition.get("planned_slices") or []:
-        if str((row or {}).get("slice_id") or "").strip() == target:
-            return row
-    return None
-
-
-def _append_unique(values: Any, value: Optional[str]) -> list[str]:
-    out = (
-        [str(v).strip() for v in values if str(v).strip()]
-        if isinstance(values, list)
-        else []
-    )
-    target = str(value or "").strip()
-    if target and target not in out:
-        out.append(target)
-    return out
-
-
-def _upsert_promotion_decision(
-    decomposition: dict[str, Any], entry: dict[str, Any]
-) -> None:
-    rows = (
-        decomposition.get("promotion_decisions")
-        if isinstance(decomposition.get("promotion_decisions"), list)
-        else []
-    )
-    slice_id = str(entry.get("slice_id") or "").strip()
-    kept = [
-        row
-        for row in rows
-        if str((row or {}).get("slice_id") or "").strip() != slice_id
-    ]
-    kept.append(entry)
-    decomposition["promotion_decisions"] = kept[-12:]
 
 
 def _allowed_actions_for_slice(slice_state: dict[str, Any]) -> list[str]:
@@ -676,20 +540,6 @@ def _to_response(
     )
 
 
-async def _build_backlog_user_lookup(
-    db: AsyncSession, *, current_user: User
-) -> dict[str, User]:
-    visible_user_ids = await list_collaboration_user_ids(db, current_user=current_user)
-    if current_user.id not in visible_user_ids:
-        visible_user_ids.add(current_user.id)
-    rows = list(
-        (await db.execute(select(User).where(User.id.in_(visible_user_ids))))
-        .scalars()
-        .all()
-    )
-    return {str(row.id): row for row in rows}
-
-
 def _build_orchestrator_chain_config(
     backlog_item_id: UUID, previous_child_kind: str
 ) -> dict[str, Any]:
@@ -769,9 +619,9 @@ async def _create_orchestrator_job(
     item.started_at = item.started_at or datetime.utcnow()
     item.updated_at = datetime.utcnow()
     decomposition = _normalize_decomposition(item)
-    _append_backlog_timeline(
+    append_backlog_timeline(
         decomposition,
-        _timeline_entry(
+        timeline_entry(
             actor="system",
             action="orchestrator_started",
             previous_status="draft" if not item.started_at else str(item.status or ""),
@@ -881,9 +731,9 @@ async def _spawn_slice_repair_job(
     db.add(repair_job)
     await db.flush()
     prev_status = str(slice_state.get("status") or "").strip() or None
-    _append_slice_timeline(
+    append_slice_timeline(
         slice_state,
-        _timeline_entry(
+        timeline_entry(
             actor="system",
             action="repair_job_started",
             previous_status=prev_status,
@@ -892,7 +742,7 @@ async def _spawn_slice_repair_job(
             related_job_id=str(repair_job.id),
         ),
     )
-    _append_lineage_id(slice_state, "repair_job_ids", str(repair_job.id))
+    append_lineage_id(slice_state, "repair_job_ids", str(repair_job.id))
     if operator_note:
         _append_manual_promotion_history(
             slice_state,
@@ -944,9 +794,9 @@ async def _spawn_slice_apply_job(
     )
     db.add(apply_job)
     await db.flush()
-    _append_slice_timeline(
+    append_slice_timeline(
         slice_state,
-        _timeline_entry(
+        timeline_entry(
             actor="user",
             action="apply_override_started",
             previous_status=str(slice_state.get("status") or "").strip() or None,
@@ -956,9 +806,9 @@ async def _spawn_slice_apply_job(
             related_proposal_id=proposal_id,
         ),
     )
-    _append_lineage_id(slice_state, "apply_job_ids", str(apply_job.id))
-    _append_lineage_id(slice_state, "proposal_ids", proposal_id)
-    _append_artifact_history(slice_state, "proposal", proposal_id, "Selected proposal")
+    append_lineage_id(slice_state, "apply_job_ids", str(apply_job.id))
+    append_lineage_id(slice_state, "proposal_ids", proposal_id)
+    append_artifact_history(slice_state, "proposal", proposal_id, "Selected proposal")
     _append_manual_promotion_history(
         slice_state,
         action="apply_override",
@@ -1228,7 +1078,7 @@ async def act_on_coding_backlog_item(
     operator_note = str(payload.operator_note or "").strip() or None
     closure_reason = _normalize_closure_reason(payload.closure_reason)
     decomposition = _normalize_decomposition(item)
-    slice_state = _find_slice(decomposition, slice_id)
+    slice_state = find_slice(decomposition, slice_id)
     collaboration = _normalize_collaboration(
         item.collaboration, fallback_owner_user_id=str(item.user_id)
     )
@@ -1322,9 +1172,9 @@ async def act_on_coding_backlog_item(
             list(collaboration.get("shared_with_user_ids") or []) or None
         )
         item.collaboration = collaboration
-        _append_backlog_timeline(
+        append_backlog_timeline(
             decomposition,
-            _timeline_entry(
+            timeline_entry(
                 actor="user",
                 action="assign_backlog",
                 note=operator_note,
@@ -1347,9 +1197,9 @@ async def act_on_coding_backlog_item(
             fallback_owner_user_id=str(item.user_id),
         )
         item.collaboration = collaboration
-        _append_backlog_timeline(
+        append_backlog_timeline(
             decomposition,
-            _timeline_entry(
+            timeline_entry(
                 actor="user", action="clear_backlog_assignment", note=operator_note
             ),
         )
@@ -1366,9 +1216,9 @@ async def act_on_coding_backlog_item(
         summary = item.latest_summary if isinstance(item.latest_summary, dict) else {}
         summary["operator_note"] = operator_note
         item.latest_summary = summary
-        _append_backlog_timeline(
+        append_backlog_timeline(
             decomposition,
-            _timeline_entry(
+            timeline_entry(
                 actor="user", action="update_backlog_note", note=operator_note
             ),
         )
@@ -1379,9 +1229,9 @@ async def act_on_coding_backlog_item(
         previous_status = str(item.status or "").strip() or None
         item.status = "paused"
         item.updated_at = datetime.utcnow()
-        _append_backlog_timeline(
+        append_backlog_timeline(
             decomposition,
-            _timeline_entry(
+            timeline_entry(
                 actor="user",
                 action="pause",
                 previous_status=previous_status,
@@ -1399,9 +1249,9 @@ async def act_on_coding_backlog_item(
         item.status = "cancelled"
         item.completed_at = datetime.utcnow()
         item.updated_at = datetime.utcnow()
-        _append_backlog_timeline(
+        append_backlog_timeline(
             decomposition,
-            _timeline_entry(
+            timeline_entry(
                 actor="user",
                 action="cancel",
                 previous_status=previous_status,
@@ -1431,9 +1281,9 @@ async def act_on_coding_backlog_item(
         )
         item.completed_at = datetime.utcnow()
         item.updated_at = datetime.utcnow()
-        _append_backlog_timeline(
+        append_backlog_timeline(
             decomposition,
-            _timeline_entry(
+            timeline_entry(
                 actor="user",
                 action="close",
                 previous_status=previous_status,
@@ -1471,7 +1321,7 @@ async def act_on_coding_backlog_item(
             proposal_id=proposal_id,
             operator_note=operator_note,
         )
-        item.child_job_ids = _append_unique(item.child_job_ids, str(apply_job.id))
+        item.child_job_ids = append_unique(item.child_job_ids, str(apply_job.id))
         item.current_job_id = apply_job.id
         item.latest_apply_job_id = apply_job.id
         item.status = "running"
@@ -1482,9 +1332,9 @@ async def act_on_coding_backlog_item(
         slice_state["operator_note"] = operator_note
         slice_state["operator_acted_at"] = datetime.utcnow().isoformat()
         _clear_waiting_metadata(slice_state)
-        _append_slice_timeline(
+        append_slice_timeline(
             slice_state,
-            _timeline_entry(
+            timeline_entry(
                 actor="user",
                 action="apply_override_confirmed",
                 previous_status=previous_status,
@@ -1494,9 +1344,9 @@ async def act_on_coding_backlog_item(
                 related_proposal_id=proposal_id,
             ),
         )
-        _append_backlog_timeline(
+        append_backlog_timeline(
             decomposition,
-            _timeline_entry(
+            timeline_entry(
                 actor="user",
                 action="apply_override",
                 previous_status="awaiting_operator",
@@ -1568,9 +1418,9 @@ async def act_on_coding_backlog_item(
             slice_state.get("completed_at") or datetime.utcnow().isoformat()
         )
         _clear_waiting_metadata(slice_state)
-        _append_slice_timeline(
+        append_slice_timeline(
             slice_state,
-            _timeline_entry(
+            timeline_entry(
                 actor="user",
                 action="create_patch_pr",
                 previous_status=previous_status,
@@ -1580,10 +1430,10 @@ async def act_on_coding_backlog_item(
                 related_patch_pr_id=str(pr.id),
             ),
         )
-        _append_lineage_id(slice_state, "patch_pr_ids", str(pr.id))
-        _append_lineage_id(slice_state, "proposal_ids", proposal_id)
-        _append_artifact_history(slice_state, "patch_pr", str(pr.id), "Patch PR")
-        _append_artifact_history(
+        append_lineage_id(slice_state, "patch_pr_ids", str(pr.id))
+        append_lineage_id(slice_state, "proposal_ids", proposal_id)
+        append_artifact_history(slice_state, "patch_pr", str(pr.id), "Patch PR")
+        append_artifact_history(
             slice_state, "proposal", proposal_id, "Selected proposal"
         )
         _append_manual_promotion_history(
@@ -1593,9 +1443,9 @@ async def act_on_coding_backlog_item(
             proposal_id=proposal_id,
             patch_pr_id=str(pr.id),
         )
-        _append_backlog_timeline(
+        append_backlog_timeline(
             decomposition,
-            _timeline_entry(
+            timeline_entry(
                 actor="user",
                 action="create_patch_pr",
                 previous_status="awaiting_operator",
@@ -1605,10 +1455,10 @@ async def act_on_coding_backlog_item(
                 related_patch_pr_id=str(pr.id),
             ),
         )
-        decomposition["completed_slices"] = _append_unique(
+        decomposition["completed_slices"] = append_unique(
             decomposition.get("completed_slices"), slice_state.get("slice_id")
         )
-        _upsert_promotion_decision(
+        upsert_promotion_decision(
             decomposition,
             {
                 "slice_id": str(slice_state.get("slice_id") or ""),
@@ -1660,9 +1510,9 @@ async def act_on_coding_backlog_item(
             slice_state.get("completed_at") or datetime.utcnow().isoformat()
         )
         _clear_waiting_metadata(slice_state)
-        _append_slice_timeline(
+        append_slice_timeline(
             slice_state,
-            _timeline_entry(
+            timeline_entry(
                 actor="user",
                 action="keep_proposal_only",
                 previous_status=previous_status,
@@ -1671,8 +1521,8 @@ async def act_on_coding_backlog_item(
                 related_proposal_id=proposal_id,
             ),
         )
-        _append_lineage_id(slice_state, "proposal_ids", proposal_id)
-        _append_artifact_history(
+        append_lineage_id(slice_state, "proposal_ids", proposal_id)
+        append_artifact_history(
             slice_state, "proposal", proposal_id, "Selected proposal"
         )
         _append_manual_promotion_history(
@@ -1681,9 +1531,9 @@ async def act_on_coding_backlog_item(
             operator_note=operator_note,
             proposal_id=proposal_id,
         )
-        _append_backlog_timeline(
+        append_backlog_timeline(
             decomposition,
-            _timeline_entry(
+            timeline_entry(
                 actor="user",
                 action="keep_proposal_only",
                 previous_status="awaiting_operator",
@@ -1692,10 +1542,10 @@ async def act_on_coding_backlog_item(
                 related_proposal_id=proposal_id,
             ),
         )
-        decomposition["completed_slices"] = _append_unique(
+        decomposition["completed_slices"] = append_unique(
             decomposition.get("completed_slices"), slice_state.get("slice_id")
         )
-        _upsert_promotion_decision(
+        upsert_promotion_decision(
             decomposition,
             {
                 "slice_id": str(slice_state.get("slice_id") or ""),
@@ -1733,7 +1583,7 @@ async def act_on_coding_backlog_item(
         repair_job = await _spawn_slice_repair_job(
             item, slice_state, db=db, operator_note=operator_note
         )
-        item.child_job_ids = _append_unique(item.child_job_ids, str(repair_job.id))
+        item.child_job_ids = append_unique(item.child_job_ids, str(repair_job.id))
         item.current_job_id = repair_job.id
         item.status = "running"
         slice_state["status"] = "retrying"
@@ -1745,10 +1595,10 @@ async def act_on_coding_backlog_item(
         slice_state["operator_note"] = operator_note
         slice_state["operator_acted_at"] = datetime.utcnow().isoformat()
         _clear_waiting_metadata(slice_state)
-        _append_lineage_id(slice_state, "retry_from_job_ids", previous_job_id)
-        _append_backlog_timeline(
+        append_lineage_id(slice_state, "retry_from_job_ids", previous_job_id)
+        append_backlog_timeline(
             decomposition,
-            _timeline_entry(
+            timeline_entry(
                 actor="user",
                 action="relaunch_slice",
                 previous_status="awaiting_operator",
@@ -1781,9 +1631,9 @@ async def act_on_coding_backlog_item(
         slice_state["operator_note"] = operator_note
         slice_state["operator_acted_at"] = datetime.utcnow().isoformat()
         _clear_waiting_metadata(slice_state)
-        _append_slice_timeline(
+        append_slice_timeline(
             slice_state,
-            _timeline_entry(
+            timeline_entry(
                 actor="user",
                 action="skip_slice",
                 previous_status=previous_status,
@@ -1794,9 +1644,9 @@ async def act_on_coding_backlog_item(
         _append_manual_promotion_history(
             slice_state, action="skip_slice", operator_note=operator_note
         )
-        _append_backlog_timeline(
+        append_backlog_timeline(
             decomposition,
-            _timeline_entry(
+            timeline_entry(
                 actor="user",
                 action="skip_slice",
                 previous_status="awaiting_operator",
@@ -1817,7 +1667,7 @@ async def act_on_coding_backlog_item(
             repair_job = await _spawn_slice_repair_job(
                 item, next_slice, db=db, operator_note=operator_note
             )
-            item.child_job_ids = _append_unique(item.child_job_ids, str(repair_job.id))
+            item.child_job_ids = append_unique(item.child_job_ids, str(repair_job.id))
             item.current_job_id = repair_job.id
             item.status = "running"
             next_slice["status"] = "repairing"

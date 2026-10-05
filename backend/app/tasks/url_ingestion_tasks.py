@@ -2,58 +2,25 @@
 Background tasks for ad-hoc URL ingestion.
 """
 
-import asyncio
-import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 from uuid import UUID
 
-import redis
 from celery import current_task
 from loguru import logger
 from sqlalchemy import select
 
 from app.core.celery import celery_app
-from app.core.config import settings
 from app.core.database import create_celery_session
 from app.models.user import User
 from app.services.url_ingestion_service import UrlIngestionService
-
-
-def _run_async(coroutine):
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    if loop.is_running():
-        return asyncio.run(coroutine)
-    return loop.run_until_complete(coroutine)
-
-
-def _get_redis_client() -> Optional[redis.Redis]:
-    try:
-        return redis.from_url(settings.REDIS_URL, decode_responses=True)
-    except Exception as e:
-        logger.warning(f"Failed to connect to Redis for URL ingestion progress: {e}")
-        return None
+from app.tasks import job_support
 
 
 def _publish(source_id: str, message_type: str, payload_key: str, payload: Any):
-    try:
-        client = _get_redis_client()
-        if not client:
-            return
-        channel = f"ingestion_progress:{source_id}"
-        msg = json.dumps(
-            {
-                "type": message_type,
-                "document_id": source_id,
-                payload_key: payload,
-            }
-        )
-        client.publish(channel, msg)
-    except Exception as e:
-        logger.debug(f"Failed to publish URL ingestion progress: {e}")
+    job_support.publish_sync(
+        f"ingestion_progress:{source_id}",
+        {"type": message_type, "document_id": source_id, payload_key: payload},
+    )
 
 
 @celery_app.task(bind=True, name="app.tasks.url_ingestion_tasks.ingest_url")
@@ -63,7 +30,7 @@ def ingest_url(self, request: Dict[str, Any], user_id: str) -> Dict[str, Any]:
 
     Progress channel key is `url_ingest:{task_id}`.
     """
-    return _run_async(_async_ingest_url(self, request, user_id))
+    return job_support.run_async(_async_ingest_url(self, request, user_id))
 
 
 async def _async_ingest_url(
@@ -95,13 +62,9 @@ async def _async_ingest_url(
             pass
 
     def cancel_check() -> bool:
-        try:
-            client = _get_redis_client()
-            if not client or not task_id:
-                return False
-            return bool(client.get(f"url_ingest:cancel:{task_id}"))
-        except Exception:
+        if not task_id:
             return False
+        return job_support.flag_is_set(f"url_ingest:cancel:{task_id}")
 
     async with create_celery_session()() as db:
         try:

@@ -175,3 +175,43 @@ class TestItDoesNothingWhenThereIsNothingToDo:
         child = _Job(config={"pipeline_assumes": ["algorithm_spec"]}, parent=parent)
         state = await _inherit(child, _Db([parent, child]))
         assert state["findings"] == []
+
+
+class TestAFindingCanSayItIsPerishable:
+    """A sandbox skill declares perishability per skill, on the finding.
+
+    The evidence map is fixed at import and cannot know one user's skills, so
+    by type name every `skill_*` finding looks durable. The finding carries
+    the skill's own declaration to the place that decides.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_flagged_finding_is_not_inherited(self):
+        parent = _Job(
+            findings=[
+                {"type": "skill_size", "bytes": 80, "perishable": True},
+                {"type": "skill_source_facts", "functions": 2},
+            ]
+        )
+        child = _Job(
+            config={"pipeline_assumes": ["skill_size", "skill_source_facts"]},
+            parent=parent,
+        )
+        state = await _inherit(child, _Db([parent, child]))
+
+        assert [f["type"] for f in state["findings"]] == ["skill_source_facts"]
+        (entry,) = [
+            e
+            for e in child.execution_log
+            if e.get("phase") == "assumed_evidence_inherited"
+        ]
+        assert entry["not_inherited_perishable"] == ["skill_size"]
+
+    @pytest.mark.asyncio
+    async def test_only_true_counts_as_the_declaration(self):
+        """A result field that happens to be called perishable must not be
+        read as one -- the tool reserves the key, and this is the other half."""
+        parent = _Job(findings=[{"type": "skill_x", "perishable": "yes"}])
+        child = _Job(config={"pipeline_assumes": ["skill_x"]}, parent=parent)
+        state = await _inherit(child, _Db([parent, child]))
+        assert len(state["findings"]) == 1

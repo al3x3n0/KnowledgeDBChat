@@ -145,6 +145,11 @@ def _job_spec(stage: PipelineStage, pipeline: Pipeline) -> Dict[str, Any]:
         config["goal_contract"] = dict(stage.contract)
     if stage.assumes:
         config["pipeline_assumes"] = list(stage.assumes)
+    if len(stage.depends_on) > 1:
+        # A fan-in stage is created as a child of whichever stage it waits on
+        # finishes last; this names the others, so it can start from every
+        # one's working files rather than one's.
+        config["pipeline_depends_on"] = sorted(stage.depends_on)
     if stage.runner:
         config["deterministic_runner"] = stage.runner
 
@@ -246,13 +251,29 @@ def bind(pipeline: Pipeline) -> BoundPipeline:
             # A checkpoint stage's chain waits for a person. Completing is what
             # makes it ready to be approved; approving is what starts the next
             # stage. Every other condition fires on its own.
+            # Three ways a stage releases what comes after it. The default is
+            # completion; a checkpoint waits for a person; spawn_on does not
+            # wait at all, which is how a stage that never ends still has
+            # successors.
+            if stage.spawn_on is not None:
+                trigger = "on_findings"
+            elif stage.checkpoint:
+                trigger = "on_approval"
+            else:
+                trigger = "on_complete"
+
             chain: Dict[str, Any] = {
-                "trigger_condition": "on_approval"
-                if stage.checkpoint
-                else "on_complete",
+                "trigger_condition": trigger,
                 "inherit_results": True,
                 "child_jobs": child_jobs,
             }
+            if stage.spawn_on is not None:
+                # At the top of chain_config, where should_trigger_chain reads
+                # it. It was nested under `trigger_thresholds` -- the shape a
+                # chain *definition* uses before launch flattens it -- and
+                # nothing flattened it here, so every `spawn_on: {findings: N}`
+                # released its successors at the default of 10.
+                chain["findings_threshold"] = stage.spawn_on.findings
             if chain_data:
                 chain["chain_data"] = chain_data
             job["chain_config"] = chain

@@ -33,6 +33,10 @@ DEFAULT_TIMEOUT_SECONDS = 180
 # architecture description may contain.
 MAX_SOURCE_CHARS = 4_000_000
 MAX_OUTPUT_CHARS = 60_000
+#: How much of the obligation travels on the finding. Long enough for the
+#: asserts that carry the claim, short enough not to turn a corpus of proofs
+#: into a corpus of SMT.
+MAX_OBLIGATION_CHARS = 2_000
 
 # Emit targets the tool exposes. Restricted to a known set because the target
 # is interpolated into a shell command, and named explicitly so the catalog
@@ -69,7 +73,13 @@ EMIT_TARGETS = {
     "pyrtl": "emit-pyrtl",
 }
 
-SOLVER_VERDICTS = ("unsat", "sat", "unknown")
+# z3 prints `timeout` when -T: expires, and it is a verdict rather than a
+# malformed query: the obligation that times out is routinely the same one that
+# returns unsat with more time. Reading it as unparseable output told the caller
+# their obligation "probably does not typecheck" and sent them to rewrite a
+# correct one -- measured against an obligation structurally identical to one
+# that had just been discharged.
+SOLVER_VERDICTS = ("unsat", "sat", "unknown", "timeout")
 
 
 def _preflight(source: str, image: str) -> Optional[Dict[str, Any]]:
@@ -311,8 +321,13 @@ async def prove_equivalence(
             "note": (
                 "unsat: no counterexample exists, the claim holds for all inputs. "
                 "sat: the claim is false and the model above is a counterexample. "
-                "unknown: the solver gave up; the claim is neither proved nor "
-                "disproved."
+                "unknown: the solver gave up on the theory; a different encoding "
+                "may settle it. timeout: the solver ran out of clock, which is "
+                "not a statement about the obligation -- raise timeout_seconds, "
+                "or narrow the query. An existential search (does an input exist "
+                "where these differ?) is far harder than checking a specific "
+                "input, so supplying a candidate witness as an equality "
+                "constraint often turns a timeout into an immediate answer."
             ),
         },
         "findings": [
@@ -323,6 +338,15 @@ async def prove_equivalence(
                     if proved
                     else f"Equivalence not proved (solver said {verdict})"
                 ),
+                # The obligation IS the claim. "Equivalence proved for all
+                # inputs" names no equivalence, so a reader of the corpus
+                # cannot tell a real result from a tautology, and the executed
+                # arguments are not recoverable from anywhere else: the action
+                # ledger drops tool input by design and the audit log does not
+                # cover this dispatch path. A verdict without its question is
+                # not evidence.
+                "obligation": (obligation or "").strip()[:MAX_OBLIGATION_CHARS],
+                "settled": verdict in ("unsat", "sat"),
                 "verdict": verdict,
                 "proved": proved,
             }

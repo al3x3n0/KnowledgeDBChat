@@ -3,7 +3,6 @@ Document service for managing documents and document sources.
 """
 
 import hashlib
-import json
 import os
 import tempfile
 from datetime import datetime
@@ -11,10 +10,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-import redis
 from fastapi import UploadFile
 from loguru import logger
 from sqlalchemy import and_, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload, selectinload
 
@@ -28,6 +27,7 @@ from app.services.persona_service import persona_service
 from app.services.storage_service import storage_service
 from app.services.text_processor import TextProcessor
 from app.services.vector_store import vector_store_service
+from app.tasks import job_support
 
 
 class DocumentService:
@@ -193,6 +193,31 @@ class DocumentService:
         document = result.scalar_one_or_none()
 
         return document
+
+    @staticmethod
+    def _publish_document_event(
+        event: str, document_id: Any, title: Any, user_id: Any
+    ) -> None:
+        """Tell workflows with an event trigger that this happened.
+
+        The editor offers document.uploaded / processed / deleted triggers and
+        `trigger_event_workflow` runs them, but nothing ever published an
+        event, so an event-triggered workflow never ran. Published only for a
+        known user (a workflow belongs to one; a source sync has none), and
+        never allowed to fail the action that caused it.
+        """
+        if user_id is None:
+            return
+        try:
+            from app.tasks.workflow_tasks import publish_workflow_event
+
+            publish_workflow_event(
+                event,
+                {"document_id": str(document_id), "title": title},
+                str(user_id),
+            )
+        except Exception as exc:  # noqa: BLE001 - an event is a courtesy
+            logger.warning(f"Could not publish {event} for {document_id}: {exc}")
 
     async def upload_file(
         self,
@@ -430,6 +455,12 @@ class DocumentService:
             await cache_service.set(cache_key, document, ttl=3600)
 
             logger.info(f"Uploaded document: {document.id}")
+            self._publish_document_event(
+                "document.uploaded",
+                document.id,
+                document.title,
+                owner_user.id if owner_user else None,
+            )
             return document
 
         except Exception as e:
@@ -461,102 +492,106 @@ class DocumentService:
             return None
         return os.path.splitext(filename)[1].lower().lstrip(".")
 
-    async def _get_or_create_upload_source(self, db: AsyncSession) -> DocumentSource:
-        """Get or create the upload document source."""
+    async def _get_or_create_builtin_source(
+        self,
+        db: AsyncSession,
+        name: str,
+        *,
+        source_type: str,
+        config: Dict[str, Any],
+        active: bool = True,
+    ) -> DocumentSource:
+        """The source named `name`, created on first use.
+
+        Four methods were copies of this, differing in the row they create.
+        An inactive source is kept inactive even if someone switched it on,
+        since being active is what makes the periodic sync crawl it.
+        """
         result = await db.execute(
-            select(DocumentSource).where(DocumentSource.name == "File Upload")
+            select(DocumentSource).where(DocumentSource.name == name)
         )
         source = result.scalar_one_or_none()
 
         if not source:
-            source = DocumentSource(
-                name="File Upload",
-                source_type="file",
-                config={"type": "upload", "description": "Manually uploaded files"},
+            candidate = DocumentSource(
+                name=name, source_type=source_type, is_active=active, config=config
             )
-            db.add(source)
+            try:
+                # A savepoint, so losing the race undoes only this insert and
+                # leaves the caller's other objects unexpired.
+                async with db.begin_nested():
+                    db.add(candidate)
+                source = candidate
+            except IntegrityError:
+                # Two first uploads at once: `name` is unique, so the other
+                # one created it between the lookup and the insert.
+                source = (
+                    await db.execute(
+                        select(DocumentSource).where(DocumentSource.name == name)
+                    )
+                ).scalar_one()
             await db.commit()
             await db.refresh(source)
+        elif not active and source.is_active:
+            source.is_active = False
+            await db.commit()
 
         return source
+
+    async def _get_or_create_upload_source(self, db: AsyncSession) -> DocumentSource:
+        """Get or create the upload document source."""
+        return await self._get_or_create_builtin_source(
+            db,
+            "File Upload",
+            source_type="file",
+            config={"type": "upload", "description": "Manually uploaded files"},
+        )
 
     async def _get_or_create_agent_notes_source(
         self, db: AsyncSession
     ) -> DocumentSource:
         """Get or create the agent-created notes document source."""
-        result = await db.execute(
-            select(DocumentSource).where(DocumentSource.name == "Agent Notes")
+        return await self._get_or_create_builtin_source(
+            db,
+            "Agent Notes",
+            source_type="file",
+            config={
+                "type": "agent_notes",
+                "description": "Notes created by the in-app agent/tools",
+            },
         )
-        source = result.scalar_one_or_none()
-
-        if not source:
-            source = DocumentSource(
-                name="Agent Notes",
-                source_type="file",
-                config={
-                    "type": "agent_notes",
-                    "description": "Notes created by the in-app agent/tools",
-                },
-            )
-            db.add(source)
-            await db.commit()
-            await db.refresh(source)
-
-        return source
 
     async def _get_or_create_latex_projects_source(
         self, db: AsyncSession
     ) -> DocumentSource:
         """Get or create the LaTeX Studio projects document source."""
-        result = await db.execute(
-            select(DocumentSource).where(DocumentSource.name == "LaTeX Projects")
+        return await self._get_or_create_builtin_source(
+            db,
+            "LaTeX Projects",
+            source_type="file",
+            config={
+                "type": "latex_projects",
+                "description": "LaTeX Studio projects published into the knowledge base",
+            },
         )
-        source = result.scalar_one_or_none()
-
-        if not source:
-            source = DocumentSource(
-                name="LaTeX Projects",
-                source_type="file",
-                config={
-                    "type": "latex_projects",
-                    "description": "LaTeX Studio projects published into the knowledge base",
-                },
-            )
-            db.add(source)
-            await db.commit()
-            await db.refresh(source)
-
-        return source
 
     async def _get_or_create_url_ingest_source(
         self, db: AsyncSession
     ) -> DocumentSource:
-        """Get or create the URL ingestion source."""
-        result = await db.execute(
-            select(DocumentSource).where(DocumentSource.name == "URL Ingest")
+        """Get or create the URL ingestion source.
+
+        Inactive, so periodic web source sync jobs don't try to crawl it.
+        """
+        return await self._get_or_create_builtin_source(
+            db,
+            "URL Ingest",
+            source_type="web",
+            config={
+                "type": "url_ingest",
+                "description": "Ad-hoc URL ingestion into the knowledge base",
+            },
+            active=False,
         )
-        source = result.scalar_one_or_none()
-
-        if not source:
-            source = DocumentSource(
-                name="URL Ingest",
-                source_type="web",
-                # Keep this source inactive so periodic web source sync jobs don't try to crawl it.
-                is_active=False,
-                config={
-                    "type": "url_ingest",
-                    "description": "Ad-hoc URL ingestion into the knowledge base",
-                },
-            )
-            db.add(source)
-            await db.commit()
-            await db.refresh(source)
-        elif source.is_active:
-            # Safety: if it exists and is active, disable to avoid scheduled web syncs.
-            source.is_active = False
-            await db.commit()
-
-        return source
 
     async def _process_document_async(
         self, document: Document, db: AsyncSession, user_id: Optional[UUID] = None
@@ -598,7 +633,7 @@ class DocumentService:
                     chunk_index=chunk_data["chunk_index"],
                     start_pos=chunk_data.get("start_pos"),
                     end_pos=chunk_data.get("end_pos"),
-                    metadata=chunk_metadata,
+                    extra_metadata=chunk_metadata,
                 )
 
                 document_chunks.append(chunk)
@@ -678,6 +713,9 @@ class DocumentService:
             logger.info(
                 f"Processed document {document.id} with {len(document_chunks)} chunks"
             )
+            self._publish_document_event(
+                "document.processed", document.id, document.title, user_id
+            )
 
             # Optionally auto-summarize
             if await _get_flag("summarization_enabled") and await _get_flag(
@@ -709,9 +747,25 @@ class DocumentService:
             document.processing_error = str(e)
             await db.commit()
 
-    async def delete_document(self, document_id: UUID, db: AsyncSession) -> bool:
+    async def delete_document(
+        self,
+        document_id: UUID,
+        db: AsyncSession,
+        *,
+        warnings: Optional[List[str]] = None,
+        user_id: Optional[UUID] = None,
+    ) -> bool:
         """
         Delete a document and all associated data.
+
+        `user_id`, when the deletion is someone's, publishes document.deleted
+        for their event-triggered workflows.
+
+        The row is deleted even when its stored file or its vectors cannot
+        be removed -- by design, so one broken store cannot pin a document
+        forever. Pass a list as `warnings` to be told what was left behind:
+        returning a bare True for that hid orphaned vectors that search
+        still returned.
 
         This method deletes:
         1. File from MinIO storage
@@ -767,11 +821,20 @@ class DocumentService:
                         logger.warning(
                             f"File deletion returned False for: {document.file_path}"
                         )
+                        if warnings is not None:
+                            warnings.append(
+                                f"The stored file {document.file_path} was not removed"
+                            )
                 except Exception as e:
                     logger.warning(
                         f"Failed to delete file from MinIO {document.file_path}: {e}",
                         exc_info=True,
                     )
+                    if warnings is not None:
+                        warnings.append(
+                            f"The stored file {document.file_path} could not be "
+                            f"removed: {e}"
+                        )
                     # Continue with deletion even if MinIO delete fails
 
             # Step 2: Delete from vector store (ChromaDB)
@@ -787,6 +850,11 @@ class DocumentService:
                 logger.warning(
                     f"Failed to delete chunks from vector store for document {document_id}: {e}"
                 )
+                if warnings is not None:
+                    warnings.append(
+                        "Its vectors could not be removed from the search index, "
+                        f"so search may still return it: {e}"
+                    )
                 # Continue with deletion even if vector store delete fails
 
             # Step 3: Delete chunks from database explicitly (in addition to cascade)
@@ -864,6 +932,9 @@ class DocumentService:
             logger.info(
                 f"Successfully deleted document {document_id}: {document.title}"
             )
+            self._publish_document_event(
+                "document.deleted", document_id, document.title, user_id
+            )
             return True
 
         except Exception as e:
@@ -917,6 +988,15 @@ class DocumentService:
             # Invalidate cache (already done in _process_document_async, but ensure it's cleared)
             cache_key = f"document:{document_id}"
             await cache_service.delete(cache_key)
+
+            # Processing records its own failure on the row and does not
+            # raise, so "it returned" is not "it worked".
+            if not document.is_processed:
+                logger.warning(
+                    f"Reprocessing {document_id} did not index it: "
+                    f"{document.processing_error}"
+                )
+                return False
 
             logger.info(f"Reprocessed document: {document_id}")
             return True
@@ -993,19 +1073,14 @@ class DocumentService:
 
         # Helper to publish summarization progress to Redis (for WebSocket bridge)
         def _publish_sum_progress(progress: dict):
-            try:
-                client = redis.from_url(settings.REDIS_URL, decode_responses=True)
-                channel = f"summarization_progress:{str(document_id)}"
-                msg = json.dumps(
-                    {
-                        "type": "progress",
-                        "document_id": str(document_id),
-                        "progress": progress,
-                    }
-                )
-                client.publish(channel, msg)
-            except Exception as e:
-                logger.debug(f"Failed to publish summarization progress to Redis: {e}")
+            job_support.publish_sync(
+                f"summarization_progress:{str(document_id)}",
+                {
+                    "type": "progress",
+                    "document_id": str(document_id),
+                    "progress": progress,
+                },
+            )
 
         # Track which model was actually used
         actual_model_used = None

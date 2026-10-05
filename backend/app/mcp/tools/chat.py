@@ -11,8 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.mcp.auth import MCPAuthContext
 from app.models.document import Document
-from app.models.memory import UserPreferences
-from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.llm_service import LLMService, UserLLMSettings, load_user_llm_settings
 from app.services.vector_store import vector_store_service
 
 
@@ -195,16 +194,7 @@ Answer:"""
         self, user_id: UUID, db: AsyncSession
     ) -> Optional[UserLLMSettings]:
         """Load user's LLM preferences."""
-        try:
-            result = await db.execute(
-                select(UserPreferences).where(UserPreferences.user_id == user_id)
-            )
-            prefs = result.scalar_one_or_none()
-            if prefs:
-                return UserLLMSettings.from_preferences(prefs)
-        except Exception as e:
-            logger.warning(f"Failed to load user LLM settings: {e}")
-        return None
+        return await load_user_llm_settings(db, user_id)
 
     async def _get_accessible_doc_ids(
         self,

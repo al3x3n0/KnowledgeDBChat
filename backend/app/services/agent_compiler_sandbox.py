@@ -80,6 +80,14 @@ EMIT_ALIASES = {
 # and never measured the -O3 codegen it had been asked for.
 COMPILER_ERROR_REMEDIES = (
     (
+        re.compile(r"undefined reference to [`'\"]?(\w+)"),
+        "The linker could not find a function the other file calls. When a "
+        "kernel and a driver are compiled separately, every function the driver "
+        "calls must be defined in the kernel WITHOUT `static` (static hides it "
+        "from other files) and with the exact name and signature the driver "
+        "declares.",
+    ),
+    (
         re.compile(r"does not support '-march=native'"),
         "This sandbox targets aarch64, where clang rejects -march=native. "
         "Use -mcpu=native instead.",
@@ -125,8 +133,18 @@ def explain_compiler_failure(stderr: str) -> str:
     and filing the reason in a separate field means the reason may never reach
     whoever decides the next call.
     """
+    lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
+    # The first line that IS an error. The linker opens with a context line --
+    # "driver.o: in function `main':" -- and puts "undefined reference to ..."
+    # on the next, so the first line alone told a run where the problem was
+    # and not what it was.
     first_line = next(
-        (line.strip() for line in (stderr or "").splitlines() if line.strip()), ""
+        (
+            line
+            for line in lines
+            if re.search(r"\berror\b|undefined reference|multiple definition", line)
+        ),
+        lines[0] if lines else "",
     )
     message = "Compilation failed"
     if first_line:

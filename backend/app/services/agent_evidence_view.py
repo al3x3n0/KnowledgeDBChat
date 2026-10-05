@@ -326,7 +326,11 @@ def build(job: Any, disputes: Optional[Mapping[int, str]] = None) -> Dict[str, A
                 ).strip(),
                 warning=str(finding.get("measurement_warning") or "").strip(),
                 perishable=(
-                    agent_evidence_map.is_perishable(finding_type)
+                    (
+                        agent_evidence_map.is_perishable(finding_type)
+                        # A sandbox skill says so on the finding itself.
+                        or finding.get("perishable") is True
+                    )
                     if finding_type
                     else False
                 ),

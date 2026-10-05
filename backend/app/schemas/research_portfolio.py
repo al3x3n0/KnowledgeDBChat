@@ -6,29 +6,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.domain_research_profile import _normalize_uuid_list
 from app.schemas.experiment import ScientificValidationRunSummaryResponse
 from app.services.scientific_validation_service import (
     normalize_portfolio_automation_policy,
     normalize_portfolio_automation_profile,
     resolve_portfolio_automation_policy,
 )
-
-
-def _normalize_uuid_list(value: Any, *, max_items: int = 24) -> list[str]:
-    rows = (
-        value
-        if isinstance(value, list)
-        else str(value or "").replace("\n", ",").split(",")
-    )
-    out: list[str] = []
-    for row in rows:
-        text = str(row or "").strip()
-        if not text or text in out:
-            continue
-        out.append(text)
-        if len(out) >= max_items:
-            break
-    return out
 
 
 def _normalize_policy(value: Any) -> dict[str, Any]:

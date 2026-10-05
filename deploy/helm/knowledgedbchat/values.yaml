@@ -104,6 +104,7 @@ secrets:
   deepseekApiKey: ""
   qwenApiKey: ""
   kimiApiKey: ""
+  glmApiKey: ""
   qdrantApiKey: ""
   # Fernet key for the encrypted secrets store (python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
   secretsEncryptionKey: ""
@@ -424,18 +425,21 @@ qdrant:
 
 minio:
   enabled: true
-  # quay.io, not Docker Hub. MinIO withdrew these images from Hub -- the
-  # `minio/minio` repository there now answers "object not found", and the
-  # smoke test's cluster reported `pull access denied, repository does not
-  # exist or may require authorization` for the tag pinned here. A locally
-  # cached copy hides this, which is why it surfaced only on a clean runner.
+  # pgsty's community build of MinIO. MinIO stopped serving its images to
+  # anonymous pulls: Docker Hub's minio/minio went first, then quay.io's
+  # (401 Unauthorized, first seen 2026-10-05, after this tag had passed the
+  # smoke test on 2026-09-16). pgsty/minio is built like the official image --
+  # UBI9-micro, the same docker-entrypoint.sh, curl and mc included -- so the
+  # args and probes below are unchanged, and data written by the official
+  # server is read as-is. A locally cached copy of an image hides a pull that
+  # fails, which is why each of these surfaced only on a clean runner.
   image:
-    repository: quay.io/minio/minio
-    tag: RELEASE.2025-09-07T16-13-09Z
+    repository: docker.io/pgsty/minio
+    tag: RELEASE.2026-08-04T00-00-00Z
     pullPolicy: IfNotPresent
   mcImage:
-    repository: quay.io/minio/mc
-    tag: RELEASE.2025-08-13T08-35-41Z
+    repository: docker.io/pgsty/mc
+    tag: RELEASE.2026-09-16T00-00-00Z
     pullPolicy: IfNotPresent
   service:
     apiPort: 9000

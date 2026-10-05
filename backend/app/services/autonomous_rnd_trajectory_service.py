@@ -166,6 +166,18 @@ class AutonomousRnDTrajectoryAdapter:
                 if value is not None and value != "":
                     row[field] = value
 
+            # Why a call failed, not only that it did. Raw tool output stays
+            # out of the ledger deliberately, but an error message is the one
+            # part that explains the row: without it a failed call looks
+            # exactly like a call that returned nothing. Measured -- arXiv's
+            # API began refusing requests with HTTP 406, and across three
+            # discovery stages and forty-odd iterations the runs could only
+            # report "no new findings", so an upstream outage read as an agent
+            # that would not do its work.
+            error = result.get("error")
+            if error:
+                row["error"] = str(error)[:240]
+
             # A repeated identical failure carries its escalation. The ledger
             # is where an operator reviews what a run did, and "this call
             # failed three times and was told to stop" is exactly the shape of

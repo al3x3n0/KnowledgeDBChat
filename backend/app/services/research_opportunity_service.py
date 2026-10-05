@@ -12,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob
 from app.models.experiment import ExperimentPlan, ExperimentRun
+from app.services.config_values import safe_float as _safe_float
+from app.services.config_values import unique_strings
 
 RESEARCH_OPPORTUNITY_STAGE_VALUES = {
     "discovered",
@@ -76,20 +78,6 @@ def _text(value: Any, *, default: str = "") -> str:
     return str(value or "").strip() or default
 
 
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return default
-
-
-def _safe_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except Exception:
-        return default
-
-
 def normalize_research_opportunity_key(value: Any) -> str:
     text = _text(value).lower()
     out = []
@@ -105,16 +93,7 @@ def normalize_research_opportunity_key(value: Any) -> str:
 
 
 def _clean_string_list(value: Any, *, limit: int = 12) -> List[str]:
-    rows = value if isinstance(value, list) else []
-    out: List[str] = []
-    for row in rows:
-        text = _text(row)
-        if not text or text in out:
-            continue
-        out.append(text)
-        if len(out) >= limit:
-            break
-    return out
+    return unique_strings(value, limit)
 
 
 def _clean_dict_list(value: Any, *, limit: int = 12) -> List[Dict[str, Any]]:

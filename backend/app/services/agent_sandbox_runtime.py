@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import subprocess
 import uuid
-from typing import List, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,25 @@ def explain_sandbox_exit(returncode: int, stderr: str, image: str) -> str:
     return ""
 
 
+def could_not_run(returncode: Any, stderr: str, image: str) -> str:
+    """Why the script never ran, or "" when it did.
+
+    Only docker's own 125. A script is free to exit 126 or 127 itself (a
+    command it names is missing), and that is the code's failure, which its
+    caller already reports; 125 is the daemon refusing before anything ran.
+    Every tool that ignored the return code read it as the code's failure
+    instead -- "the pass did not compile", "work is not defined in the
+    object", "baseline_broken" -- and sent the run to edit code that had
+    never executed.
+    """
+    if returncode != DOCKER_COULD_NOT_START:
+        return ""
+    return explain_sandbox_exit(returncode, stderr, image)
+
+
+NO_DOCKER = "Docker is not available to this process"
+
+
 def image_not_allowlisted(image: str) -> str:
     """Why this call cannot run, and why retrying it differently will not help.
 
@@ -107,21 +127,35 @@ def image_not_allowlisted(image: str) -> str:
     )
 
 
+def new_container_name() -> str:
+    """A name to run a container under, so it can be removed if abandoned."""
+    return f"kdbc-sandbox-{uuid.uuid4().hex[:16]}"
+
+
 def docker_command(
     *,
     image: str,
     workdir: str,
-    script: str,
-    timeout_seconds: int,
+    script: str = "",
+    timeout_seconds: int = 0,
     memory: str = DEFAULT_MEMORY,
     cpus: str = DEFAULT_CPUS,
     name: str = "",
+    pids_limit: str = DEFAULT_PIDS_LIMIT,
+    argv: Optional[Sequence[str]] = None,
+    read_only: bool = False,
 ) -> List[str]:
     """Build the confined `docker run` invocation for one sandboxed script.
 
     ``name`` is what makes an abandoned run recoverable. Without it the only
     handle on a container is the client process, and killing that leaves the
     container running: the daemon owns it, not us.
+
+    ``argv`` runs a program directly instead of ``/bin/sh -lc script``, and
+    ``read_only`` mounts the work directory read-only. Both exist so the four
+    other places that built this command by hand can call this instead: they
+    had the same posture, and none of them had the name, so a timeout in any
+    of them left its container running.
     """
     return [
         "docker",
@@ -135,7 +169,7 @@ def docker_command(
         "--security-opt",
         "no-new-privileges",
         "--pids-limit",
-        DEFAULT_PIDS_LIMIT,
+        str(pids_limit),
         "--memory",
         memory,
         "--cpus",
@@ -143,14 +177,34 @@ def docker_command(
         "--user",
         "65534:65534",
         "-v",
-        f"{workdir}:/work:rw",
+        f"{workdir}:/work:{'ro' if read_only else 'rw'}",
         "-w",
         "/work",
         image,
-        "/bin/sh",
-        "-lc",
-        script,
+        *(list(argv) if argv is not None else ["/bin/sh", "-lc", script]),
     ]
+
+
+def remove_container_sync(name: str) -> bool:
+    """`remove_container` for a caller running in a thread, not on the loop.
+
+    The experiment and demo runners execute `docker run` with
+    ``subprocess.run`` inside ``asyncio.to_thread``. When that times out it
+    kills the client and nothing else, exactly as the async path used to.
+    """
+    if not name:
+        return False
+    try:
+        done = subprocess.run(
+            ["docker", "rm", "--force", name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=REMOVE_TIMEOUT_SECONDS,
+        )
+        return done.returncode == 0
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"Could not remove sandbox container {name}: {exc}")
+        return False
 
 
 async def remove_container(name: str) -> bool:
@@ -201,7 +255,7 @@ async def run_in_sandbox(
     Cancellation gets the same treatment as a timeout. A job cancelled mid-run
     abandons its container exactly as thoroughly.
     """
-    name = f"kdbc-sandbox-{uuid.uuid4().hex[:16]}"
+    name = new_container_name()
     process = await asyncio.create_subprocess_exec(
         *docker_command(
             image=image,

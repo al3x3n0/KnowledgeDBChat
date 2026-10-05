@@ -8,13 +8,12 @@ from typing import Optional
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import select
 
 from app.core.celery import celery_app
 from app.core.database import create_celery_session
 from app.models.document import DocumentSource, GitBranchDiff
 from app.services.git_service import GitService
-from app.services.llm_service import UserLLMSettings
+from app.services.llm_service import UserLLMSettings, load_user_llm_settings
 from app.utils.ingestion_state import clear_git_compare_task, is_git_compare_cancelled
 
 git_service = GitService()
@@ -22,20 +21,7 @@ git_service = GitService()
 
 async def _load_user_settings(db, user_id: Optional[str]) -> Optional[UserLLMSettings]:
     """Load user LLM settings from preferences."""
-    if not user_id:
-        return None
-    try:
-        from app.models.memory import UserPreferences
-
-        result = await db.execute(
-            select(UserPreferences).where(UserPreferences.user_id == UUID(user_id))
-        )
-        user_prefs = result.scalar_one_or_none()
-        if user_prefs:
-            return UserLLMSettings.from_preferences(user_prefs)
-    except Exception as e:
-        logger.debug(f"Could not load user preferences for git compare task: {e}")
-    return None
+    return await load_user_llm_settings(db, user_id)
 
 
 @celery_app.task(bind=True, name="app.tasks.git_compare_tasks.compare_git_branches")

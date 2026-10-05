@@ -189,6 +189,7 @@ import {
   ResearchInboxBulkFollowUpRelaunchResponse,
   ResearchInboxListResponse,
   ResearchInboxItemUpdateRequest,
+  ResearchInboxRejectionReason,
   ResearchInboxStats,
   ResearchMonitorAnalyticsResponse,
   ResearchMonitorCustomerBudgetUpdateRequest,
@@ -282,12 +283,21 @@ import {
   PipelineStageInsertion,
   PipelineStageRestart,
   PipelineVocabulary,
+  ContractSuggestions,
+  ChainImportSurvey,
   SavedPipeline,
   DocumentFolderItemsResult,
   DocumentFolderRef,
   DocumentFolderTree,
   Plugin,
   PluginListResponse,
+  SandboxSkill,
+  SandboxSkillDraftStatus,
+  SandboxSkillDryRunResponse,
+  SandboxSkillImage,
+  SandboxSkillImageListResponse,
+  SandboxSkillListResponse,
+  SandboxSkillManifest,
   ContributedToolsResponse,
   PluginUiResponse,
   ResearchCampaign,
@@ -660,6 +670,48 @@ class ApiClient {
     return response.data;
   }
 
+  /** Evidence types each contract-less stage is probably asking for.
+   *
+   *  Suggestions only: each carries the tool behind it and the words that
+   *  matched, because a goal sharing one generic word with the vocabulary
+   *  produces suggestions worth dismissing. */
+  async suggestContracts(spec: unknown): Promise<ContractSuggestions> {
+    const response = await this.client.post(
+      '/api/v1/agent-pipelines/suggest-contracts',
+      { spec },
+      // A spec mid-edit is often not a pipeline yet; that is not worth a toast
+      // on every keystroke.
+      { suppressToast: true } as any
+    );
+    return response.data;
+  }
+
+  /** Saved chains, and whether each can become a pipeline.
+   *
+   *  A survey rather than a conversion: a chain that converts still arrives
+   *  with empty contracts, and one that does not needs a decision. */
+  async surveyChainsForImport(): Promise<ChainImportSurvey> {
+    const response = await this.client.get('/api/v1/agent-pipelines/import/chains');
+    return response.data;
+  }
+
+  /** Save one chain as a pipeline. The chain is left where it is. */
+  async importChainAsPipeline(
+    chainId: string,
+    name?: string,
+    variables?: Record<string, string>
+  ): Promise<SavedPipeline> {
+    const response = await this.client.post(
+      '/api/v1/agent-pipelines/import/chains',
+      { chain_id: chainId, name, variables },
+      // A chain that cannot be expressed as a pipeline answers 422 with the
+      // blocking step. The panel shows that in place; a toast would be a
+      // second, worse telling of it.
+      { suppressToast: true } as any
+    );
+    return response.data;
+  }
+
   /** Save a pipeline. A spec that does not check is still saved — work in
    *  progress is worth keeping — with the verdict recorded alongside it. */
   async saveSavedPipeline(payload: {
@@ -734,7 +786,12 @@ class ApiClient {
   async getJobWorkspace(jobId: string, path = '.'): Promise<AgentJobWorkspace> {
     const response = await this.client.get(
       `/api/v1/agent-jobs/${jobId}/workspace`,
-      { params: { path } }
+      // Both non-2xx answers here are answers, not failures: 404 means this run
+      // never made a workspace (most runs do not), and 410 means its files were
+      // swept after the retention window. The panel renders each deliberately --
+      // nothing for the first, an explanation for the second -- so a toast on
+      // top of that shouts an error at someone opening an ordinary research job.
+      { params: { path }, suppressToast: true } as any
     );
     return response.data;
   }
@@ -746,7 +803,7 @@ class ApiClient {
   ): Promise<AgentJobWorkspaceFile> {
     const response = await this.client.get(
       `/api/v1/agent-jobs/${jobId}/workspace/file`,
-      { params: { path } }
+      { params: { path }, suppressToast: true } as any
     );
     return response.data;
   }
@@ -1374,6 +1431,21 @@ class ApiClient {
       ...response.data,
       system_prompt: response.data?.system_prompt ?? null,
     };
+  }
+
+  /** Draft an agent definition from a description. Creates nothing: the reply
+   *  is for review, and `notes` says what had to be repaired. */
+  async draftAgentDefinition(
+    description: string,
+    current?: Partial<AgentDefinitionCreate> | null
+  ): Promise<{ definition: AgentDefinitionCreate | null; notes: string[] }> {
+    const response = await this.client.post('/api/v1/agent/agents/draft', {
+      description,
+      // What is on the form, not the last draft: a hand edit between passes
+      // would otherwise be discarded.
+      ...(current ? { current } : {}),
+    });
+    return response.data;
   }
 
   async createAgentDefinition(data: AgentDefinitionCreate): Promise<AgentDefinition> {
@@ -4321,6 +4393,11 @@ class ApiClient {
     return response.data;
   }
 
+  async getResearchInboxRejectionReasons(): Promise<{ reasons: ResearchInboxRejectionReason[] }> {
+    const response = await this.client.get(`/api/v1/research/inbox/rejection-reasons`);
+    return response.data;
+  }
+
   async bulkUpdateResearchInboxItems(data: { item_ids: string[] } & ResearchInboxItemUpdateRequest): Promise<{ updated: number }> {
     const response = await this.client.patch(`/api/v1/research/inbox/bulk`, data);
     return response.data;
@@ -4674,6 +4751,117 @@ class ApiClient {
     pending: boolean;
   }> {
     const response = await this.client.get(`/api/v1/plugins/draft/${taskId}`);
+    return response.data;
+  }
+
+  // Sandbox skills --------------------------------------------------------
+
+  async listSandboxSkills(): Promise<SandboxSkillListResponse> {
+    const response = await this.client.get('/api/v1/sandbox-skills');
+    return response.data;
+  }
+
+  /** Stores a draft. A skill is never active on creation. */
+  async createSandboxSkill(
+    manifest: SandboxSkillManifest | Record<string, any>
+  ): Promise<SandboxSkill> {
+    const response = await this.client.post('/api/v1/sandbox-skills', {
+      manifest,
+    });
+    return response.data;
+  }
+
+  /** An active skill whose content changes becomes a draft again. */
+  async updateSandboxSkill(
+    skillId: string,
+    manifest: SandboxSkillManifest | Record<string, any>
+  ): Promise<SandboxSkill> {
+    const response = await this.client.put(
+      `/api/v1/sandbox-skills/${skillId}`,
+      { manifest }
+    );
+    return response.data;
+  }
+
+  async deleteSandboxSkill(skillId: string): Promise<void> {
+    await this.client.delete(`/api/v1/sandbox-skills/${skillId}`);
+  }
+
+  /** Run the skill's control in the sandbox and record the verdict. */
+  async dryRunSandboxSkill(skillId: string): Promise<SandboxSkillDryRunResponse> {
+    const response = await this.client.post(
+      `/api/v1/sandbox-skills/${skillId}/dry-run`
+    );
+    return response.data;
+  }
+
+  /** Refused (409) until the control has passed against the current content. */
+  async activateSandboxSkill(skillId: string): Promise<SandboxSkill> {
+    const response = await this.client.post(
+      `/api/v1/sandbox-skills/${skillId}/activate`
+    );
+    return response.data;
+  }
+
+  async disableSandboxSkill(skillId: string): Promise<SandboxSkill> {
+    const response = await this.client.post(
+      `/api/v1/sandbox-skills/${skillId}/disable`
+    );
+    return response.data;
+  }
+
+  /**
+   * Draft a skill from a description; with `current`, revise that skill.
+   *
+   * Drafting stores nothing. The skill comes back for review.
+   */
+  async draftSandboxSkill(
+    description: string,
+    current?: Record<string, any> | null
+  ): Promise<{ task_id: string; poll_url: string }> {
+    const response = await this.client.post('/api/v1/sandbox-skills/draft', {
+      description,
+      current: current || undefined,
+    });
+    return response.data;
+  }
+
+  async getSandboxSkillDraft(taskId: string): Promise<SandboxSkillDraftStatus> {
+    const response = await this.client.get(
+      `/api/v1/sandbox-skills/draft/${taskId}`
+    );
+    return response.data;
+  }
+
+  async listSandboxSkillImages(): Promise<SandboxSkillImageListResponse> {
+    const response = await this.client.get('/api/v1/sandbox-skills/images');
+    return response.data;
+  }
+
+  /** Proposes an image. Nothing is built until an administrator says so. */
+  async proposeSandboxSkillImage(payload: {
+    slug: string;
+    dockerfile: string;
+    description?: string;
+  }): Promise<SandboxSkillImage> {
+    const response = await this.client.post(
+      '/api/v1/sandbox-skills/images',
+      payload
+    );
+    return response.data;
+  }
+
+  async buildSandboxSkillImage(imageId: string): Promise<SandboxSkillImage> {
+    const response = await this.client.post(
+      `/api/v1/sandbox-skills/images/${imageId}/build`
+    );
+    return response.data;
+  }
+
+  async rejectSandboxSkillImage(imageId: string): Promise<SandboxSkillImage> {
+    const response = await this.client.post(
+      `/api/v1/sandbox-skills/images/${imageId}/reject`
+    );
     return response.data;
   }
 

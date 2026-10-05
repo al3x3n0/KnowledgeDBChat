@@ -15,11 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.document import Document, DocumentSource
-from app.models.memory import UserPreferences
 from app.models.user import User
 from app.services.arxiv_search_service import ArxivSearchService
 from app.services.auth_service import get_current_user
-from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.llm_service import LLMService, load_user_llm_settings
 
 router = APIRouter()
 
@@ -149,17 +148,7 @@ async def translate_arxiv_query(
     try:
         llm = LLMService()
         # Use per-user LLM settings for query translation.
-        user_settings = None
-        try:
-            prefs_res = await db.execute(
-                select(UserPreferences).where(
-                    UserPreferences.user_id == current_user.id
-                )
-            )
-            prefs = prefs_res.scalar_one_or_none()
-            user_settings = UserLLMSettings.from_preferences(prefs) if prefs else None
-        except Exception:
-            user_settings = None
+        user_settings = await load_user_llm_settings(db, current_user.id)
         raw = await llm.generate_response(
             query=prompt,
             context=None,

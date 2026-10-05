@@ -35,6 +35,7 @@ from app.agent_core.tool_specs import (
     memory,
     orchestration,
     research,
+    skills,
 )
 from app.agent_core.tool_specs.spec import ToolSpec
 
@@ -52,6 +53,7 @@ _MODULES = (
     agent_ops,
     data_analysis,
     measurement,
+    skills,
 )
 
 TOOL_SPECS: Tuple[ToolSpec, ...] = tuple(

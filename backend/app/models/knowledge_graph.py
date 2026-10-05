@@ -126,11 +126,12 @@ class Relationship(Base):
         nullable=False,
     )
 
-    # Provenance
+    # Provenance. NULL for a relationship somebody stated rather than one
+    # extracted from a document.
     document_id = Column(
         UUID(as_uuid=True),
         ForeignKey("documents.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     chunk_id = Column(
         UUID(as_uuid=True),

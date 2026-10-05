@@ -371,12 +371,8 @@ async def training_progress_websocket(
     job_id: UUID,
 ):
     """WebSocket endpoint for real-time training progress updates."""
-    import json
-
-    import redis.asyncio as redis
     from sqlalchemy import and_, select
 
-    from app.core.config import settings
     from app.core.database import AsyncSessionLocal
     from app.models.training_job import TrainingJob
     from app.utils.websocket_auth import require_websocket_auth
@@ -406,60 +402,18 @@ async def training_progress_websocket(
         await websocket.close(code=4004, reason="Training job not found")
         return
 
-    # Subscribe to progress channel
-    redis_client = None
-    pubsub = None
-    channel = f"training_job:{job_id}:progress"
+    from app.utils.websocket_progress import forward_progress, status_is_terminal
 
-    try:
-        redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
-        pubsub = redis_client.pubsub()
-        await pubsub.subscribe(channel)
-
-        # Send initial state
-        await websocket.send_json(
-            {
-                "type": "connected",
-                "job_id": str(job_id),
-                "status": job.status,
-                "progress": job.progress,
-            }
-        )
-
-        async for message in pubsub.listen():
-            if message["type"] != "message":
-                continue
-
-            data = message["data"]
-            await websocket.send_text(data)
-
-            # Close on terminal state updates
-            try:
-                payload = json.loads(data)
-                if payload.get("type") == "progress" and payload.get("status") in (
-                    "completed",
-                    "failed",
-                    "cancelled",
-                ):
-                    break
-            except Exception:
-                pass
-
-    except WebSocketDisconnect:
-        return
-    except Exception as e:
-        try:
-            await websocket.close(code=1011, reason=str(e))
-        except Exception:
-            pass
-    finally:
-        try:
-            if pubsub:
-                await pubsub.unsubscribe(channel)
-        except Exception:
-            pass
-        try:
-            if redis_client:
-                await redis_client.close()
-        except Exception:
-            pass
+    await forward_progress(
+        websocket,
+        f"training_job:{job_id}:progress",
+        initial={
+            "type": "connected",
+            "job_id": str(job_id),
+            "status": job.status,
+            "progress": job.progress,
+        },
+        # Only a progress message ends the stream; a log line that happens to
+        # carry a status does not.
+        is_terminal=lambda m: m.get("type") == "progress" and status_is_terminal(m),
+    )

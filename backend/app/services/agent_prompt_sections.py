@@ -189,6 +189,68 @@ def format_critic(state: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def format_reasoning_notes(state: dict[str, Any]) -> str:
+    """What the run has recorded with its reasoning tools.
+
+    `reflect`, `hypothesize`, `weigh_evidence` and `critique_plan` each say
+    they keep something "for future reference" and wrote it to state, where
+    nothing read it: the next step never saw a hypothesis it was tracking or
+    a blind spot it had named. Recent entries only, and short, since this
+    rides in every prompt.
+    """
+    lines: list[str] = []
+
+    hypotheses = [h for h in state.get("hypotheses") or [] if isinstance(h, dict)]
+    if hypotheses:
+        lines.append("Hypotheses being tracked:")
+        for h in hypotheses[-8:]:
+            lines.append(
+                f"- {h.get('id', '?')} [{h.get('status', 'proposed')}] "
+                f"{str(h.get('hypothesis') or '')[:240]}"
+            )
+
+    ledger = [e for e in state.get("evidence_ledger") or [] if isinstance(e, dict)]
+    if ledger:
+        lines.append("Evidence weighed:")
+        for e in ledger[-5:]:
+            lines.append(
+                f"- {str(e.get('claim') or '')[:240]} -> {e.get('verdict', 'neutral')}"
+            )
+
+    reflections = [r for r in state.get("reflections") or [] if isinstance(r, dict)]
+    if reflections:
+        latest = reflections[-1]
+        lines.append(
+            f"Last reflection ({str(latest.get('topic') or '')[:120]}): "
+            f"{str(latest.get('assessment') or '')[:300]}"
+        )
+        for label, key in (
+            ("Blind spot", "blind_spots"),
+            ("Correction", "suggested_corrections"),
+        ):
+            for item in (latest.get(key) or [])[:3]:
+                lines.append(f"- {label}: {str(item)[:200]}")
+
+    critiques = [c for c in state.get("plan_critiques") or [] if isinstance(c, dict)]
+    if critiques:
+        latest = critiques[-1]
+        lines.append(
+            f"Last plan critique ({latest.get('severity', 'moderate')}): "
+            f"{str(latest.get('plan_summary') or '')[:240]}"
+        )
+        for label, key in (
+            ("Weakness", "weaknesses"),
+            ("Missing step", "missing_steps"),
+            ("Assumption challenged", "assumptions_challenged"),
+        ):
+            for item in (latest.get(key) or [])[:3]:
+                lines.append(f"- {label}: {str(item)[:200]}")
+
+    if not lines:
+        return ""
+    return "REASONING NOTES (recorded by this run):\n" + "\n".join(lines)
+
+
 def format_tool_stats(state: dict[str, Any]) -> str:
     """Render per-tool outcomes as prompt hints."""
     current_stats = (
@@ -343,3 +405,36 @@ def format_execution_graph(runtime: Any) -> str:
         for item in recommendations[:4]:
             lines.append(f"  - {str(item)[:220]}")
     return "\n".join(lines)
+
+
+def format_unmet_contract(state: dict[str, Any]) -> str:
+    """What the contract still owes, for the run that has to satisfy it.
+
+    The executor evaluates the contract every iteration to decide whether the
+    run may stop, and that answer reached the finalizer and a tool the model
+    had to think of calling -- but never the model itself. Measured on a live
+    run: it produced every piece of evidence its contract named, then spent
+    eight of eighteen actions writing progress reports and re-reading its own
+    findings, because nothing told it the one remaining requirement was a call
+    to `set_output_schema`.
+
+    Names the remedy, not only the gap: a requirement a run cannot act on is
+    the same as one it cannot see.
+    """
+    contract = state.get("goal_contract_last")
+    if not isinstance(contract, dict) or not contract.get("enabled"):
+        return ""
+    if contract.get("satisfied"):
+        return ""
+    missing = contract.get("missing")
+    if not isinstance(missing, list) or not missing:
+        return ""
+    rendered = ", ".join(str(item) for item in missing[:8])
+    return (
+        "CONTRACT NOT YET SATISFIED -- this run cannot complete until these "
+        f"are produced: {rendered}. A `result_key:<name>` entry means the run "
+        "must still write that result: `structured_output` comes from calling "
+        "set_output_schema with your answer in it. A `finding_type:<name>` "
+        "entry means a tool that produces that evidence has not run yet. "
+        "Address these before reporting progress again."
+    )

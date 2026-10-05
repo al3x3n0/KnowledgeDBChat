@@ -404,12 +404,7 @@ class AuthService:
 
     async def require_admin(self, current_user: User) -> User:
         """Require admin privileges."""
-        if not current_user.is_admin():
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Admin privileges required",
-            )
-        return current_user
+        return ensure_admin(current_user)
 
     async def update_password(
         self, user: User, current_password: str, new_password: str, db: AsyncSession
@@ -428,6 +423,37 @@ class AuthService:
 
 # Global instance for dependency injection
 auth_service = AuthService()
+
+
+def is_admin(user: Optional[User]) -> bool:
+    """Whether this user is an administrator. The one place that decides.
+
+    This was answered in about a dozen ways: the model's method, a raw
+    comparison of the role string in seven places, three private helpers and
+    a second ``require_admin``. One of the variants named the method without
+    calling it -- a bound method, always truthy -- and it guarded three
+    pipeline routes that therefore let any signed-in user read or restart
+    anyone's run. A check that exists in one form cannot be written wrongly
+    in another; ``tests/test_one_admin_check.py`` refuses the other forms.
+
+    ``None`` is not an administrator, so a caller holding an optional user
+    needs no guard of its own.
+    """
+    return bool(user is not None and user.is_admin())
+
+
+def ensure_admin(
+    user: Optional[User], detail: str = "Admin privileges required"
+) -> User:
+    """``user``, or a 403. For a handler that already has the user in hand.
+
+    Use ``Depends(require_admin)`` when the whole route is for administrators;
+    this is for the route that is open to everyone and has one admin-only
+    branch.
+    """
+    if not is_admin(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
+    return user
 
 
 async def get_current_user(

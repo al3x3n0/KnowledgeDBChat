@@ -50,7 +50,13 @@ import PipelineGraph from '../components/pipelines/PipelineGraph';
 import PipelineRunProgress from '../components/pipelines/PipelineRunProgress';
 import StageInspector from '../components/pipelines/StageInspector';
 import { apiClient } from '../services/api';
-import type { PipelineCheck, PipelineVocabulary, SavedPipeline } from '../types';
+import type {
+  ChainImportCandidate,
+  ContractSuggestion,
+  PipelineCheck,
+  PipelineVocabulary,
+  SavedPipeline,
+} from '../types';
 
 const STORAGE_KEY = 'pipeline_studio_draft_v1';
 
@@ -289,6 +295,84 @@ const PipelineStudioPage: React.FC = () => {
     [openId, saved]
   );
 
+  /** Saved chains that could become pipelines.
+   *
+   *  Chains are being retired as a way to author work: a chain says *when* the
+   *  next step fires, a pipeline says *what must be true* when a stage is done.
+   *  They produce the same runtime, so this is a rewrite of the description
+   *  rather than a migration of anything running. Empty for anyone with no
+   *  chains, which is why the panel hides itself rather than explaining. */
+  const [importable, setImportable] = useState<ChainImportCandidate[]>([]);
+  const [importing, setImporting] = useState<string | null>(null);
+  /** Evidence each contract-less stage might be asking for.
+   *
+   *  Naming the evidence is the hardest step in writing a pipeline: it means
+   *  knowing which types exist, which tool makes each, and what the stage's job
+   *  type may call. These are proposals with their reasons attached, never
+   *  applied on their own. */
+  const [contractHints, setContractHints] = useState<Record<string, ContractSuggestion[]>>({});
+  /** Values for a chain's {placeholders}, keyed chain id then variable name.
+   *  A chain is often a template and a pipeline goal is literal, so these have
+   *  to be supplied at import or the goal keeps the braces. */
+  const [chainVars, setChainVars] = useState<Record<string, Record<string, string>>>({});
+
+  useEffect(() => {
+    const spec = parsed.value;
+    if (!spec) {
+      setContractHints({});
+      return;
+    }
+    let live = true;
+    // Debounced: this follows the editor, and a request per keystroke would be
+    // noise for an answer that only changes when a goal does.
+    const timer = window.setTimeout(async () => {
+      try {
+        const result = await apiClient.suggestContracts(spec);
+        if (live) setContractHints(result.suggestions || {});
+      } catch {
+        if (live) setContractHints({});
+      }
+    }, 400);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [parsed.value]);
+
+  /** Write a suggested evidence type into a stage's contract.
+   *
+   *  Edits the text the author is looking at rather than some parallel state:
+   *  the spec in the editor stays the one true version of what they have said.
+   */
+  const applyContractHint = useCallback(
+    (stageId: string, findingType: string) => {
+      const spec = parsed.value as any;
+      if (!spec) return;
+      const next = JSON.parse(JSON.stringify(spec));
+      const stage = (next.stages || []).find((s: any) => s?.id === stageId);
+      if (!stage) return;
+      const contract = (stage.contract && typeof stage.contract === 'object')
+        ? stage.contract
+        : {};
+      const existing: string[] = Array.isArray(contract.required_finding_types)
+        ? contract.required_finding_types
+        : [];
+      if (existing.includes(findingType)) return;
+      stage.contract = { ...contract, required_finding_types: [...existing, findingType] };
+      setSource(JSON.stringify(next, null, 2));
+    },
+    [parsed.value]
+  );
+
+  const refreshImportable = useCallback(async () => {
+    try {
+      const survey = await apiClient.surveyChainsForImport();
+      setImportable(survey.candidates || []);
+    } catch {
+      // Nothing to say: the studio works without the panel.
+    }
+  }, []);
+
   const refreshSaved = useCallback(async () => {
     try {
       setSaved(await apiClient.listSavedPipelines());
@@ -300,7 +384,40 @@ const PipelineStudioPage: React.FC = () => {
 
   useEffect(() => {
     refreshSaved();
-  }, [refreshSaved]);
+    refreshImportable();
+  }, [refreshSaved, refreshImportable]);
+
+  const handleImportChain = useCallback(
+    async (candidate: ChainImportCandidate) => {
+      setImporting(candidate.chain_id);
+      try {
+        const pipeline = await apiClient.importChainAsPipeline(
+          candidate.chain_id,
+          undefined,
+          chainVars[candidate.chain_id]
+        );
+        toast.success(
+          `Imported ${pipeline.name}. ${candidate.contracts_to_write} stage${
+            candidate.contracts_to_write === 1 ? '' : 's'
+          } still need a contract.`
+        );
+        await refreshSaved();
+        await refreshImportable();
+        setOpenId(pipeline.id);
+        setSource(JSON.stringify(pipeline.spec, null, 2));
+      } catch (error: any) {
+        const detail = error?.response?.data?.detail;
+        toast.error(
+          typeof detail === 'object' && detail?.blockers?.length
+            ? `${candidate.name}: ${detail.blockers[0].step} cannot be a stage`
+            : `Could not import ${candidate.name}`
+        );
+      } finally {
+        setImporting(null);
+      }
+    },
+    [refreshSaved, refreshImportable, chainVars]
+  );
 
   const handleSave = useCallback(async () => {
     if (!parsed.value) {
@@ -549,6 +666,97 @@ const PipelineStudioPage: React.FC = () => {
         </Button>
       </div>
 
+      {importable.length > 0 && (
+        <div
+          className="flex-none rounded-lg border border-amber-500/40 bg-amber-500/5 p-3"
+          aria-label="Job chains you can import"
+        >
+          <div className="text-xs font-medium text-gray-800 mb-1">
+            Job chains you can bring here
+          </div>
+          <p className="text-xs text-gray-600 mb-2.5 max-w-prose">
+            A chain says when the next step fires; a pipeline says what must be
+            true when a stage is done. Importing rewrites the description — it
+            copies, and leaves the chain running.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {importable.map((candidate) => {
+              // A server predating this field omits it; the page still works,
+              // it just has no values to ask for.
+              const variables = candidate.variables || [];
+              return (
+              <div
+                key={candidate.chain_id}
+                className={`flex items-center gap-2 pl-2.5 pr-1 py-1 rounded-full border text-xs ${
+                  candidate.convertible
+                    ? 'border-gray-300 bg-gray-50'
+                    : 'border-rose-300 bg-rose-50'
+                }`}
+                title={
+                  candidate.convertible
+                    ? `${candidate.steps} steps · ${candidate.contracts_to_write} contract${
+                        candidate.contracts_to_write === 1 ? '' : 's'
+                      } to write after importing`
+                    : candidate.blockers
+                        .map((b) => `${b.step} (${b.trigger}): ${b.reason}`)
+                        .join('; ')
+                }
+              >
+                <span className="font-medium text-gray-800">{candidate.name}</span>
+                {candidate.convertible ? (
+                  <>
+                    <span className="text-gray-500">
+                      {candidate.contracts_to_write} contract
+                      {candidate.contracts_to_write === 1 ? '' : 's'} to write
+                    </span>
+                    {/* A chain is often a template. Its goals keep the braces
+                        unless the values are given here. */}
+                    {variables.map((variable) => (
+                      <input
+                        key={variable}
+                        className="w-28 px-1.5 py-0.5 rounded border border-gray-300 bg-white text-xs"
+                        placeholder={variable}
+                        aria-label={`${variable} for ${candidate.name}`}
+                        value={chainVars[candidate.chain_id]?.[variable] || ''}
+                        onChange={(e) =>
+                          setChainVars((prev) => ({
+                            ...prev,
+                            [candidate.chain_id]: {
+                              ...(prev[candidate.chain_id] || {}),
+                              [variable]: e.target.value,
+                            },
+                          }))
+                        }
+                      />
+                    ))}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={
+                        importing === candidate.chain_id ||
+                        variables.some(
+                          (v) => !(chainVars[candidate.chain_id]?.[v] || '').trim()
+                        )
+                      }
+                      onClick={() => handleImportChain(candidate)}
+                    >
+                      {importing === candidate.chain_id ? 'Importing…' : 'Import'}
+                    </Button>
+                  </>
+                ) : (
+                  // Named rather than hidden: a chain that cannot be a pipeline
+                  // is a thing to decide about, not an error to suppress.
+                  <span className="text-rose-700">
+                    {candidate.blockers[0]?.step} needs {candidate.blockers[0]?.trigger}
+                  </span>
+                )}
+              </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {saved.length > 0 && (
         <div className="flex-none flex flex-wrap gap-2" aria-label="Saved pipelines">
           {saved.map((pipeline) => (
@@ -751,6 +959,45 @@ const PipelineStudioPage: React.FC = () => {
                       </li>
                     ))}
                   </ul>
+                </Panel>
+              )}
+
+              {Object.keys(contractHints).length > 0 && (
+                <Panel title="Evidence these stages might need" tone="plain">
+                  <p className="text-xs text-gray-600 mb-2.5">
+                    Naming the evidence a stage must produce is the step that
+                    decides whether it can stop honestly. These come from the
+                    words the goal and the producing tool share — check the
+                    reason before taking one.
+                  </p>
+                  <div className="space-y-2.5">
+                    {Object.entries(contractHints).map(([stageId, hints]) => (
+                      <div key={stageId}>
+                        <div className="text-xs font-medium text-gray-800 mb-1">
+                          {stageId}
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {hints.map((hint) => (
+                            <button
+                              key={hint.finding_type}
+                              type="button"
+                              onClick={() => applyContractHint(stageId, hint.finding_type)}
+                              className="px-2 py-1 rounded border border-gray-300 bg-white text-xs
+                                         text-left hover:border-primary-500 hover:bg-primary-500/5
+                                         focus:outline-none focus:ring-2 focus:ring-primary-500/40"
+                              /* The reason, not just the name: a suggestion
+                                 matching one generic word is one to dismiss,
+                                 and that is only visible if it is shown. */
+                              title={`produced by ${hint.produced_by} · matched ${hint.matched.join(', ')}`}
+                            >
+                              <span className="font-mono">{hint.finding_type}</span>
+                              <span className="text-gray-500"> · {hint.matched.join(' ')}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </Panel>
               )}
 

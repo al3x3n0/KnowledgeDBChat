@@ -1,9 +1,13 @@
 import React from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from 'react-query';
 import type { RenderResult } from '@testing-library/react';
 import AutonomousAgentsPage from '../AutonomousAgentsPage';
+import ResearchInboxPage from '../ResearchInboxPage';
+import CodingBacklogPage from '../CodingBacklogPage';
+import DomainProfilesPage from '../DomainProfilesPage';
+import ResearchFleetPage from '../ResearchFleetPage';
 import {
   buildBugTriageSwarmQuickStartPayload,
   buildDomainResearchQuickStartPayload,
@@ -301,6 +305,7 @@ const renderWithProviders = async (
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
           <AutonomousAgentsPage />
+          <LocationProbe />
         </AuthProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -308,6 +313,183 @@ const renderWithProviders = async (
   renderedViews.push(view);
   await flushMockPromises();
   return view;
+};
+
+/**
+ * The Research Inbox left the Runs page for the Library. These tests still
+ * describe the same behaviour, so they render the page it moved to rather than
+ * clicking a tab that no longer exists.
+ */
+/**
+ * Where the page navigated to. The inbox drilldowns used to switch a tab in
+ * place; they now leave for /research/inbox, so the URL they build IS the
+ * behaviour worth asserting -- it is the whole of what one page hands the other.
+ */
+let lastLocation: { pathname: string; search: string } = { pathname: '', search: '' };
+const LocationProbe: React.FC = () => {
+  const location = useLocation();
+  lastLocation = { pathname: location.pathname, search: location.search };
+  return null;
+};
+
+const inboxDrilldownParams = () => Object.fromEntries(new URLSearchParams(lastLocation.search));
+
+/** Coding Backlog moved to its own destination beside Patch PRs. */
+/**
+ * Domain profiles and research fleets are destinations of their own now -- the
+ * profile in Settings, the fleet in the R&D door. These tests describe the same
+ * behaviour, so they render the page each moved to.
+ */
+const renderOpportunityPage = async (
+  Page: React.ComponentType,
+  entry: string,
+  options?: { documentSources?: typeof defaultDocumentSources }
+) => {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, cacheTime: 0 } },
+  });
+  if (options?.documentSources) {
+    queryClient.setQueryData(['document-sources', 'all'], options.documentSources);
+  }
+  const view = render(
+    <MemoryRouter
+      initialEntries={[entry]}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
+          <Page />
+          <LocationProbe />
+        </AuthProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  renderedViews.push(view);
+  await flushMockPromises();
+  return view;
+};
+
+const renderDomainProfilesPage = async (o?: { documentSources?: typeof defaultDocumentSources }) =>
+  renderOpportunityPage(DomainProfilesPage, '/settings/domain-profiles', o);
+
+const renderResearchFleetPage = async (o?: { documentSources?: typeof defaultDocumentSources }) =>
+  renderOpportunityPage(ResearchFleetPage, '/research/fleet', o);
+
+const renderCodingBacklogPage = async (
+  options?: { documentSources?: typeof defaultDocumentSources }
+) => {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, cacheTime: 0 } },
+  });
+  if (options?.documentSources) {
+    queryClient.setQueryData(['document-sources', 'all'], options.documentSources);
+  }
+  const view = render(
+    <MemoryRouter
+      initialEntries={['/coding-backlog']}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
+          <CodingBacklogPage />
+          <LocationProbe />
+        </AuthProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  renderedViews.push(view);
+  await flushMockPromises();
+  return view;
+};
+
+const renderInboxPage = async (
+  initialEntry: string = '/research/inbox',
+  options?: { documentSources?: typeof defaultDocumentSources }
+) => {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, cacheTime: 0 } },
+  });
+  if (options?.documentSources) {
+    queryClient.setQueryData(['document-sources', 'all'], options.documentSources);
+  }
+  const view = render(
+    <MemoryRouter
+      initialEntries={[initialEntry]}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
+          <ResearchInboxPage />
+          <LocationProbe />
+        </AuthProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  renderedViews.push(view);
+  await flushMockPromises();
+  return view;
+};
+
+/**
+ * Follow a drilldown across the page boundary: assert Runs navigated to the
+ * inbox, then render the inbox at exactly that URL. The handoff is the URL, so
+ * this asserts the contract rather than assuming both halves share state.
+ */
+/**
+ * Follow a link to whichever opportunity surface it points at. The inbox, the
+ * operator queue and the decision trace all link to a profile or a portfolio,
+ * and all three are now on other pages: assert the URL, then render the page it
+ * names. The URL is the contract between them.
+ */
+const followToOpportunityPage = async (expectedTab: 'domain' | 'fleet') => {
+  const path = expectedTab === 'domain' ? '/settings/domain-profiles' : '/research/fleet';
+  await waitFor(() => expect(lastLocation.pathname).toBe(path));
+  const target = `${lastLocation.pathname}${lastLocation.search}`;
+  cleanupRenderedViews();
+  await renderOpportunityPage(
+    expectedTab === 'domain' ? DomainProfilesPage : ResearchFleetPage,
+    target
+  );
+};
+
+/**
+ * Tick an inbox row's checkbox by the row's title.
+ *
+ * These selections used to be positional -- getAllByRole('checkbox')[1] -- which
+ * described the chrome around the inbox as much as the rows themselves, so they
+ * broke when the inbox moved to its own page without any row behaviour changing.
+ */
+const selectInboxRow = (title: string) => {
+  const row = screen.getByText(title).closest('div[class*="border"]') as HTMLElement;
+  fireEvent.click(within(row).getAllByRole('checkbox')[0]);
+};
+
+const cleanupRenderedViews = () => {
+  while (renderedViews.length > 0) renderedViews.pop()?.unmount();
+};
+
+/**
+ * Assert the drilldown's handoff URL without rendering the inbox afterwards.
+ *
+ * Two customer-scoped drilldowns cannot re-render the inbox inside the same
+ * test: this harness mounts one page directly rather than routing, so the Runs
+ * page stays mounted at a URL that is no longer its own and spins (measured: an
+ * unbounded render loop from one click). The URL is the whole contract between
+ * the two pages, so asserting it is the part that belongs to Runs; that the
+ * inbox renders a drilldown correctly is covered by the four monitor-scoped
+ * drilldown tests, which still render it.
+ */
+const expectInboxHandoff = async (expectedParams: Record<string, string>) => {
+  await waitFor(() => expect(lastLocation.pathname).toBe('/research/inbox'));
+  expect(inboxDrilldownParams()).toEqual(expectedParams);
+};
+
+const followInboxDrilldown = async (expectedParams?: Record<string, string>) => {
+  await waitFor(() => expect(lastLocation.pathname).toBe('/research/inbox'));
+  if (expectedParams) expect(inboxDrilldownParams()).toEqual(expectedParams);
+  const target = `${lastLocation.pathname}${lastLocation.search}`;
+  cleanupRenderedViews();
+  await renderInboxPage(target);
 };
 
 const expectJobHeading = async (name: string) => {
@@ -2904,6 +3086,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
 
     fireEvent.click(screen.getByText('Validation Run: Compiler hotspot: validation blocked'));
     fireEvent.click(screen.getByRole('button', { name: 'Open Domain' }));
+    await followToOpportunityPage('domain');
 
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     const row = await screen.findByText('Compiler hotspot');
@@ -3444,11 +3627,10 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       offset: 0,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
+    await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler follow-up source')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Open Target' }));
+    await followToOpportunityPage('domain');
 
     await waitFor(() => {
       expect(apiClient.listDomainResearchProfiles).toHaveBeenCalled();
@@ -3487,11 +3669,10 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       offset: 0,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
+    await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Fleet follow-up source')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Open Target' }));
+    await followToOpportunityPage('fleet');
 
     await waitFor(() => {
       expect(apiClient.listResearchPortfolios).toHaveBeenCalled();
@@ -3526,9 +3707,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       offset: 0,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
+    await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Detached follow-up source')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Open Target' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Open Follow-up' })).toBeInTheDocument();
@@ -3596,9 +3775,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       follow_up_job_id: 'job-follow-up-approve-1',
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
+    await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Queued compiler follow-up')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Inbox follow-up note for Queued compiler follow-up'), {
       target: { value: 'Looks safe to launch' },
@@ -3681,9 +3858,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       follow_up_operator_decision: 'rejected',
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
+    await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Risky compiler follow-up')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Inbox follow-up note for Risky compiler follow-up'), {
       target: { value: 'Need stronger evidence' },
@@ -3730,9 +3905,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       offset: 0,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
+    await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Completed compiler follow-up')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Approve Follow-up' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Reject Follow-up' })).not.toBeInTheDocument();
@@ -3830,12 +4003,10 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       ],
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
+    await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Queued compiler follow-up A')).toBeInTheDocument();
-    fireEvent.click(screen.getAllByRole('checkbox')[1]);
-    fireEvent.click(screen.getAllByRole('checkbox')[2]);
+    selectInboxRow('Queued compiler follow-up A');
+    selectInboxRow('Queued compiler follow-up B');
     fireEvent.change(screen.getByPlaceholderText('Bulk follow-up note (optional)'), {
       target: { value: 'Approve both compiler launches' },
     });
@@ -3915,12 +4086,10 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       ],
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
+    await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Queued fleet follow-up A')).toBeInTheDocument();
-    fireEvent.click(screen.getAllByRole('checkbox')[1]);
-    fireEvent.click(screen.getAllByRole('checkbox')[2]);
+    selectInboxRow('Queued fleet follow-up A');
+    selectInboxRow('Queued fleet follow-up B');
     fireEvent.change(screen.getByPlaceholderText('Bulk follow-up note (optional)'), {
       target: { value: 'Reject until evidence improves' },
     });
@@ -3991,12 +4160,10 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       offset: 0,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
+    await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Queued domain follow-up')).toBeInTheDocument();
-    fireEvent.click(screen.getAllByRole('checkbox')[1]);
-    fireEvent.click(screen.getAllByRole('checkbox')[2]);
+    selectInboxRow('Queued domain follow-up');
+    selectInboxRow('Queued fleet follow-up');
     await flushMockPromises();
 
     expect(screen.getByRole('button', { name: 'Approve Follow-ups' })).toBeDisabled();
@@ -4062,12 +4229,10 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       ],
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
+    await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Failed follow-up A')).toBeInTheDocument();
-    fireEvent.click(screen.getAllByRole('checkbox')[1]);
-    fireEvent.click(screen.getAllByRole('checkbox')[2]);
+    selectInboxRow('Failed follow-up A');
+    selectInboxRow('Cancelled follow-up B');
     fireEvent.change(screen.getByPlaceholderText('Bulk follow-up note (optional)'), {
       target: { value: 'Retry both terminal follow-ups' },
     });
@@ -4129,12 +4294,10 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       offset: 0,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
+    await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Failed follow-up')).toBeInTheDocument();
-    fireEvent.click(screen.getAllByRole('checkbox')[1]);
-    fireEvent.click(screen.getAllByRole('checkbox')[2]);
+    selectInboxRow('Failed follow-up');
+    selectInboxRow('Pending follow-up');
     await flushMockPromises();
 
     expect(screen.getByRole('button', { name: 'Relaunch Follow-ups' })).toBeDisabled();
@@ -4364,7 +4527,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     });
   });
 
-  shardIt('renders customer fleet cards and drills into queue and inbox by customer', async () => {
+  shardIt('renders customer fleet cards and drills into the queue by customer', async () => {
     await renderWithProviders('/autonomous-agents');
 
     fireEvent.click(await screen.findByText('Autonomy Health'));
@@ -4387,20 +4550,11 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       );
     });
 
-    fireEvent.click(screen.getByText('Autonomy Health'));
-    fireEvent.click(screen.getAllByRole('button', { name: 'View Inbox' })[0]);
-
-    await waitFor(() => {
-      expect(apiClient.listResearchInboxItems).toHaveBeenCalledWith({
-        status: 'accepted',
-        item_type: undefined,
-        customer: 'Acme',
-        job_id: undefined,
-        q: undefined,
-        limit: 100,
-        offset: 0,
-      });
-    });
+    // The inbox half of this test moved out when the inbox became its own page:
+    // driving a queue drilldown and then an inbox drilldown in one test means
+    // navigating away from a page this harness keeps mounted, which spins. The
+    // customer-card inbox handoff is asserted by "drills a customer
+    // cancelled-outcome metric into accepted inbox follow-ups".
   });
 
   shardIt('focuses the top-pressure monitor from a customer fleet card', async () => {
@@ -4477,6 +4631,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     const monitorCard = (await screen.findByRole('heading', { name: 'Acme Monitor' })).closest('.border.rounded-lg.p-4') as HTMLElement;
     fireEvent.click(within(monitorCard).getByRole('button', { name: 'Failed 1' }));
 
+    await followInboxDrilldown();
     await waitFor(() => {
       expect(apiClient.listResearchInboxItems).toHaveBeenCalledWith({
         status: 'accepted',
@@ -4542,22 +4697,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     const customerCard = (await screen.findByRole('heading', { name: 'Beta' })).closest('.border.rounded-lg.p-4') as HTMLElement;
     fireEvent.click(within(customerCard).getByRole('button', { name: 'Cancelled 1' }));
 
-    await waitFor(() => {
-      expect(apiClient.listResearchInboxItems).toHaveBeenCalledWith({
-        status: 'accepted',
-        item_type: undefined,
-        customer: 'Beta',
-        job_id: undefined,
-        q: undefined,
-        limit: 100,
-        offset: 0,
-      });
-    });
-    expect(await screen.findByText('Showing accepted follow-ups for Beta · cancelled outcomes')).toBeInTheDocument();
-    expect(await screen.findByText('Beta cancelled follow-up')).toBeInTheDocument();
-    await waitFor(() => {
-      expect(screen.queryByText('Beta failed follow-up')).not.toBeInTheDocument();
-    });
+    await expectInboxHandoff({ inbox_customer: 'Beta', inbox_health_drilldown: 'cancelled_follow_up', inbox_status: 'accepted' });
   });
 
   shardIt('drills monitor suppressed relaunch pressure into accepted inbox follow-ups', async () => {
@@ -4717,6 +4857,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     const monitorCard = (await screen.findByRole('heading', { name: 'Acme Monitor' })).closest('.border.rounded-lg.p-4') as HTMLElement;
     fireEvent.click(within(monitorCard).getByRole('button', { name: 'Suppressed 1' }));
 
+    await followInboxDrilldown();
     await waitFor(() => {
       expect(apiClient.listResearchInboxItems).toHaveBeenCalledWith({
         status: 'accepted',
@@ -4733,6 +4874,15 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     await waitFor(() => {
       expect(screen.queryByText('Acme ordinary failed relaunch')).not.toBeInTheDocument();
     });
+  });
+
+  shardIt('sends an old ?tab=inbox bookmark to the page the inbox moved to', async () => {
+    // The inbox left Runs for the Library. Links people already have must still
+    // land on it, carrying whatever filters they were saved with.
+    await renderWithProviders('/autonomous-agents?tab=inbox&inbox_customer=Acme&inbox_job=monitor-1');
+
+    await waitFor(() => expect(lastLocation.pathname).toBe('/research/inbox'));
+    expect(inboxDrilldownParams()).toEqual({ inbox_customer: 'Acme', inbox_job: 'monitor-1' });
   });
 
   shardIt('clears the inbox health drilldown context without clearing other inbox filters', async () => {
@@ -4760,7 +4910,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       offset: 0,
     });
 
-    await renderWithProviders('/autonomous-agents?tab=inbox&inbox_customer=Acme&inbox_job=monitor-1&inbox_health_drilldown=failed_follow_up');
+    await renderInboxPage('/research/inbox?inbox_customer=Acme&inbox_job=monitor-1&inbox_health_drilldown=failed_follow_up');
 
     expect(await screen.findByText('Showing accepted follow-ups for Acme · monitor-1 · failed outcomes')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Clear drilldown' }));
@@ -5349,6 +5499,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
 
     fireEvent.click(screen.getAllByText('Open in Inbox')[0]);
 
+    await followInboxDrilldown();
     await waitFor(() => {
       expect(apiClient.listResearchInboxItems).toHaveBeenCalledWith({
         status: 'accepted',
@@ -5400,6 +5551,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
 
     fireEvent.click(screen.getByText('Open in Inbox'));
 
+    await followInboxDrilldown();
     await waitFor(() => {
       expect(apiClient.listResearchInboxItems).toHaveBeenCalledWith({
         status: 'accepted',
@@ -5418,7 +5570,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
   });
 
   shardIt('clears the inbox policy drilldown context without clearing the monitor filter', async () => {
-    await renderWithProviders('/autonomous-agents?tab=inbox&inbox_job=monitor-1&inbox_policy_drilldown=simulated_policy_impact');
+    await renderInboxPage('/research/inbox?inbox_job=monitor-1&inbox_policy_drilldown=simulated_policy_impact');
 
     expect(await screen.findByText('Showing accepted signals for monitor-1 · simulated policy impact')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Clear drilldown' }));
@@ -5839,6 +5991,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     });
 
     fireEvent.click(screen.getByRole('button', { name: 'Open Domain' }));
+    await followToOpportunityPage('domain');
 
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     const row = await screen.findByText('Target domain opportunity');
@@ -6402,9 +6555,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       .mockResolvedValueOnce({ id: 'profile-microarch' });
     apiClient.createResearchPortfolio.mockResolvedValueOnce({ id: 'portfolio-science' });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Seed Compiler + Microarch Pack')).toBeInTheDocument();
 
     fireEvent.click(screen.getByText('Seed Compiler + Microarch Pack'));
@@ -6495,9 +6646,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
   });
 
   shardIt('creates a coding backlog item with the expected payload', async () => {
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Coding Backlog'));
+    await renderCodingBacklogPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Start Backlog')).toBeInTheDocument();
 
     fireEvent.input(screen.getByPlaceholderText('Backlog title'), {
@@ -6579,9 +6728,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     apiClient.performCodingBacklogAction.mockResolvedValueOnce(backlogItem);
     const promptSpy = jest.spyOn(window, 'prompt').mockImplementation(() => null as any);
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Coding Backlog'));
+    await renderCodingBacklogPage({ documentSources: defaultDocumentSources });
     const backlogCard = await screen.findByText('Manual collaboration backlog');
     const card = backlogCard.closest('.border') as HTMLElement;
     fireEvent.change(within(card).getByPlaceholderText('Backlog operator note'), {
@@ -6867,9 +7014,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
   });
 
   shardIt('creates a domain research profile with the expected payload', async () => {
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Start Monitor')).toBeInTheDocument();
 
     fireEvent.input(screen.getByPlaceholderText('Profile title'), {
@@ -7177,9 +7322,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Opportunity queue')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Create Plan'));
 
@@ -7312,9 +7455,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
         total: 1,
       });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Opportunity queue')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Run Experiment'));
 
@@ -7374,9 +7515,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Top opportunities')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Suppress'));
     fireEvent.change(screen.getByLabelText('Fleet suppression note'), { target: { value: 'Low signal duplicate' } });
@@ -7481,9 +7620,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
         total: 1,
       });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Research Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Run Experiment'));
 
@@ -7546,9 +7683,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 2,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Sandboxes')).toBeInTheDocument();
 
     fireEvent.click(screen.getByText('Create custom sandbox profile'));
@@ -7686,9 +7821,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
 
@@ -7805,9 +7938,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
 
@@ -7890,9 +8021,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
 
@@ -7973,9 +8102,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
 
@@ -8041,9 +8168,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
 
@@ -8211,9 +8336,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       follow_up_job_id: 'job-follow-1',
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
 
@@ -8311,9 +8434,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       ],
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     fireEvent.click(await screen.findByText('Latest research ops state'));
     fireEvent.click(screen.getByLabelText('Select Queued compiler follow-up A'));
     fireEvent.click(screen.getByLabelText('Select Queued compiler follow-up B'));
@@ -8378,7 +8499,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents?tab=domain&profileId=profile-1&opportunityId=opp-target', {
+    await renderOpportunityPage(DomainProfilesPage, '/settings/domain-profiles?profileId=profile-1&opportunityId=opp-target', {
       documentSources: defaultDocumentSources,
     });
 
@@ -8436,9 +8557,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
     const blockedSection = screen.getByText('Blocked opportunities').closest('.bg-white') as HTMLElement;
@@ -8493,9 +8612,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     const card = screen.getByText('Compiler Frontier').closest('.border') as HTMLElement;
     fireEvent.click(within(card).getByText('Latest research ops state'));
@@ -8556,9 +8673,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Start Fleet')).toBeInTheDocument();
 
     fireEvent.input(screen.getByPlaceholderText('Portfolio title'), {
@@ -8692,9 +8807,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -8773,9 +8886,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
     fireEvent.click(screen.getAllByRole('button', { name: 'Show details' })[0]);
@@ -8845,9 +8956,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       },
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
     fireEvent.click(screen.getByRole('button', { name: 'Relaunch Follow-up' }));
@@ -8938,9 +9047,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       },
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
     const cooldownSection = screen.getByText('Cooldown opportunities').closest('.bg-white') as HTMLElement;
@@ -9015,9 +9122,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       profile: { id: 'profile-1', latest_summary: {}, opportunities: [] },
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
 
@@ -9092,9 +9197,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       portfolio: { id: 'portfolio-1', latest_summary: {}, opportunities: [] },
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -9169,9 +9272,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       portfolio: { id: 'portfolio-1', latest_summary: {}, opportunities: [] },
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -9253,9 +9354,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       .mockResolvedValueOnce({ profile: { id: 'profile-1', latest_summary: {}, opportunities: [] } })
       .mockResolvedValueOnce({ profile: { id: 'profile-1', latest_summary: {}, opportunities: [] } });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
 
@@ -9348,9 +9447,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       .mockResolvedValueOnce({ portfolio: { id: 'portfolio-1', latest_summary: {}, opportunities: [] } })
       .mockResolvedValueOnce({ portfolio: { id: 'portfolio-1', latest_summary: {}, opportunities: [] } });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -9445,9 +9542,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       .mockResolvedValueOnce({ portfolio: { id: 'portfolio-1', latest_summary: {}, opportunities: [] } })
       .mockResolvedValueOnce({ portfolio: { id: 'portfolio-1', latest_summary: {}, opportunities: [] } });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -9538,9 +9633,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -9635,9 +9728,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       follow_up_operator_decision: 'rejected',
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -9735,9 +9826,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       ],
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     fireEvent.click(await screen.findByText('Portfolio state'));
     fireEvent.click(screen.getByLabelText('Select Queued fleet follow-up A'));
     fireEvent.click(screen.getByLabelText('Select Queued fleet follow-up B'));
@@ -9808,9 +9897,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       profile: { id: 'profile-1', latest_summary: {}, opportunities: [] },
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
 
@@ -9883,9 +9970,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       portfolio: { id: 'portfolio-1', latest_summary: {}, opportunities: [] },
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -9943,9 +10028,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -10004,9 +10087,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
 
@@ -10079,9 +10160,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       .mockResolvedValueOnce({ profile: { id: 'profile-1', latest_summary: {}, opportunities: [] } })
       .mockResolvedValueOnce({ profile: { id: 'profile-1', latest_summary: {}, opportunities: [] } });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Domain Profiles'));
+    await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Compiler Frontier')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Latest research ops state'));
 
@@ -10177,9 +10256,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       .mockResolvedValueOnce({ portfolio: { id: 'portfolio-1', latest_summary: {}, opportunities: [] } })
       .mockResolvedValueOnce({ portfolio: { id: 'portfolio-1', latest_summary: {}, opportunities: [] } });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -10273,9 +10350,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -10330,7 +10405,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents?tab=fleet&fleetId=portfolio-1&opportunityId=opp-manual-target', {
+    await renderOpportunityPage(ResearchFleetPage, '/research/fleet?fleetId=portfolio-1&opportunityId=opp-manual-target', {
       documentSources: defaultDocumentSources,
     });
 
@@ -10379,9 +10454,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -10447,9 +10520,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
     const waitingSection = screen.getByText('Waiting on evidence change').closest('.bg-white') as HTMLElement;
@@ -10526,9 +10597,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       total: 1,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Research Fleet'));
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Scientific Fleet')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Portfolio state'));
 
@@ -10728,9 +10797,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       offset: 0,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Coding Backlog'));
+    await renderCodingBacklogPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Stabilize save pipeline')).toBeInTheDocument();
 
     fireEvent.click(screen.getByText('Orchestration detail'));
@@ -10749,10 +10816,12 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     expect(await screen.findByText(/Repair jobs: job-a/i)).toBeInTheDocument();
     expect(screen.getByText(/Selected proposal · proposal-a/i)).toBeInTheDocument();
     expect(screen.getAllByText('Copy ID').length).toBeGreaterThan(0);
+    // "Open Job" leaves for Runs now that the backlog is its own destination,
+    // so the URL it builds is what this page is responsible for; fetching the
+    // job is Runs' business and is tested there.
     fireEvent.click(screen.getAllByText('Open Job')[0]);
-    await waitFor(() => {
-      expect(apiClient.getAgentJob).toHaveBeenCalledWith('job-a');
-    });
+    await waitFor(() => expect(lastLocation.pathname).toBe('/autonomous-agents'));
+    expect(new URLSearchParams(lastLocation.search).get('job')).toBe('job-a');
   });
 
   shardIt('sends slice-level operator actions from the backlog tab', async () => {
@@ -10881,9 +10950,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       offset: 0,
     });
 
-    await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
-
-    fireEvent.click(screen.getByText('Coding Backlog'));
+    await renderCodingBacklogPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Manual promotion backlog')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Orchestration detail'));
     fireEvent.click(screen.getByText('Artifacts and lineage'));
@@ -10936,7 +11003,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     // had opened Autonomy Health earlier in the same session. A filter that
     // silently offers nothing depending on where you have been is worse than
     // one that is absent.
-    await renderWithProviders('/autonomous-agents?tab=inbox');
+    await renderInboxPage('/research/inbox');
 
     await waitFor(() =>
       expect(apiClient.getResearchMonitorAnalytics).toHaveBeenCalled()

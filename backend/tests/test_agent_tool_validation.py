@@ -185,3 +185,123 @@ class TestOneItemListWhereANumberIsWanted:
         """bool is an int in Python; [True] meaning 1 top function is not a
         reading anyone intended."""
         assert self._coerced([True]) == [True]
+
+
+class TestAlternativeFields:
+    """A malformed field beside a complete alternative is noise, not a reason
+    to refuse the call -- measured three times on clone_and_index_repo."""
+
+    def test_an_invented_source_id_beside_a_repo_url_is_dropped(self):
+        from app.services.agent_tool_validation import (
+            coerce_tool_params,
+            validate_tool_params,
+        )
+
+        params = {
+            "source_id": "raylib-5.0",
+            "repo_url": "https://github.com/x/y.git",
+            "branch": "5.0",
+        }
+        assert coerce_tool_params("clone_and_index_repo", params) == ["source_id"]
+        assert "source_id" not in params
+        assert validate_tool_params("clone_and_index_repo", params) is None
+
+    def test_a_real_source_id_is_kept(self):
+        from app.services.agent_tool_validation import coerce_tool_params
+
+        params = {
+            "source_id": "7f1c2a4e-3b1d-4c55-9a0e-2d4b6f8a1c3e",
+            "repo_url": "https://x/y.git",
+        }
+        assert "source_id" not in coerce_tool_params("clone_and_index_repo", params)
+        assert params["source_id"].startswith("7f1c")
+
+    def test_an_invented_source_id_ALONE_is_still_refused(self):
+        from app.services.agent_tool_validation import (
+            coerce_tool_params,
+            validate_tool_params,
+        )
+
+        params = {"source_id": "raylib"}
+        coerce_tool_params("clone_and_index_repo", params)
+        assert "should be a UUID" in validate_tool_params(
+            "clone_and_index_repo", params
+        )
+
+    def test_sources_as_a_list_beside_paths_is_dropped(self):
+        from app.services.agent_tool_validation import (
+            coerce_tool_params,
+            validate_tool_params,
+        )
+
+        params = {
+            "sources": ["src/rtextures.c"],
+            "paths": ["src/rtextures.c"],
+            "include_dirs": ["src"],
+        }
+        assert "sources" in coerce_tool_params("scan_for_optimizations", params)
+        assert validate_tool_params("scan_for_optimizations", params) is None
+
+
+class TestBenchInputByValue:
+    def _fix(self, params):
+        from app.services.agent_tool_validation import (
+            coerce_tool_params,
+            validate_tool_params,
+        )
+
+        coerce_tool_params("propose_restructurings", params)
+        return params, validate_tool_params("propose_restructurings", params)
+
+    def test_text_that_is_one_of_the_inputs_becomes_its_index(self):
+        p, problem = self._fix(
+            {
+                "kernel": "k",
+                "driver": "d",
+                "inputs": ["1 1", "4096 4096 40"],
+                "bench_input": "4096 4096 40",
+            }
+        )
+        assert p["bench_input"] == 1 and problem is None
+
+    def test_text_in_no_list_is_appended_and_timed(self):
+        p, problem = self._fix(
+            {
+                "kernel": "k",
+                "driver": "d",
+                "inputs": ["1 1"],
+                "bench_input": "12000 9000 77",
+            }
+        )
+        assert (
+            p["inputs"] == ["1 1", "12000 9000 77"]
+            and p["bench_input"] == 1
+            and problem is None
+        )
+
+    def test_a_numeric_string_is_the_index(self):
+        p, _ = self._fix(
+            {"kernel": "k", "driver": "d", "inputs": ["a", "b"], "bench_input": "1"}
+        )
+        assert p["bench_input"] == 1
+
+
+def test_a_tool_needing_one_of_two_fields_is_never_called_with_none():
+    """The critic's pivot built `{}` for these because neither field is
+    individually required."""
+    from app.services.autonomous_agent_executor import _tool_requires_params
+
+    assert _tool_requires_params("clone_and_index_repo")
+    assert _tool_requires_params("scan_for_optimizations")
+    assert not _tool_requires_params("definitely_not_a_tool")
+
+
+def test_an_empty_alternative_beside_a_complete_one_is_dropped():
+    from app.services.agent_tool_validation import (
+        coerce_tool_params,
+        validate_tool_params,
+    )
+
+    params = {"sources": [], "paths": ["src/rtextures.c"], "include_dirs": ["src"]}
+    assert "sources" in coerce_tool_params("scan_for_optimizations", params)
+    assert validate_tool_params("scan_for_optimizations", params) is None

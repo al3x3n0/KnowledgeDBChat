@@ -125,21 +125,47 @@ def _searchable_text(finding: Dict[str, Any]) -> str:
     return " ".join(parts).lower()
 
 
-def _provenance(job: Any, finding: Dict[str, Any]) -> Dict[str, Any]:
+def _provenance(job: Any, finding: Dict[str, Any], index: int = -1) -> Dict[str, Any]:
     """The finding as the recalling run will see it.
 
     `recalled` is what keeps this out of the contract count, and the job it
     came from is what lets a reader tell a number this run measured from one
     it looked up. Both belong on the record rather than in a log line.
+
+    `ref` addresses the finding itself. A run that discovers a recalled number
+    is wrong can say so only if it can name it, and a job id alone names a job
+    -- the position in its findings list is the rest of the address. Without
+    this a retraction tool would need an identifier nothing hands out.
     """
     recalled = dict(finding)
     recalled["recalled"] = True
     recalled["recalled_from_job"] = str(getattr(job, "id", "") or "")
+    if index >= 0:
+        recalled["ref"] = f"{getattr(job, 'id', '')}#{index}"
     goal = str(getattr(job, "goal", "") or "")
     recalled["recalled_from_goal"] = goal[:200]
     completed = getattr(job, "completed_at", None) or getattr(job, "created_at", None)
     recalled["recalled_at"] = completed.isoformat() if completed else None
     return recalled
+
+
+async def _retracted_finding_refs(db: AsyncSession, user_id: Any) -> set:
+    """Findings this user has withdrawn, as ``<job_id>#<index>``.
+
+    Never fatal: a recall that cannot reach the retraction table returns
+    everything rather than nothing, because losing the corpus is a worse
+    failure than surfacing a withdrawn number -- but it says so in the log.
+    """
+    try:
+        from app.models.agent_retraction import RetractionKind
+        from app.services import agent_retraction_service
+
+        return await agent_retraction_service.retracted_refs(
+            db, user_id, RetractionKind.FINDING
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"Could not read retractions; recalling unfiltered: {exc}")
+        return set()
 
 
 async def recall(
@@ -172,8 +198,17 @@ async def recall(
     result = await db.execute(stmt)
     jobs = list(result.scalars().all())
 
+    # A withdrawn finding is worse than an absent one: it arrives with a job
+    # id and a measurement source, reads as established, and the run citing it
+    # has no way to know it was taken back. Every retraction recorded here was
+    # recorded because the number was wrong -- an inert prefetcher reported as
+    # a 0.78x regression, a sweep reporting saturation it never measured --
+    # and those were exactly the claims a later run would most want.
+    withdrawn = await _retracted_finding_refs(db, user_id)
+
     matched: List[Dict[str, Any]] = []
     seen_types: Dict[str, int] = {}
+    skipped_retracted = 0
     for job in jobs:
         results = getattr(job, "results", None)
         if not isinstance(results, dict):
@@ -181,10 +216,13 @@ async def recall(
         findings = results.get("findings")
         if not isinstance(findings, list):
             continue
-        for finding in findings:
+        for index, finding in enumerate(findings):
             if not _matches(finding, types, subject):
                 continue
-            matched.append(_provenance(job, finding))
+            if f"{job.id}#{index}" in withdrawn:
+                skipped_retracted += 1
+                continue
+            matched.append(_provenance(job, finding, index))
             ftype = str(finding.get("type") or "").strip()
             seen_types[ftype] = seen_types.get(ftype, 0) + 1
             if len(matched) >= limit:
@@ -198,6 +236,7 @@ async def recall(
         "count": len(matched),
         "types_found": seen_types,
         "jobs_scanned": len(jobs),
+        "retracted_skipped": skipped_retracted,
         "note": (
             "These were measured by earlier runs, not by this one. They can be "
             "cited in derived_from, and each says which job produced it. They "

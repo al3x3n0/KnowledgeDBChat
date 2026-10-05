@@ -2,25 +2,15 @@
 API endpoints for repository report and presentation generation.
 """
 
-import re
 from typing import Optional
 from uuid import UUID
 
-from fastapi import (
-    APIRouter,
-    Depends,
-    HTTPException,
-    Query,
-    WebSocket,
-    WebSocketDisconnect,
-    status,
-)
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, status
 from fastapi.responses import Response
 from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.endpoints.users import get_current_user
 from app.core.database import get_db
 from app.models.document import DocumentSource
 from app.models.repo_report import RepoReportJob
@@ -32,43 +22,17 @@ from app.schemas.repo_report import (
     RepoReportJobListResponse,
     RepoReportJobResponse,
 )
+from app.services.auth_service import get_current_user
+from app.services.repo_analysis_service import parse_repo_url as _parse_repo_url
 from app.services.storage_service import StorageService
 
 router = APIRouter()
 
 
-def _parse_repo_url(url: str) -> tuple[str, str, str]:
-    """
-    Parse a repository URL to extract type, owner, and repo name.
-
-    Returns:
-        Tuple of (repo_type, owner, repo_name)
-    """
-    # GitHub patterns
-    github_patterns = [
-        r"github\.com[:/]([^/]+)/([^/?#\s]+)",
-        r"api\.github\.com/repos/([^/]+)/([^/?#\s]+)",
-    ]
-    for pattern in github_patterns:
-        match = re.search(pattern, url)
-        if match:
-            return ("github", match.group(1), match.group(2).removesuffix(".git"))
-
-    # GitLab patterns
-    gitlab_patterns = [
-        r"gitlab\.com[:/]([^/]+)/([^/?#\s]+)",
-        r"gitlab\.[^/]+[:/]([^/]+)/([^/?#\s]+)",
-    ]
-    for pattern in gitlab_patterns:
-        match = re.search(pattern, url)
-        if match:
-            return ("gitlab", match.group(1), match.group(2).removesuffix(".git"))
-
-    raise ValueError(f"Could not parse repository URL: {url}")
-
-
 @router.get("/sections", response_model=AvailableSectionsResponse)
-async def list_available_sections():
+async def list_available_sections(
+    current_user: User = Depends(get_current_user),
+):
     """
     List available sections for repository reports/presentations.
 
@@ -409,56 +373,24 @@ async def repo_report_progress(
         await websocket.close(code=4004, reason="Job not found")
         return
 
-    import redis.asyncio as redis
+    from app.utils.websocket_auth import authorize_owner
 
-    from app.core.config import settings
+    if await authorize_owner(websocket, job.user_id) is None:
+        return
 
-    try:
-        # Subscribe to Redis channel for this job
-        redis_client = redis.from_url(settings.REDIS_URL)
-        pubsub = redis_client.pubsub()
-        channel = f"repo_report:{job_id}:progress"
-        await pubsub.subscribe(channel)
+    from app.utils.websocket_progress import TERMINAL_STATUSES, forward_progress
 
-        # Send initial status
-        await websocket.send_json(
-            {
-                "type": "progress",
-                "progress": job.progress,
-                "stage": job.current_stage or "pending",
-                "status": job.status,
-            }
-        )
-
-        # If already completed/failed, close immediately
-        if job.status in ("completed", "failed", "cancelled"):
-            await websocket.close()
-            return
-
-        # Listen for updates
-        async for message in pubsub.listen():
-            if message["type"] == "message":
-                import json
-
-                data = json.loads(message["data"])
-                await websocket.send_json(data)
-
-                # Close on completion
-                if data.get("status") in ("completed", "failed", "cancelled"):
-                    break
-
-        await pubsub.unsubscribe(channel)
-        await redis_client.close()
-
-    except WebSocketDisconnect:
-        logger.debug(f"WebSocket disconnected for repo report job {job_id}")
-    except Exception as e:
-        logger.error(f"WebSocket error for repo report job {job_id}: {e}")
-    finally:
-        try:
-            await websocket.close()
-        except Exception:
-            pass
+    await forward_progress(
+        websocket,
+        f"repo_report:{job_id}:progress",
+        initial={
+            "type": "progress",
+            "progress": job.progress,
+            "stage": job.current_stage or "pending",
+            "status": job.status,
+        },
+        already_finished=job.status in TERMINAL_STATUSES,
+    )
 
 
 # =============================================================================

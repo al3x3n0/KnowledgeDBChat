@@ -267,3 +267,66 @@ def test_varied_failures_of_different_kinds_do_not_accumulate():
     )
 
     assert result is None
+
+
+def test_a_tool_refusing_its_arguments_is_classified_however_it_is_worded():
+    """The condition is one thing; the wording is whatever the author chose.
+
+    A refusal that lands in "unknown" is one the diagnosis cannot describe
+    back to the model, so the bucket has to survive the synonym the tool
+    happened to use.
+    """
+    for wording in (
+        "At least two kernels are needed",
+        "kernels must be a list of two or more",
+        "field 'variant' is required",
+        "invalid kernel specification",
+    ):
+        assert diagnosis.classify_error(wording) == "invalid_argument", wording
+
+
+def test_a_specific_failure_outranks_the_generic_argument_bucket():
+    """Both patterns match; the one that says more about the cause wins."""
+    assert diagnosis.classify_error("no space left on device, at least 1GB needed") == (
+        "resource"
+    )
+    assert diagnosis.classify_error("admin permission required") == "permission"
+    assert diagnosis.classify_error("image not found, a tag must be given") == (
+        "not_found"
+    )
+
+
+class TestWhetherTheToolReadTheArguments:
+    """All of these are tool failures; only some judged the input.
+
+    Every message here is verbatim from a run that stalled. The distinction
+    decides whether a person can answer the stall or only the platform can.
+    """
+
+    JUDGED = (
+        "run has key(s) l2, which are not part of a configuration. It takes: "
+        "cpu_type, clock, caches, branch_pred",
+        "get_document_details was called with invalid parameters: field "
+        "document_id should be a UUID",
+        "At least two kernels are needed",
+        "field category should be one of hypothesis, result",
+    )
+    NEVER_READ = (
+        "Failed to summarize findings: LLM service error: Failed to generate response",
+        "A simulation failed.",
+        "Ingestion of 2605.20868v1 was started (source bce256eb) but no document appeared",
+        "No hot blocks to mine. Run profile_c_workload first and this tool "
+        "will pick up its blocks.",
+    )
+
+    def test_a_message_about_the_input_is_recognised(self):
+        for message in self.JUDGED:
+            assert diagnosis.describes_the_input(message), message
+
+    def test_a_failure_that_never_reached_the_input_is_not(self):
+        for message in self.NEVER_READ:
+            assert not diagnosis.describes_the_input(message), message
+
+    def test_nothing_is_not_a_judgement(self):
+        assert not diagnosis.describes_the_input("")
+        assert not diagnosis.describes_the_input(None)

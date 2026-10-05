@@ -25,16 +25,18 @@ Three things make the difference between this and asking a model for JSON:
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from uuid import UUID
 
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services import (
+    agent_evidence_map,
     agent_pipeline_binding,
     agent_pipeline_spec,
     agent_pipeline_vocabulary,
+    llm_json,
 )
 
 
@@ -103,10 +105,14 @@ DRAFT_SCHEMA: Dict[str, Any] = {
 }
 
 
-def _vocabulary_block() -> str:
-    """The evidence types, as a table a model can only choose from."""
+def _vocabulary_block(extra_evidence: Sequence[Any] = ()) -> str:
+    """The evidence types, as a table a model can only choose from.
+
+    ``extra_evidence`` is what the static vocabulary cannot know: the evidence
+    this author's own sandbox skills yield.
+    """
     lines: List[str] = []
-    for entry in agent_pipeline_vocabulary.evidence_types():
+    for entry in [*agent_pipeline_vocabulary.evidence_types(), *extra_evidence]:
         bits = [f"~{entry.typical_seconds}s"]
         if entry.job_types:
             # The trap this prevents: a stage requiring coding evidence left
@@ -114,6 +120,10 @@ def _vocabulary_block() -> str:
             bits.append("job_type must be one of: " + ", ".join(entry.job_types))
         if entry.perishable:
             bits.append("perishable (not inherited by later stages)")
+        if agent_evidence_map.is_skill_evidence(entry.name) and entry.consumes:
+            # A skill's name says nothing about what it does; its description
+            # is the only way a model can tell which request it answers.
+            bits.append(f"from {entry.consumes}")
         lines.append(f"  {entry.name} -- {'; '.join(bits)}")
     return "\n".join(lines)
 
@@ -150,24 +160,12 @@ a distinct kind of evidence, not a subdivision of the same work."""
 
 def _extract(completion: Any) -> Dict[str, Any]:
     """The spec out of a completion, whichever way the provider returned it."""
-    structured = getattr(completion, "structured", None)
-    if isinstance(structured, dict) and structured:
-        return structured
-    text = str(getattr(completion, "text", "") or "").strip()
-    if not text:
+    spec = llm_json.completion_object(completion)
+    if spec:
+        return spec
+    if not str(getattr(completion, "text", "") or "").strip():
         raise PipelineDraftError("The model returned nothing.")
-    # Providers without native schema output fence their JSON.
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text[:4].lower() == "json":
-            text = text[4:]
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
-        raise PipelineDraftError("The model did not return a pipeline.")
-    try:
-        return json.loads(text[start : end + 1])
-    except json.JSONDecodeError as error:
-        raise PipelineDraftError(f"The model returned invalid JSON: {error}")
+    raise PipelineDraftError("The model did not return a pipeline.")
 
 
 def tidy(spec: Dict[str, Any], description: str) -> Dict[str, Any]:
@@ -222,19 +220,50 @@ def tidy(spec: Dict[str, Any], description: str) -> Dict[str, Any]:
     return out
 
 
-def problems_with(spec: Dict[str, Any]) -> List[str]:
+def problems_with(
+    spec: Dict[str, Any], *, skill_evidence: Optional[Sequence[str]] = None
+) -> List[str]:
     """Everything the studio's own checks would say about this spec.
 
     The same two calls the check endpoint makes, in the same order, so a draft
     is judged by exactly what will judge it a second later on screen.
+
+    ``skill_evidence`` is the skill evidence this author can actually obtain.
+    When given, a stage requiring any other `skill_*` type is a problem: the
+    static checker accepts the whole namespace, so without this a model could
+    invent a skill and the draft would score clean.
     """
     try:
         pipeline = agent_pipeline_spec.normalize(spec)
     except Exception as error:  # noqa: BLE001 - any shape error is a problem
         return [f"Not a pipeline: {error}"]
     problems = list(agent_pipeline_spec.validate(pipeline))
+    if skill_evidence is not None:
+        problems.extend(skill_problems(pipeline, skill_evidence))
     if not problems:
         problems.extend(agent_pipeline_binding.expressible(pipeline))
+    return problems
+
+
+def skill_problems(pipeline: Any, available: Sequence[str]) -> List[str]:
+    """Stages requiring skill evidence this author has no active skill for."""
+    have = {str(name) for name in available}
+    problems: List[str] = []
+    for stage in pipeline.stages:
+        for name in stage.required_finding_types():
+            if agent_evidence_map.is_skill_evidence(name) and name not in have:
+                skill = name[len(agent_evidence_map.SKILL_EVIDENCE_PREFIX) :]
+                problems.append(
+                    f"{stage.id}: requires {name}, but there is no active "
+                    f"sandbox skill {skill!r}"
+                    + (
+                        f". Active skill evidence: {', '.join(sorted(have))}"
+                        if have
+                        else ", and no sandbox skill is active at all"
+                    )
+                    + ". Create and activate the skill, or require evidence "
+                    "that exists."
+                )
     return problems
 
 
@@ -245,6 +274,7 @@ async def draft_pipeline(
     user_id: Optional[UUID] = None,
     db: Optional[AsyncSession] = None,
     budget_seconds: Optional[int] = None,
+    extra_evidence: Sequence[Any] = (),
 ) -> Tuple[Dict[str, Any], List[str], bool]:
     """Draft a pipeline for `description`.
 
@@ -257,7 +287,8 @@ async def draft_pipeline(
     if not wanted:
         raise PipelineDraftError("Say what the pipeline should do.")
 
-    system = SYSTEM_PROMPT.format(vocabulary=_vocabulary_block())
+    system = SYSTEM_PROMPT.format(vocabulary=_vocabulary_block(extra_evidence))
+    skill_evidence = [str(entry.name) for entry in extra_evidence]
     user = f"Draft a pipeline for this request:\n\n{wanted}"
     if budget_seconds:
         # Said as a constraint on shape, because the model cannot price a
@@ -278,7 +309,7 @@ async def draft_pipeline(
     )
     spec = tidy(_extract(completion), wanted)
 
-    problems = problems_with(spec)
+    problems = problems_with(spec, skill_evidence=skill_evidence)
     if not problems:
         return spec, [], False
 
@@ -308,7 +339,7 @@ async def draft_pipeline(
         logger.warning(f"Pipeline draft repair failed: {error}")
         return spec, problems, False
 
-    repaired_problems = problems_with(repaired)
+    repaired_problems = problems_with(repaired, skill_evidence=skill_evidence)
     # Keep whichever is less broken. A repair that made it worse is a repair
     # that should not be shown -- measured once as a model "fixing" an unknown
     # finding type by inventing two more.

@@ -3,17 +3,14 @@ Background tasks for document ingestion and processing.
 """
 
 import asyncio
-import json
 from typing import Any, Dict, Optional
 from uuid import UUID
 
-import redis
 from celery import current_task
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.celery import celery_app
-from app.core.config import settings
 from app.core.database import create_celery_session
 from app.models.document import Document, DocumentSource, DocumentSourceSyncLog
 from app.services.connectors.arxiv_connector import ArxivConnector
@@ -23,18 +20,7 @@ from app.services.connectors.gitlab_connector import GitLabConnector
 from app.services.connectors.web_connector import WebConnector
 from app.services.document_service import DocumentService
 from app.services.persona_service import persona_service
-
-
-def _run_async(coroutine):
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    if loop.is_running():
-        # Fallback for unexpected contexts
-        return asyncio.run(coroutine)
-    return loop.run_until_complete(coroutine)
+from app.tasks import job_support
 
 
 @celery_app.task(bind=True, name="app.tasks.ingestion_tasks.ingest_from_source")
@@ -48,7 +34,7 @@ def ingest_from_source(self, source_id: str) -> Dict[str, Any]:
     Returns:
         Dict with ingestion results
     """
-    return _run_async(_async_ingest_from_source(self, source_id))
+    return job_support.run_async(_async_ingest_from_source(self, source_id))
 
 
 async def _async_ingest_from_source(task, source_id: str) -> Dict[str, Any]:
@@ -112,25 +98,14 @@ async def _async_ingest_from_source(task, source_id: str) -> Dict[str, Any]:
 
             # Determine incremental vs full based on force_full flag and last_sync
             since = None
-            try:
-                rc = _get_redis_client()
-                force_full = (
-                    bool(rc.get(f"ingestion:force_full:{source_id}")) if rc else False
-                )
-            except Exception:
-                force_full = False
+            force_full = job_support.flag_is_set(f"ingestion:force_full:{source_id}")
             if not force_full:
                 try:
                     since = source.last_sync if source.last_sync else None
                 except Exception:
                     since = None
             # Clear force_full flag if set
-            try:
-                rc = _get_redis_client()
-                if rc:
-                    rc.delete(f"ingestion:force_full:{source_id}")
-            except Exception:
-                pass
+            job_support.delete_keys(f"ingestion:force_full:{source_id}")
 
             if since:
                 try:
@@ -166,8 +141,7 @@ async def _async_ingest_from_source(task, source_id: str) -> Dict[str, Any]:
                 try:
                     # Cancellation check
                     try:
-                        rc = _get_redis_client()
-                        if rc and rc.get(f"ingestion:cancel:{source_id}"):
+                        if job_support.flag_is_set(f"ingestion:cancel:{source_id}"):
                             _publish_ing_status(
                                 source_id, {"is_syncing": False, "canceled": True}
                             )
@@ -426,13 +400,9 @@ async def _async_ingest_from_source(task, source_id: str) -> Dict[str, Any]:
             except Exception:
                 pass
             # Cleanup mapping and cancel flag
-            try:
-                client = _get_redis_client()
-                if client:
-                    client.delete(f"ingestion:task:{source_id}")
-                    client.delete(f"ingestion:cancel:{source_id}")
-            except Exception:
-                pass
+            job_support.delete_keys(
+                f"ingestion:task:{source_id}", f"ingestion:cancel:{source_id}"
+            )
             return result
 
         except Exception as e:
@@ -462,88 +432,35 @@ async def _async_ingest_from_source(task, source_id: str) -> Dict[str, Any]:
 
         finally:
             # Ensure mapping is cleared on any exit
-            try:
-                client = _get_redis_client()
-                if client:
-                    client.delete(f"ingestion:task:{source_id}")
-            except Exception:
-                pass
-
-
-def _get_redis_client():
-    try:
-        return redis.from_url(settings.REDIS_URL, decode_responses=True)
-    except Exception as e:
-        logger.warning(f"Failed to connect to Redis for ingestion progress: {e}")
-        return None
+            job_support.delete_keys(f"ingestion:task:{source_id}")
 
 
 def _publish_ing_progress(source_id: str, progress: dict):
-    try:
-        client = _get_redis_client()
-        if client:
-            channel = f"ingestion_progress:{source_id}"
-            msg = json.dumps(
-                {
-                    "type": "progress",
-                    "document_id": source_id,
-                    "progress": progress,
-                }
-            )
-            client.publish(channel, msg)
-    except Exception as e:
-        logger.debug(f"Failed to publish ingestion progress: {e}")
+    job_support.publish_sync(
+        f"ingestion_progress:{source_id}",
+        {"type": "progress", "document_id": source_id, "progress": progress},
+    )
 
 
 def _publish_ing_complete(source_id: str, result: dict):
-    try:
-        client = _get_redis_client()
-        if client:
-            channel = f"ingestion_progress:{source_id}"
-            msg = json.dumps(
-                {
-                    "type": "complete",
-                    "document_id": source_id,
-                    "result": result,
-                }
-            )
-            client.publish(channel, msg)
-    except Exception as e:
-        logger.debug(f"Failed to publish ingestion complete: {e}")
+    job_support.publish_sync(
+        f"ingestion_progress:{source_id}",
+        {"type": "complete", "document_id": source_id, "result": result},
+    )
 
 
 def _publish_ing_error(source_id: str, error: str):
-    try:
-        client = _get_redis_client()
-        if client:
-            channel = f"ingestion_progress:{source_id}"
-            msg = json.dumps(
-                {
-                    "type": "error",
-                    "document_id": source_id,
-                    "error": error,
-                }
-            )
-            client.publish(channel, msg)
-    except Exception as e:
-        logger.debug(f"Failed to publish ingestion error: {e}")
+    job_support.publish_sync(
+        f"ingestion_progress:{source_id}",
+        {"type": "error", "document_id": source_id, "error": error},
+    )
 
 
 def _publish_ing_status(source_id: str, status: dict):
-    try:
-        client = _get_redis_client()
-        if client:
-            channel = f"ingestion_progress:{source_id}"
-            msg = json.dumps(
-                {
-                    "type": "status",
-                    "document_id": source_id,
-                    "status": status,
-                }
-            )
-            client.publish(channel, msg)
-    except Exception as e:
-        logger.debug(f"Failed to publish ingestion status: {e}")
+    job_support.publish_sync(
+        f"ingestion_progress:{source_id}",
+        {"type": "status", "document_id": source_id, "status": status},
+    )
 
 
 def _format_seconds(seconds: Optional[int]) -> Optional[str]:
@@ -570,7 +487,7 @@ def process_uploaded_document(self, document_id: str) -> Dict[str, Any]:
     Returns:
         Dict with processing results
     """
-    return _run_async(_async_process_uploaded_document(self, document_id))
+    return job_support.run_async(_async_process_uploaded_document(self, document_id))
 
 
 async def _async_process_uploaded_document(task, document_id: str) -> Dict[str, Any]:
@@ -595,17 +512,33 @@ async def _async_process_uploaded_document(task, document_id: str) -> Dict[str, 
 
             document_service = DocumentService()
 
-            # Process the document
-            await document_service._process_document_async(document, db)
+            # Through reprocess_document: it removes the chunks and vectors a
+            # previous version left before indexing this one, and says whether
+            # indexing worked. Processing directly kept both versions after a
+            # sync changed the text (search returned the stale one), and it
+            # swallows its own failure, so this reported success regardless.
+            title = document.title
+            indexed = await document_service.reprocess_document(document.id, db)
 
             task.update_state(
                 state="PROGRESS",
                 meta={"current": 4, "total": 4, "status": "Processing completed"},
             )
 
+            if not indexed:
+                refreshed = await db.get(Document, document.id)
+                return {
+                    "document_id": document_id,
+                    "title": title,
+                    "success": False,
+                    "processed": False,
+                    "error": getattr(refreshed, "processing_error", None)
+                    or "Indexing failed",
+                }
+
             result = {
                 "document_id": document_id,
-                "title": document.title,
+                "title": title,
                 "success": True,
                 "processed": True,
             }
@@ -671,7 +604,17 @@ async def _async_dry_run_source(
             connector = _get_connector(source)
             if not connector:
                 raise ValueError(f"No connector for type {source.source_type}")
-            await connector.initialize(source.config)
+            # initialize() answers False rather than raising; ignored, the run
+            # failed later with "Connector not initialized", which hides the
+            # real cause (bad config, rejected credentials).
+            if not await connector.initialize(source.config):
+                raise ValueError(
+                    f"Could not connect to this {source.source_type} source: "
+                    + (
+                        getattr(connector, "last_error", None)
+                        or "check its URL and credentials"
+                    )
+                )
             # Apply temporary include_* overrides for dry-run if provided
             try:
                 for key in [

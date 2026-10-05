@@ -21,7 +21,11 @@ from app.schemas.docker_tool import (
     DockerToolExecutionInput,
     DockerToolExecutionResult,
 )
+from app.services import agent_sandbox_runtime
 from app.services.storage_service import StorageService
+
+#: Processes a custom tool's container may hold at once.
+PIDS_LIMIT = 512
 
 
 class DockerToolExecutor:
@@ -72,24 +76,34 @@ class DockerToolExecutor:
 
             # Write input file if needed
             if config.input_mode in ("file", "both") and execution_input.input_content:
-                input_path = os.path.join(workspace_dir, "input.txt")
+                # Named as the tool configured it, the way the output file
+                # already is. It was always written as input.txt, so a tool
+                # declaring any other input_file_path read a file that was
+                # not there.
+                input_path = os.path.join(
+                    workspace_dir,
+                    os.path.basename(config.input_file_path or "input.txt"),
+                )
                 with open(input_path, "w") as f:
                     f.write(execution_input.input_content)
                 logger.debug(f"Wrote input file: {input_path}")
-
-            # Build docker run command
-            cmd = self._build_docker_command(
-                config=config,
-                workspace_dir=workspace_dir,
-                environment_overrides=execution_input.environment_overrides,
-            )
-
-            logger.info(f"Executing Docker command: {' '.join(cmd)}")
 
             # Prepare stdin data
             stdin_data = None
             if config.input_mode in ("stdin", "both") and execution_input.stdin_data:
                 stdin_data = execution_input.stdin_data.encode()
+
+            # Build docker run command
+            container_name = agent_sandbox_runtime.new_container_name()
+            cmd = self._build_docker_command(
+                config=config,
+                workspace_dir=workspace_dir,
+                environment_overrides=execution_input.environment_overrides,
+                container_name=container_name,
+                attach_stdin=stdin_data is not None,
+            )
+
+            logger.info(f"Executing Docker command: {' '.join(cmd)}")
 
             # Execute the container
             try:
@@ -109,6 +123,7 @@ class DockerToolExecutor:
                 except asyncio.TimeoutError:
                     process.kill()
                     await process.wait()
+                    await agent_sandbox_runtime.remove_container(container_name)
                     duration = time.time() - start_time
                     return DockerToolExecutionResult(
                         success=False,
@@ -196,6 +211,8 @@ class DockerToolExecutor:
         config: DockerToolConfig,
         workspace_dir: str,
         environment_overrides: Optional[Dict[str, str]] = None,
+        container_name: str = "",
+        attach_stdin: bool = False,
     ) -> List[str]:
         """
         Build the docker run command with all options.
@@ -209,6 +226,25 @@ class DockerToolExecutor:
             List of command arguments
         """
         cmd = ["docker", "run", "--rm"]
+
+        # Without -i the container's stdin is not connected at all: whatever
+        # is written to the `docker run` client goes nowhere, and a tool in
+        # the default "stdin" input mode reads end-of-file.
+        if attach_stdin:
+            cmd.append("-i")
+
+        # Named, so a run that outlives its timeout can be removed. Killing
+        # the `docker run` client -- which is all a timeout did here -- leaves
+        # the container running on the daemon for as long as it likes.
+        if container_name:
+            cmd.extend(["--name", container_name])
+
+        # A custom tool chooses its own image, user and network, so this is
+        # not the confined sandbox and does not pretend to be. These two cost
+        # an honest tool nothing: a process that cannot gain privileges it was
+        # not started with, and a bound on how many it may fork.
+        cmd.extend(["--security-opt", "no-new-privileges"])
+        cmd.extend(["--pids-limit", str(PIDS_LIMIT)])
 
         # Resource limits
         cmd.extend(["--memory", config.memory_limit])

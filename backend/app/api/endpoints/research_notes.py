@@ -18,7 +18,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.document import Document
-from app.models.memory import UserPreferences
 from app.models.research_note import ResearchNote
 from app.models.synthesis_job import SynthesisJob, SynthesisJobStatus, SynthesisJobType
 from app.models.user import User
@@ -32,12 +31,15 @@ from app.schemas.research_note import (
     ResearchNotesLintRecentResponse,
     ResearchNoteUpdate,
 )
+from app.services import llm_json
 from app.services.auth_service import get_current_user
-from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.citation_lines import is_line_citable as _is_line_citable
+from app.services.llm_service import LLMService, load_user_llm_settings
 from app.services.research_note_reevaluation_notification_service import (
     maybe_emit_reevaluation_notification,
 )
 from app.services.vector_store import vector_store_service
+from app.utils.datetimes import parse_iso_naive as _parse_ts
 
 router = APIRouter()
 
@@ -270,18 +272,8 @@ async def _reconcile_pending_reevaluation_status(
 
 
 def _extract_json(text: str) -> Dict[str, Any]:
-    cleaned = (text or "").strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```[a-zA-Z0-9_-]*", "", cleaned).strip()
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3].strip()
-
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("No JSON object found in response")
-    payload = cleaned[start : end + 1]
-    return json.loads(payload)
+    # One parser for every reply shape; see llm_json.
+    return llm_json.require_json_object(text, "No JSON object found in response")
 
 
 async def _build_sources_payload(
@@ -603,16 +595,7 @@ async def enforce_research_note_citations(
         f"NOTE MARKDOWN:\n{note_markdown}\n"
     )
 
-    user_settings: Optional[UserLLMSettings] = None
-    try:
-        prefs_result = await db.execute(
-            select(UserPreferences).where(UserPreferences.user_id == current_user.id)
-        )
-        user_prefs = prefs_result.scalar_one_or_none()
-        if user_prefs:
-            user_settings = UserLLMSettings.from_preferences(user_prefs)
-    except Exception as exc:
-        logger.warning(f"Could not load user LLM preferences: {exc}")
+    user_settings = await load_user_llm_settings(db, current_user.id)
 
     llm = LLMService()
     try:
@@ -631,16 +614,6 @@ async def enforce_research_note_citations(
         ) from exc
 
     generated_markdown = (data.get("content_markdown_cited") or "").strip()
-
-    def _is_line_citable(line: str) -> bool:
-        s = line.strip()
-        if not s:
-            return False
-        if s.startswith("#"):
-            return False
-        if s.startswith("```") or s.startswith(">"):
-            return False
-        return bool(re.search(r"[A-Za-z0-9]", s))
 
     uncited_examples: List[Dict[str, Any]] = []
     total_citable_lines = 0
@@ -799,16 +772,6 @@ async def lint_research_note_citations(
     # Lint current note markdown (not the generated markdown).
     markdown = (note.content_markdown or "").strip()
 
-    def _is_line_citable(line: str) -> bool:
-        s = line.strip()
-        if not s:
-            return False
-        if s.startswith("#"):
-            return False
-        if s.startswith("```") or s.startswith(">"):
-            return False
-        return bool(re.search(r"[A-Za-z0-9]", s))
-
     used_citation_keys: List[str] = []
     unknown_citation_keys: List[str] = []
     total_citable_lines = 0
@@ -906,24 +869,6 @@ async def lint_recent_research_notes(
     )
     res = await db.execute(stmt)
     notes = list(res.scalars().all())
-
-    def _parse_ts(v: str | None) -> datetime | None:
-        if not v:
-            return None
-        try:
-            return datetime.fromisoformat(v.replace("Z", "+00:00")).replace(tzinfo=None)
-        except Exception:
-            return None
-
-    def _is_line_citable(line: str) -> bool:
-        s = (line or "").strip()
-        if not s:
-            return False
-        if s.startswith("#"):
-            return False
-        if s.startswith("```") or s.startswith(">"):
-            return False
-        return bool(re.search(r"[A-Za-z0-9]", s))
 
     for note in notes:
         processed += 1

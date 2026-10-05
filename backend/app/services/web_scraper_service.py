@@ -4,16 +4,147 @@ Web scraping utilities for fetching and extracting readable text from web pages.
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import re
 import socket
+import urllib.request
 from collections import deque
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlparse, urlunparse
 
+import httpcore
 import httpx
 from bs4 import BeautifulSoup
 from loguru import logger
+
+
+def host_is_allowlisted(host: str, allowed: List[str]) -> bool:
+    """Whether `host` is one of `allowed` or a subdomain of one."""
+    host = (host or "").strip().lower()
+    for entry in allowed:
+        entry = (entry or "").strip().lower()
+        if entry and (host == entry or host.endswith("." + entry)):
+            return True
+    return False
+
+
+async def internal_scrape_allowed_hosts(db: Any) -> List[str]:
+    """Hosts an active web source names, which a non-admin may reach even
+    when they resolve to a private address.
+
+    The chat tool and URL ingestion each carried a copy of this lookup.
+    """
+    from sqlalchemy import select
+
+    from app.models.document import DocumentSource
+
+    rows = await db.execute(
+        select(DocumentSource).where(
+            DocumentSource.source_type == "web", DocumentSource.is_active.is_(True)
+        )
+    )
+    hosts: List[str] = []
+    for source in rows.scalars().all():
+        cfg = source.config or {}
+        for domain in cfg.get("allowed_domains") or []:
+            if str(domain or "").strip():
+                hosts.append(str(domain).strip().lower())
+        for base in cfg.get("base_urls") or []:
+            try:
+                base_host = (urlparse(str(base)).hostname or "").lower()
+            except Exception:
+                base_host = ""
+            if base_host:
+                hosts.append(base_host)
+    return hosts
+
+
+PRIVATE_NETWORK_REFUSAL = (
+    "allow_private_networks requires admin role (or an active web source allowlist)"
+)
+
+
+async def private_network_access(
+    db: Any, url: str, *, asked: bool, admin: bool
+) -> Tuple[bool, List[str], Optional[str]]:
+    """Who may reach a private address, decided once for a scrape.
+
+    Returns (allow every private address, hosts allowed to be private,
+    refusal). An admin who asks may reach private networks; anyone else may
+    reach only the hosts an active web source names -- those hosts, not
+    whatever a page on one of them links to. Asking without being an admin,
+    for a URL on no such host, is refused.
+
+    The chat tool and URL ingestion each made this decision, and each read
+    the allowlist twice to do it.
+    """
+    hosts = await internal_scrape_allowed_hosts(db)
+    if not asked:
+        return False, hosts, None
+    if admin:
+        return True, hosts, None
+    if host_is_allowlisted((urlparse(url).hostname or "").lower(), hosts):
+        return False, hosts, None
+    return False, hosts, PRIVATE_NETWORK_REFUSAL
+
+
+class PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
+    """Resolve once, check every address, connect to one that was checked.
+
+    The URL check resolved the hostname and the HTTP client then resolved it
+    again to connect. A DNS server that answers with a public address the
+    first time and a private one the second (DNS rebinding) passed the check
+    and reached the private one. Here the check and the connection use the
+    same answer. TLS still verifies against the hostname: httpcore takes the
+    SNI name from the request, not from the address connected to.
+
+    `allowed(host, ip)` returns whether `ip` may be reached for `host`.
+    """
+
+    def __init__(
+        self,
+        allowed: Callable[[str, Any], bool],
+        inner: Optional[httpcore.AsyncNetworkBackend] = None,
+    ):
+        self._allowed = allowed
+        self._inner = inner or httpcore.AnyIOBackend()
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: Optional[float] = None,
+        local_address: Optional[str] = None,
+        socket_options: Any = None,
+    ) -> httpcore.AsyncNetworkStream:
+        try:
+            infos = await asyncio.get_running_loop().getaddrinfo(
+                host, port, type=socket.SOCK_STREAM
+            )
+        except OSError as exc:
+            raise httpcore.ConnectError(f"Failed to resolve {host}: {exc}") from exc
+        addresses = []
+        for info in infos:
+            ip = ipaddress.ip_address(info[4][0].split("%", 1)[0])
+            if not self._allowed(host, ip):
+                raise httpcore.ConnectError(f"Disallowed IP address for {host}: {ip}")
+            addresses.append(str(ip))
+        if not addresses:
+            raise httpcore.ConnectError(f"No address for {host}")
+        return await self._inner.connect_tcp(
+            addresses[0],
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+    async def connect_unix_socket(self, *args: Any, **kwargs: Any) -> Any:
+        raise httpcore.ConnectError("Unix sockets are not reachable from the scraper")
+
+    async def sleep(self, seconds: float) -> None:
+        await self._inner.sleep(seconds)
 
 
 class WebScraperService:
@@ -21,6 +152,7 @@ class WebScraperService:
     DEFAULT_MAX_BYTES = 2_000_000
     DEFAULT_MAX_CONTENT_CHARS = 50_000
     DEFAULT_USER_AGENT = "KnowledgeDBChat/1.0"
+    MAX_REDIRECTS = 5
 
     def __init__(
         self,
@@ -36,12 +168,37 @@ class WebScraperService:
         self, *, timeout_s: float, headers: Dict[str, str]
     ) -> httpx.AsyncClient:
         if self._client is None:
+            transport = None
+            if self._enforce_network_safety and not urllib.request.getproxies():
+                # The connection checks the address it connects to; see
+                # PinnedNetworkBackend. httpx exposes no parameter for the
+                # backend, so it is set on the transport's pool.
+                #
+                # Not behind a proxy: there the proxy resolves the name and
+                # this process never sees an address, so the URL check is the
+                # only check -- and httpx ignores proxy settings whenever a
+                # transport is given, so pinning would silently route around
+                # a proxy the deployment relies on.
+                transport = httpx.AsyncHTTPTransport()
+                transport._pool._network_backend = PinnedNetworkBackend(
+                    self._address_allowed
+                )
             self._client = httpx.AsyncClient(
                 timeout=timeout_s,
                 follow_redirects=True,
                 headers=headers,
+                transport=transport,
             )
         return self._client
+
+    def _address_allowed(self, host: str, ip: Any) -> bool:
+        """The rule `_validate_safe_url` applies, for one resolved address."""
+        private_ok = bool(getattr(self, "_fetch_allows_private", False)) or (
+            host_is_allowlisted(
+                host.lower(), getattr(self, "_private_hosts", None) or []
+            )
+        )
+        return self._is_allowed_ip(ip, allow_private_networks=private_ok)
 
     async def aclose(self) -> None:
         if self._owns_client and self._client is not None:
@@ -62,7 +219,15 @@ class WebScraperService:
         timeout_s: float = DEFAULT_TIMEOUT_S,
         max_bytes: int = DEFAULT_MAX_BYTES,
         headers: Optional[Dict[str, str]] = None,
+        private_hosts: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
+        # Hosts that may resolve to a private address although
+        # `allow_private_networks` is off. Per host: deciding once from the
+        # start URL and applying it to every hop let an allowlisted internal
+        # page carry a non-admin, by a link, to any other private host.
+        self._private_hosts = [
+            h.strip().lower() for h in (private_hosts or []) if h and h.strip()
+        ]
         if max_pages < 1 or max_pages > 25:
             raise ValueError("max_pages must be between 1 and 25")
         if max_depth < 0 or max_depth > 5:
@@ -98,9 +263,14 @@ class WebScraperService:
             visited.add(current_url)
 
             try:
+                # Links are always read: the crawl needs them whether or
+                # not the caller wants them back. Tied to `include_links`,
+                # a caller that did not want links listed could not crawl,
+                # and URL ingestion -- which never wants them -- ingested
+                # exactly one page whatever it was asked for.
                 page = await self._scrape_single(
                     current_url,
-                    include_links=include_links,
+                    include_links=True,
                     allow_private_networks=allow_private_networks,
                     max_content_chars=max_content_chars,
                     timeout_s=timeout_s,
@@ -113,11 +283,15 @@ class WebScraperService:
                 errors.append({"url": current_url, "error": str(e)})
                 continue
 
-            if not follow_links or depth >= max_depth or not include_links:
+            page_links = page.get("links", [])
+            if not include_links:
+                page["links"] = []
+
+            if not follow_links or depth >= max_depth:
                 continue
 
             discovered = 0
-            for link in page.get("links", []):
+            for link in page_links:
                 if discovered >= 200:
                     break
                 if link in visited:
@@ -202,25 +376,43 @@ class WebScraperService:
         headers: Dict[str, str],
         allow_private_networks: bool,
     ) -> Tuple[str, httpx.Response]:
+        # Read by the connection's address check (_address_allowed).
+        self._fetch_allows_private = bool(allow_private_networks)
         client = await self._get_client(timeout_s=timeout_s, headers=headers)
-        async with client.stream("GET", url) as response:
-            response.raise_for_status()
-            total = 0
-            chunks: List[bytes] = []
-            async for chunk in response.aiter_bytes():
-                if not chunk:
+        # Redirects are followed here, one hop at a time, so each address is
+        # checked *before* it is requested. Letting the client follow them
+        # and checking the final URL afterwards withheld the content of a
+        # redirect to a private address but still sent the request -- which,
+        # for a metadata endpoint or an internal service, is the harm.
+        current = url
+        for _hop in range(self.MAX_REDIRECTS + 1):
+            if self._enforce_network_safety:
+                self._validate_safe_url(
+                    current, allow_private_networks=allow_private_networks
+                )
+            async with client.stream(
+                "GET", current, follow_redirects=False
+            ) as response:
+                location = response.headers.get("location")
+                if response.status_code in (301, 302, 303, 307, 308) and location:
+                    current = self._normalize_url(urljoin(current, location))
                     continue
-                total += len(chunk)
-                if total > max_bytes:
-                    raise ValueError(f"Response too large (>{max_bytes} bytes)")
-                chunks.append(chunk)
-            content = b"".join(chunks)
+                response.raise_for_status()
+                total = 0
+                chunks: List[bytes] = []
+                async for chunk in response.aiter_bytes():
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ValueError(f"Response too large (>{max_bytes} bytes)")
+                    chunks.append(chunk)
+                content = b"".join(chunks)
+            break
+        else:
+            raise ValueError(f"Too many redirects (>{self.MAX_REDIRECTS})")
 
-        final_url = str(response.url)
-        if self._enforce_network_safety:
-            self._validate_safe_url(
-                final_url, allow_private_networks=allow_private_networks
-            )
+        final_url = current
         hydrated = httpx.Response(
             status_code=response.status_code,
             headers=response.headers,
@@ -271,6 +463,11 @@ class WebScraperService:
             raise ValueError("URL must include a hostname")
 
         host_lower = hostname.lower()
+        # Private addresses are allowed for this host when the caller allowed
+        # them everywhere, or named this host.
+        private_ok = bool(allow_private_networks) or host_is_allowlisted(
+            host_lower, getattr(self, "_private_hosts", None) or []
+        )
         if (
             host_lower in {"localhost"}
             or host_lower.endswith(".localhost")
@@ -278,16 +475,17 @@ class WebScraperService:
         ):
             raise ValueError("Localhost domains are not allowed")
 
-        # If it's a literal IP, check it directly.
+        # If it's a literal IP, check it directly. The refusal is raised
+        # outside the try: inside it, the `except ValueError` meant for
+        # "not an IP at all" swallowed the refusal too.
         try:
-            ip = ipaddress.ip_address(host_lower)
-            if not self._is_allowed_ip(
-                ip, allow_private_networks=allow_private_networks
-            ):
+            literal = ipaddress.ip_address(host_lower)
+        except ValueError:
+            literal = None
+        if literal is not None:
+            if not self._is_allowed_ip(literal, allow_private_networks=private_ok):
                 raise ValueError("Disallowed IP address")
             return
-        except ValueError:
-            pass
 
         try:
             infos = socket.getaddrinfo(hostname, None)
@@ -300,9 +498,7 @@ class WebScraperService:
                 ip = ipaddress.ip_address(addr)
             except ValueError:
                 continue
-            if not self._is_allowed_ip(
-                ip, allow_private_networks=allow_private_networks
-            ):
+            if not self._is_allowed_ip(ip, allow_private_networks=private_ok):
                 raise ValueError("Disallowed IP address")
 
     def _select_main_content(self, soup: BeautifulSoup):

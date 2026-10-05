@@ -165,3 +165,40 @@ class TestTheAliasReachesEveryEntryPoint:
                 offenders.append(node.name)
 
         assert offenders == [], f"these check CPU_TYPES without the alias: {offenders}"
+
+
+class TestAnOverrideWrittenForTheOtherTool:
+    """Two simulation tools, two config shapes, and no sign pointing between them.
+
+    `simulate_mechanism`, `run_configs` and `measure_headroom` take a nested
+    object -- `{"caches": {"l2": {"prefetcher": ...}}}`. `simulate_c_workload`
+    and `sample_counters` take flat gem5 overrides. A run that has been varying
+    mechanisms reaches for the shape it already knows. Measured: a study wrote
+    `caches.l2.prefetcher=None` twice, was told the required form both times,
+    and never learned another tool accepts exactly what it wrote.
+    """
+
+    def test_a_mechanism_shaped_override_names_the_right_tool(self):
+        from app.services.agent_gem5_sandbox import _wrong_tool_hint
+
+        hint = _wrong_tool_hint("caches.l2.prefetcher=None")
+        assert "simulate_mechanism" in hint
+        assert "nested object" in hint
+
+    def test_cpu_params_and_branch_pred_are_recognised_too(self):
+        from app.services.agent_gem5_sandbox import _wrong_tool_hint
+
+        for override in (
+            "cpu_params.numROBEntries=256",
+            "branch_pred.conditional=TAGE_SC_L_64KB",
+            "cpu_type=O3CPU",
+        ):
+            assert _wrong_tool_hint(override), override
+
+    def test_an_ordinary_mistake_gets_no_hint(self):
+        """Pointing at another tool for a plain typo would send it away from
+        the one that was right."""
+        from app.services.agent_gem5_sandbox import _wrong_tool_hint
+
+        for override in ("systm.cpu.foo=1", "system.cpu.foo=1", "", "garbage"):
+            assert _wrong_tool_hint(override) == "", override

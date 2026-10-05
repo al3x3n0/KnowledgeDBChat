@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.notification import Notification, NotificationType
 from app.models.research_note import ResearchNote
+from app.services.config_values import unique_strings
 from app.services.notification_service import notification_service
 
 
@@ -17,19 +18,7 @@ def _text(value: Any) -> str:
 
 
 def _clean_string_list(value: Any, *, limit: int = 8) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    seen: set[str] = set()
-    items: list[str] = []
-    for raw in value:
-        item = _text(raw)
-        if not item or item in seen:
-            continue
-        seen.add(item)
-        items.append(item)
-        if len(items) >= limit:
-            break
-    return items
+    return unique_strings(value, limit)
 
 
 def _iter_autonomous_origins(payload: dict[str, Any]) -> list[dict[str, str]]:

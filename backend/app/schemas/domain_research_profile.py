@@ -64,6 +64,19 @@ def _normalize_uuid_list(value: Any, *, max_items: int = 24) -> list[str]:
     return out
 
 
+def normalize_research_mode(value: Any) -> str:
+    text = (
+        str(value or "literature_to_hypothesis")
+        .strip()
+        .lower()
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
+    if text not in {"literature_to_hypothesis"}:
+        return "literature_to_hypothesis"
+    return text
+
+
 def _normalize_track_type(value: Any) -> str:
     text = str(value or "generic").strip().lower().replace("-", "_").replace(" ", "_")
     if text in {"micro_arch", "microarch", "uarch"}:
@@ -169,16 +182,7 @@ class DomainResearchProfileCreate(BaseModel):
     @field_validator("research_mode", mode="before")
     @classmethod
     def _normalize_research_mode(cls, value: Any) -> str:
-        text = (
-            str(value or "literature_to_hypothesis")
-            .strip()
-            .lower()
-            .replace("-", "_")
-            .replace(" ", "_")
-        )
-        if text not in {"literature_to_hypothesis"}:
-            return "literature_to_hypothesis"
-        return text
+        return normalize_research_mode(value)
 
     @field_validator("report_format", mode="before")
     @classmethod

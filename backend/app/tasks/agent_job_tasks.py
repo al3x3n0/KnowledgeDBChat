@@ -29,6 +29,7 @@ from app.services.agent_execution_lease_service import (
 )
 from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 from app.services.research_inbox_follow_up_service import sync_follow_up_outcome_for_job
+from app.tasks import job_support
 
 #: Phases that mean a run is waiting for a human, not idling. The stalled-job
 #: sweep must leave these alone: resuming a job paused for approval is not
@@ -262,39 +263,25 @@ async def _publish_job_progress(
     scope_observability_runtime: Optional[dict] = None,
 ):
     """Publish job progress update to Redis for WebSocket subscribers."""
-    import redis.asyncio as redis
+    message = {
+        "type": "progress",
+        "job_id": job_id,
+        "progress": progress,
+        "phase": phase,
+        "status": status,
+        "iteration": iteration,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+    if phase_details:
+        message["phase_details"] = phase_details
+    if error:
+        message["error"] = error
+    if isinstance(execution_graph_runtime, dict) and execution_graph_runtime:
+        message["execution_graph_runtime"] = execution_graph_runtime
+    if isinstance(scope_observability_runtime, dict) and scope_observability_runtime:
+        message["scope_observability_runtime"] = scope_observability_runtime
 
-    from app.core.config import settings
-
-    try:
-        redis_client = redis.from_url(settings.REDIS_URL)
-        channel = f"agent_job:{job_id}:progress"
-
-        message = {
-            "type": "progress",
-            "job_id": job_id,
-            "progress": progress,
-            "phase": phase,
-            "status": status,
-            "iteration": iteration,
-            "timestamp": datetime.utcnow().isoformat(),
-        }
-        if phase_details:
-            message["phase_details"] = phase_details
-        if error:
-            message["error"] = error
-        if isinstance(execution_graph_runtime, dict) and execution_graph_runtime:
-            message["execution_graph_runtime"] = execution_graph_runtime
-        if (
-            isinstance(scope_observability_runtime, dict)
-            and scope_observability_runtime
-        ):
-            message["scope_observability_runtime"] = scope_observability_runtime
-
-        await redis_client.publish(channel, json.dumps(message))
-        await redis_client.close()
-    except Exception as e:
-        logger.warning(f"Failed to publish progress for agent job {job_id}: {e}")
+    await job_support.publish_message(f"agent_job:{job_id}:progress", message)
 
 
 async def _execute_agent_job_async(
@@ -906,6 +893,11 @@ def cleanup_old_agent_jobs(days: int = 30):
 MAX_ORPHAN_RECOVERIES = 3
 ORPHAN_RECOVERY_PHASE = "orphan_recovered"
 
+#: A job that was never picked up at all is a different failure from one whose
+#: worker died, and is counted separately so the log says which happened.
+MAX_UNDISPATCHED_REQUEUES = 3
+UNDISPATCHED_REQUEUE_PHASE = "undispatched_requeued"
+
 
 def count_orphan_recoveries(job: AgentJob) -> int:
     """How many times this job has already been recovered from a lost worker."""
@@ -914,6 +906,16 @@ def count_orphan_recoveries(job: AgentJob) -> int:
         1
         for entry in entries
         if isinstance(entry, dict) and entry.get("phase") == ORPHAN_RECOVERY_PHASE
+    )
+
+
+def count_undispatched_requeues(job: AgentJob) -> int:
+    """How many times this job has been queued again without ever starting."""
+    entries = job.execution_log if isinstance(job.execution_log, list) else []
+    return sum(
+        1
+        for entry in entries
+        if isinstance(entry, dict) and entry.get("phase") == UNDISPATCHED_REQUEUE_PHASE
     )
 
 
@@ -936,7 +938,7 @@ def is_orphaned(job: AgentJob, now: datetime) -> bool:
 
 
 @celery_app.task
-def check_stalled_agent_jobs(timeout_minutes: int = 30):
+def check_stalled_agent_jobs(timeout_minutes: int = 30, undispatched_minutes: int = 60):
     """
     Check for stalled agent jobs that haven't made progress.
 
@@ -1039,10 +1041,87 @@ def check_stalled_agent_jobs(timeout_minutes: int = 30):
                     error=job.error,
                 )
 
+            # A job can also be stuck *before* it ever runs. The row is
+            # committed and the Celery task never arrives -- a broker restart, a
+            # purged queue, an enqueue that failed after the commit. The sweep
+            # above cannot see it, because it looks only at RUNNING, so such a
+            # job stays PENDING for ever with nobody told. Two were found here
+            # 14 and 3 days old, with no task id, no activity and an empty
+            # execution log.
+            #
+            # Queueing it again is safe because the execution lease decides who
+            # runs: if an original message is still sitting in the broker,
+            # whichever worker acquires the lease first executes the job and the
+            # other returns lease_conflict without running it.
+            undispatched_cutoff = now - timedelta(minutes=undispatched_minutes)
+            undispatched_result = await db.execute(
+                select(AgentJob).where(
+                    and_(
+                        AgentJob.status == AgentJobStatus.PENDING.value,
+                        AgentJob.celery_task_id.is_(None),
+                        AgentJob.created_at < undispatched_cutoff,
+                        # A recurring job may sit pending between fires. Firing
+                        # one early is not a recovery, it is a wrong run.
+                        AgentJob.schedule_type.is_(None),
+                    )
+                )
+            )
+            requeued_count = 0
+            for job in undispatched_result.scalars().all():
+                # A live lease means a worker has it after all; leave it alone.
+                if not is_orphaned(job, now):
+                    continue
+
+                attempts = count_undispatched_requeues(job)
+                if attempts >= MAX_UNDISPATCHED_REQUEUES:
+                    logger.warning(
+                        f"Agent job {job.id} was never picked up after "
+                        f"{attempts} attempts; failing it"
+                    )
+                    job.status = AgentJobStatus.FAILED.value
+                    job.error = (
+                        f"Job was never started: queued {attempts} times and no "
+                        "worker ever claimed it"
+                    )
+                    job.completed_at = now
+                    failed_count += 1
+                    _record_scheduler_outcome(
+                        job,
+                        outcome=AgentJobStatus.FAILED.value,
+                        happened_at=job.completed_at,
+                        queue_reason="never_dispatched",
+                    )
+                    await sync_follow_up_outcome_for_job(db, job)
+                    await _publish_job_progress(
+                        job_id=str(job.id),
+                        progress=job.progress,
+                        phase="never_dispatched",
+                        status="failed",
+                        error=job.error,
+                    )
+                    continue
+
+                logger.warning(
+                    f"Agent job {job.id} has been pending since {job.created_at} "
+                    f"with no worker; queueing again "
+                    f"(attempt {attempts + 1}/{MAX_UNDISPATCHED_REQUEUES})"
+                )
+                job.add_log_entry(
+                    {
+                        "phase": UNDISPATCHED_REQUEUE_PHASE,
+                        "reason": "no worker ever claimed this job",
+                        "attempt": attempts + 1,
+                    }
+                )
+                job.last_activity_at = now
+                execute_agent_job_task.delay(str(job.id), str(job.user_id))
+                requeued_count += 1
+
             await db.commit()
             logger.info(
                 f"Stalled-job sweep: {recovered_count} requeued after losing a "
-                f"worker, {failed_count} failed"
+                f"worker, {requeued_count} queued again after never starting, "
+                f"{failed_count} failed"
             )
 
     asyncio.run(_check_stalled())
@@ -1061,8 +1140,7 @@ def generate_job_summary(job_id: str):
     logger.info(f"Generating summary for agent job {job_id}")
 
     async def _generate_summary():
-        from app.models.memory import UserPreferences
-        from app.services.llm_service import LLMService, UserLLMSettings
+        from app.services.llm_service import LLMService, load_user_llm_settings
 
         job_uuid = UUID(job_id)
         session_factory = create_celery_session()
@@ -1078,19 +1156,7 @@ def generate_job_summary(job_id: str):
             # Generate summary using LLM
             llm_service = LLMService()
             # Best-effort: apply per-user LLM settings (provider/model/custom URL, etc.)
-            user_settings = None
-            try:
-                prefs_res = await db.execute(
-                    select(UserPreferences).where(
-                        UserPreferences.user_id == job.user_id
-                    )
-                )
-                prefs = prefs_res.scalar_one_or_none()
-                user_settings = (
-                    UserLLMSettings.from_preferences(prefs) if prefs else None
-                )
-            except Exception:
-                user_settings = None
+            user_settings = await load_user_llm_settings(db, job.user_id)
 
             summary_prompt = f"""Generate a concise summary of this completed autonomous agent job:
 

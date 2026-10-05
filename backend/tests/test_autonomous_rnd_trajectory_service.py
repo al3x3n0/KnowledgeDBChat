@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from app.services.autonomous_rnd_trajectory_service import (
     AutonomousRnDTrajectoryAdapter,
+    autonomous_rnd_trajectory_adapter,
 )
 
 
@@ -321,3 +322,42 @@ def test_empty_trajectory_does_not_gain_claims_or_execution_success():
     assert outcome["evidence"] == []
     assert outcome["experiment"]["repeat_count"] == 0
     assert outcome["experiment"]["all_commands_ok"] is False
+
+
+class TestAFailedCallSaysWhyItFailed:
+    """The ledger keeps raw tool output out and the error message in.
+
+    Without the message a failed call is indistinguishable from a call that
+    returned nothing. arXiv's API began refusing requests with HTTP 406, and
+    across three discovery stages and forty-odd iterations the runs could only
+    report "no new findings" — an upstream outage read as an agent that would
+    not do its work, and it took a direct network test to tell them apart.
+    """
+
+    def _ledger(self, result):
+        return autonomous_rnd_trajectory_adapter.compact_action_ledger(
+            [{"action": {"tool": "ingest_arxiv_papers"}, "result": result}]
+        )
+
+    def test_the_error_reaches_the_ledger(self):
+        (row,) = self._ledger(
+            {"success": False, "error": "HTTP Error 406: Not Acceptable"}
+        )
+        assert row["success"] is False
+        assert "406" in row["error"]
+
+    def test_a_successful_call_carries_no_error(self):
+        (row,) = self._ledger({"success": True, "data": [1, 2, 3]})
+        assert "error" not in row
+
+    def test_a_long_error_is_truncated_not_dropped(self):
+        # Raw output is what the ledger refuses to store; the explanation is
+        # not raw output, so it is cut rather than discarded.
+        (row,) = self._ledger({"success": False, "error": "x" * 5000})
+        assert 0 < len(row["error"]) <= 240
+
+    def test_the_payload_itself_still_does_not_reach_the_ledger(self):
+        (row,) = self._ledger(
+            {"success": False, "error": "nope", "data": {"secret": "payload"}}
+        )
+        assert "data" not in row and "secret" not in str(row)

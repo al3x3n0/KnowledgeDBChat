@@ -25,6 +25,49 @@ class JobCheckpointQueueDependencies:
     extract_launch_mode: Callable[..., Any]
 
 
+#: The phase the runtime sets when a run stops because it needs a person
+#: (``agent_runtime_finalizer``). It is not an approval: nothing is proposed,
+#: something is missing.
+BLOCKED_PHASE = "blocked_needs_input"
+
+
+def _is_blocked_on_a_person(job: AgentJob) -> bool:
+    return (
+        str(job.status or "").strip().lower() == AgentJobStatus.PAUSED.value
+        and str(job.current_phase or "").strip() == BLOCKED_PHASE
+    )
+
+
+#: The log entry a run leaves when it finishes without satisfying its contract.
+#: Distinct from blocking: the run did not stop to ask, it ran out of road.
+CONTRACT_UNMET_PHASE = "completed_contract_unmet"
+
+
+def _finished_without_meeting_its_contract(job: AgentJob) -> dict[str, Any]:
+    """The entry a completed-but-unsatisfied run left, or {}.
+
+    A run that gives up early pauses as blocked_needs_input and is visible. A
+    run that exhausts its iteration budget with the contract unmet is marked
+    **completed**, so the worse outcome carried the better-looking status and
+    nothing surfaced it: 28 such runs in a fortnight, all reporting success
+    while delivering nothing the contract asked for.
+    """
+    if str(job.status or "").strip().lower() != AgentJobStatus.COMPLETED.value:
+        return {}
+    entries = job.execution_log if isinstance(job.execution_log, list) else []
+    for entry in reversed(entries):
+        if isinstance(entry, dict) and entry.get("phase") == CONTRACT_UNMET_PHASE:
+            return entry
+    return {}
+
+
+def _blocked_payload(job: AgentJob) -> dict[str, Any]:
+    """What the run recorded about why it gave up, if anything."""
+    results = job.results if isinstance(job.results, dict) else {}
+    blocked = results.get("blocked")
+    return blocked if isinstance(blocked, dict) else {}
+
+
 def build_job_checkpoint_queue_items(
     jobs: list[AgentJob],
     *,
@@ -101,6 +144,171 @@ def build_job_checkpoint_queue_items(
                     job_id=job.id,
                     job=job_response,
                     checkpoint=checkpoint,
+                    scheduler_state=scheduler_state,
+                    actions=action_rows,
+                )
+            )
+            continue
+
+        # A run that stopped because it needs a person is not an approval:
+        # nothing is proposed for sign-off, something is missing. It carries no
+        # approval checkpoint, and the recurring branch below skips it because
+        # it is a one-shot job, so before this it appeared in no queue at all --
+        # six were found waiting 8 to 11 days, one of them a pipeline stage,
+        # which is the whole DAG behind it stopped with nobody told.
+        if _is_blocked_on_a_person(job):
+            blocked = _blocked_payload(job)
+            created_at = (
+                job.last_activity_at
+                or job.completed_at
+                or job.started_at
+                or job.created_at
+            )
+            urgency = deps.queue_priority_fields(
+                item_type="blocked_run",
+                reason_code="needs_input",
+                created_at=created_at,
+                next_run_at=job.next_run_at,
+                backoff_until=None,
+                stale=False,
+                now=now,
+            )
+            # Resume is offered only when the run said it could be resumed;
+            # the rest is a decision a person has to make with the job open.
+            action_rows = (
+                [
+                    AgentCheckpointQueueActionResponse(
+                        kind="job_action",
+                        label="Resume",
+                        action="resume",
+                        recommended=True,
+                    )
+                ]
+                if blocked.get("resumable")
+                else []
+            )
+            missing = [str(m) for m in (blocked.get("missing") or []) if str(m).strip()]
+            items.append(
+                AgentCheckpointQueueItemResponse(
+                    queue_key=f"blocked:{job.id}",
+                    item_type="blocked_run",
+                    priority=100,
+                    title=job.name,
+                    # The run usually knows why it gave up. That sentence is the
+                    # single most useful thing in this row.
+                    summary=str(
+                        blocked.get("reason") or job.phase_details or job.goal or ""
+                    ).strip()[:320]
+                    or None,
+                    evidence_summary=deps.queue_evidence_summary_for_job(job),
+                    status=job.status,
+                    customer=customer,
+                    job_name=job.name,
+                    job_type=str(job.job_type or "").strip() or None,
+                    reason_code="needs_input",
+                    reason_label=deps.queue_reason_label("needs_input"),
+                    recommended_action="resume" if action_rows else None,
+                    priority_score=urgency["priority_score"],
+                    age_minutes=urgency["age_minutes"],
+                    sla_bucket=urgency["sla_bucket"],
+                    escalation_level=urgency["escalation_level"],
+                    is_overdue=urgency["is_overdue"],
+                    is_stale=urgency["is_stale"],
+                    next_run_at=job.next_run_at,
+                    backoff_until=None,
+                    action_count=len(action_rows),
+                    created_at=created_at,
+                    job_id=job.id,
+                    job=job_response,
+                    # What it lacks, named, so the row can be acted on without
+                    # opening the run.
+                    checkpoint={
+                        "kind": "blocked",
+                        "reason": blocked.get("reason"),
+                        "missing": missing,
+                        "resumable": bool(blocked.get("resumable")),
+                        # The question, when the run could name one. A queue
+                        # that shows every stall as "resume?" throws away the
+                        # difference between a tool that is down and a call
+                        # that was refused -- different answers, different
+                        # answerers.
+                        "needs": blocked.get("needs") or None,
+                    },
+                    scheduler_state=scheduler_state,
+                    actions=action_rows,
+                )
+            )
+            continue
+
+        unmet = _finished_without_meeting_its_contract(job)
+        if unmet:
+            created_at = (
+                job.completed_at
+                or job.last_activity_at
+                or job.started_at
+                or job.created_at
+            )
+            urgency = deps.queue_priority_fields(
+                item_type="contract_unmet",
+                reason_code="contract_unmet",
+                created_at=created_at,
+                next_run_at=job.next_run_at,
+                backoff_until=None,
+                stale=False,
+                now=now,
+            )
+            missing = [
+                str(item) for item in (unmet.get("missing") or []) if str(item).strip()
+            ]
+            # restart resets iteration and progress, so the run gets its budget
+            # back rather than re-hitting the cap it just hit; relaunch starts a
+            # fresh one. Both are valid on a completed job.
+            action_rows = [
+                AgentCheckpointQueueActionResponse(
+                    kind="job_action",
+                    label="Restart",
+                    action="restart",
+                    recommended=True,
+                ),
+                AgentCheckpointQueueActionResponse(
+                    kind="job_action", label="Relaunch", action="relaunch"
+                ),
+            ]
+            items.append(
+                AgentCheckpointQueueItemResponse(
+                    queue_key=f"contract_unmet:{job.id}",
+                    item_type="contract_unmet",
+                    # Below an approval or a blocked run on purpose: nobody is
+                    # waiting on this one. It is a quality signal about work
+                    # already reported as done, not a request for a decision.
+                    priority=60,
+                    title=job.name,
+                    summary=str(unmet.get("reason") or "").strip()[:320] or None,
+                    evidence_summary=deps.queue_evidence_summary_for_job(job),
+                    status=job.status,
+                    customer=customer,
+                    job_name=job.name,
+                    job_type=str(job.job_type or "").strip() or None,
+                    reason_code="contract_unmet",
+                    reason_label=deps.queue_reason_label("contract_unmet"),
+                    recommended_action="restart",
+                    priority_score=urgency["priority_score"],
+                    age_minutes=urgency["age_minutes"],
+                    sla_bucket=urgency["sla_bucket"],
+                    escalation_level=urgency["escalation_level"],
+                    is_overdue=urgency["is_overdue"],
+                    is_stale=urgency["is_stale"],
+                    next_run_at=job.next_run_at,
+                    backoff_until=None,
+                    action_count=len(action_rows),
+                    created_at=created_at,
+                    job_id=job.id,
+                    job=job_response,
+                    checkpoint={
+                        "kind": "contract_unmet",
+                        "reason": unmet.get("reason"),
+                        "missing": missing,
+                    },
                     scheduler_state=scheduler_state,
                     actions=action_rows,
                 )

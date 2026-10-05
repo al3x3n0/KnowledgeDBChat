@@ -49,7 +49,15 @@ from app.core.database import Base, get_db  # noqa: E402
 from app.models.user import User  # noqa: E402
 from app.services.auth_service import AuthService  # noqa: E402
 
-if "pptx" not in sys.modules:
+# Stubbed only where the library is absent. It used to be stubbed whenever
+# nothing had imported it yet -- that is, always -- so no test ever built a
+# real presentation, installed or not.
+try:
+    import pptx as _real_pptx  # noqa: F401
+except ImportError:
+    _real_pptx = None
+
+if _real_pptx is None and "pptx" not in sys.modules:
     pptx_stub = types.ModuleType("pptx")
     pptx_stub.Presentation = object
     sys.modules["pptx"] = pptx_stub
@@ -246,6 +254,7 @@ def _no_live_llm_calls(monkeypatch: pytest.MonkeyPatch):
         "ANTHROPIC_API_KEY",
         "QWEN_API_KEY",
         "KIMI_API_KEY",
+        "GLM_API_KEY",
     ):
         if hasattr(settings, name):
             monkeypatch.setattr(settings, name, None, raising=False)

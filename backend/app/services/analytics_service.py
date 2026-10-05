@@ -47,26 +47,39 @@ class AnalyticsService:
         Returns:
             Dictionary with collection statistics
         """
-        # Build base query
-        base_conditions = [Document.is_processed.is_(True)]
-
+        # What the caller asked about, before "processed" is considered.
+        scope_conditions = []
         if source_id:
-            base_conditions.append(Document.source_id == source_id)
+            scope_conditions.append(Document.source_id == source_id)
         if date_from:
-            base_conditions.append(Document.created_at >= date_from)
+            scope_conditions.append(Document.created_at >= date_from)
         if date_to:
-            base_conditions.append(Document.created_at <= date_to)
+            scope_conditions.append(Document.created_at <= date_to)
+
+        if tag:
+            # `tags` is a plain JSON column: `.contains([tag])` compiles to a
+            # substring match on the serialised list, which only matched a
+            # document whose whole list was that one tag. The matching ids
+            # are found here and every figure below is restricted to them --
+            # the filter used to reach the document count and nothing else.
+            from app.services.document_tags import document_tags
+
+            wanted = str(tag).strip()
+            rows = await db.execute(
+                select(Document).where(
+                    and_(*scope_conditions, Document.tags.is_not(None))
+                )
+            )
+            tagged_ids = [
+                d.id for d in rows.scalars().all() if wanted in document_tags(d)
+            ]
+            scope_conditions.append(Document.id.in_(tagged_ids))
+
+        base_conditions = [Document.is_processed.is_(True), *scope_conditions]
 
         # Document counts
         count_query = select(func.count(Document.id)).where(and_(*base_conditions))
         total_docs = (await db.execute(count_query)).scalar() or 0
-
-        # If filtering by tag, apply separately
-        if tag:
-            tag_count_query = select(func.count(Document.id)).where(
-                and_(*base_conditions, Document.tags.contains([tag]))
-            )
-            total_docs = (await db.execute(tag_count_query)).scalar() or 0
 
         # Total content size
         size_query = select(
@@ -150,11 +163,13 @@ class AnalyticsService:
         avg_chunk_size = int(avg_chunk_size or 0)
 
         # Processing status
+        # Within the same scope as everything else: unfiltered, one source's
+        # statistics reported every other source's pending documents.
         processed_query = select(func.count(Document.id)).where(
-            and_(Document.is_processed.is_(True))
+            and_(Document.is_processed.is_(True), *scope_conditions)
         )
         pending_query = select(func.count(Document.id)).where(
-            and_(Document.is_processed.is_(False))
+            and_(Document.is_processed.is_(False), *scope_conditions)
         )
         processed_count = (await db.execute(processed_query)).scalar() or 0
         pending_count = (await db.execute(pending_query)).scalar() or 0
@@ -393,7 +408,17 @@ class AnalyticsService:
             "file_size": func.sum(func.coalesce(Document.file_size, 0)),
             "content_size": func.sum(func.coalesce(func.length(Document.content), 0)),
         }
-        agg_func = metric_map.get(metric, func.count(Document.id))
+        # ~5 characters to a word, the estimate used elsewhere in this file.
+        metric_map["word_count"] = func.sum(
+            func.coalesce(func.length(Document.content), 0) / 5
+        )
+        if metric not in metric_map:
+            # An unknown metric used to be charted as a document count under
+            # the name that was asked for.
+            raise ValueError(
+                f"Unknown metric: {metric}. Use one of {sorted(metric_map)}"
+            )
+        agg_func = metric_map[metric]
 
         # Group by different fields
         if group_by == "source_type":
@@ -441,7 +466,10 @@ class AnalyticsService:
                 )
                 .where(and_(*base_conditions))
                 .group_by(func.date(Document.created_at))
-                .order_by("label")
+                # The most recent `limit` days; reversed below so the series
+                # still reads oldest to newest. It had no limit at all.
+                .order_by(desc("label"))
+                .limit(limit)
             )
 
         else:
@@ -449,6 +477,8 @@ class AnalyticsService:
 
         result = await db.execute(query)
         rows = result.fetchall()
+        if group_by == "date":
+            rows = list(reversed(rows))
 
         labels = []
         values = []
@@ -499,11 +529,20 @@ class AnalyticsService:
         if source_id:
             conditions.append(Document.source_id == source_id)
 
-        query = select(Document).where(and_(*conditions)).limit(limit)
+        from sqlalchemy.orm import selectinload
+
+        # The source is read for every row below; loaded lazily on an async
+        # session that raises MissingGreenlet, so the export only worked on
+        # a session that happened to hold the sources already.
+        query = (
+            select(Document)
+            .where(and_(*conditions))
+            .options(selectinload(Document.source))
+            .order_by(Document.created_at.desc(), Document.id)
+            .limit(limit)
+        )
 
         if include_chunks:
-            from sqlalchemy.orm import selectinload
-
             query = query.options(selectinload(Document.chunks))
 
         result = await db.execute(query)
@@ -541,7 +580,8 @@ class AnalyticsService:
                     {
                         "index": c.chunk_index,
                         "content": c.content,
-                        "metadata": c.metadata,
+                        # `c.metadata` is SQLAlchemy's table registry.
+                        "metadata": c.extra_metadata,
                     }
                     for c in doc.chunks
                 ]

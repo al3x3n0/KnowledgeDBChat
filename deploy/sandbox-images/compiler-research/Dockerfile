@@ -25,6 +25,42 @@ WORKDIR /src
 COPY tools/candidate-coster/ ./
 RUN cargo build --release --offline || cargo build --release
 
+# LLVM pass plugins, in a stage of their own for the same reason as
+# candidate-coster: llvm-14-dev and g++ are about a gigabyte and none of it is
+# needed to *load* a 190 KB plugin -- `opt --load-pass-plugin` only needs the
+# .so and the LLVM runtime the base image already has.
+#
+# sqrt-errno-elision rewrites a libm sqrt call to llvm.sqrt where the argument
+# is provably non-negative, which is the only input for which sqrt sets errno.
+# That single call is what keeps a normalise loop scalar: measured 0 vector ops
+# before and 9 after, with output bit-identical over 20,000 elements. It is the
+# safe subset of -fno-math-errno, applied where proved rather than promised
+# globally.
+#
+# common-divisor-reciprocal trades N divisions by a shared denominator for one
+# reciprocal and N multiplies. Unlike the above it is NOT value-preserving --
+# 34.89% of results move, by up to 3 ulp -- and it is here to price one member
+# of the -ffast-math bundle on its own. Measured scalar: 20.6% dearer at one
+# division, about 41% cheaper from two upward, which is why it fires at two.
+FROM ghcr.io/al3x3n0/kdbc-sandbox-base:latest AS passes
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        llvm-14-dev g++ \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY deploy/sandbox-images/compiler-research/passes/ ./
+# llvm-14-dev puts llvm-config under /usr/lib/llvm-14/bin and not on PATH in
+# this base, so it is named in full: a bare `llvm-config` resolves in the
+# compiler image but not here, which is how the first build of this stage
+# failed with a missing llvm/IR/Function.h rather than a missing tool.
+RUN LLVM_CONFIG=/usr/lib/llvm-14/bin/llvm-config \
+    && test -x "$LLVM_CONFIG" \
+    && for src in *.cpp; do \
+         g++ -fPIC -shared -o "${src%.cpp}.so" "$src" \
+             $($LLVM_CONFIG --cxxflags) -fno-rtti \
+         && test -s "${src%.cpp}.so"; \
+       done
+
 FROM ghcr.io/al3x3n0/kdbc-sandbox-base:latest
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -111,6 +147,7 @@ RUN mkdir -p /opt/rust-deps \
 WORKDIR /
 
 COPY --from=coster /src/target/release/candidate-coster /usr/local/bin/candidate-coster
+COPY --from=passes /src/*.so /opt/llvm-passes/
 
 RUN llvm-mca --version > /dev/null && candidate-coster --help > /dev/null
 

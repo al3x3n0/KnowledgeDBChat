@@ -36,7 +36,10 @@ import {
   GitPullRequest,
   Key,
   Layers,
+  Inbox,
+  Compass,
   ListChecks,
+  ListTodo,
   MessageCircle,
   Network,
   Presentation,
@@ -120,6 +123,9 @@ export const NAV_CATALOG: NavDoor[] = [
       item('Documents', '/documents', FileText),
       item('Papers', '/papers', BookOpen),
       item('Reading Lists', '/reading-lists', ListChecks),
+      // Triage of papers and documents the monitors surfaced. It was a tab on
+      // the Runs page, which made it a view of an agent run; it is not.
+      item('Research Inbox', '/research/inbox', Inbox),
       item('Research Notes', '/research-notes', StickyNote),
       item('Memory', '/memory', Brain),
       item('Knowledge Graph', '/kg/global', Network),
@@ -135,6 +141,8 @@ export const NAV_CATALOG: NavDoor[] = [
     sections: [
       item('Runs', '/autonomous-agents', Zap),
       item('Campaigns', '/campaigns', Rocket),
+      // A portfolio accumulates; a campaign concludes. Neighbours, not synonyms.
+      item('Research Fleet', '/research/fleet', Layers),
       item('Control Plane', '/agent-control-plane', Activity),
       item('Pipelines', '/pipelines', GitBranch),
       item('Workflows', '/workflows', Workflow),
@@ -151,6 +159,10 @@ export const NAV_CATALOG: NavDoor[] = [
       item('LaTeX Studio', '/latex', Sigma, 'latex'),
       item('Repo Reports', '/repo-reports', FolderGit2),
       item('Draft Reviews', '/artifact-drafts', ClipboardCheck),
+      // The rest of the same pipeline as Patch PRs: an item here becomes a
+      // patch there. It was a tab on the Runs page, which split coding work
+      // across a page and a tab on an unrelated one.
+      item('Coding Backlog', '/coding-backlog', ListTodo),
       item('Patch PRs', '/patch-prs', GitPullRequest),
     ],
   },
@@ -160,6 +172,9 @@ export const NAV_CATALOG: NavDoor[] = [
     icon: Settings,
     utility: true,
     sections: [
+      // A standing line of enquiry and its automation policy: configuration
+      // for how research runs, which is what this door is for.
+      item('Domain Profiles', '/settings/domain-profiles', Compass),
       item('Tools', '/tools', Wrench),
       item('AI Hub', '/ai-hub', Cpu),
       item('API Keys', '/api-keys', Key),

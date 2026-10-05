@@ -5,107 +5,53 @@ Handles async execution of synthesis jobs.
 """
 
 import asyncio
-import json
 from typing import Any, Dict, Optional
 from uuid import UUID
 
-import redis
 from loguru import logger
 
 from app.core.celery import celery_app
-from app.core.config import settings
 from app.core.database import create_celery_session
-from app.services.llm_service import UserLLMSettings
+from app.services.llm_service import UserLLMSettings, load_user_llm_settings
 from app.services.synthesis_service import synthesis_service
+from app.tasks import job_support
 
 
 async def _load_user_settings(db, user_id: str) -> Optional[UserLLMSettings]:
     """Load user LLM settings from preferences."""
-    if not user_id:
-        return None
-    try:
-        from sqlalchemy import select
-
-        from app.models.memory import UserPreferences
-
-        result = await db.execute(
-            select(UserPreferences).where(UserPreferences.user_id == UUID(user_id))
-        )
-        user_prefs = result.scalar_one_or_none()
-        if user_prefs:
-            return UserLLMSettings.from_preferences(user_prefs)
-    except Exception as e:
-        logger.debug(f"Could not load user preferences for synthesis task: {e}")
-    return None
-
-
-def _get_redis_client():
-    """Get Redis client for progress publishing."""
-    try:
-        return redis.from_url(settings.REDIS_URL, decode_responses=True)
-    except Exception as e:
-        logger.warning(f"Failed to connect to Redis: {e}")
-        return None
+    return await load_user_llm_settings(db, user_id)
 
 
 def _publish_progress(job_id: str, progress: int, stage: str):
     """Publish progress update via Redis."""
-    try:
-        client = _get_redis_client()
-        if client:
-            channel = f"synthesis_progress:{job_id}"
-            msg = json.dumps(
-                {
-                    "type": "progress",
-                    "job_id": job_id,
-                    "progress": progress,
-                    "stage": stage,
-                }
-            )
-            client.publish(channel, msg)
-    except Exception as e:
-        logger.debug(f"Failed to publish synthesis progress: {e}")
+    job_support.publish_sync(
+        f"synthesis_progress:{job_id}",
+        {"type": "progress", "job_id": job_id, "progress": progress, "stage": stage},
+    )
 
 
 def _publish_complete(job_id: str, result: dict):
     """Publish completion via Redis."""
-    try:
-        client = _get_redis_client()
-        if client:
-            channel = f"synthesis_progress:{job_id}"
-            msg = json.dumps(
-                {
-                    "type": "complete",
-                    "job_id": job_id,
-                    "result": {
-                        "word_count": result.get("metadata", {}).get("word_count", 0),
-                        "documents_analyzed": result.get("metadata", {}).get(
-                            "documents_analyzed", 0
-                        ),
-                    },
-                }
-            )
-            client.publish(channel, msg)
-    except Exception as e:
-        logger.debug(f"Failed to publish synthesis complete: {e}")
+    metadata = (result or {}).get("metadata") or {}
+    job_support.publish_sync(
+        f"synthesis_progress:{job_id}",
+        {
+            "type": "complete",
+            "job_id": job_id,
+            "result": {
+                "word_count": metadata.get("word_count", 0),
+                "documents_analyzed": metadata.get("documents_analyzed", 0),
+            },
+        },
+    )
 
 
 def _publish_error(job_id: str, error: str):
     """Publish error via Redis."""
-    try:
-        client = _get_redis_client()
-        if client:
-            channel = f"synthesis_progress:{job_id}"
-            msg = json.dumps(
-                {
-                    "type": "error",
-                    "job_id": job_id,
-                    "error": error,
-                }
-            )
-            client.publish(channel, msg)
-    except Exception as e:
-        logger.debug(f"Failed to publish synthesis error: {e}")
+    job_support.publish_sync(
+        f"synthesis_progress:{job_id}",
+        {"type": "error", "job_id": job_id, "error": error},
+    )
 
 
 @celery_app.task(bind=True, name="app.tasks.synthesis_tasks.execute_synthesis_task")
@@ -199,64 +145,27 @@ def cleanup_old_synthesis_jobs(days: int = 30) -> Dict[str, Any]:
 
 
 async def _async_cleanup_old_jobs(days: int) -> Dict[str, Any]:
-    """Async implementation of job cleanup."""
+    """Finished synthesis jobs older than `days`, file first, then row.
+
+    Through the same helper the export, presentation and repo-report cleanups
+    use. This one deleted the row whatever `delete_file` answered, and that
+    method returns False rather than raising -- so a file MinIO kept lost the
+    only row that pointed at it.
+    """
+    from app.models.synthesis_job import SynthesisJob
+    from app.services.storage_service import storage_service
+    from app.tasks.job_support import prune_finished_jobs
+
     async with create_celery_session()() as db:
         try:
-            from datetime import datetime, timedelta
-
-            from sqlalchemy import select
-
-            from app.models.synthesis_job import SynthesisJob, SynthesisJobStatus
-            from app.services.storage_service import storage_service
-
-            cutoff = datetime.utcnow() - timedelta(days=days)
-
-            # Find old completed/failed jobs
-            result = await db.execute(
-                select(SynthesisJob).where(
-                    SynthesisJob.created_at < cutoff,
-                    SynthesisJob.status.in_(
-                        [
-                            SynthesisJobStatus.COMPLETED.value,
-                            SynthesisJobStatus.FAILED.value,
-                            SynthesisJobStatus.CANCELLED.value,
-                        ]
-                    ),
-                )
+            counts = await prune_finished_jobs(
+                db,
+                SynthesisJob,
+                older_than_days=days,
+                storage=storage_service,
+                label="synthesis",
             )
-            old_jobs = result.scalars().all()
-
-            deleted_count = 0
-            files_deleted = 0
-
-            for job in old_jobs:
-                try:
-                    # Delete file if exists
-                    if job.file_path:
-                        try:
-                            await storage_service.delete_file(job.file_path)
-                            files_deleted += 1
-                        except Exception as e:
-                            logger.warning(
-                                f"Failed to delete file {job.file_path}: {e}"
-                            )
-
-                    await db.delete(job)
-                    deleted_count += 1
-                except Exception as e:
-                    logger.warning(f"Failed to delete job {job.id}: {e}")
-
-            await db.commit()
-
-            logger.info(
-                f"Cleaned up {deleted_count} old synthesis jobs, {files_deleted} files"
-            )
-            return {
-                "success": True,
-                "jobs_deleted": deleted_count,
-                "files_deleted": files_deleted,
-            }
-
         except Exception as e:
             logger.error(f"Cleanup failed: {e}")
             return {"success": False, "error": str(e)}
+    return {"success": True, "jobs_deleted": counts["deleted"], "kept": counts["kept"]}

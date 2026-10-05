@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import os
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Protocol
 
 from sqlalchemy import select
 
 from app.agent_core.tool_specs import data_analysis as data_analysis_specs
 from app.services import llm_structured
+from app.services.config_values import bounded_int, safe_int
 from app.services.data_analysis_tools import DATA_ANALYSIS_EXPOSED_NAMES
 
 
@@ -427,6 +432,10 @@ class AgentToolRegistry:
         from app.services import agent_evidence_bundle as bundle
 
         if tool_name not in bundle.EVIDENCE_TOOLS:
+            return
+        # A replay re-runs calls already in the bundle; recording them again
+        # appended every one to the bundle being verified.
+        if (getattr(context, "extra", None) or {}).get("replaying_bundle"):
             return
         job_id = getattr(getattr(context, "job", None), "id", None)
         if not job_id:
@@ -1177,6 +1186,27 @@ def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
             "data": {"findings": findings, "total": len(findings)},
         }
 
+    async def _literature_review_arxiv(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        """The chat tool, as the job's owner.
+
+        Its spec names research, monitor and knowledge_expansion jobs, and it
+        is the producer of `literature_review` -- yet only chat had a handler,
+        so a contract requiring that evidence could not be met by any run.
+        """
+        user_id = ctx.user_id or getattr(ctx.job, "user_id", None)
+        if user_id is None:
+            return {"error": "literature_review_arxiv needs the job's owner"}
+        from app.services.agent_service import AgentService
+
+        try:
+            return await AgentService()._tool_literature_review_arxiv(
+                params, user_id, ctx.db
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}
+
     async def _ingest_paper_by_id(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -1359,13 +1389,53 @@ def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
     async def _monitor_arxiv_topic(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        topic = params.get("topic")
+        from datetime import datetime, timedelta, timezone
+
+        from app.services.config_values import bounded_int
+
+        topic = str(params.get("topic") or "").strip()
+        query = str(params.get("query") or "").strip()
+        if not topic and not query:
+            # Without either this searched arXiv for the literal "all:None".
+            return {"error": "topic (or query) is required"}
+        query = query or f"all:{topic}"
+
+        # `categories` and `since_days` were declared and never read.
+        categories = params.get("categories")
+        if isinstance(categories, str):
+            categories = [categories]
+        categories = [str(c).strip() for c in (categories or []) if str(c).strip()]
+        if categories:
+            query = (
+                f"({query}) AND (" + " OR ".join(f"cat:{c}" for c in categories) + ")"
+            )
+
         papers = await _arxiv_search(
-            query=params.get("query") or f"all:{topic}",
-            max_results=params.get("max_results", 20),
+            query=query,
+            max_results=bounded_int(params.get("max_results"), 20, 1, 100),
             sort_by="submittedDate",
             sort_order="descending",
         )
+
+        since_days = params.get("since_days")
+        if since_days is not None:
+            cutoff = datetime.now(timezone.utc) - timedelta(
+                days=bounded_int(since_days, 7, 1, 3650)
+            )
+
+            def _recent(paper: Dict[str, Any]) -> bool:
+                try:
+                    published = datetime.fromisoformat(
+                        str(paper.get("published")).replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    return True  # undated: not provably old
+                if published.tzinfo is None:
+                    published = published.replace(tzinfo=timezone.utc)
+                return published >= cutoff
+
+            papers = [p for p in papers if _recent(p)]
+
         return {
             "success": True,
             "data": papers,
@@ -1383,29 +1453,119 @@ def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
     async def _find_related_papers(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        from uuid import UUID
-
         from app.models.document import Document
+        from app.services.config_values import bounded_int, parse_uuid
 
-        query = ""
+        relation = str(params.get("relation_type") or "semantic").strip()
+        if relation not in {
+            "semantic",
+            "citations",
+            "shared_authors",
+            "shared_topics",
+            "all",
+        }:
+            return {"error": f"Unknown relation_type: {relation}"}
+        limit = bounded_int(params.get("limit"), 10, 1, 50)
+
+        title, author, reference_arxiv_id, reference_doc_id = "", "", "", None
         doc_id = params.get("document_id")
-        arxiv_id = params.get("arxiv_id")
+        arxiv_id = str(params.get("arxiv_id") or "").strip()
         if doc_id:
-            doc_result = await ctx.db.execute(
-                select(Document).where(Document.id == UUID(doc_id))
-            )
-            doc = doc_result.scalar_one_or_none()
+            doc_uuid = parse_uuid(str(doc_id))
+            if doc_uuid is None:
+                return {"error": f"Invalid document_id: {doc_id}"}
+            doc = (
+                await ctx.db.execute(select(Document).where(Document.id == doc_uuid))
+            ).scalar_one_or_none()
             if doc:
-                query = doc.title
+                title, author, reference_doc_id = (
+                    doc.title or "",
+                    doc.author or "",
+                    doc.id,
+                )
         elif arxiv_id:
             papers = await _arxiv_search(query=f"id:{arxiv_id}", max_results=1)
             if papers:
-                query = papers[0].get("title", "")
+                title = papers[0].get("title", "")
+                reference_arxiv_id = str(papers[0].get("id") or arxiv_id)
+                authors = papers[0].get("authors") or []
+                author = str(authors[0]) if authors else ""
 
-        if not query or not params.get("search_external", True):
-            return {"error": "No query could be built"}
+        if not title:
+            return {
+                "error": "No query could be built: the reference paper was not found"
+            }
 
-        related = await _arxiv_search(query=query, max_results=params.get("limit", 10))
+        # What "related" means decides what is asked. It was declared and
+        # ignored: every relation ran the same title search.
+        if relation == "shared_authors":
+            if not author:
+                return {"error": "The reference paper has no author to match on"}
+            query = f'au:"{author}"'
+        elif relation == "citations":
+            query = f'all:"{title}"'
+        else:
+            query = title
+
+        if not params.get("search_external", True):
+            # The knowledge base, not arXiv. This branch used to answer "No
+            # query could be built" although one had been.
+            # By the words of the title, in the database: no index and no
+            # network are needed to say what else here is about the same thing.
+            import re as _re
+
+            from sqlalchemy import or_ as _or
+
+            from app.services.config_values import like_literal
+
+            words = [w for w in _re.findall(r"[A-Za-z0-9]{4,}", title)][:8]
+            related = []
+            if words:
+                rows = await ctx.db.execute(
+                    select(Document)
+                    .where(
+                        Document.id != reference_doc_id,
+                        _or(
+                            *[
+                                Document.title.ilike(
+                                    f"%{like_literal(w)}%", escape="\\"
+                                )
+                                for w in words
+                            ]
+                        ),
+                    )
+                    .order_by(Document.updated_at.desc())
+                    .limit(limit)
+                )
+                related = [
+                    {"id": str(d.id), "title": d.title, "source": "knowledge_base"}
+                    for d in rows.scalars().all()
+                ]
+            return {
+                "success": True,
+                "data": related,
+                "findings": [
+                    {
+                        "type": "related_paper_set",
+                        "title": paper.get("title"),
+                        "document_id": paper.get("id"),
+                    }
+                    for paper in related
+                ],
+            }
+
+        found = await _arxiv_search(query=query, max_results=limit + 1)
+        # A paper is not related to itself.
+        related = [
+            paper
+            for paper in found
+            if not (
+                reference_arxiv_id
+                and str(paper.get("id") or "").split("v")[0]
+                == reference_arxiv_id.split("v")[0]
+            )
+            and str(paper.get("title") or "").strip().lower() != title.strip().lower()
+        ][:limit]
         return {
             "success": True,
             "data": related,
@@ -1745,6 +1905,25 @@ cannot say why their number differs."""
                     "content": synthesis_content,
                 }
             ],
+            # The same thing again as a *finding*, because a goal contract
+            # counts finding types and not artifact types. This tool's spec
+            # declares produces=("synthesis_document",) and it emitted the name
+            # only as an artifact, so a contract requiring synthesis_document
+            # could not be satisfied by the one tool meant to satisfy it:
+            # measured on a live pipeline whose writeup stage called this once,
+            # succeeded, and still ended `completed_contract_unmet` on
+            # finding_type:synthesis_document -- and in 364 jobs no finding of
+            # that type had ever been recorded. Recorded here rather than in
+            # the persist branch below, because the synthesis exists whether or
+            # not it was also saved as a document.
+            "findings": [
+                {
+                    "type": "synthesis_document",
+                    "title": title,
+                    "topic": topic,
+                    "findings_included": len(findings),
+                }
+            ],
         }
 
         if persist and title and synthesis_content.strip():
@@ -1794,6 +1973,9 @@ cannot say why their number differs."""
                 result["artifacts"].append(
                     {"type": "document", "id": str(doc.id), "title": doc.title}
                 )
+                # Point the evidence at the saved document, so a later stage
+                # can read what this one wrote.
+                result["findings"][0]["document_id"] = str(doc.id)
             except Exception:
                 pass
 
@@ -1826,7 +2008,7 @@ cannot say why their number differs."""
             task_type="methodology_comparison",
             temperature=0.2,
             max_tokens=1800,
-            user_id=ctx.user_id,
+            user_id=ctx.user_id or getattr(ctx.job, "user_id", None),
             db=ctx.db,
         )
         if payload is None:
@@ -1877,7 +2059,7 @@ cannot say why their number differs."""
             task_type="research_gap_analysis",
             temperature=0.3,
             max_tokens=1500,
-            user_id=ctx.user_id,
+            user_id=ctx.user_id or getattr(ctx.job, "user_id", None),
             db=ctx.db,
         )
         if payload is None:
@@ -2259,7 +2441,7 @@ Suggest the single best next action and explain why."""
             task_type="document_cluster_analysis",
             temperature=0.2,
             max_tokens=1500,
-            user_id=ctx.user_id,
+            user_id=ctx.user_id or getattr(ctx.job, "user_id", None),
             db=ctx.db,
         )
         if payload is None:
@@ -2279,6 +2461,7 @@ Suggest the single best next action and explain why."""
             "save_research_finding": _save_research_finding,
             "get_research_findings": _get_research_findings,
             "ingest_paper_by_id": _ingest_paper_by_id,
+            "literature_review_arxiv": _literature_review_arxiv,
             "batch_ingest_papers": _batch_ingest_papers,
             "monitor_arxiv_topic": _monitor_arxiv_topic,
             "find_related_papers": _find_related_papers,
@@ -2596,6 +2779,20 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
         except Exception as exc:
             return {"error": f"Failed to record the method: {str(exc)[:200]}"}
 
+        # Also kept on the run, which is where the run's own record reads it:
+        # the finaliser's "what this run established" document lists methods
+        # verbatim from results["methods"], and nothing ever wrote that key,
+        # so a run's methods reached later jobs' memory and never its record.
+        state.setdefault("recorded_methods", []).append(
+            {
+                "name": record["name"],
+                "procedure": record["procedure"],
+                "prevents": record["prevents"],
+                "status": record["status"],
+                "evidence": record["evidence"],
+            }
+        )
+
         return {
             "success": True,
             "data": {
@@ -2628,7 +2825,13 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
         if not content_str:
             return {"error": "content is required"}
 
-        importance = max(0.0, min(1.0, float(params.get("importance", 0.5) or 0.5)))
+        raw_importance = params.get("importance")
+        try:
+            # 0.0 is a value, not an absence: `or 0.5` stored it as 0.5.
+            importance = 0.5 if raw_importance is None else float(raw_importance)
+        except (TypeError, ValueError):
+            return {"error": "importance must be a number between 0.0 and 1.0"}
+        importance = max(0.0, min(1.0, importance))
         category = str(params.get("category", "fact") or "fact")
         metadata = (
             params.get("metadata") if isinstance(params.get("metadata"), dict) else None
@@ -2648,6 +2851,16 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
             mem_resp = await executor.memory_service.create_memory(
                 job.user_id, memory_data, ctx.db
             )
+            # Say which run remembered it; the column exists for that.
+            try:
+                from app.models.memory import ConversationMemory
+
+                row = await ctx.db.get(ConversationMemory, mem_resp.id)
+                if row is not None and row.job_id is None and job.id is not None:
+                    row.job_id = job.id
+                    await ctx.db.commit()
+            except Exception:
+                await ctx.db.rollback()
             return {
                 "success": True,
                 "data": {"memory_id": str(mem_resp.id), "content": content_str[:200]},
@@ -2665,7 +2878,10 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
         if not query_str:
             return {"error": "query is required"}
 
-        limit = min(int(params.get("limit", 10) or 10), 50)
+        try:
+            limit = max(1, min(int(params.get("limit", 10) or 10), 50))
+        except (TypeError, ValueError):
+            limit = 10
         cat_filter = params.get("category_filter")
         min_imp = params.get("min_importance")
         memory_types = [cat_filter] if cat_filter else None
@@ -2679,6 +2895,8 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
             memories = await executor.memory_service.search_memories(
                 job.user_id, search_req, ctx.db
             )
+            from app.services.memory_service import lexical_relevance
+
             return {
                 "success": True,
                 "data": {
@@ -2688,6 +2906,13 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
                             "content": m.content,
                             "importance": m.importance_score,
                             "type": m.memory_type,
+                            # How much of the query this memory shares, by
+                            # words. The ranking is lexical, so a memory
+                            # scoring 0.0 was returned for its importance,
+                            # not because it matched.
+                            "relevance": round(
+                                lexical_relevance(query_str, m.content or ""), 2
+                            ),
                         }
                         for m in memories
                     ],
@@ -2707,7 +2932,10 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
         if not topic:
             return {"error": "topic is required"}
 
-        limit = min(int(params.get("limit", 10) or 10), 50)
+        try:
+            limit = max(1, min(int(params.get("limit", 10) or 10), 50))
+        except (TypeError, ValueError):
+            limit = 10
         try:
             search_req = MemorySearchRequest(query=topic, limit=limit)
             memories = await executor.memory_service.search_memories(
@@ -2743,6 +2971,15 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
                     "total_memories": stats.total_memories,
                     "memories_by_type": stats.memories_by_type,
                     "recent_memories": stats.recent_memories,
+                    "most_accessed_memories": [
+                        {
+                            "id": str(m.id),
+                            "content": (m.content or "")[:200],
+                            "type": m.memory_type,
+                            "access_count": m.access_count,
+                        }
+                        for m in (stats.most_accessed_memories or [])[:10]
+                    ],
                 },
             }
         except Exception as exc:
@@ -2804,6 +3041,20 @@ def build_autonomous_workflow_provider(executor: Any) -> FunctionToolProvider:
         except Exception as exc:
             return {"error": f"Failed to list workflows: {exc}"}
 
+    def _bounded_json(value: Any, limit: int = 20000) -> Any:
+        """`value` if it serialises within `limit` characters, else a note
+        saying how large it was and its top-level keys."""
+        if not value:
+            return {}
+        try:
+            size = len(json.dumps(value, default=str))
+        except Exception:
+            return {"_unreadable": True}
+        if size <= limit:
+            return value
+        keys = sorted(value) if isinstance(value, dict) else []
+        return {"_truncated": True, "_size": size, "_keys": keys[:100]}
+
     async def _execute_workflow(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -2821,7 +3072,9 @@ def build_autonomous_workflow_provider(executor: Any) -> FunctionToolProvider:
             if not user_obj:
                 return {"error": "Could not load user for workflow execution"}
             engine = WorkflowEngine(ctx.db, user_obj)
-            execution = await engine.execute_workflow(
+            # Queued, not run here: the spec says this launches, and running
+            # inline held the whole agent turn on every node of the graph.
+            execution = await engine.queue_workflow(
                 workflow_id=_UUID(wf_id_str),
                 trigger_type="agent_job",
                 trigger_data=params.get("trigger_data")
@@ -2837,6 +3090,35 @@ def build_autonomous_workflow_provider(executor: Any) -> FunctionToolProvider:
                 },
             }
         except Exception as exc:
+            # The engine commits a failed execution before it raises. Name
+            # it, or the run cannot ask what went wrong and a retry simply
+            # makes another.
+            failed_id = None
+            try:
+                from app.models.workflow import WorkflowExecution
+
+                await ctx.db.rollback()
+                failed_id = (
+                    await ctx.db.execute(
+                        select(WorkflowExecution.id)
+                        .where(
+                            WorkflowExecution.workflow_id == _UUID(wf_id_str),
+                            WorkflowExecution.user_id == job.user_id,
+                            WorkflowExecution.status == "failed",
+                        )
+                        .order_by(WorkflowExecution.created_at.desc())
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+            except Exception:
+                failed_id = None
+            if failed_id is not None:
+                return {
+                    "error": f"Workflow execution failed: {exc} "
+                    f"(execution_id {failed_id})",
+                    "execution_id": str(failed_id),
+                    "status": "failed",
+                }
             return {"error": f"Workflow execution failed: {exc}"}
 
     async def _get_workflow_status(
@@ -2852,9 +3134,11 @@ def build_autonomous_workflow_provider(executor: Any) -> FunctionToolProvider:
         if not exec_id_str:
             return {"error": "execution_id is required"}
         try:
+            # The caller's own executions only; a stranger's reads as absent.
             exec_result = await ctx.db.execute(
                 _select(WorkflowExecution).where(
-                    WorkflowExecution.id == _UUID(exec_id_str)
+                    WorkflowExecution.id == _UUID(exec_id_str),
+                    WorkflowExecution.user_id == ctx.job.user_id,
                 )
             )
             execution = exec_result.scalar_one_or_none()
@@ -2874,6 +3158,9 @@ def build_autonomous_workflow_provider(executor: Any) -> FunctionToolProvider:
                     "completed_at": str(execution.completed_at)
                     if execution.completed_at
                     else None,
+                    # What the workflow produced: without it a run could
+                    # start a workflow and never read its result.
+                    "output": _bounded_json(execution.context),
                 },
             }
         except Exception as exc:
@@ -3115,10 +3402,14 @@ def build_autonomous_reasoning_provider(executor: Any) -> FunctionToolProvider:
         reflections = state.get("reflections")
         if not isinstance(reflections, list):
             reflections = []
+        topic = str(params.get("topic") or "").strip()
+        assessment = str(params.get("assessment") or "").strip()
+        if not topic or not assessment:
+            return {"error": "topic and assessment are required"}
         entry = {
             "iteration": int(job.iteration or 0),
-            "topic": str(params.get("topic", ""))[:300],
-            "assessment": str(params.get("assessment", ""))[:500],
+            "topic": topic[:300],
+            "assessment": assessment[:500],
             "blind_spots": [
                 str(b)[:200]
                 for b in (params.get("blind_spots") or [])
@@ -3148,21 +3439,27 @@ def build_autonomous_reasoning_provider(executor: Any) -> FunctionToolProvider:
         if not isinstance(hypotheses, list):
             hypotheses = []
         hyp_id = str(params.get("hypothesis_id") or "").strip()
-        status = str(params.get("status") or "proposed").strip()
-        if status not in {
-            "proposed",
-            "testing",
-            "supported",
-            "refuted",
-            "inconclusive",
-        }:
-            status = "proposed"
+        valid_statuses = {"proposed", "testing", "supported", "refuted", "inconclusive"}
+        given_status = str(params.get("status") or "").strip()
+        if given_status and given_status not in valid_statuses:
+            # Refused, not coerced: an unknown status used to become
+            # "proposed" and overwrite a hypothesis already settled.
+            return {
+                "error": f"status must be one of {sorted(valid_statuses)}, "
+                f"not {given_status!r}"
+            }
+        status = given_status or "proposed"
+        if not hyp_id and not str(params.get("hypothesis") or "").strip():
+            return {"error": "hypothesis is required"}
         result: Dict[str, Any] = {}
         if hyp_id:
             updated = False
             for hypothesis in hypotheses:
                 if isinstance(hypothesis, dict) and hypothesis.get("id") == hyp_id:
-                    hypothesis["status"] = status
+                    # Only when given: adding a rationale must not demote a
+                    # supported hypothesis back to "proposed".
+                    if given_status:
+                        hypothesis["status"] = status
                     if params.get("rationale"):
                         hypothesis["rationale"] = str(params["rationale"])[:400]
                     if params.get("testable_predictions"):
@@ -3181,7 +3478,11 @@ def build_autonomous_reasoning_provider(executor: Any) -> FunctionToolProvider:
                     ]
                 }
         else:
-            hyp_id = f"h-{len(hypotheses) + 1}"
+            # A counter, not the list length: the list is capped at 30, so
+            # every hypothesis after the thirtieth was "h-31".
+            counter = int(state.get("hypothesis_counter") or len(hypotheses)) + 1
+            state["hypothesis_counter"] = counter
+            hyp_id = f"h-{counter}"
             entry = {
                 "id": hyp_id,
                 "hypothesis": str(params.get("hypothesis", ""))[:500],
@@ -3207,25 +3508,51 @@ def build_autonomous_reasoning_provider(executor: Any) -> FunctionToolProvider:
         ledger = state.get("evidence_ledger")
         if not isinstance(ledger, list):
             ledger = []
-        verdict = str(params.get("verdict") or "neutral").strip()
-        if verdict not in {
+        claim = str(params.get("claim") or "").strip()
+        verdict = str(params.get("verdict") or "").strip()
+        valid_verdicts = {
             "strongly_supported",
             "weakly_supported",
             "neutral",
             "weakly_refuted",
             "strongly_refuted",
-        }:
-            verdict = "neutral"
+        }
+        if not claim or not verdict:
+            return {"error": "claim and verdict are required"}
+        if verdict not in valid_verdicts:
+            return {
+                "error": f"verdict must be one of {sorted(valid_verdicts)}, "
+                f"not {verdict!r}"
+            }
+        linked_id = str(params.get("hypothesis_id") or "").strip()
+        known_ids = {
+            h.get("id") for h in state.get("hypotheses") or [] if isinstance(h, dict)
+        }
+        if linked_id and linked_id not in known_ids:
+            return {
+                "error": f"Hypothesis {linked_id} not found",
+                "data": {"available_ids": sorted(str(i) for i in known_ids)},
+            }
+
+        def _strength(item: Dict[str, Any]) -> float:
+            try:
+                value = float(item.get("strength", 0.5))
+            except (TypeError, ValueError):
+                return 0.5
+            if value != value:  # NaN compares unequal to itself
+                return 0.5
+            return max(0.0, min(1.0, value))
+
         ev_for = params.get("evidence_for") or []
         ev_against = params.get("evidence_against") or []
         entry = {
-            "claim": str(params.get("claim", ""))[:500],
+            "claim": claim[:500],
             "hypothesis_id": str(params.get("hypothesis_id") or "").strip() or None,
             "evidence_for": [
                 {
                     "statement": str(e.get("statement", ""))[:300],
                     "source_document_id": str(e.get("source_document_id") or ""),
-                    "strength": max(0.0, min(1.0, float(e.get("strength", 0.5)))),
+                    "strength": _strength(e),
                 }
                 for e in ev_for
                 if isinstance(e, dict)
@@ -3234,7 +3561,7 @@ def build_autonomous_reasoning_provider(executor: Any) -> FunctionToolProvider:
                 {
                     "statement": str(e.get("statement", ""))[:300],
                     "source_document_id": str(e.get("source_document_id") or ""),
-                    "strength": max(0.0, min(1.0, float(e.get("strength", 0.5)))),
+                    "strength": _strength(e),
                 }
                 for e in ev_against
                 if isinstance(e, dict)
@@ -3281,10 +3608,15 @@ def build_autonomous_reasoning_provider(executor: Any) -> FunctionToolProvider:
             critiques = []
         severity = str(params.get("severity") or "moderate").strip()
         if severity not in {"minor", "moderate", "major"}:
-            severity = "moderate"
+            return {
+                "error": f"severity must be minor, moderate or major, not {severity!r}"
+            }
+        plan_summary = str(params.get("plan_summary") or "").strip()
+        if not plan_summary or not params.get("weaknesses"):
+            return {"error": "plan_summary and weaknesses are required"}
         entry = {
             "iteration": int(job.iteration or 0),
-            "plan_summary": str(params.get("plan_summary", ""))[:500],
+            "plan_summary": plan_summary[:500],
             "weaknesses": [
                 str(w)[:200]
                 for w in (params.get("weaknesses") or [])
@@ -3361,22 +3693,34 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
         if len(delegated_ids) >= 5:
             return {"error": "Maximum child job budget (5) reached for this parent"}
 
-        child_name = str(params.get("name", "Subtask"))[:200]
-        child_goal = str(params.get("goal", ""))[:2000]
+        child_name = str(params.get("name") or "Subtask")[:200]
+        child_goal = str(params.get("goal") or "").strip()[:2000]
+        if not child_goal:
+            return {"error": "goal is required"}
         child_type = str(params.get("job_type", "custom")).strip()
         if child_type not in {"research", "analysis", "synthesis", "custom"}:
             child_type = "custom"
+        # A copy: the caller's dict is not this handler's to change.
         child_config = (
-            params.get("config") if isinstance(params.get("config"), dict) else {}
+            dict(params["config"]) if isinstance(params.get("config"), dict) else {}
         )
         share = params.get("share_findings", True)
         if not isinstance(share, bool):
             share = True
         remaining_iters = max(1, (job.max_iterations or 100) - (job.iteration or 0))
-        child_max = min(int(params.get("max_iterations", 30) or 30), remaining_iters)
+        try:
+            requested_iters = int(params.get("max_iterations", 30) or 30)
+        except (TypeError, ValueError):
+            return {"error": "max_iterations must be a number"}
+        child_max = max(1, min(requested_iters, remaining_iters))
 
         if share:
-            child_config["inherited_findings"] = (state.get("findings") or [])[-20:]
+            # Under the key the child's prompt reads. These went to
+            # `inherited_findings`, which nothing reads, so a child told
+            # "findings shared" started blind.
+            child_config.setdefault("inherited_data", {})["parent_findings"] = (
+                state.get("findings") or []
+            )[-20:]
 
         try:
             child = AgentJob(
@@ -3395,11 +3739,18 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                 max_llm_calls=min(child_max * 3, job.max_llm_calls or 200),
                 max_runtime_minutes=min(30, job.max_runtime_minutes or 60),
             )
-            ctx.db.add(child)
-            await ctx.db.flush()
+            # A savepoint: this session is the run's, and a refused insert
+            # would otherwise leave it unusable for every later tool.
+            async with ctx.db.begin_nested():
+                ctx.db.add(child)
+                await ctx.db.flush()
             delegated_ids.append(str(child.id))
             state["delegated_subtask_ids"] = delegated_ids
 
+            # Committed before it is queued: a worker in another process
+            # cannot see a row that has only been flushed, and one that
+            # picked the task up first found no job to run.
+            await ctx.db.commit()
             execute_agent_job_task.delay(str(child.id), str(job.user_id))
 
             result = {
@@ -3431,6 +3782,12 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                         state.setdefault("delegated_subtask_results", {})[
                             str(child.id)
                         ] = result["data"]["results"]
+                        state.setdefault("delegated_subtask_final", {})[
+                            str(child.id)
+                        ] = {
+                            "status": child.status,
+                            "results": result["data"]["results"],
+                        }
                         break
                 else:
                     result["data"]["status"] = child.status
@@ -3463,11 +3820,18 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
         if subtask_id not in delegated_ids:
             return {"error": f"Job {subtask_id} is not a delegated subtask of this job"}
 
-        cached = (state.get("delegated_subtask_results") or {}).get(subtask_id)
-        if cached:
+        # Only a child that has ended is cached, with the status it ended
+        # in. Caching whatever was there replayed a child still running as
+        # "completed", with stale results, and never looked at it again.
+        cached = (state.get("delegated_subtask_final") or {}).get(subtask_id)
+        if isinstance(cached, dict):
             return {
                 "success": True,
-                "data": {"status": "completed", "results": cached, "source": "cache"},
+                "data": {
+                    "status": cached.get("status"),
+                    "results": cached.get("results") or {},
+                    "source": "cache",
+                },
             }
 
         timeout = min(int(params.get("timeout_seconds", 30) or 30), 120)
@@ -3493,9 +3857,15 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                 waited += 3
                 await ctx.db.refresh(child)
             child_results = child.results if isinstance(child.results, dict) else {}
-            state.setdefault("delegated_subtask_results", {})[
-                subtask_id
-            ] = child_results
+            if child.status in [
+                AgentJobStatus.COMPLETED.value,
+                AgentJobStatus.FAILED.value,
+                AgentJobStatus.CANCELLED.value,
+            ]:
+                state.setdefault("delegated_subtask_final", {})[subtask_id] = {
+                    "status": child.status,
+                    "results": child_results,
+                }
             return {
                 "success": True,
                 "data": {
@@ -3535,7 +3905,10 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
             target_ids = []
         try:
             query = select(AgentJob).where(
-                AgentJob.parent_job_id == job.parent_job_id, AgentJob.id != job.id
+                AgentJob.parent_job_id == job.parent_job_id,
+                AgentJob.id != job.id,
+                # The caller's own jobs only, as the other sibling tools do.
+                AgentJob.user_id == job.user_id,
             )
             if target_ids:
                 target_uuids = []
@@ -3544,8 +3917,14 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                         target_uuids.append(uuid.UUID(str(tid)))
                     except (ValueError, AttributeError):
                         pass
-                if target_uuids:
-                    query = query.where(AgentJob.id.in_(target_uuids))
+                if not target_uuids:
+                    # Addressed to somebody, and none of the addresses could
+                    # be read: that is nobody, not everybody.
+                    return {
+                        "error": "None of target_job_ids is a job id; "
+                        "nothing was shared"
+                    }
+                query = query.where(AgentJob.id.in_(target_uuids))
             siblings_result = await ctx.db.execute(query)
             siblings = siblings_result.scalars().all()
             shared_count = 0
@@ -3597,7 +3976,9 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
         job = ctx.job
         state = ctx.state if isinstance(ctx.state, dict) else {}
         review_type = str(params.get("review_type") or "peer_agent").strip()
-        content = str(params.get("content_to_review", ""))[:3000]
+        content = str(params.get("content_to_review") or "").strip()[:3000]
+        if not content:
+            return {"error": "content_to_review is required"}
         criteria = [
             str(c)[:200]
             for c in (params.get("review_criteria") or [])
@@ -3618,17 +3999,54 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
         state["review_requests"] = reviews[-20:]
 
         if review_type == "human":
-            state["approval_checkpoint_pending"] = {
+            # This does not pause the run, and used to say it had: it set
+            # `approval_checkpoint_pending`, which the executor clears before
+            # its next action, and answered "paused_for_human_review". The
+            # request is recorded and the owner is told; the run goes on.
+            request = {
                 "type": "review_request",
                 "content_to_review": content,
                 "review_criteria": criteria,
                 "requested_at": datetime.utcnow().isoformat(),
             }
+            notified = False
+            try:
+                from app.services.notification_service import NotificationService
+
+                async with ctx.db.begin_nested():
+                    notification = await NotificationService().create_notification(
+                        db=ctx.db,
+                        user_id=job.user_id,
+                        notification_type="agent_job_alert",
+                        title=f"Review requested by {job.name or 'an agent run'}"[:200],
+                        message=content[:2000],
+                        priority="high",
+                        related_entity_type="agent_job",
+                        related_entity_id=job.id,
+                        data={
+                            "source_job_id": str(job.id),
+                            "review_criteria": criteria,
+                        },
+                        commit=False,
+                    )
+                notified = notification is not None
+            except Exception:
+                notified = False
             return {
                 "success": True,
                 "data": {
-                    "action": "paused_for_human_review",
-                    "checkpoint": state["approval_checkpoint_pending"],
+                    "action": "human_review_requested",
+                    "paused": False,
+                    "owner_notified": notified,
+                    "request": request,
+                    "note": (
+                        "The request is recorded and the job's owner has been "
+                        "notified. The run is NOT paused: continue with work "
+                        "that does not depend on the review."
+                        if notified
+                        else "The request is recorded but the owner could not "
+                        "be notified, and the run is NOT paused."
+                    ),
                 },
             }
 
@@ -3637,6 +4055,10 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
             return {
                 "error": "Cannot spawn peer review: maximum delegation depth reached"
             }
+        # A reviewer is a child job like any other and counts as one.
+        already = state.get("delegated_subtask_ids")
+        if isinstance(already, list) and len(already) >= 5:
+            return {"error": "Maximum child job budget (5) reached for this parent"}
 
         try:
             review_goal = f"Review the following content and provide feedback:\n\n{content[:1500]}"
@@ -3660,14 +4082,19 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                 max_llm_calls=15,
                 max_runtime_minutes=15,
             )
-            ctx.db.add(child)
-            await ctx.db.flush()
+            async with ctx.db.begin_nested():
+                ctx.db.add(child)
+                await ctx.db.flush()
             delegated_ids = state.get("delegated_subtask_ids")
             if not isinstance(delegated_ids, list):
                 delegated_ids = []
             delegated_ids.append(str(child.id))
             state["delegated_subtask_ids"] = delegated_ids
 
+            # Committed before it is queued: a worker in another process
+            # cannot see a row that has only been flushed, and one that
+            # picked the task up first found no job to run.
+            await ctx.db.commit()
             execute_agent_job_task.delay(str(child.id), str(job.user_id))
 
             try:
@@ -3707,6 +4134,8 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                 return {"error": f"Target job {target_job_id_str} not found"}
             if str(target_job.user_id) != str(job.user_id):
                 return {"error": "Cannot send messages to jobs owned by other users"}
+            if str(target_job.id) == str(job.id):
+                return {"error": "A job cannot send a message to itself"}
             target_results = (
                 target_job.results if isinstance(target_job.results, dict) else {}
             )
@@ -3723,7 +4152,8 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                     "sent_at": datetime.utcnow().isoformat(),
                 }
             )
-            target_results["agent_messages"] = agent_msgs[-100:]
+            agent_msgs = agent_msgs[-100:]
+            target_results["agent_messages"] = agent_msgs
             target_job.results = target_results
             flag_modified(target_job, "results")
             await ctx.db.flush()
@@ -3732,6 +4162,7 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                 "data": {
                     "delivered": True,
                     "target_job_id": target_job_id_str,
+                    # Where it is now, after the inbox was trimmed.
                     "message_index": len(agent_msgs) - 1,
                 },
             }
@@ -3743,7 +4174,20 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
     ) -> Any:
         job = ctx.job
         try:
+            # Read from the database. Another job's session wrote the message;
+            # the copy of this job held in memory since the run began does not
+            # have it, so a running job never saw anything it was sent.
             job_results = job.results if isinstance(job.results, dict) else {}
+            if ctx.db is not None and getattr(job, "id", None) is not None:
+                from app.models.agent_job import AgentJob as _AgentJob
+
+                stored = (
+                    await ctx.db.execute(
+                        select(_AgentJob.results).where(_AgentJob.id == job.id)
+                    )
+                ).scalar_one_or_none()
+                if isinstance(stored, dict):
+                    job_results = stored
             agent_msgs = job_results.get("agent_messages", [])
             if not isinstance(agent_msgs, list):
                 agent_msgs = []
@@ -3758,6 +4202,9 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                     "total": len(agent_msgs),
                     "since_index": since,
                     "shared_findings_count": len(shared),
+                    # The findings themselves; the count alone told a job it
+                    # had been sent something it had no way to read.
+                    "shared_findings": shared[-20:],
                 },
             }
         except Exception as exc:
@@ -3780,6 +4227,22 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
 def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvider:
     """Read-oriented workspace tools for AutonomousAgentExecutor."""
 
+    async def _document_source_exists(db: Any, source_id: str) -> bool:
+        from uuid import UUID
+
+        from sqlalchemy import select
+
+        from app.models.document import DocumentSource
+
+        try:
+            key = UUID(str(source_id))
+        except (TypeError, ValueError):
+            return False
+        row = await db.execute(
+            select(DocumentSource.id).where(DocumentSource.id == key)
+        )
+        return row.scalar_one_or_none() is not None
+
     async def _clone_and_index_repo(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -3792,6 +4255,27 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
             source_id = str((job.config or {}).get("source_id") or "").strip()
         if not source_id and not repo_url:
             return {"error": "Either source_id or repo_url is required"}
+        fallback_note = ""
+        if source_id:
+            # A source id that names nothing used to load zero documents and
+            # report success with files_count 0. Measured: a run's critic
+            # suggested a placeholder UUID, the clone "succeeded" empty, the
+            # repo_url passed in the SAME call was ignored, and three
+            # iterations went to confirming the workspace was empty.
+            if not await _document_source_exists(ctx.db, source_id):
+                if not repo_url:
+                    return {
+                        "error": (
+                            f"source_id {source_id!r} names no document source in "
+                            "the knowledge base. To clone from git, pass repo_url "
+                            "(and branch) and leave source_id out."
+                        )
+                    }
+                fallback_note = (
+                    f"source_id {source_id!r} names no document source; cloned "
+                    "repo_url instead. Leave source_id out when giving a URL."
+                )
+                source_id = ""
         try:
             if source_id:
                 ws = await executor.workspace_manager.create_from_source(
@@ -3809,6 +4293,21 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
                 if not enabled:
                     return {"error": "Git clone requires unsafe_code_execution_enabled"}
                 ws = await executor.workspace_manager.create_from_url(repo_url, branch)
+            if not ws.original_hashes:
+                # An empty workspace is never a success: every later tool
+                # would report "0 files" as if that were the repository.
+                executor.workspace_manager.cleanup(ws.workspace_id)
+                return {
+                    "error": (
+                        "the workspace came out EMPTY -- "
+                        + (
+                            f"source {source_id} has no documents"
+                            if source_id
+                            else f"cloning {repo_url} produced no files"
+                        )
+                        + ". Nothing was indexed; do not proceed as if it were."
+                    )
+                }
             state["coding_workspace_id"] = ws.workspace_id
             ws.owner_job_id = str(job.id)
             ws.session_id = (
@@ -3881,6 +4380,7 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
                     }
             return {
                 "success": True,
+                **({"note": fallback_note} if fallback_note else {}),
                 "data": {
                     "workspace_id": ws.workspace_id,
                     "files_count": len(ws.original_hashes),
@@ -3911,7 +4411,7 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
     ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {
@@ -3938,7 +4438,7 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
     async def _read_file(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}
@@ -3964,7 +4464,7 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
     ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}
@@ -3996,7 +4496,7 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
     ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}
@@ -4008,7 +4508,7 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
     ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}
@@ -4083,6 +4583,113 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
             "get_workspace_artifact_url": _get_workspace_artifact_url,
         },
     )
+
+
+#: How many scheduled jobs and notifications one run may leave behind it.
+MAX_SCHEDULED_JOBS_PER_RUN = 10
+MAX_NOTIFICATIONS_PER_RUN = 20
+
+
+def _diff_files(diff: str) -> List[str]:
+    """Every path a unified diff touches, deletions included.
+
+    Reading only `+++ b/` lines missed a deleted file, whose new side is
+    `/dev/null`; its old side is the only place it is named.
+    """
+    files: List[str] = []
+    for line in diff.splitlines():
+        path = None
+        if line.startswith("+++ b/"):
+            path = line[len("+++ b/") :]
+        elif line.startswith("--- a/"):
+            path = line[len("--- a/") :]
+        if path and path not in files:
+            files.append(path)
+    return files
+
+
+def _new_file_diffs(ws: Any, manager: Any, diff: str) -> str:
+    """Unified-diff hunks for files the run created that git does not track."""
+    try:
+        added = manager.get_status(ws).get("added") or []
+    except Exception:  # noqa: BLE001
+        return ""
+    known = set(_diff_files(diff))
+    chunks: List[str] = []
+    for rel in added:
+        if rel in known:
+            continue
+        try:
+            text = (Path(ws.base_path) / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        lines = text.splitlines()
+        body = "".join(f"+{line}\n" for line in lines)
+        chunks.append(
+            f"diff --git a/{rel} b/{rel}\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            f"+++ b/{rel}\n"
+            f"@@ -0,0 +1,{len(lines)} @@\n"
+            f"{body}"
+        )
+    return "".join(chunks)
+
+
+async def _store_patch_proposal(
+    ctx: "AgentToolExecutionContext", proposal: Dict[str, Any]
+) -> Any:
+    """Write (or revise) the job's CodePatchProposal row; returns its id.
+
+    One row per job (`uq_code_patch_proposals_job_id`): a second proposal from
+    the same run revises the first while it is still awaiting review, and is
+    refused once a person has decided on it.
+    """
+    job = ctx.job
+    user_id = getattr(job, "user_id", None) or ctx.user_id
+    if ctx.db is None or user_id is None:
+        return None
+    from app.models.code_patch_proposal import CodePatchProposal
+
+    metadata = {
+        "files_touched": proposal["files"],
+        "rationale": proposal["rationale"],
+        "lines_added": proposal["lines_added"],
+        "lines_removed": proposal["lines_removed"],
+        "workspace_id": proposal["workspace_id"],
+        "origin": "propose_code_patch",
+    }
+    if "diff_truncated_from" in proposal:
+        metadata["diff_truncated_from"] = proposal["diff_truncated_from"]
+    row = None
+    if job is not None:
+        row = (
+            await ctx.db.execute(
+                select(CodePatchProposal).where(CodePatchProposal.job_id == job.id)
+            )
+        ).scalar_one_or_none()
+    if row is not None and row.status != "proposed":
+        return {
+            "error": (
+                f"This run's proposal was already {row.status}; a decided "
+                "proposal is not overwritten."
+            )
+        }
+    if row is None:
+        row = CodePatchProposal(
+            user_id=user_id,
+            job_id=getattr(job, "id", None),
+            status="proposed",
+            title=proposal["title"][:500],
+            diff_unified=proposal["diff"],
+        )
+        ctx.db.add(row)
+    row.title = proposal["title"][:500]
+    row.summary = proposal["rationale"] or None
+    row.diff_unified = proposal["diff"]
+    row.proposal_metadata = metadata
+    await ctx.db.commit()
+    return row.id
 
 
 def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolProvider:
@@ -4210,7 +4817,11 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         from app.services.custom_tool_service import CustomToolService
 
         state = ctx.state if isinstance(ctx.state, dict) else {}
-        script_name = str(params.get("script_name", "script.py"))[:100]
+        # The name becomes a file in the container's working directory, so it
+        # is a bare file name and nothing else.
+        script_name = os.path.basename(str(params.get("script_name") or "script.py"))
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", script_name):
+            script_name = "script.py"
         script_content = str(params.get("script_content", ""))
         timeout = min(int(params.get("timeout_seconds", 120) or 120), 300)
         input_data = (
@@ -4220,32 +4831,8 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         )
         requirements = params.get("requirements") or []
         arguments = params.get("arguments") or []
-        if not isinstance(requirements, list):
-            requirements = []
         if not isinstance(arguments, list):
             arguments = []
-
-        safe_packages = {
-            "pandas",
-            "numpy",
-            "scipy",
-            "scikit-learn",
-            "matplotlib",
-            "seaborn",
-            "networkx",
-            "requests",
-            "beautifulsoup4",
-            "lxml",
-            "pyyaml",
-            "tabulate",
-            "openpyxl",
-            "xlsxwriter",
-        }
-        requirements = [
-            r
-            for r in requirements
-            if isinstance(r, str) and r.strip().lower() in safe_packages
-        ]
 
         if not script_content.strip():
             return {"error": "No script content provided"}
@@ -4253,29 +4840,44 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             return {
                 "error": "Docker execution is not enabled; write_and_run_script requires Docker"
             }
+        if requirements:
+            # The container has no network, so `pip install` cannot succeed;
+            # it used to be chained in front of the script with `&&`, which
+            # meant asking for a package guaranteed the script never ran.
+            return {
+                "error": (
+                    "requirements cannot be installed: the script runs in a "
+                    "container with no network. Use only the Python standard "
+                    "library, or run it without requirements."
+                )
+            }
         try:
             cts = CustomToolService()
             user = await _resolve_user(ctx)
-            pip_cmd = (
-                f"pip install -q {' '.join(requirements)} && " if requirements else ""
-            )
-            input_cmd = ""
-            if input_data:
-                input_cmd = f"echo '{json.dumps(input_data, default=str)}' > /workspace/input.json && "
-            args_str = " ".join(str(arg) for arg in arguments[:10])
             exec_result = await cts._execute_docker(
                 config={
                     "image": "python:3.11-slim",
+                    # The script arrives as a file and the input as stdin.
+                    # Arguments are passed as argv, never spliced into the
+                    # shell line: an apostrophe in the data used to end the
+                    # quoted string it had been pasted into.
                     "command": [
                         "bash",
                         "-c",
-                        f"{pip_cmd}{input_cmd}python /workspace/{script_name} {args_str}",
+                        'cat > /workspace/input.json; exec python "$0" "$@"',
+                        f"/workspace/{script_name}",
+                        *[str(arg) for arg in arguments[:10]],
                     ],
+                    "input_mode": "both",
+                    "input_file_path": f"/workspace/{script_name}",
                     "timeout_seconds": timeout,
                     "memory_limit": "512m",
                     "network_enabled": False,
                 },
-                inputs={"stdin": script_content},
+                inputs={
+                    "stdin": json.dumps(input_data, default=str),
+                    "input_file_content": script_content,
+                },
                 user=user,
             )
             history = state.get("code_execution_history")
@@ -4299,7 +4901,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
     ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}
@@ -4331,7 +4933,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
     ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}
@@ -4352,7 +4954,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
     ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}
@@ -4384,7 +4986,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
     ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}
@@ -4520,7 +5122,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
     ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}
@@ -4633,7 +5235,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
 
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if ws is None:
             return {"error": "No active coding workspace"}
@@ -4736,7 +5338,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
 
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if ws is None:
             return {"error": "No active coding workspace"}
@@ -4756,10 +5358,28 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 ),
                 timeout=10,
             )
-            stdout_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=60
+            )
             diff = stdout_bytes.decode("utf-8", errors="replace")
         except Exception as exc:  # noqa: BLE001
             return {"error": f"Could not read the workspace diff: {exc}"}
+
+        if proc.returncode not in (0, None):
+            # A workspace built from KB documents has no .git, and git exits
+            # 129 with nothing on stdout. That used to read as "no changes".
+            detail = (stderr_bytes or b"").decode("utf-8", errors="replace").strip()
+            return {
+                "error": (
+                    f"git diff failed (exit {proc.returncode}), so the "
+                    "workspace's changes could not be read: "
+                    f"{detail.splitlines()[0] if detail else 'no output'}"
+                )
+            }
+
+        # Bare `git diff` shows tracked files only. A file the run created is
+        # a change all the same, and get_status already counts it.
+        diff += _new_file_diffs(ws, executor.workspace_manager, diff)
 
         if not diff.strip():
             # A proposal with no diff is the shape of a run that believes it
@@ -4771,15 +5391,12 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 )
             }
 
-        files = [
-            line[len("+++ b/") :]
-            for line in diff.splitlines()
-            if line.startswith("+++ b/")
-        ]
+        files = _diff_files(diff)
+        stored_diff = diff[:200000]
         proposal = {
             "title": title,
             "rationale": str(params.get("rationale") or ""),
-            "diff": diff[:200000],
+            "diff": stored_diff,
             "files": files,
             "lines_added": sum(
                 1
@@ -4793,11 +5410,22 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             ),
             "workspace_id": getattr(ws, "workspace_id", None),
         }
+        if len(diff) > len(stored_diff):
+            proposal["diff_truncated_from"] = len(diff)
         state["code_patch_proposal"] = proposal
+
+        # The proposal is meant for a person, and people read /code-patches.
+        # Kept only in the run state, it reached no review surface at all.
+        stored = await _store_patch_proposal(ctx, proposal)
+        if isinstance(stored, dict) and stored.get("error"):
+            return stored
+        data = {k: v for k, v in proposal.items() if k != "diff"}
+        if stored is not None:
+            data["proposal_id"] = str(stored)
 
         return {
             "success": True,
-            "data": {k: v for k, v in proposal.items() if k != "diff"},
+            "data": data,
             "findings": [
                 {
                     "type": "code_patch_proposal",
@@ -4821,7 +5449,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
 
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}
@@ -4954,6 +5582,333 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             flags=str(params.get("flags") or "-O2"),
             emit=str(params.get("emit") or "asm"),
             label=str(params.get("label") or ""),
+        )
+
+    async def _build_llvm_pass(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_pass_builder
+
+        return await agent_pass_builder.build_llvm_pass(
+            source=str(params.get("source") or ""),
+            pass_name=str(params.get("pass_name") or ""),
+            test_code=str(params.get("test_code") or ""),
+            flags=str(params.get("flags") or "-O1"),
+            label=str(params.get("label") or ""),
+        )
+
+    async def _scan_for_optimizations(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_optscan
+
+        if params.get("paths"):
+            # A real repository: its headers live beside the sources, which
+            # pasted text cannot carry (raylib's includes are 11 MB).
+            state = ctx.state if isinstance(ctx.state, dict) else {}
+            ws = executor.workspace_manager.get_or_default(
+                params.get("workspace_id"), state, job=ctx.job
+            )
+            if not ws:
+                return {
+                    "error": "paths needs a workspace: use clone_and_index_repo first"
+                }
+            paths = params.get("paths")
+            dirs = params.get("include_dirs") or []
+            if not isinstance(paths, list) or not isinstance(dirs, list):
+                return {"error": "paths and include_dirs must be lists of repo paths"}
+            return await agent_optscan.scan_workspace(
+                root=str(ws.base_path),
+                paths=[str(p) for p in paths],
+                include_dirs=[str(d) for d in dirs],
+                flags=str(params.get("flags") or "-O1"),
+                label=str(params.get("label") or ""),
+            )
+        raw = params.get("sources")
+        if not isinstance(raw, dict):
+            # A caller that passed a single snippet gets told the shape rather
+            # than a type error from inside the sandbox.
+            return {
+                "error": (
+                    "sources must be a mapping of bare .c filename to source "
+                    "text, e.g. {'kernel.c': '...'}; got "
+                    f"{type(raw).__name__}"
+                )
+            }
+        return await agent_optscan.scan_for_optimizations(
+            sources={str(k): str(v or "") for k, v in raw.items()},
+            flags=str(params.get("flags") or "-O1"),
+            label=str(params.get("label") or ""),
+        )
+
+    def _harness(params: Dict[str, Any]) -> Any:
+        """The driver/inputs half every restructuring tool shares.
+
+        Returns the kwargs, or an error dict when `inputs` is not a list --
+        a single string would otherwise be split into one input per character.
+        """
+        raw = params.get("inputs")
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, list):
+            return {
+                "error": (
+                    "inputs must be a list of stdin texts for the driver, "
+                    f"e.g. ['100000 7']; got {type(raw).__name__}"
+                )
+            }
+        return {
+            "driver": str(params.get("driver") or ""),
+            "inputs": [str(x if x is not None else "") for x in raw],
+            "flags": str(params.get("flags") or "-O2"),
+            "bench_input": int(params.get("bench_input") or 0),
+            "label": str(params.get("label") or ""),
+        }
+
+    def _reference_args(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+        """`reference` plus the workspace it names files in, or an error."""
+        reference = params.get("reference")
+        if not reference:
+            return {}
+        if not isinstance(reference, dict):
+            return {
+                "error": (
+                    "reference must be an object: {adapter, paths, include_dirs, flags}"
+                )
+            }
+        state = ctx.state if isinstance(ctx.state, dict) else {}
+        ws = executor.workspace_manager.get_or_default(
+            reference.get("workspace_id") or params.get("workspace_id"),
+            state,
+            job=ctx.job,
+        )
+        if not ws:
+            return {
+                "error": "reference needs the repository: clone_and_index_repo first"
+            }
+        return {"reference": reference, "reference_root": str(ws.base_path)}
+
+    async def _propose_restructurings(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_restructure_proposer
+
+        harness = _harness(params)
+        if "error" in harness:
+            return harness
+        ref = _reference_args(params, ctx)
+        if "error" in ref:
+            return ref
+        return await agent_restructure_proposer.propose_restructurings(
+            kernel=str(params.get("kernel") or ""),
+            **ref,
+            focus=str(params.get("focus") or ""),
+            count=int(params.get("count") or 3),
+            user_id=ctx.user_id or getattr(ctx.job, "user_id", None),
+            db=ctx.db,
+            **harness,
+        )
+
+    async def _evaluate_restructuring(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_restructure
+
+        harness = _harness(params)
+        if "error" in harness:
+            return harness
+        ref = _reference_args(params, ctx)
+        if "error" in ref:
+            return ref
+        return await agent_restructure.evaluate_restructuring(
+            kernel=str(params.get("kernel") or ""),
+            candidate=str(params.get("candidate") or ""),
+            **ref,
+            value_preserving=params.get("value_preserving") is not False,
+            invariant=str(params.get("invariant") or ""),
+            trials=int(params.get("trials") or 7),
+            **harness,
+        )
+
+    async def _disassemble_symbol(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_binary_rewrite
+
+        return await agent_binary_rewrite.disassemble_symbol(
+            symbol=str(params.get("symbol") or ""),
+            object_b64=str(params.get("object_b64") or ""),
+            kernel=str(params.get("kernel") or ""),
+            flags=str(params.get("flags") or "-O2"),
+        )
+
+    async def _propose_binary_rewrites(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_restructure_proposer
+
+        harness = _harness(params)
+        if "error" in harness:
+            return harness
+        return await agent_restructure_proposer.propose_binary_rewrites(
+            symbol=str(params.get("symbol") or ""),
+            object_b64=str(params.get("object_b64") or ""),
+            kernel=str(params.get("kernel") or ""),
+            focus=str(params.get("focus") or ""),
+            count=int(params.get("count") or 3),
+            user_id=ctx.user_id or getattr(ctx.job, "user_id", None),
+            db=ctx.db,
+            **harness,
+        )
+
+    async def _evaluate_binary_rewrite(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_binary_rewrite
+
+        harness = _harness(params)
+        if "error" in harness:
+            return harness
+        return await agent_binary_rewrite.evaluate_binary_rewrite(
+            symbol=str(params.get("symbol") or ""),
+            replacement_asm=str(params.get("replacement_asm") or ""),
+            object_b64=str(params.get("object_b64") or ""),
+            kernel=str(params.get("kernel") or ""),
+            baseline_asm=str(params.get("baseline_asm") or ""),
+            value_preserving=params.get("value_preserving") is not False,
+            invariant=str(params.get("invariant") or ""),
+            trials=int(params.get("trials") or 7),
+            **harness,
+        )
+
+    async def _synthesize_pass_from_rewrite(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_pass_from_rewrite
+
+        harness = _harness(params)
+        if "error" in harness:
+            return harness
+        return await agent_pass_from_rewrite.synthesize_pass_from_rewrite(
+            kernel=str(params.get("kernel") or ""),
+            rewrite_kernel=str(params.get("rewrite_kernel") or ""),
+            idea=str(params.get("idea") or ""),
+            invariant=str(params.get("invariant") or ""),
+            user_id=ctx.user_id or getattr(ctx.job, "user_id", None),
+            db=ctx.db,
+            **harness,
+        )
+
+    async def _evaluate_pass_on_kernel(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_pass_from_rewrite
+
+        harness = _harness(params)
+        if "error" in harness:
+            return harness
+        return await agent_pass_from_rewrite.evaluate_pass_on_kernel(
+            pass_source=str(params.get("pass_source") or ""),
+            pass_name=str(params.get("pass_name") or ""),
+            kernel=str(params.get("kernel") or ""),
+            rewrite_kernel=str(params.get("rewrite_kernel") or ""),
+            must_decline=str(params.get("must_decline") or ""),
+            value_preserving=params.get("value_preserving") is not False,
+            precondition=str(params.get("precondition") or ""),
+            trials=int(params.get("trials") or 7),
+            **harness,
+        )
+
+    def _bolt_program(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+        """The program half of the BOLT tools: sources, or workspace paths."""
+        raw_inputs = params.get("inputs")
+        if isinstance(raw_inputs, str):
+            raw_inputs = [raw_inputs]
+        if not isinstance(raw_inputs, list):
+            return {"error": "inputs must be a list of stdin texts"}
+        program: Dict[str, Any] = {
+            "inputs": [str(x if x is not None else "") for x in raw_inputs],
+            "run_args": str(params.get("run_args") or ""),
+            "profile_run_args": str(params.get("profile_run_args") or ""),
+            "build_flags": str(params.get("build_flags") or "-O2"),
+            "libs": str(
+                params.get("libs") if params.get("libs") is not None else "-lm"
+            ),
+            "bench_input": int(params.get("bench_input") or 0),
+            "label": str(params.get("label") or ""),
+        }
+        profile = params.get("profile_inputs")
+        if profile is not None:
+            if not isinstance(profile, list):
+                return {"error": "profile_inputs must be a list of input indices"}
+            # The schema checks that this is an array, not what is in it:
+            # ["all"] reached int() and surfaced as a bare ValueError.
+            if not all(
+                (isinstance(i, int) and not isinstance(i, bool))
+                or (isinstance(i, str) and i.strip().isdigit())
+                for i in profile
+            ):
+                return {
+                    "error": (
+                        f"profile_inputs must be a list of input indices, got "
+                        f"{profile!r}"
+                    )
+                }
+            program["profile_inputs"] = [int(i) for i in profile]
+        if isinstance(params.get("sources"), dict):
+            program["sources"] = {
+                str(k): str(v or "") for k, v in params["sources"].items()
+            }
+            return program
+        state = ctx.state if isinstance(ctx.state, dict) else {}
+        ws = executor.workspace_manager.get_or_default(
+            params.get("workspace_id"), state, job=ctx.job
+        )
+        if not ws:
+            return {
+                "error": "give sources, or clone_and_index_repo first and give paths"
+            }
+        paths, dirs = params.get("paths") or [], params.get("include_dirs") or []
+        if not isinstance(paths, list) or not isinstance(dirs, list):
+            return {"error": "paths and include_dirs must be lists of repo paths"}
+        program.update(
+            root=str(ws.base_path),
+            paths=[str(p) for p in paths],
+            include_dirs=[str(d) for d in dirs],
+        )
+        return program
+
+    async def _propose_bolt_configurations(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_bolt
+
+        program = _bolt_program(params, ctx)
+        if "error" in program:
+            return program
+        return await agent_bolt.propose_bolt_configurations(
+            count=int(params.get("count") or 3),
+            focus=str(params.get("focus") or ""),
+            user_id=ctx.user_id or getattr(ctx.job, "user_id", None),
+            db=ctx.db,
+            **program,
+        )
+
+    async def _optimize_executable_with_bolt(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_bolt
+
+        program = _bolt_program(params, ctx)
+        if "error" in program:
+            return program
+        return await agent_bolt.optimize_executable(
+            options=str(params.get("options") or ""),
+            rationale=str(params.get("rationale") or ""),
+            trials=int(params.get("trials") or 7),
+            measure=str(params.get("measure") or "wall"),
+            core=str(params.get("core") or agent_bolt.DEFAULT_CORE),
+            **program,
         )
 
     async def _profile_c_workload(
@@ -5259,16 +6214,10 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
     ) -> Any:
         from app.services import agent_compiler_sandbox
 
-        def _as_int(value: Any, default: int) -> int:
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                return default
-
         return await agent_compiler_sandbox.cost_fusion_candidate(
             pattern=str(params.get("pattern") or ""),
             cpu=str(params.get("cpu") or ""),
-            copies=_as_int(params.get("copies"), 20),
+            copies=safe_int(params.get("copies"), 20),
             mode=str(params.get("mode") or "dependent"),
             label=str(params.get("label") or ""),
         )
@@ -5310,18 +6259,12 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 )
             }
 
-        def _as_int(value: Any, default: int, low: int, high: int) -> int:
-            try:
-                return max(low, min(int(value), high))
-            except (TypeError, ValueError):
-                return default
-
         ranked = isa_candidate_mining.mine_blocks(
             [b for b in blocks if isinstance(b, dict)],
-            max_nodes=_as_int(params.get("max_instructions"), 3, 2, 6),
-            max_inputs=_as_int(params.get("max_inputs"), 2, 1, 8),
-            max_outputs=_as_int(params.get("max_outputs"), 1, 1, 4),
-            min_dynamic=_as_int(params.get("min_executions"), 0, 0, 10**15),
+            max_nodes=bounded_int(params.get("max_instructions"), 3, 2, 6),
+            max_inputs=bounded_int(params.get("max_inputs"), 2, 1, 8),
+            max_outputs=bounded_int(params.get("max_outputs"), 1, 1, 4),
+            min_dynamic=bounded_int(params.get("min_executions"), 0, 0, 10**15),
         )
         if not ranked:
             return {
@@ -5421,6 +6364,116 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             code=str(params.get("code") or ""),
             targets=[str(t) for t in targets] if isinstance(targets, list) else [],
             config=_study_config(params, "config"),
+            flags=str(params.get("flags") or agent_gem5_studies.DEFAULT_FLAGS),
+            run_args=str(params.get("run_args") or ""),
+            label=str(params.get("label") or ""),
+        )
+
+    async def _retract_finding(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.models.agent_retraction import RetractionKind
+        from app.services import agent_retract_tool, agent_retraction_service
+
+        ref = str(params.get("ref") or "").strip()
+        reason = str(params.get("reason") or "").strip()
+        cited = params.get("contradicted_by")
+        if isinstance(cited, str):
+            try:
+                cited = json.loads(cited)
+            except json.JSONDecodeError:
+                cited = [c.strip() for c in cited.split(",") if c.strip()]
+        cited = [str(c) for c in (cited or [])]
+
+        problem = agent_retract_tool.check(ref, reason, cited, ctx.state)
+        if problem:
+            return {"error": problem}
+
+        # The finding has to exist, and be the caller's. Only the shape of
+        # the ref was checked, so a job that does not exist, an index past
+        # the end and another user's job were all "retracted" successfully.
+        job_part, _, index_part = ref.partition("#")
+        from uuid import UUID as _UUID
+
+        from app.models.agent_job import AgentJob as _AgentJob
+
+        owner_id = getattr(ctx.job, "user_id", None) or ctx.user_id
+        try:
+            target = (
+                await ctx.db.execute(
+                    select(_AgentJob).where(
+                        _AgentJob.id == _UUID(job_part.strip()),
+                        _AgentJob.user_id == owner_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            index = int(index_part.strip())
+        except (ValueError, TypeError, AttributeError):
+            return {"error": f"{ref} does not name a finding (expected job_id#index)"}
+        findings = (
+            (target.results or {}).get("findings")
+            if target is not None and isinstance(target.results, dict)
+            else None
+        )
+        if not isinstance(findings, list) or not 0 <= index < len(findings):
+            return {"error": f"No finding {ref} was found among your jobs"}
+
+        row = await agent_retraction_service.retract(
+            ctx.db,
+            user_id=ctx.user_id or getattr(ctx.job, "user_id", None),
+            kind=RetractionKind.FINDING,
+            ref=ref,
+            reason=reason,
+            source="; ".join(cited)[:200],
+            # The context has a job, not a job_id: this was always NULL.
+            source_job_id=getattr(ctx.job, "id", None),
+        )
+        return {
+            "success": True,
+            "data": {
+                "retracted": ref,
+                "retraction_id": str(getattr(row, "id", "")),
+                "contradicted_by": cited,
+            },
+            "note": (
+                "That finding will no longer be recalled by later runs. It is "
+                "withdrawn, not deleted: the record keeps the reason so a "
+                "reader can tell why."
+            ),
+        }
+
+    async def _measure_marginal(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_gem5_studies
+
+        reps = params.get("reps")
+        if isinstance(reps, str):
+            # A model asked for a small array sends it as text; parsing it
+            # costs nothing and refusing it costs an iteration.
+            try:
+                reps = json.loads(reps)
+            except json.JSONDecodeError:
+                reps = [r.strip() for r in reps.split(",") if r.strip()]
+        try:
+            reps = [int(r) for r in (reps or [])]
+        except (TypeError, ValueError):
+            # Given and unreadable is refused, not replaced: falling back to
+            # (2, 8) ran a study at counts nobody asked for and reported it
+            # as the one requested.
+            return {
+                "success": False,
+                "error": (
+                    "reps must name exactly two different positive counts, "
+                    f"e.g. [2, 8]; got {params.get('reps')!r}"
+                ),
+            }
+
+        return await agent_gem5_studies.measure_marginal(
+            code=str(params.get("code") or ""),
+            configs=_study_config(params, "configs") or {},
+            reps=reps or (2, 8),
+            memory_bound=params.get("memory_bound", True) is not False,
             flags=str(params.get("flags") or agent_gem5_studies.DEFAULT_FLAGS),
             run_args=str(params.get("run_args") or ""),
             label=str(params.get("label") or ""),
@@ -5572,18 +6625,24 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 )
             }
 
+        # Before any replay: the summary describes what the run recorded.
+        summary = bundle.summarize(str(job_id))
         replay: Dict[str, Any] = {}
         if bool(params.get("replay", False)):
+            import dataclasses
+
+            replay_ctx = dataclasses.replace(
+                ctx, extra={**(ctx.extra or {}), "replaying_bundle": True}
+            )
 
             async def execute(tool: str, tool_params: Dict[str, Any]) -> Any:
                 _, result = await executor.tool_registry.try_execute(
-                    tool, tool_params, ctx
+                    tool, tool_params, replay_ctx
                 )
                 return result
 
             replay = await bundle.replay_bundle(str(job_id), execute)
 
-        summary = bundle.summarize(str(job_id))
         verdict = replay.get("verdict") if replay else "not replayed"
         return {
             "success": True,
@@ -6201,6 +7260,17 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "run_custom_tool": _run_custom_tool_autonomous,
             "list_custom_tools": _list_custom_tools_autonomous,
             "compile_c_snippet": _compile_c_snippet,
+            "scan_for_optimizations": _scan_for_optimizations,
+            "build_llvm_pass": _build_llvm_pass,
+            "propose_restructurings": _propose_restructurings,
+            "evaluate_restructuring": _evaluate_restructuring,
+            "disassemble_symbol": _disassemble_symbol,
+            "propose_binary_rewrites": _propose_binary_rewrites,
+            "evaluate_binary_rewrite": _evaluate_binary_rewrite,
+            "synthesize_pass_from_rewrite": _synthesize_pass_from_rewrite,
+            "evaluate_pass_on_kernel": _evaluate_pass_on_kernel,
+            "propose_bolt_configurations": _propose_bolt_configurations,
+            "optimize_executable_with_bolt": _optimize_executable_with_bolt,
             "analyze_snippet_cycles": _analyze_snippet_cycles,
             "profile_c_workload": _profile_c_workload,
             "simulate_c_workload": _simulate_c_workload,
@@ -6209,6 +7279,8 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "simulate_mechanism": _simulate_mechanism,
             "explain_bottleneck": _explain_bottleneck,
             "measure_headroom": _measure_headroom,
+            "retract_finding": _retract_finding,
+            "measure_marginal": _measure_marginal,
             "sweep_mechanism": _sweep_mechanism,
             "evaluate_across_kernels": _evaluate_across_kernels,
             "find_fusion_candidates": _find_fusion_candidates,
@@ -6260,7 +7332,7 @@ def build_autonomous_symbol_retrieval_provider(executor: Any) -> FunctionToolPro
         if not query_str:
             return {"error": "query is required"}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {
@@ -6325,10 +7397,22 @@ def build_autonomous_symbol_retrieval_provider(executor: Any) -> FunctionToolPro
         if not symbol_name or not file_path_param:
             return {"error": "symbol_name and file_path are required"}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}
+        from app.services.repo_symbol_index_service import RepoSymbolIndexService
+
+        if not RepoSymbolIndexService.reads(file_path_param):
+            # "Not found" from an index that cannot read the file is a claim
+            # about the file it has no grounds for.
+            return {
+                "error": (
+                    f"the symbol index does not read {file_path_param!r} files; "
+                    f"use search_code with a pattern for {symbol_name!r} in that "
+                    "file, then read_file with the line range it reports"
+                )
+            }
         try:
             retrieve_result = await _asyncio.to_thread(
                 executor.symbol_index_service.retrieve,
@@ -6389,7 +7473,7 @@ def build_autonomous_symbol_retrieval_provider(executor: Any) -> FunctionToolPro
         if not symbol_name:
             return {"error": "symbol_name is required"}
         ws = executor.workspace_manager.get_or_default(
-            params.get("workspace_id"), state
+            params.get("workspace_id"), state, job=ctx.job
         )
         if not ws:
             return {"error": "No active coding workspace"}
@@ -6446,6 +7530,40 @@ def build_autonomous_symbol_retrieval_provider(executor: Any) -> FunctionToolPro
 def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolProvider:
     """Document authoring tools for AutonomousAgentExecutor."""
 
+    def _rebuild_citations(doc_ws: Dict[str, Any]) -> None:
+        """The references are whatever the sections cite now."""
+        registry: Dict[str, Any] = {}
+        for section in doc_ws["plan"]["sections"]:
+            for citation in section.get("citations") or []:
+                registry[citation["ref_id"]] = {
+                    "document_id": str(citation.get("document_id", "")),
+                    "title": str(citation.get("title", ""))[:200],
+                    "excerpt": str(citation.get("excerpt", ""))[:500],
+                }
+        doc_ws["citations_registry"] = registry
+
+    def _figure_markdown(figure: Dict[str, Any]) -> str:
+        """A figure as it appears in the document: its data as a table when
+        it has some, its diagram source when it has that, and its caption."""
+        parts = []
+        data = figure.get("data")
+        if isinstance(data, dict):
+            headers = data.get("headers") or data.get("columns")
+            rows = data.get("rows")
+            if isinstance(headers, list) and isinstance(rows, list):
+                parts.append("| " + " | ".join(str(h) for h in headers) + " |")
+                parts.append("| " + " | ".join("---" for _ in headers) + " |")
+                for row in rows[:100]:
+                    cells = row if isinstance(row, list) else [row]
+                    parts.append("| " + " | ".join(str(c) for c in cells) + " |")
+            else:
+                for key, value in list(data.items())[:50]:
+                    parts.append(f"- {key}: {value}")
+        if figure.get("diagram_spec"):
+            parts.append("```\n" + str(figure["diagram_spec"]) + "\n```")
+        parts.append(f"*[Figure: {figure.get('caption', '')}]*")
+        return "\n".join(parts)
+
     async def _plan_document(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -6457,13 +7575,26 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
         if not isinstance(sections, list) or not sections:
             return {"error": "At least one section is required"}
 
+        usable = [section for section in sections if isinstance(section, dict)]
+        if not usable:
+            return {"error": "No usable sections: each section must be an object"}
+        max_sections = 30
+        sections_dropped = max(0, len(usable) - max_sections)
+        usable = usable[:max_sections]
         plan_sections = []
-        for section in sections[:30]:
-            if not isinstance(section, dict):
-                continue
+        seen_ids = set()
+        for section in usable:
+            # Stored stripped, because it is looked up stripped: an id with
+            # padding could be planned and then never written.
+            section_key = (
+                str(section.get("id") or "").strip() or f"s-{len(plan_sections)+1}"
+            )
+            if section_key in seen_ids:
+                return {"error": f"Two sections share the id '{section_key}'"}
+            seen_ids.add(section_key)
             plan_sections.append(
                 {
-                    "id": str(section.get("id") or f"s-{len(plan_sections)+1}"),
+                    "id": section_key,
                     "title": str(section.get("title", ""))[:200],
                     "description": str(section.get("description", ""))[:500],
                     "content": None,
@@ -6491,6 +7622,9 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
                 "title": title[:300],
                 "sections_count": len(plan_sections),
                 "section_ids": [section["id"] for section in plan_sections],
+                # Said, not silent: sections past the cap are not planned.
+                "max_sections": max_sections,
+                "sections_dropped": sections_dropped,
             },
         }
 
@@ -6515,16 +7649,17 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
             return {"error": f"Section '{section_id}' not found in document plan"}
 
         section["content"] = content
+        # Writing a section replaces what it cites. Appending meant a
+        # rewrite counted its citations twice and a dropped source stayed
+        # in the references.
+        section["citations"] = []
         citations = params.get("citations") or []
         if isinstance(citations, list):
             for citation in citations[:20]:
                 if isinstance(citation, dict) and citation.get("ref_id"):
                     section["citations"].append(citation)
-                    doc_ws["citations_registry"][citation["ref_id"]] = {
-                        "document_id": str(citation.get("document_id", "")),
-                        "title": str(citation.get("title", ""))[:200],
-                        "excerpt": str(citation.get("excerpt", ""))[:500],
-                    }
+        _rebuild_citations(doc_ws)
+        doc_ws["assembled_markdown"] = None
         return {
             "success": True,
             "data": {
@@ -6559,11 +7694,10 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
         for citation in params.get("additional_citations") or []:
             if isinstance(citation, dict) and citation.get("ref_id"):
                 section["citations"].append(citation)
-                doc_ws["citations_registry"][citation["ref_id"]] = {
-                    "document_id": str(citation.get("document_id", "")),
-                    "title": str(citation.get("title", ""))[:200],
-                    "excerpt": str(citation.get("excerpt", ""))[:500],
-                }
+        _rebuild_citations(doc_ws)
+        # The assembled text is a snapshot; without this an export after a
+        # revision shipped the text from before it.
+        doc_ws["assembled_markdown"] = None
         return {
             "success": True,
             "data": {
@@ -6607,11 +7741,23 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
         written = 0
         skipped = 0
         for section in sections:
+            # Figures are rendered here, from the plan. They used to be a
+            # line appended to the section's text, which lost a figure
+            # inserted before the section was written, lost every figure on
+            # a revision, and never showed a table's data at all.
+            figures = "".join(
+                "\n" + _figure_markdown(figure) + "\n"
+                for figure in section.get("figures") or []
+            )
             if section.get("content"):
-                parts.append(f"## {section['title']}\n\n{section['content']}\n")
+                parts.append(
+                    f"## {section['title']}\n\n{section['content']}\n{figures}"
+                )
                 written += 1
             else:
-                parts.append(f"## {section['title']}\n\n*[Section not yet written]*\n")
+                parts.append(
+                    f"## {section['title']}\n\n*[Section not yet written]*\n{figures}"
+                )
                 skipped += 1
 
         if include_refs and doc_ws.get("citations_registry"):
@@ -6637,7 +7783,6 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
         import hashlib
-        import re as _re
 
         from loguru import logger
 
@@ -6686,34 +7831,55 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
                 file_bytes = builder.build(title=title, content_items=content_items)
                 mime_type = "application/pdf"
             elif fmt == "pptx":
+                from app.services.docx_builder import (
+                    markdown_to_content_items as md_items_for_slides,
+                )
                 from app.services.pptx_builder import PPTXBuilder
 
+                # Slides are cut from the same parsed items the DOCX and PDF
+                # are built from. Splitting the raw text on "## " made bullets
+                # of code fences and rule lines, and kept only the first ten
+                # lines of a section, dropping the rest without a word.
+                per_slide = 10
                 slides = []
-                sections = _re.split(r"^##\s+", markdown, flags=_re.MULTILINE)
-                slide_num = 1
-                for section in sections:
-                    section = section.strip()
-                    if not section:
-                        continue
-                    lines = section.split("\n", 1)
-                    slide_title = lines[0].strip().lstrip("#").strip()
-                    body = lines[1].strip() if len(lines) > 1 else ""
-                    bullets = []
-                    for body_line in body.split("\n"):
-                        body_line = body_line.strip()
-                        if body_line.startswith(("- ", "* ", "+ ")):
-                            bullets.append(body_line[2:].strip())
-                        elif body_line and not body_line.startswith("#"):
-                            bullets.append(body_line)
-                    slides.append(
-                        SlideContent(
-                            slide_number=slide_num,
-                            slide_type="content",
-                            title=slide_title,
-                            content=bullets[:10],
+                current_title, current_lines = title, []
+
+                def _flush() -> None:
+                    chunks = [
+                        current_lines[k : k + per_slide]
+                        for k in range(0, len(current_lines), per_slide)
+                    ]
+                    for index, chunk in enumerate(chunks):
+                        slides.append(
+                            SlideContent(
+                                slide_number=len(slides) + 1,
+                                slide_type="content",
+                                title=current_title
+                                if index == 0
+                                else f"{current_title} (cont.)",
+                                content=chunk,
+                            )
                         )
-                    )
-                    slide_num += 1
+
+                for item in md_items_for_slides(markdown):
+                    kind = item.get("type")
+                    if kind == "heading" and int(item.get("level") or 2) <= 2:
+                        _flush()
+                        current_title, current_lines = str(item.get("text") or ""), []
+                    elif kind in ("bullet_list", "numbered_list"):
+                        current_lines.extend(str(x) for x in item.get("items") or [])
+                    elif kind == "code_block":
+                        current_lines.extend(
+                            line
+                            for line in str(item.get("code") or "").split("\n")
+                            if line.strip()
+                        )
+                    elif kind == "table":
+                        for row in item.get("rows") or []:
+                            current_lines.append(" | ".join(str(c) for c in row))
+                    elif item.get("text"):
+                        current_lines.append(str(item["text"]))
+                _flush()
                 if not slides:
                     slides.append(
                         SlideContent(
@@ -6728,10 +7894,20 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
                 file_bytes = builder.build(outline=outline)
                 mime_type = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
             elif fmt == "latex":
+                from app.core.config import settings as _settings
                 from app.services.latex_compiler_service import LatexCompilerService
+                from app.services.markdown_latex import markdown_to_latex
 
-                compile_result = LatexCompilerService.compile_to_pdf(
-                    tex_source=markdown,
+                # The same switch that gates compilation everywhere else. This
+                # branch never consulted it -- and never worked either: it
+                # called the method on the class, and gave it markdown.
+                if not getattr(_settings, "LATEX_COMPILER_ENABLED", False):
+                    return {
+                        "error": "LaTeX compilation is disabled on this "
+                        "deployment; export as pdf or docx instead"
+                    }
+                compile_result = LatexCompilerService().compile_to_pdf(
+                    tex_source=markdown_to_latex(markdown, title),
                     timeout_seconds=60,
                     max_source_chars=500000,
                 )
@@ -6750,29 +7926,70 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
                 "size_bytes": len(file_bytes),
                 "mime_type": mime_type,
             }
+            # Keep the file. It used to be built, measured and dropped: the
+            # result named a size and a type and nothing that could be opened.
+            extension = "pdf" if fmt == "latex" else fmt
+            try:
+                import uuid as _uuid
+
+                from app.services.storage_service import storage_service
+
+                object_path = (
+                    f"agent_artifacts/{job.id}/exports/{_uuid.uuid4()}.{extension}"
+                )
+                await storage_service.initialize()
+                await storage_service.upload_to_path(object_path, file_bytes, mime_type)
+                artifact["object_path"] = object_path
+                artifact["url"] = await storage_service.get_presigned_download_url(
+                    object_path
+                )
+            except Exception as exc:
+                logger.warning(f"Failed to store exported document: {exc}")
+                artifact["stored"] = False
+                artifact["storage_error"] = str(exc)[:300]
             doc_ws.setdefault("export_artifacts", []).append(artifact)
 
             if params.get("persist_to_kb"):
                 try:
-                    from app.models.document import Document
+                    import uuid as _uuid
 
+                    from app.models.document import Document
+                    from app.services.document_service import DocumentService
+
+                    notes_source = (
+                        await DocumentService()._get_or_create_agent_notes_source(
+                            ctx.db
+                        )
+                    )
                     doc = Document(
-                        title=f"{title} ({fmt.upper()})",
+                        title=f"{title} ({fmt.upper()})"[:500],
                         content=markdown[:100000],
                         content_hash=hashlib.sha256(markdown.encode()).hexdigest(),
-                        file_type=mime_type,
-                        file_size=len(file_bytes),
+                        # The column holds 50 characters; the DOCX media
+                        # type is 71.
+                        file_type="text/markdown",
+                        file_size=len(markdown.encode("utf-8")),
+                        file_path=artifact.get("object_path"),
+                        source_id=notes_source.id,
+                        source_identifier=f"agent_export:{_uuid.uuid4().hex}",
+                        tags=["autonomous_job", "export"],
                         extra_metadata={
                             "origin": "document_author",
                             "job_id": str(job.id),
                             "format": fmt,
+                            "export_mime_type": mime_type,
                         },
                     )
-                    ctx.db.add(doc)
-                    await ctx.db.flush()
+                    # A savepoint, so a refused insert costs only itself.
+                    async with ctx.db.begin_nested():
+                        ctx.db.add(doc)
+                        await ctx.db.flush()
                     artifact["document_id"] = str(doc.id)
+                    artifact["persisted"] = True
                 except Exception as exc:
                     logger.warning(f"Failed to persist exported doc to KB: {exc}")
+                    artifact["persisted"] = False
+                    artifact["persist_error"] = str(exc)[:300]
 
             return {"success": True, "data": artifact}
         except Exception as exc:
@@ -6789,9 +8006,16 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
 
         section_id = str(params.get("section_id", "")).strip()
         figure_type = str(params.get("figure_type", "")).strip()
-        caption = str(params.get("caption", ""))[:300]
+        caption = str(params.get("caption") or "").strip()[:300]
         if not section_id or not figure_type:
             return {"error": "section_id and figure_type are required"}
+        if figure_type not in {"chart", "table", "diagram", "flowchart"}:
+            return {
+                "error": f"figure_type must be chart, table, diagram or flowchart, "
+                f"not {figure_type!r}"
+            }
+        if not caption:
+            return {"error": "caption is required"}
 
         section = None
         for section_row in doc_ws["plan"]["sections"]:
@@ -6811,9 +8035,7 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
             "position": str(params.get("position", "inline")),
         }
         section.setdefault("figures", []).append(figure_entry)
-        fig_md = f"\n\n*[Figure: {caption}]*\n"
-        if section.get("content"):
-            section["content"] += fig_md
+        doc_ws["assembled_markdown"] = None
         return {
             "success": True,
             "data": {
@@ -6916,6 +8138,27 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
             "findings": outcome["findings"],
         }
 
+    def _tool_calls(log: Any) -> Iterable[tuple[str, Optional[str], Dict[str, Any]]]:
+        """(tool, error, entry) for each tool call in an execution log.
+
+        Only the executor's per-iteration entry is a call. Operator decisions
+        also carry an `action` ("approve"), and were being counted as calls
+        to a tool of that name. A call failed if it recorded an error or
+        recorded that it did not succeed.
+        """
+        for entry in log or []:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("phase") not in (None, "iteration_complete"):
+                continue
+            tool = entry.get("action")
+            if not tool:
+                continue
+            error = entry.get("error")
+            if not error and entry.get("success") is False:
+                error = "failed"
+            yield str(tool), (str(error) if error else None), entry
+
     async def _get_job_history(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -6937,7 +8180,7 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
             status_filter = str(params.get("status", "")).strip()
             if status_filter:
                 stmt = stmt.where(AgentJobModel.status == status_filter)
-            limit = min(int(params.get("limit", 10) or 10), 50)
+            limit = max(1, min(int(params.get("limit", 10) or 10), 50))
             stmt = stmt.limit(limit)
 
             past_jobs = (await ctx.db.execute(stmt)).scalars().all()
@@ -7003,10 +8246,8 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                 )
             tool_counts = {}
             if target_job.execution_log:
-                for entry in target_job.execution_log:
-                    tool = entry.get("action")
-                    if tool:
-                        tool_counts[tool] = tool_counts.get(tool, 0) + 1
+                for tool, _error, _entry in _tool_calls(target_job.execution_log):
+                    tool_counts[tool] = tool_counts.get(tool, 0) + 1
 
             return {
                 "success": True,
@@ -7050,7 +8291,7 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
 
         job = ctx.job
         try:
-            days = min(int(params.get("days", 7) or 7), 30)
+            days = max(1, min(int(params.get("days", 7) or 7), 30))
             tool_name_filter = str(params.get("tool_name", "")).strip() or None
             cutoff = datetime.now(timezone.utc) - timedelta(days=days)
             stmt = select(AgentJobModel).where(
@@ -7062,15 +8303,14 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
 
             tool_stats = {}
             for row in analyzed_jobs:
-                for entry in row.execution_log or []:
-                    tool = entry.get("action")
-                    if not tool or (tool_name_filter and tool != tool_name_filter):
+                for tool, error, _entry in _tool_calls(row.execution_log):
+                    if tool_name_filter and tool != tool_name_filter:
                         continue
                     stats = tool_stats.setdefault(
                         tool, {"calls": 0, "successes": 0, "failures": 0}
                     )
                     stats["calls"] += 1
-                    if entry.get("error"):
+                    if error:
                         stats["failures"] += 1
                     else:
                         stats["successes"] += 1
@@ -7113,27 +8353,31 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
         if not analysis_tool_name:
             return {"error": "tool_name is required"}
         try:
-            days = min(int(params.get("days", 7) or 7), 30)
+            days = max(1, min(int(params.get("days", 7) or 7), 30))
             cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-            stmt = select(AgentJobModel).where(
-                AgentJobModel.user_id == job.user_id,
-                AgentJobModel.created_at >= cutoff,
-                AgentJobModel.execution_log.isnot(None),
+            stmt = (
+                select(AgentJobModel)
+                .where(
+                    AgentJobModel.user_id == job.user_id,
+                    AgentJobModel.created_at >= cutoff,
+                    AgentJobModel.execution_log.isnot(None),
+                )
+                .order_by(AgentJobModel.created_at.asc())
             )
             analyzed_jobs = (await ctx.db.execute(stmt)).scalars().all()
             total_calls = 0
             errors = []
             for row in analyzed_jobs:
-                for entry in row.execution_log or []:
-                    if entry.get("action") != analysis_tool_name:
+                for tool, error, entry in _tool_calls(row.execution_log):
+                    if tool != analysis_tool_name:
                         continue
                     total_calls += 1
-                    if entry.get("error"):
+                    if error:
                         errors.append(
                             {
                                 "job_id": str(row.id),
                                 "job_type": row.job_type,
-                                "error": str(entry.get("error"))[:200],
+                                "error": error[:200],
                                 "timestamp": entry.get("timestamp"),
                                 "iteration": entry.get("iteration"),
                             }
@@ -7182,7 +8426,7 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
             queries = [str(q).strip() for q in queries_raw if str(q).strip()][:10]
             if not queries:
                 return {"error": "No valid queries provided"}
-            limit_per = min(int(params.get("limit_per_query", 5) or 5), 20)
+            limit_per = max(1, min(int(params.get("limit_per_query", 5) or 5), 20))
             source_id_filter = str(params.get("source_id", "")).strip() or None
             dedup = params.get("deduplicate", True)
             if dedup is None:
@@ -7277,16 +8521,24 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                         )
                     elif generate_missing:
                         try:
+                            from app.services.llm_service import load_user_llm_settings
+
                             summary_text = (
                                 await executor.document_service.summarize_document(
-                                    doc.id, ctx.db, user_id=job.user_id
+                                    doc.id,
+                                    ctx.db,
+                                    user_settings=await load_user_llm_settings(
+                                        ctx.db, job.user_id
+                                    ),
                                 )
                             )
+                            if not summary_text:
+                                raise ValueError("the summariser returned nothing")
                             summaries.append(
                                 {
                                     "document_id": doc_id_str,
                                     "title": doc.title,
-                                    "summary": summary_text or "",
+                                    "summary": summary_text,
                                     "status": "generated",
                                 }
                             )
@@ -7330,7 +8582,9 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
         state = ctx.state if isinstance(ctx.state, dict) else {}
         try:
             condition = str(params.get("condition", "")).strip()
-            threshold = int(params.get("threshold", 1) or 1)
+            # 0 is a threshold; `or 1` turned it into 1.
+            raw_threshold = params.get("threshold")
+            threshold = 1 if raw_threshold is None else int(raw_threshold)
             data: Dict[str, Any]
             if condition == "findings_count":
                 count = len(state.get("findings", []))
@@ -7341,9 +8595,16 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                     "condition": condition,
                 }
             elif condition == "findings_has_category":
-                cat = str(params.get("category", "")).strip()
+                cat = str(params.get("category") or "").strip()
+                if not cat:
+                    return {
+                        "error": "category parameter required for "
+                        "findings_has_category condition"
+                    }
                 matches = [
-                    f for f in state.get("findings", []) if f.get("category") == cat
+                    f
+                    for f in state.get("findings", [])
+                    if isinstance(f, dict) and f.get("category") == cat
                 ]
                 data = {
                     "met": len(matches) >= threshold,
@@ -7353,12 +8614,17 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                     "condition": condition,
                 }
             elif condition == "documents_count":
+                # The search reports as its total only what it fetched, so
+                # the page must be at least as large as the threshold: with a
+                # page of one the total was at most two, and a threshold of
+                # three or more could never be met. `actual` is therefore a
+                # floor once it reaches the threshold, not an exact count.
                 source_id = str(params.get("source_id", "")).strip() or None
                 _, total, _ = await executor.search_service.search(
                     query="*",
                     mode="smart",
                     page=1,
-                    page_size=1,
+                    page_size=max(1, min(threshold, 100)),
                     source_id=source_id,
                     db=ctx.db,
                 )
@@ -7375,11 +8641,13 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                     return {
                         "error": "query parameter required for search_has_results condition"
                     }
+                # The search reports as its total only what it fetched, so
+                # the page has to be at least as large as the threshold.
                 _, total, _ = await executor.search_service.search(
                     query=query,
                     mode="smart",
                     page=1,
-                    page_size=1,
+                    page_size=max(1, min(threshold, 100)),
                     source_id=source_id,
                     db=ctx.db,
                 )
@@ -7425,13 +8693,14 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
             filtered = [
                 f
                 for f in findings
-                if float(f.get("confidence", 0.8) or 0.8) >= min_conf
+                if (0.8 if f.get("confidence") is None else float(f.get("confidence")))
+                >= min_conf
             ]
             if cat_filter:
                 filtered = [f for f in filtered if f.get("category") == cat_filter]
             by_category: dict[str, int] = {}
             for finding in filtered:
-                category = str(finding.get("category", "uncategorized"))
+                category = str(finding.get("category") or "uncategorized")
                 by_category[category] = by_category.get(category, 0) + 1
             return {
                 "success": True,
@@ -7523,9 +8792,14 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
         state = ctx.state if isinstance(ctx.state, dict) else {}
         try:
             exec_plan = state.get("execution_plan")
-            plan_steps_total = (
-                len(exec_plan.get("steps", [])) if isinstance(exec_plan, dict) else 0
-            )
+            # The plan is stored as a list of steps; only a dict was counted,
+            # so every real plan reported zero steps.
+            if isinstance(exec_plan, list):
+                plan_steps_total = len(exec_plan)
+            elif isinstance(exec_plan, dict):
+                plan_steps_total = len(exec_plan.get("steps", []))
+            else:
+                plan_steps_total = 0
             return {
                 "success": True,
                 "data": {
@@ -7557,7 +8831,8 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
         state = ctx.state if isinstance(ctx.state, dict) else {}
         try:
             actions = state.get("actions_taken", [])
-            keep_last = min(int(params.get("keep_last", 5) or 5), 20)
+            raw_keep = params.get("keep_last")
+            keep_last = max(0, min(5 if raw_keep is None else int(raw_keep), 20))
             if len(actions) <= keep_last:
                 return {
                     "success": True,
@@ -7599,10 +8874,14 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                     f"Previous compressed history:\n{existing_compressed}\n\n"
                 )
             compress_prompt += f"New actions to compress:\n{actions_text}\n\nWrite a concise summary in past tense."
-            # The executor holds these as an attribute; there is no
-            # _get_user_settings method and never was, so this raised
-            # AttributeError and took the tool down with it.
-            user_settings = getattr(executor, "user_settings", None)
+            # Loaded for the job's owner. The executor has no such attribute
+            # (only its runtime adapter does), so reading it there always
+            # gave None and the owner's provider and model were ignored.
+            from app.services.llm_service import load_user_llm_settings
+
+            user_settings = await load_user_llm_settings(
+                ctx.db, getattr(ctx.job, "user_id", None)
+            )
             summary_resp = await executor.llm_service.generate_response(
                 system_prompt="You are a concise summarizer. Output only the summary, no preamble.",
                 user_message=compress_prompt,
@@ -7611,6 +8890,13 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                 snapshot_context=_tool_snapshot_context(ctx, "compress_history"),
             )
             summary_text = str(summary_resp or "").strip()[:2000]
+            if not summary_text:
+                # Nothing is dropped for a summary that is not there: storing
+                # it erased the earlier summary and the actions together.
+                return {
+                    "error": "The model returned no summary; history was left "
+                    "as it was"
+                }
             state["compressed_history"] = summary_text
             state["actions_taken"] = actions[-keep_last:] if keep_last > 0 else []
             return {
@@ -7654,10 +8940,14 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                 "Group related findings, identify themes, note contradictions, and highlight the most important insights.\n\n"
                 f"Findings:\n{findings_text}\n\nWrite a structured synthesis."
             )
-            # The executor holds these as an attribute; there is no
-            # _get_user_settings method and never was, so this raised
-            # AttributeError and took the tool down with it.
-            user_settings = getattr(executor, "user_settings", None)
+            # Loaded for the job's owner. The executor has no such attribute
+            # (only its runtime adapter does), so reading it there always
+            # gave None and the owner's provider and model were ignored.
+            from app.services.llm_service import load_user_llm_settings
+
+            user_settings = await load_user_llm_settings(
+                ctx.db, getattr(ctx.job, "user_id", None)
+            )
             synthesis_resp = await executor.llm_service.generate_response(
                 system_prompt="You are a research synthesizer. Output only the synthesis, no preamble.",
                 user_message=synth_prompt,
@@ -7666,6 +8956,11 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                 snapshot_context=_tool_snapshot_context(ctx, "summarize_findings"),
             )
             synthesis_text = str(synthesis_resp or "").strip()[:3000]
+            if not synthesis_text:
+                return {
+                    "error": "The model returned no synthesis; the findings "
+                    "were left as they were"
+                }
             out: Dict[str, Any] = {
                 "success": True,
                 "data": {
@@ -7675,12 +8970,17 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                 },
             }
             if consolidate:
-                if cat_filter:
-                    state["findings"] = [
-                        f for f in findings if f.get("category") != cat_filter
-                    ]
-                else:
-                    state["findings"] = []
+                # Only narrative findings are folded into the synthesis. A
+                # finding with a `type` is evidence: goal contracts count
+                # them, bounds are checked on them and later tools cite
+                # them. Replacing them with one untyped summary let a run
+                # un-satisfy a contract it had already met.
+                folded = [f for f in target if not f.get("type")]
+                kept_typed = len(target) - len(folded)
+                folded_ids = {id(f) for f in folded}
+                state["findings"] = [f for f in findings if id(f) not in folded_ids]
+                out["data"]["findings_folded"] = len(folded)
+                out["data"]["typed_findings_kept"] = kept_typed
                 consolidated = {
                     "id": str(uuid.uuid4()),
                     "title": f"Synthesis: {cat_filter or 'all findings'} ({len(target)} items)",
@@ -7690,7 +8990,9 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                     "tags": ["synthesized", "compressed"],
                     "created_at": datetime.utcnow().isoformat(),
                 }
-                state["findings"].append(consolidated)
+                # Returned, not appended: the executor adds a result's
+                # `findings` to state itself, so appending here as well
+                # recorded the synthesis twice.
                 executor._job_findings.setdefault(str(job.id), []).append(consolidated)
                 out["findings"] = [consolidated]
             return out
@@ -7775,7 +9077,7 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
             child_type = str(params.get("job_type", "research")).strip()
             if child_type not in {"research", "analysis", "synthesis", "custom"}:
                 child_type = "research"
-            child_max = min(int(params.get("max_iterations", 10) or 10), 20)
+            child_max = max(1, min(int(params.get("max_iterations", 10) or 10), 20))
             share = params.get("share_findings", True)
             if share is None:
                 share = True
@@ -7788,7 +9090,12 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
                 },
             }
             if share:
-                child_config["inherited_findings"] = (state.get("findings") or [])[-20:]
+                # Under the key the child's prompt reads. These went to
+                # `inherited_findings`, which nothing reads, so a child told
+                # "findings shared" started blind.
+                child_config.setdefault("inherited_data", {})["parent_findings"] = (
+                    state.get("findings") or []
+                )[-20:]
             source_scope_id = executor._resolve_default_source_scope(job)
             if source_scope_id:
                 child_config["default_source_id"] = source_scope_id
@@ -7810,9 +9117,14 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
                 max_runtime_minutes=min(30, job.max_runtime_minutes or 60),
                 results={},
             )
-            ctx.db.add(child)
-            await ctx.db.flush()
+            async with ctx.db.begin_nested():
+                ctx.db.add(child)
+                await ctx.db.flush()
             state.setdefault("delegated_subtask_ids", []).append(str(child.id))
+            # Committed before it is queued: a worker in another process
+            # cannot see a row that has only been flushed, and one that
+            # picked the task up first found no job to run.
+            await ctx.db.commit()
             execute_agent_job_task.delay(str(child.id), str(job.user_id))
             return {
                 "success": True,
@@ -7979,13 +9291,21 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
     ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         try:
-            directive = str(params.get("directive", "")).strip()[:1000]
+            directive = str(params.get("directive") or "").strip()[:1000]
             if not directive:
                 return {"error": "directive parameter is required"}
             append = bool(params.get("append", False))
             if append:
-                existing = str(state.get("focus_directive", ""))
-                state["focus_directive"] = (existing + "\n" + directive).strip()[:2000]
+                existing = str(state.get("focus_directive") or "")
+                combined = (existing + "\n" + directive).strip()
+                if len(combined) > 2000:
+                    # Cutting the tail dropped the new text and still
+                    # answered "appended".
+                    return {
+                        "error": "The focus directive is full (2000 characters). "
+                        "Replace it instead of appending."
+                    }
+                state["focus_directive"] = combined
             else:
                 state["focus_directive"] = directive
             return {
@@ -8170,17 +9490,25 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
             doc_id = None
             if params.get("persist", False):
                 try:
-                    notes_source = (
-                        await executor.document_service._ensure_agent_notes_source(
-                            ctx.db, job.user_id
-                        )
+                    import hashlib
+                    import uuid
+
+                    notes_source = await executor.document_service._get_or_create_agent_notes_source(
+                        ctx.db
                     )
                     doc = Document(
                         title=title[:500],
                         content=md,
+                        content_hash=hashlib.sha256(md.encode("utf-8")).hexdigest(),
                         file_type="text/markdown",
+                        file_size=len(md.encode("utf-8")),
                         source_id=notes_source.id,
-                        user_id=job.user_id,
+                        source_identifier=f"agent_report:{uuid.uuid4().hex}",
+                        tags=["autonomous_job", "report"],
+                        extra_metadata={
+                            "origin": "autonomous_job",
+                            "job_id": str(job.id),
+                        },
                     )
                     ctx.db.add(doc)
                     await ctx.db.flush()
@@ -8251,6 +9579,7 @@ def build_autonomous_web_research_provider(executor: Any) -> FunctionToolProvide
     async def _search_web(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
+        import html as _html
         import re as _re
         from urllib.parse import unquote
 
@@ -8260,7 +9589,7 @@ def build_autonomous_web_research_provider(executor: Any) -> FunctionToolProvide
         if not query:
             return {"error": "query is required"}
         try:
-            max_results = min(int(params.get("max_results", 5) or 5), 10)
+            max_results = max(1, min(int(params.get("max_results", 5) or 5), 10))
             async with httpx.AsyncClient(
                 timeout=15.0,
                 headers={"User-Agent": "Mozilla/5.0 (compatible; KnowledgeDBChat/1.0)"},
@@ -8270,16 +9599,43 @@ def build_autonomous_web_research_provider(executor: Any) -> FunctionToolProvide
                     "https://html.duckduckgo.com/html/", params={"q": query}
                 )
                 resp.raise_for_status()
-            result_blocks = _re.findall(
-                r'<a[^>]+class="result__a"[^>]+href="([^"]*)"[^>]*>(.*?)</a>.*?'
-                r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
-                resp.text,
-                _re.DOTALL,
+            # One result at a time: a snippet is looked for only between a
+            # title and the next title. A single pattern spanning title to
+            # snippet gave a result that had no snippet the next result's,
+            # and swallowed that result.
+            titles = list(
+                _re.finditer(
+                    r'<a[^>]+class="result__a"[^>]+href="([^"]*)"[^>]*>(.*?)</a>',
+                    resp.text,
+                    _re.DOTALL,
+                )
             )
+            result_blocks = []
+            for index, match in enumerate(titles):
+                end = (
+                    titles[index + 1].start()
+                    if index + 1 < len(titles)
+                    else len(resp.text)
+                )
+                snippet = _re.search(
+                    r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
+                    resp.text[match.end() : end],
+                    _re.DOTALL,
+                )
+                result_blocks.append(
+                    (
+                        match.group(1),
+                        match.group(2),
+                        snippet.group(1) if snippet else "",
+                    )
+                )
             results_list = []
             for url_raw, title_raw, snippet_raw in result_blocks[:max_results]:
-                title_clean = _re.sub(r"<[^>]+>", "", title_raw).strip()
-                snippet_clean = _re.sub(r"<[^>]+>", "", snippet_raw).strip()
+                title_clean = _html.unescape(_re.sub(r"<[^>]+>", "", title_raw)).strip()
+                snippet_clean = _html.unescape(
+                    _re.sub(r"<[^>]+>", "", snippet_raw)
+                ).strip()
+                url_raw = _html.unescape(url_raw)
                 url_match = _re.search(r"uddg=([^&]+)", url_raw)
                 url_clean = unquote(url_match.group(1) if url_match else url_raw)
                 if title_clean:
@@ -8321,7 +9677,15 @@ def build_autonomous_web_research_provider(executor: Any) -> FunctionToolProvide
         finally:
             await scraper.aclose()
         pages = (result or {}).get("pages") or []
-        return pages[0] if isinstance(pages[0], dict) else {} if pages else {}
+        if not pages:
+            # Say why. Indexing the empty list reported every 404, timeout
+            # and refused connection as "list index out of range", with the
+            # real cause sitting unread beside it.
+            errors = (result or {}).get("errors") or []
+            first = errors[0] if errors else {}
+            reason = first.get("error") if isinstance(first, dict) else first
+            raise ValueError(str(reason or "the page could not be fetched"))
+        return pages[0] if isinstance(pages[0], dict) else {}
 
     async def _fetch_url_content(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
@@ -8356,7 +9720,9 @@ def build_autonomous_web_research_provider(executor: Any) -> FunctionToolProvide
             return {"error": "url is required"}
         try:
             page = await _scrape_one_page(url, 100000)
-            text = str(page.get("content", ""))[:50000]
+            full_text = str(page.get("content", ""))
+            # What the model is shown is what is reported as summarised.
+            text = full_text[:30000]
             if not text.strip():
                 return {"error": f"No content extracted from {url}"}
             focus = str(params.get("focus", "")).strip()
@@ -8368,17 +9734,20 @@ def build_autonomous_web_research_provider(executor: Any) -> FunctionToolProvide
                     "Summarize the web page content the user provides"
                     f"{focus_clause}. Be concise and extract key information."
                 ),
-                user_message=text[:30000],
+                user_message=text,
                 max_tokens=1000,
                 db=ctx.db,
                 snapshot_context=_tool_snapshot_context(ctx, "summarize_url"),
             )
+            if not str(summary or "").strip():
+                return {"error": f"The model returned no summary for {url}"}
             return {
                 "success": True,
                 "data": {
                     "url": url,
                     "summary": summary,
                     "content_length": len(text),
+                    "truncated": len(full_text) > len(text),
                     "focus": focus or None,
                 },
             }
@@ -8414,6 +9783,23 @@ def build_autonomous_notification_visualization_provider(
         if not notif_message:
             return {"error": "message is required"}
         try:
+            from sqlalchemy import func
+
+            from app.models.notification import Notification
+
+            sent = (
+                await ctx.db.execute(
+                    select(func.count(Notification.id)).where(
+                        Notification.related_entity_id == job.id,
+                        Notification.notification_type == "agent_job_alert",
+                    )
+                )
+            ).scalar() or 0
+            if sent >= MAX_NOTIFICATIONS_PER_RUN:
+                return {
+                    "error": f"This run has already sent {sent} notifications "
+                    f"(limit {MAX_NOTIFICATIONS_PER_RUN})."
+                }
             ns = NotificationService()
             priority = str(params.get("priority", "normal")).strip().lower()
             if priority not in {"low", "normal", "high", "urgent"}:
@@ -8431,6 +9817,10 @@ def build_autonomous_notification_visualization_provider(
                 action_url=str(params.get("action_url", "")).strip()[:500] or None,
                 commit=False,
             )
+            if notification is None:
+                # The service swallows its own failures and returns None;
+                # reporting success here told the run a person had been told.
+                return {"error": "The notification could not be stored"}
             await ctx.db.flush()
             return {
                 "success": True,
@@ -8477,6 +9867,10 @@ def build_autonomous_notification_visualization_provider(
                 data={"intended_delivery": "email", "source_job_id": str(job.id)},
                 commit=False,
             )
+            if notification is None:
+                # The service swallows its own failures and returns None;
+                # reporting success here told the run a person had been told.
+                return {"error": "The notification could not be stored"}
             await ctx.db.flush()
             return {
                 "success": True,
@@ -8537,8 +9931,12 @@ def build_autonomous_notification_visualization_provider(
             image_bytes = b64.b64decode(chart_result["image_base64"])
             object_path = f"agent_artifacts/{job.id}/charts/{_uuid4()}.{fmt}"
             await storage_service.initialize()
+            # The service builds its type as "image/<format>", which for svg
+            # is not a registered type and browsers will not render it.
             await storage_service.upload_to_path(
-                object_path, image_bytes, chart_result.get("mime_type", f"image/{fmt}")
+                object_path,
+                image_bytes,
+                "image/svg+xml" if fmt == "svg" else "image/png",
             )
             url = await storage_service.get_presigned_download_url(object_path)
             return {
@@ -8569,7 +9967,14 @@ def build_autonomous_notification_visualization_provider(
         if not diagram_code:
             return {"error": "diagram_code is required"}
         try:
-            diagram_type = str(params.get("diagram_type", "mermaid")).strip().lower()
+            diagram_type = str(params.get("diagram_type") or "mermaid").strip().lower()
+            if diagram_type not in {"mermaid", "graphviz"}:
+                # Anything else used to be rendered as Mermaid and reported
+                # back under the name the caller had asked for.
+                return {
+                    "error": f"Invalid diagram_type: {diagram_type}. "
+                    "Must be mermaid or graphviz"
+                }
             fmt = str(params.get("format", "png")).strip().lower()
             if fmt not in {"png", "svg"}:
                 fmt = "png"
@@ -8836,9 +10241,9 @@ def build_autonomous_kg_provider(executor: Any) -> FunctionToolProvider:
             kg = KnowledgeGraphService()
             limit = min(int(params.get("limit", 20) or 20), 100)
             entity_type = str(params.get("entity_type", "")).strip() or None
-            entities = await kg.entities(ctx.db, q=query, limit=limit)
-            if entity_type:
-                entities = [e for e in entities if e.entity_type == entity_type]
+            entities = await kg.entities(
+                ctx.db, q=query, limit=limit, entity_type=entity_type
+            )
             return {
                 "success": True,
                 "data": {
@@ -8873,7 +10278,35 @@ def build_autonomous_kg_provider(executor: Any) -> FunctionToolProvider:
             context = await kg.get_entity_context(
                 [_UUID(entity_id)], ctx.db, max_relationships=30
             )
-            return {"success": True, "data": context}
+            if not context["entities"]:
+                return {"error": f"Entity {entity_id} not found"}
+            # Plain data: the service returns rows, which neither a model nor
+            # the job's JSON results can hold.
+            return {
+                "success": True,
+                "data": {
+                    "entities": [
+                        {
+                            "id": str(e.id),
+                            "canonical_name": e.canonical_name,
+                            "entity_type": e.entity_type,
+                            "description": e.description or "",
+                        }
+                        for e in context["entities"]
+                    ],
+                    "relationships": [
+                        {
+                            "id": str(r.id),
+                            "relation_type": r.relation_type,
+                            "source_entity_id": str(r.source_entity_id),
+                            "target_entity_id": str(r.target_entity_id),
+                            "confidence": r.confidence,
+                            "evidence": r.evidence or "",
+                        }
+                        for r in context["relationships"]
+                    ],
+                },
+            }
         except ValueError:
             return {"error": f"Invalid entity_id format: {entity_id}"}
         except Exception as exc:
@@ -8897,7 +10330,10 @@ def build_autonomous_kg_provider(executor: Any) -> FunctionToolProvider:
                 description=str(params.get("description", "")).strip() or None,
             )
             ctx.db.add(entity)
-            await ctx.db.flush()
+            # Committed, like the relationship beside it: the id is handed to
+            # the model, and a later tool rolling this session back would
+            # leave it holding the id of a row that no longer exists.
+            await ctx.db.commit()
             return {
                 "success": True,
                 "data": {
@@ -8931,7 +10367,7 @@ def build_autonomous_kg_provider(executor: Any) -> FunctionToolProvider:
                 db=ctx.db,
                 source_entity_id=source_id,
                 target_entity_id=target_id,
-                relation_type=relation_type[:128],
+                relation_type=relation_type[:64],
                 confidence=confidence,
                 evidence=str(params.get("evidence", "")).strip() or None,
             )
@@ -8965,6 +10401,9 @@ def build_autonomous_kg_provider(executor: Any) -> FunctionToolProvider:
                 else None,
                 min_confidence=float(params.get("min_confidence", 0.0) or 0.0),
                 search=str(params.get("search", "")).strip() or None,
+                # An entity this run created has no mentions yet; the default
+                # of 1 hid it from the graph it had just been added to.
+                min_mentions=0,
                 limit_nodes=min(int(params.get("limit_nodes", 50) or 50), 200),
                 limit_edges=min(int(params.get("limit_nodes", 50) or 50), 200) * 3,
             )
@@ -8997,7 +10436,10 @@ def build_autonomous_scheduling_provider(executor: Any) -> FunctionToolProvider:
     ) -> Any:
         from datetime import datetime, timezone
 
+        from sqlalchemy import func
+
         from app.models.agent_job import AgentJob as AgentJobModel
+        from app.models.agent_job import AgentJobType
 
         job = ctx.job
         goal = str(params.get("goal", "")).strip()
@@ -9006,8 +10448,29 @@ def build_autonomous_scheduling_provider(executor: Any) -> FunctionToolProvider:
             return {"error": "goal is required"}
         if schedule_type not in {"once", "recurring"}:
             return {"error": "schedule_type must be 'once' or 'recurring'"}
+        job_type_param = str(params.get("job_type") or "research").strip().lower()
+        known_job_types = {t.value for t in AgentJobType} | {"coding"}
+        if job_type_param not in known_job_types:
+            return {
+                "error": f"job_type must be one of {sorted(known_job_types)}, "
+                f"not {job_type_param!r}"
+            }
         try:
-            job_type_param = str(params.get("job_type", "research")).strip().lower()
+            # A run that schedules jobs which schedule jobs has no natural
+            # end, so one run may leave only so many behind it.
+            already = (
+                await ctx.db.execute(
+                    select(func.count(AgentJobModel.id)).where(
+                        AgentJobModel.parent_job_id == job.id,
+                        AgentJobModel.schedule_type.isnot(None),
+                    )
+                )
+            ).scalar() or 0
+            if already >= MAX_SCHEDULED_JOBS_PER_RUN:
+                return {
+                    "error": f"This run has already scheduled {already} jobs "
+                    f"(limit {MAX_SCHEDULED_JOBS_PER_RUN}). Cancel one first."
+                }
             config_param = (
                 params.get("config") if isinstance(params.get("config"), dict) else {}
             )
@@ -9033,6 +10496,9 @@ def build_autonomous_scheduling_provider(executor: Any) -> FunctionToolProvider:
                 )
             new_job = AgentJobModel(
                 user_id=job.user_id,
+                # Required by the table; it was never set, so every call
+                # was refused by the database.
+                name=f"Scheduled: {goal}"[:200],
                 goal=goal[:2000],
                 job_type=job_type_param,
                 schedule_type=schedule_type,
@@ -9042,8 +10508,11 @@ def build_autonomous_scheduling_provider(executor: Any) -> FunctionToolProvider:
                 config=config_param,
                 parent_job_id=job.id,
             )
-            ctx.db.add(new_job)
-            await ctx.db.flush()
+            # In a savepoint: this session is the run's, and a refused insert
+            # would otherwise leave it unusable for every later tool.
+            async with ctx.db.begin_nested():
+                ctx.db.add(new_job)
+                await ctx.db.flush()
             return {
                 "success": True,
                 "data": {
@@ -9077,6 +10546,10 @@ def build_autonomous_scheduling_provider(executor: Any) -> FunctionToolProvider:
                 return {"error": "Not authorized to cancel this job"}
             if target.status == "running":
                 return {"error": "Cannot cancel a currently running job"}
+            if target.schedule_type is None:
+                # Without this a finished one-shot job was rewritten to
+                # "cancelled", losing the record that it had completed.
+                return {"error": f"Job {cancel_job_id} is not a scheduled job"}
             target.status = "cancelled"
             target.next_run_at = None
             target.schedule_type = None
@@ -9117,15 +10590,14 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
         from app.models.document import Document as DocModel
         from app.tasks.transcription_tasks import transcribe_document as transcribe_task
 
-        job = ctx.job
         doc_id = (params.get("document_id") or "").strip()
         if not doc_id:
             return {"error": "Missing required parameter: document_id"}
         try:
             doc_result = await ctx.db.execute(
-                select(DocModel).where(
-                    DocModel.id == _UUID(doc_id), DocModel.user_id == job.user_id
-                )
+                # Documents have no owner column: the knowledge base is
+                # shared. Filtering on one raised AttributeError on every call.
+                select(DocModel).where(DocModel.id == _UUID(doc_id))
             )
             doc = doc_result.scalar_one_or_none()
             if not doc:
@@ -9171,10 +10643,13 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
             )
             if not is_av:
                 return {"error": f"Document is not audio/video (type={ft}, ext={ext})"}
+            # Queue first. With the flag committed before the enqueue, a
+            # broker that was down left the document "in progress" for ever
+            # and every retry was told so.
+            celery_result = transcribe_task.delay(str(doc.id))
             doc.extra_metadata = {**meta, "is_transcribing": True}
             flag_modified(doc, "extra_metadata")
             await ctx.db.commit()
-            celery_result = transcribe_task.delay(str(doc.id))
             return {
                 "success": True,
                 "data": {
@@ -9202,23 +10677,26 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
         from pathlib import Path as _Path
         from uuid import UUID as _UUID
 
+        import httpx
+
         from app.core.config import settings as _settings
         from app.models.document import Document as DocModel
         from app.services.storage_service import storage_service as _storage
 
-        job = ctx.job
         doc_id = (params.get("document_id") or "").strip()
         prompt_text = (
             params.get("prompt") or ""
         ).strip() or "Describe this image in detail, including any text, diagrams, charts, or notable visual elements."
-        vision_model = (params.get("model") or "").strip()
+        vision_model = (params.get("model") or "").strip() or (
+            getattr(_settings, "VISION_MODEL", "llava") or "llava"
+        )
         if not doc_id:
             return {"error": "Missing required parameter: document_id"}
         try:
             doc_result = await ctx.db.execute(
-                select(DocModel).where(
-                    DocModel.id == _UUID(doc_id), DocModel.user_id == job.user_id
-                )
+                # Documents have no owner column: the knowledge base is
+                # shared. Filtering on one raised AttributeError on every call.
+                select(DocModel).where(DocModel.id == _UUID(doc_id))
             )
             doc = doc_result.scalar_one_or_none()
             if not doc:
@@ -9248,15 +10726,18 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
             }
             if ft not in image_types and ext not in image_exts:
                 return {"error": f"Document is not an image (type={ft}, ext={ext})"}
-            image_bytes = await _storage.get_file_content(doc.file_path)
+            try:
+                image_bytes = await _storage.get_file_content(doc.file_path)
+            except Exception as storage_exc:
+                return {
+                    "error": f"Failed to download image {doc.file_path}: {storage_exc}"
+                }
             if not image_bytes:
                 return {"error": "Failed to download image: empty content"}
             if len(image_bytes) > 20 * 1024 * 1024:
                 return {
                     "error": f"Image too large ({len(image_bytes) // (1024*1024)}MB). Max 20MB."
                 }
-            if not vision_model:
-                vision_model = getattr(_settings, "VISION_MODEL", "llava") or "llava"
             payload = {
                 "model": vision_model,
                 "prompt": prompt_text[:2000],
@@ -9294,9 +10775,22 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
             }
         except Exception as exc:
             error_msg = str(exc)
-            if "404" in error_msg or "not found" in error_msg.lower():
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status == 404:
                 return {
                     "error": f"Vision model '{vision_model}' not available. Pull it with: ollama pull {vision_model}"
+                }
+            if isinstance(exc, httpx.ConnectError):
+                # Image analysis is Ollama-only whatever LLM_PROVIDER says,
+                # and the stack does not bundle Ollama. Say so: a bare
+                # connection error reads as a transient fault worth retrying.
+                return {
+                    "error": (
+                        "Image analysis needs an Ollama instance with a vision "
+                        f"model, and none is reachable at "
+                        f"{executor.llm_service.base_url} (OLLAMA_BASE_URL): "
+                        f"{error_msg}"
+                    )
                 }
             return {"error": f"Failed to analyze image: {error_msg}"}
 
@@ -9308,15 +10802,14 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
 
         from app.models.document import Document as DocModel
 
-        job = ctx.job
         doc_id = (params.get("document_id") or "").strip()
         if not doc_id:
             return {"error": "Missing required parameter: document_id"}
         try:
             doc_result = await ctx.db.execute(
-                select(DocModel).where(
-                    DocModel.id == _UUID(doc_id), DocModel.user_id == job.user_id
-                )
+                # Documents have no owner column: the knowledge base is
+                # shared. Filtering on one raised AttributeError on every call.
+                select(DocModel).where(DocModel.id == _UUID(doc_id))
             )
             doc = doc_result.scalar_one_or_none()
             if not doc:
@@ -9375,7 +10868,10 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
                     )
                     temp_path = tmp.name
                     tmp.close()
-                    await _storage.download_file(doc.file_path, temp_path)
+                    if not await _storage.download_file(doc.file_path, temp_path):
+                        raise FileNotFoundError(
+                            f"{doc.file_path} was not found in storage"
+                        )
                     probe_result = subprocess.run(
                         [
                             "ffprobe",
@@ -9462,6 +10958,19 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
 def build_autonomous_snapshot_provider(executor: Any) -> FunctionToolProvider:
     """Workspace snapshot and drift-detection tools for AutonomousAgentExecutor."""
 
+    def _run_iteration(ctx: AgentToolExecutionContext) -> int:
+        # The iteration is the job's. Runtime state has no such key, so
+        # reading it there stamped every snapshot 0, and drift never saw
+        # an iteration pass.
+        state = ctx.state if isinstance(ctx.state, dict) else {}
+        value = state.get("iteration")
+        if value is None:
+            value = getattr(ctx.job, "iteration", 0)
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
     async def _capture_snapshot(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -9483,13 +10992,14 @@ def build_autonomous_snapshot_provider(executor: Any) -> FunctionToolProvider:
             if f.get("document_id") or f.get("source_id")
         }
         snapshot = {
-            "iteration": state.get("iteration", 0),
+            "iteration": _run_iteration(ctx),
             "timestamp": _dt.utcnow().isoformat(),
             "findings_count": len(state.get("findings", [])),
             "actions_count": len(state.get("actions_taken", [])),
             "goal_progress": state.get("goal_progress", 0),
             "documents_found": len(doc_ids),
-            "tool_stats": dict(state.get("tool_stats", {})),
+            # Deep: the executor updates a tool's counters in place.
+            "tool_stats": copy.deepcopy(state.get("tool_stats", {})),
             "stalled_iterations": state.get("stalled_iterations", 0),
             "artifacts_count": len(state.get("artifacts", [])),
             "formatted_outputs_count": len(state.get("formatted_outputs", [])),
@@ -9575,6 +11085,19 @@ def build_autonomous_snapshot_provider(executor: Any) -> FunctionToolProvider:
             a_val = str(snap_a.get(key, ""))
             b_val = str(snap_b.get(key, ""))
             diff[key] = {"before": a_val, "after": b_val, "changed": a_val != b_val}
+        # Keys the run asked to have captured are compared too; they were
+        # stored and then never read.
+        custom_a = snap_a.get("custom_keys") or {}
+        custom_b = snap_b.get("custom_keys") or {}
+        if custom_a or custom_b:
+            diff["custom_keys"] = {
+                key: {
+                    "before": custom_a.get(key),
+                    "after": custom_b.get(key),
+                    "changed": custom_a.get(key) != custom_b.get(key),
+                }
+                for key in sorted(set(custom_a) | set(custom_b))
+            }
         stats_a = snap_a.get("tool_stats", {})
         stats_b = snap_b.get("tool_stats", {})
         tools_added = set(stats_b.keys()) - set(stats_a.keys())
@@ -9635,7 +11158,7 @@ def build_autonomous_snapshot_provider(executor: Any) -> FunctionToolProvider:
             if f.get("document_id") or f.get("source_id")
         }
         current = {
-            "iteration": state.get("iteration", 0),
+            "iteration": _run_iteration(ctx),
             "findings_count": len(state.get("findings", [])),
             "actions_count": len(state.get("actions_taken", [])),
             "goal_progress": state.get("goal_progress", 0),
@@ -9812,6 +11335,10 @@ def build_autonomous_project_bootstrap_provider(executor: Any) -> FunctionToolPr
             "project_bootstrap": _project_bootstrap,
         },
     )
+
+
+#: merge_documents combines at most this many documents.
+MERGE_MAX_DOCUMENTS = 20
 
 
 def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
@@ -10117,26 +11644,40 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
         from collections import Counter
-        from uuid import UUID
 
         from sqlalchemy import desc, func
 
         from app.models.document import Document, DocumentSource
+        from app.services.config_values import bounded_int, parse_uuid
+        from app.services.document_tags import clean_tags
 
-        limit = int(params.get("recent_limit", 25) or 25)
-        limit = max(1, min(limit, 100))
+        limit = bounded_int(params.get("recent_limit"), 25, 1, 100)
         source_id_raw = str(params.get("source_id") or "").strip()
         source_uuid = None
         if source_id_raw:
-            try:
-                source_uuid = UUID(source_id_raw)
-            except Exception:
-                source_uuid = None
+            # Refused, not ignored: a source id that could not be read gave
+            # whole-knowledge-base figures presented as that source's.
+            source_uuid = parse_uuid(source_id_raw)
+            if source_uuid is None:
+                return {"error": f"Invalid source_id: {source_id_raw}"}
+            if await ctx.db.get(DocumentSource, source_uuid) is None:
+                return {"error": f"Source not found: {source_id_raw}"}
 
-        docs_count_query = select(func.count()).select_from(Document)
-        if source_uuid:
-            docs_count_query = docs_count_query.where(Document.source_id == source_uuid)
-        total_docs = int((await ctx.db.execute(docs_count_query)).scalar() or 0)
+        def scoped(query):
+            return (
+                query.where(Document.source_id == source_uuid) if source_uuid else query
+            )
+
+        async def scalar(query) -> int:
+            return int((await ctx.db.execute(scoped(query))).scalar() or 0)
+
+        total_docs = await scalar(select(func.count(Document.id)))
+        processed_docs = await scalar(
+            select(func.count(Document.id)).where(Document.is_processed.is_(True))
+        )
+        total_size = await scalar(
+            select(func.coalesce(func.sum(Document.file_size), 0))
+        )
         total_sources = (
             1
             if source_uuid
@@ -10150,28 +11691,35 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
             )
         )
 
-        recent_query = (
-            select(Document.id, Document.title, Document.created_at, Document.tags)
+        recent_query = scoped(
+            select(Document.id, Document.title, Document.created_at)
             .order_by(desc(Document.created_at))
             .limit(limit)
         )
-        if source_uuid:
-            recent_query = recent_query.where(Document.source_id == source_uuid)
         rows = (await ctx.db.execute(recent_query)).all()
+
+        # Over every document, like the totals beside it. Counted over the
+        # `recent_limit` newest rows only, "top tags" was the top tags of the
+        # last twenty-five documents.
         tag_counter: Counter[str] = Counter()
-        for _, _, _, tags in rows:
-            if isinstance(tags, list):
-                tag_counter.update([str(tag).lower() for tag in tags if tag])
+        tag_rows = await ctx.db.execute(
+            scoped(select(Document.tags).where(Document.tags.isnot(None)))
+        )
+        for (tags,) in tag_rows.all():
+            tag_counter.update(list(dict.fromkeys(t.lower() for t in clean_tags(tags))))
 
         return {
             "success": True,
             "data": {
                 "documents_total": total_docs,
+                "processed_documents": processed_docs,
+                "pending_processing": total_docs - processed_docs,
+                "total_storage_bytes": total_size,
                 "sources_total": total_sources,
                 "source_id": str(source_uuid) if source_uuid else None,
                 "recent_documents": [
                     {"id": str(doc_id), "title": title, "created_at": str(created_at)}
-                    for doc_id, title, created_at, _ in rows
+                    for doc_id, title, created_at in rows
                 ],
                 "top_tags": [
                     {"tag": tag, "count": count}
@@ -10267,22 +11815,31 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
     async def _list_documents_by_tag(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        from app.models.document import Document
-
         tags_param = params.get("tags")
         if not tags_param or not isinstance(tags_param, list) or not tags_param:
             return {"error": "tags is required and must be a non-empty array"}
         match_all = bool(params.get("match_all", False))
-        limit = min(int(params.get("limit", 20) or 20), 100)
+        try:
+            limit = min(int(params.get("limit", 20) or 20), 100)
+        except (TypeError, ValueError):
+            return {"error": "limit must be a number"}
+        if limit < 1:
+            return {"error": "limit must be at least 1"}
         tags_set = set(str(tag).strip() for tag in tags_param if str(tag).strip())
-        stmt = select(Document).where(Document.tags.isnot(None)).limit(500)
-        docs = (await ctx.db.execute(stmt)).scalars().all()
+        if not tags_set:
+            # The empty set is a subset of every document's tags, so with
+            # match_all a list of blank tags listed everything.
+            return {"error": "tags is required and must be a non-empty array"}
 
-        if match_all:
-            matched = [doc for doc in docs if tags_set.issubset(set(doc.tags or []))]
-        else:
-            matched = [doc for doc in docs if tags_set & set(doc.tags or [])]
-        matched = matched[:limit]
+        from app.services.document_tags import documents_with_tags
+
+        matched = await documents_with_tags(
+            ctx.db,
+            list(tags_set),
+            match_all=match_all,
+            limit=limit,
+            newest_by="created_at",
+        )
         return {
             "success": True,
             "data": {
@@ -10312,6 +11869,8 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
         import uuid
         from uuid import UUID as _UUID
 
+        from loguru import logger
+
         from app.models.document import Document
 
         job = ctx.job
@@ -10322,20 +11881,44 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
         if not merge_title:
             return {"error": "title is required"}
 
-        separator = str(params.get("separator", "\n\n---\n\n"))
+        separator = params.get("separator")
+        separator = "\n\n---\n\n" if separator is None else str(separator)
         merge_tags = params.get("tags") if isinstance(params.get("tags"), list) else []
+        # Every id that is not merged is named with its reason. They used to
+        # be dropped in silence -- an id that was not one, a document that
+        # did not exist, anything past the 20th -- and an id given twice was
+        # merged twice.
         sections = []
-        source_ids = []
-        for doc_id_str in doc_ids[:20]:
+        source_ids: List[str] = []
+        skipped: List[Dict[str, str]] = []
+        for doc_id_str in doc_ids:
+            raw_id = str(doc_id_str).strip()
             try:
-                doc_obj = await ctx.db.get(Document, _UUID(str(doc_id_str).strip()))
-                if doc_obj and doc_obj.content:
-                    sections.append(f"# {doc_obj.title}\n\n{doc_obj.content}")
-                    source_ids.append(str(doc_obj.id))
-            except Exception:
+                doc_uuid = _UUID(raw_id)
+            except (ValueError, AttributeError, TypeError):
+                skipped.append({"id": raw_id, "reason": "not a document id"})
                 continue
+            if str(doc_uuid) in source_ids:
+                skipped.append({"id": raw_id, "reason": "listed more than once"})
+                continue
+            if len(source_ids) >= MERGE_MAX_DOCUMENTS:
+                skipped.append(
+                    {"id": raw_id, "reason": f"over the {MERGE_MAX_DOCUMENTS} limit"}
+                )
+                continue
+            doc_obj = await ctx.db.get(Document, doc_uuid)
+            if doc_obj is None:
+                skipped.append({"id": raw_id, "reason": "no such document"})
+            elif not doc_obj.content:
+                skipped.append({"id": raw_id, "reason": "document has no content"})
+            else:
+                sections.append(f"# {doc_obj.title}\n\n{doc_obj.content}")
+                source_ids.append(str(doc_obj.id))
         if not sections:
-            return {"error": "No valid documents with content found"}
+            return {
+                "error": "No valid documents with content found",
+                "skipped": skipped,
+            }
 
         merged_content = separator.join(sections)
         if len(merged_content.encode("utf-8")) > 2_000_000:
@@ -10366,20 +11949,30 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
         await ctx.db.refresh(new_doc)
 
         try:
-            await executor.document_service.reprocess_document(
+            indexed = await executor.document_service.reprocess_document(
                 new_doc.id, ctx.db, user_id=job.user_id
             )
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - the merge is kept either way
+            logger.warning(f"merge_documents: indexing {new_doc.id} failed: {exc}")
+            indexed = False
 
+        data = {
+            "document_id": str(new_doc.id),
+            "title": new_doc.title,
+            "source_count": len(source_ids),
+            "content_length": len(merged_content),
+        }
+        if skipped:
+            data["skipped"] = skipped
+        if not indexed:
+            # Saved but not searchable: a search for it would find nothing.
+            data["warning"] = (
+                "The merged document was saved but could not be indexed, so "
+                "search will not find it until it is reprocessed."
+            )
         return {
             "success": True,
-            "data": {
-                "document_id": str(new_doc.id),
-                "title": new_doc.title,
-                "source_count": len(source_ids),
-                "content_length": len(merged_content),
-            },
+            "data": data,
             "artifacts": [
                 {"type": "document", "id": str(new_doc.id), "title": new_doc.title}
             ],
@@ -10401,5 +11994,42 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
             "create_document_from_text": _create_document_from_text,
             "list_documents_by_tag": _list_documents_by_tag,
             "merge_documents": _merge_documents,
+        },
+    )
+
+
+def build_autonomous_sandbox_skill_provider(executor: Any) -> FunctionToolProvider:
+    """Sandbox skills: find one, read it, run it, propose another.
+
+    A table and nothing else. The handlers live in
+    ``agent_sandbox_skill_tools`` and are imported when called, the way every
+    other provider here reaches its service.
+
+    Answers in chat as well as in autonomous jobs. Every spec is advertised to
+    chat whatever its provider's modes, so an autonomous-only provider is a
+    tool chat is offered and then told is unknown. The handlers need a user
+    and something to key a working directory on, and a conversation supplies
+    both.
+    """
+
+    def _handler(name: str):
+        async def _call(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+            from app.services import agent_sandbox_skill_tools
+
+            return await getattr(agent_sandbox_skill_tools, name)(params, ctx)
+
+        return _call
+
+    return FunctionToolProvider(
+        name="sandbox_skill_tools",
+        modes={"autonomous", "chat"},
+        handlers={
+            name: _handler(name)
+            for name in (
+                "list_sandbox_skills",
+                "load_sandbox_skill",
+                "run_sandbox_skill",
+                "propose_sandbox_skill",
+            )
         },
     )

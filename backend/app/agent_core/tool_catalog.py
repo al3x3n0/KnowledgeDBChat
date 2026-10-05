@@ -223,4 +223,15 @@ def iter_mcp_tools() -> Dict[str, ToolMetadata]:
                 "required": ["image", "command"],
             },
         ),
+        # Sandbox skills are declared as specs, so their classification is the
+        # spec's own -- the same one every other surface is governed by.
+        **{
+            name: _default_metadata(name=f"mcp:{name}", description="", input_schema={})
+            for name in (
+                "list_sandbox_skills",
+                "load_sandbox_skill",
+                "run_sandbox_skill",
+                "propose_sandbox_skill",
+            )
+        },
     }

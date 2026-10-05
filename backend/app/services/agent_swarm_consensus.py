@@ -41,6 +41,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from app.services.config_values import as_number as _as_number
+
 #: Numeric fields worth comparing, in the order a reader cares about. Drawn
 #: from what the measurement tools actually emit rather than invented: the
 #: first one present on both sides is the one compared.
@@ -91,15 +93,6 @@ DEFAULT_TOLERANCE = 0.10
 #: and overruling it with a constant is the mistake `_tolerance_for` exists to
 #: avoid.
 MAX_USEFUL_TOLERANCE = 0.50
-
-
-def _as_number(value: Any) -> Optional[float]:
-    if isinstance(value, bool):
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _dig(finding: Mapping[str, Any], field_name: str) -> Optional[float]:

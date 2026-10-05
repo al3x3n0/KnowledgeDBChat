@@ -25,13 +25,14 @@ every number being compared.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from app.services import gem5_bottleneck
 from app.services.agent_gem5_mechanism import (
     DEFAULT_FLAGS,
     DEFAULT_IMAGE,
     SandboxRunFailed,
+    mispriced_simd_ops,
     run_configs,
     stats_identical,
 )
@@ -173,6 +174,14 @@ def _set_path(config: Dict[str, Any], path: str, value: Any) -> Dict[str, Any]:
     return out
 
 
+def _stat(run: Dict[str, Any], key: str) -> Optional[float]:
+    """One statistic from a run, or None when the build does not report it."""
+    value = (run or {}).get("stats", {}).get(key)
+    if value is None or value != value:  # None or NaN
+        return None
+    return float(value)
+
+
 def _cycles(run: Dict[str, Any]) -> float:
     return float(run["stats"].get("system.cpu.numCycles") or 0.0)
 
@@ -194,6 +203,31 @@ def _geomean(values: Sequence[float]) -> Optional[float]:
 # ---------------------------------------------------------------------------
 # What is limiting this kernel.
 # ---------------------------------------------------------------------------
+def model_warnings(runs: Any) -> Dict[str, Any]:
+    """The configs in this run set whose cycles the model cannot price.
+
+    Five study functions here turn gem5 stats into a conclusion. The first
+    version of this check lived inside one of them, which left the other four
+    reporting the same unpriceable numbers in silence -- the shape of gap this
+    module keeps finding elsewhere. `run_configs` attaches the verdict to each
+    run, and this turns a set of them into the two fields a result carries, so
+    wiring a study in is one spread rather than a rule to remember.
+    """
+    flagged = {
+        name: run["mispriced_simd"]
+        for name, run in sorted((runs or {}).items())
+        if isinstance(run, dict) and run.get("mispriced_simd")
+    }
+    if not flagged:
+        return {"mispriced_simd_configs": [], "model_warning": None}
+    return {
+        "mispriced_simd_configs": sorted(flagged),
+        "model_warning": " ".join(
+            f"[{name}] {v['warning']}" for name, v in flagged.items()
+        ),
+    }
+
+
 async def explain_bottleneck(
     *,
     code: str,
@@ -225,6 +259,7 @@ async def explain_bottleneck(
     top = (attribution["signals"] or [{}])[0]
     return {
         "success": True,
+        **model_warnings(runs),
         "label": subject,
         "configuration": runs["run"]["manifest"],
         **attribution,
@@ -251,6 +286,32 @@ async def explain_bottleneck(
 # ---------------------------------------------------------------------------
 # How much is there to win.
 # ---------------------------------------------------------------------------
+def _l1d_prefetcher_conflict(targets: Sequence[str], config: Dict[str, Any]) -> str:
+    """The one idealisation/mechanism pairing that crashes gem5, or "".
+
+    Phrased as what the tool accepts, because the run reading it has to choose
+    a different call, and every alternative named here was measured rather
+    than assumed.
+    """
+    if "l1d_capacity" not in set(targets):
+        return ""
+    l2 = ((config or {}).get("caches") or {}).get("l2") or {}
+    prefetcher = l2.get("prefetcher") if isinstance(l2, dict) else None
+    if not prefetcher:
+        return ""
+    return (
+        f"Idealising l1d_capacity with {prefetcher} on L2 crashes gem5 "
+        "(inside BaseCache::CacheReqPacketQueue::sendDeferredPacket, with no "
+        "diagnostic), so it is refused rather than run. Measured "
+        "alternatives that work: idealise l1d_capacity with no mechanism "
+        "config, to bound what the cache is costing this machine; move the "
+        f"prefetcher to l1d (`caches.l1d.prefetcher: {prefetcher}`); or keep "
+        f"{prefetcher} on L2 and idealise l1i_capacity or l2_capacity "
+        "instead. A mechanism's own effect is measured by simulate_mechanism, "
+        "which is unaffected."
+    )
+
+
 async def measure_headroom(
     *,
     code: str,
@@ -294,6 +355,24 @@ async def measure_headroom(
         }
 
     base = config or {}
+
+    # One combination crashes gem5 itself, so it is refused rather than run:
+    # a 16MiB L1d with a prefetcher on L2 dies inside
+    # `BaseCache::CacheReqPacketQueue::sendDeferredPacket`, printing a libc
+    # backtrace and no diagnostic. Refused up front because the baseline arm
+    # runs first and the crash comes after it -- a run that will not produce a
+    # number should not spend a full simulation discovering that.
+    #
+    # Measured, one factor at a time, on the kernel that first hit it:
+    # idealised l1d + L2 prefetcher crashes; default l1d + L2 prefetcher is
+    # fine; idealised l1d + the same prefetcher on l1d is fine; idealised l1d
+    # alone is fine (73.77% headroom); idealised l1i or l2 + L2 prefetcher are
+    # fine. So the rule names l1d and an L2 prefetcher and nothing wider --
+    # every other pairing is work somebody should be allowed to do.
+    refusal = _l1d_prefetcher_conflict(wanted, base)
+    if refusal:
+        return {"success": False, "error": refusal}
+
     configs = {"baseline": base}
     for target in wanted:
         configs[f"ideal_{target}"] = _merge(base, IDEALISATIONS[target]["config"])
@@ -343,6 +422,7 @@ async def measure_headroom(
     best = results[0]
     return {
         "success": True,
+        **model_warnings(runs),
         "label": subject,
         "baseline_cycles": baseline_cycles,
         "baseline_limit": gem5_bottleneck.backpressure(runs["baseline"]["stats"]).get(
@@ -464,12 +544,44 @@ async def sweep_mechanism(
             }
         )
 
+    # A curve that never moves is not a curve. Every point ran the same
+    # machine, so the honest reading is that the setting did not reach the
+    # simulator -- and the misleading reading, which is what got recorded, is
+    # that it saturates at the very first value.
+    #
+    # Measured: a degree sweep over `caches.l2.prefetcher.degree` (the path
+    # without `params`, so the value landed beside `class` where nothing reads
+    # it) returned 427,572 cycles at degrees 1, 2, 4, 8 and 16 and was written
+    # down as "best 1.4480x at 1, saturating at 1" -- advice not to bother
+    # tuning it. Swept properly, on a working set that exceeds the cache and
+    # measured as marginal cycles per iteration so the setup cost cancels,
+    # degree 16 is 2.01x faster than degree 1 (1,029,650 -> 511,980 cycles per
+    # iteration) and the curve has not saturated there. gem5's default of 4
+    # yields 2.14x against no prefetcher where 16 yields 3.10x.
+    distinct_cycles = {p["cycles"] for p in curve if p["cycles"]}
+    if len(curve) > 1 and len(distinct_cycles) == 1:
+        return {
+            "success": False,
+            "error": (
+                f"Every point in this sweep produced the same cycle count "
+                f"({next(iter(distinct_cycles)):.0f}), so {vary} did not "
+                "reach the simulated machine and the sweep measured one "
+                "configuration five times. A mechanism parameter belongs "
+                "under `params`, as in "
+                "`caches.l2.prefetcher.params.degree` -- written beside "
+                "`class` it sits where nothing reads it."
+            ),
+            "varied": vary,
+            "curve": curve,
+        }
+
     best = max(curve, key=lambda p: p["speedup"] or 0.0)
     saturation = _saturation_point(curve)
     monotonic = _is_monotonic(curve)
     subject = (label or "").strip() or vary
     return {
         "success": True,
+        **model_warnings(runs),
         "label": subject,
         "varied": vary,
         "baseline_cycles": baseline_cycles,
@@ -518,6 +630,21 @@ def _is_monotonic(curve: Sequence[Dict[str, Any]]) -> bool:
     return all(b >= a for a, b in zip(speedups, speedups[1:]))
 
 
+def _with_magnitudes(measured: list, kernels: list) -> str:
+    """Name each regressed kernel with how far it fell, worst first.
+
+    A list of bare names renders a halving and a 1% blip identically, which is
+    how a control kernel behaving exactly as a control should came to be
+    reported beside a 2x collapse in the same breath.
+    """
+    named = set(kernels)
+    ordered = sorted(
+        (k for k in measured if k["kernel"] in named),
+        key=lambda k: k["speedup"],
+    )
+    return ", ".join(f"{k['kernel']} {k['speedup']:.2f}x" for k in ordered)
+
+
 def _saturation_point(
     curve: Sequence[Dict[str, Any]], epsilon: float = 0.01
 ) -> Optional[Any]:
@@ -550,7 +677,11 @@ async def evaluate_across_kernels(
     timeout_seconds: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Measure one mechanism on several kernels and report the distribution."""
-    from app.services.agent_gem5_mechanism import MECHANISM_KEYS, find_confounds
+    from app.services.agent_gem5_mechanism import (
+        MECHANISM_KEYS,
+        find_confounds,
+        inert_prefetchers,
+    )
 
     listed = [k for k in (kernels or []) if isinstance(k, dict) and k.get("code")]
     if len(listed) < 2:
@@ -589,7 +720,8 @@ async def evaluate_across_kernels(
             "confounds": confounds,
         }
 
-    per_kernel = []
+    per_kernel: List[Dict[str, Any]] = []
+    inert_on: List[str] = []
     for index, kernel in enumerate(listed):
         name = str(kernel.get("name") or f"kernel{index}")
         try:
@@ -608,6 +740,9 @@ async def evaluate_across_kernels(
             continue
         base_cycles = _cycles(runs["baseline"])
         var_cycles = _cycles(runs["variant"])
+        inert = inert_prefetchers(variant, runs["variant"]["stats"])
+        if inert:
+            inert_on.append(name)
         per_kernel.append(
             {
                 "kernel": name,
@@ -617,6 +752,7 @@ async def evaluate_across_kernels(
                 "identical_stats": stats_identical(
                     runs["baseline"]["stats"], runs["variant"]["stats"]
                 ),
+                "inert_mechanisms": inert,
             }
         )
 
@@ -628,6 +764,32 @@ async def evaluate_across_kernels(
             "per_kernel": per_kernel,
         }
 
+    # A mechanism that engaged on no kernel was not measured on any of them.
+    # Measured: an IrregularStreamBufferPrefetcher on L2 identified zero
+    # candidates on all four kernels and matched the no-prefetcher run to the
+    # cycle, and this reported `geomean 1.0000x` -- a clean-looking number
+    # that a contract accepted and a study built a conclusion on. Against a
+    # baseline that *does* prefetch it reads worse still: the result is the
+    # baseline's own gain, inverted, attributed to a mechanism that never ran.
+    if inert_on and len(inert_on) == len(measured):
+        names = sorted(
+            {m for k in per_kernel for m in (k.get("inert_mechanisms") or [])}
+        )
+        return {
+            "success": False,
+            "error": (
+                f"{' and '.join(names)} issued no prefetches on any of the "
+                f"{len(measured)} kernels, so this comparison measures the "
+                "baseline and not the mechanism. Check that the mechanism is "
+                "configured where it can see the accesses it needs -- a "
+                "prefetcher at L2 trains on L1 misses, which some kernels and "
+                "some prefetchers never generate in a usable form. "
+                "describe_gem5_mechanisms lists what this build carries."
+            ),
+            "per_kernel": per_kernel,
+            "inert_on": inert_on,
+        }
+
     speedups = [k["speedup"] for k in measured]
     worst = min(measured, key=lambda k: k["speedup"])
     best = max(measured, key=lambda k: k["speedup"])
@@ -635,6 +797,7 @@ async def evaluate_across_kernels(
     subject = (label or "").strip() or "mechanism"
     return {
         "success": True,
+        **model_warnings(runs),
         "label": subject,
         "per_kernel": per_kernel,
         "geomean_speedup": _geomean(speedups),
@@ -657,7 +820,7 @@ async def evaluate_across_kernels(
                     f"{len(measured)} kernels, worst {worst['speedup']:.4f}x "
                     f"on {worst['kernel']}"
                     + (
-                        f", regressed on {', '.join(regressions)}"
+                        f", regressed on {_with_magnitudes(measured, regressions)}"
                         if regressions
                         else ""
                     )
@@ -667,8 +830,242 @@ async def evaluate_across_kernels(
                 "worst_kernel": worst["kernel"],
                 "best_speedup": best["speedup"],
                 "regressions": regressions,
+                # The distribution is what a multi-kernel evaluation is for.
+                # Aggregates alone cannot tell a mechanism that fails on one
+                # kernel from one that is mediocre everywhere.
+                "per_kernel": [
+                    {"kernel": k["kernel"], "speedup": k["speedup"]} for k in measured
+                ],
                 "kernels_measured": len(measured),
                 "measurement_source": "gem5 multi-kernel evaluation",
+            }
+        ],
+    }
+
+
+#: A kernel measured once reports its setup as if it were the work. The token
+#: a caller puts in the loop bound so the same source can be run at two
+#: repetition counts.
+REPS_TOKEN = "REPS"
+
+#: Below this share of L2 misses per repetition, the measured loop is not
+#: reaching memory: whatever it is comparing, it is not the memory system.
+RESIDENT_MISS_FLOOR = 1000
+
+#: Above this share of the short run, setup dominates and a single-run
+#: measurement is mostly initialisation.
+FIXED_COST_WARN = 0.5
+
+
+async def measure_marginal(
+    *,
+    code: str,
+    configs: Dict[str, Any],
+    reps: Sequence[int] = (2, 8),
+    memory_bound: bool = True,
+    flags: str = DEFAULT_FLAGS,
+    run_args: str = "",
+    label: str = "",
+    image: str = DEFAULT_IMAGE,
+    timeout_seconds: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Cycles attributable to the measured loop, with setup cancelled.
+
+    A kernel initialises an array and then reads it. gem5 times both, and the
+    initialisation is itself a large, highly prefetchable stream -- so a single
+    run reports the setup as though it were the work. Measured: a prefetcher
+    study whose kernels were 90% initialisation reported 2.19x for a mechanism
+    worth 1.0001x on the loop it claimed to measure, and every conclusion drawn
+    from it had to be withdrawn.
+
+    Running the same source at two repetition counts and taking the difference
+    cancels the fixed cost exactly, rather than assuming it is small. That is
+    the whole tool: it exists because knowing to do this is not the same as
+    remembering to, and the runs that forgot looked exactly like the runs that
+    did not.
+
+    Reports two conditions that invalidate a comparison rather than merely
+    weaken it:
+
+    - `measured_loop_is_resident` -- the loop barely misses L2 per repetition,
+      so the working set fits in cache. Fatal for a memory study and correct
+      for a compute one: a kernel measuring an adder SHOULD be resident, or it
+      measures the memory system instead. Only the caller knows which study
+      this is, so `memory_bound` says, and the check is enforced against that
+      declaration rather than assumed.
+    - `fixed_cost_dominates` -- setup is most of the short run, so a
+      single-run measurement of this kernel would have been mostly setup.
+      Reported even though this tool has already corrected for it, because it
+      tells the caller their kernel is shaped wrong for anyone else's tool.
+    """
+    if REPS_TOKEN not in (code or ""):
+        return {
+            "success": False,
+            "error": (
+                f"code must contain the bare token {REPS_TOKEN} as its outer "
+                f"loop bound, e.g. `for(int r=0;r<{REPS_TOKEN};r++)`, so the "
+                "same source can be run at two repetition counts. Substituting "
+                "it is what cancels the initialisation cost."
+            ),
+        }
+    counts = sorted({int(r) for r in (reps or ()) if int(r) > 0})
+    if len(counts) != 2:
+        return {
+            "success": False,
+            "error": (
+                "reps must name exactly two different positive counts; the "
+                "difference between them is the measurement."
+            ),
+        }
+    low, high = counts
+    if not isinstance(configs, dict) or not configs:
+        return {"success": False, "error": "configs is required."}
+
+    runs_by_rep: Dict[int, Any] = {}
+    for count in (low, high):
+        try:
+            runs_by_rep[count] = await run_configs(
+                code=code.replace(REPS_TOKEN, str(count)),
+                configs=configs,
+                flags=flags,
+                run_args=run_args,
+                image=image,
+                timeout_seconds=timeout_seconds,
+            )
+        except SandboxRunFailed as failure:
+            return failure.detail
+
+    span = high - low
+    out: Dict[str, Any] = {}
+    problems: List[str] = []
+    for name in configs:
+        lo_run = runs_by_rep[low][name]
+        hi_run = runs_by_rep[high][name]
+        lo_cycles, hi_cycles = _cycles(lo_run), _cycles(hi_run)
+        marginal = (hi_cycles - lo_cycles) / span
+        if marginal <= 0:
+            problems.append(
+                f"{name}: more repetitions did not cost more cycles "
+                f"({lo_cycles:.0f} at {low}, {hi_cycles:.0f} at {high}). The "
+                "loop is being optimised away or the counts are not reaching "
+                "the program."
+            )
+            continue
+        fixed = lo_cycles - marginal * low
+        misses_lo = _stat(lo_run, "system.l2cache.overallMisses::total")
+        misses_hi = _stat(hi_run, "system.l2cache.overallMisses::total")
+        marginal_misses = (
+            (misses_hi - misses_lo) / span
+            if misses_lo is not None and misses_hi is not None
+            else None
+        )
+        out[name] = {
+            "cycles_per_repetition": round(marginal, 1),
+            "fixed_cost_cycles": round(max(fixed, 0.0), 1),
+            "fixed_cost_share_of_short_run": (
+                round(max(fixed, 0.0) / lo_cycles, 3) if lo_cycles else None
+            ),
+            "l2_misses_per_repetition": (
+                round(marginal_misses, 1) if marginal_misses is not None else None
+            ),
+            "measured_loop_is_resident": (
+                marginal_misses is not None and marginal_misses < RESIDENT_MISS_FLOOR
+            ),
+            "fixed_cost_dominates": (
+                bool(lo_cycles) and (max(fixed, 0.0) / lo_cycles) > FIXED_COST_WARN
+            ),
+        }
+
+    if not out:
+        return {"success": False, "error": "; ".join(problems[:3])}
+
+    resident = [n for n, v in out.items() if v["measured_loop_is_resident"]]
+    if resident and memory_bound:
+        # Deliberately WITHOUT the cycle counts. A refusal that hands back its
+        # numbers invites them to be used: a live run took the per-config block
+        # out of two refused calls and built a study on it, complete with a
+        # prediction and a verdict, and the contract was satisfied. The caller
+        # needs to know what is wrong and by how much, not what the cycles
+        # were.
+        return {
+            "success": False,
+            "error": (
+                f"The measured loop barely misses L2 in {', '.join(sorted(resident))}"
+                f" (< {RESIDENT_MISS_FLOOR} misses per repetition), so its "
+                "working set is resident in cache and this comparison is not "
+                "about the memory system. Either enlarge the working set past "
+                "the cache being studied, or pass memory_bound=false if the "
+                "kernel is resident on purpose because the study is about "
+                "compute. No cycle counts are returned from a refused "
+                "measurement."
+            ),
+            "misses_per_repetition": {
+                n: out[n]["l2_misses_per_repetition"] for n in sorted(resident)
+            },
+        }
+
+    # Whether the model could price what this kernel actually issued. Read from
+    # the longer run, which is the one the marginal cost is mostly made of.
+    mispriced: Dict[str, Any] = {}
+    for name in out:
+        verdict = mispriced_simd_ops(runs_by_rep[high][name].get("stats") or {})
+        if verdict:
+            mispriced[name] = verdict
+            out[name]["mispriced_simd"] = verdict["ops"]
+
+    subject = (label or "").strip() or "marginal measurement"
+    heavy = sorted(n for n, v in out.items() if v["fixed_cost_dominates"])
+    return {
+        "success": True,
+        "label": subject,
+        "repetitions": [low, high],
+        "per_config": out,
+        "problems": problems[:3],
+        "setup_dominated_configs": heavy,
+        "memory_bound": bool(memory_bound),
+        "resident_configs": sorted(resident),
+        "mispriced_simd_configs": sorted(mispriced),
+        "model_warning": (
+            " ".join(f"[{n}] {v['warning']}" for n, v in sorted(mispriced.items()))
+            or None
+        ),
+        "interpretation": (
+            "Cycles here are per repetition of the measured loop, with setup "
+            "cancelled by differencing two repetition counts. "
+            + (
+                "Setup is most of the short run in "
+                + ", ".join(heavy)
+                + ", so a single-run measurement of this kernel would have "
+                "been mostly initialisation."
+                if heavy
+                else "Setup is a minority of the short run."
+            )
+        ),
+        "findings": [
+            {
+                "type": "simulated_measurement",
+                "subject": subject,
+                "title": (
+                    f"{subject}: "
+                    + ", ".join(
+                        f"{n} {v['cycles_per_repetition']:.0f} cycles/rep"
+                        for n, v in sorted(out.items())
+                    )
+                    + " (setup cancelled)"
+                ),
+                "per_config": {n: v["cycles_per_repetition"] for n, v in out.items()},
+                "measurement_source": "gem5 differential measurement",
+                **(
+                    {
+                        "model_warning": " ".join(
+                            f"[{n}] {v['warning']}"
+                            for n, v in sorted(mispriced.items())
+                        ),
+                        "mispriced_simd_configs": sorted(mispriced),
+                    }
+                    if mispriced
+                    else {}
+                ),
             }
         ],
     }

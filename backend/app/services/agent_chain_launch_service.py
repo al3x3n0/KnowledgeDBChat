@@ -18,6 +18,7 @@ from app.services.agent_scope_service import (
     merge_chain_step_config,
     normalize_scope_keys_deep,
 )
+from app.services.config_values import coerce_bool
 
 
 class AgentChainLaunchError(RuntimeError):
@@ -251,19 +252,7 @@ class AgentChainLaunchService:
             return cls._coerce_bool(memory.get("enabled"), default=True)
         return True
 
-    @staticmethod
-    def _coerce_bool(value: Any, *, default: bool) -> bool:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return bool(value)
-        if isinstance(value, str):
-            normalized = value.strip().lower()
-            if normalized in {"true", "1", "yes", "y", "on"}:
-                return True
-            if normalized in {"false", "0", "no", "n", "off"}:
-                return False
-        return default
+    _coerce_bool = staticmethod(coerce_bool)
 
 
 agent_chain_launch_service = AgentChainLaunchService(agent_chain_definition_service)

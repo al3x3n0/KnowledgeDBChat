@@ -13,9 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.endpoints.auth import get_current_active_user
 from app.core.database import get_db
 from app.core.feature_flags import get_str as get_feature_str
-from app.models.agent_job import AgentJob
 from app.models.memory import ConversationMemory
 from app.models.user import User
+from app.modules.autonomy.api.owned_job import get_owned_job as _get_owned_job
 from app.modules.autonomy.application import feedback_presenters
 from app.schemas.agent_job import (
     AgentJobFeedbackCreate,
@@ -26,21 +26,6 @@ from app.schemas.customer_profile import CustomerProfile
 from app.services.agent_job_memory_service import agent_job_memory_service
 
 router = APIRouter()
-
-
-async def _get_owned_job(
-    *,
-    job_id: UUID,
-    user_id: UUID,
-    db: AsyncSession,
-) -> AgentJob:
-    result = await db.execute(
-        select(AgentJob).where(and_(AgentJob.id == job_id, AgentJob.user_id == user_id))
-    )
-    job = result.scalar_one_or_none()
-    if job is None:
-        raise HTTPException(status_code=404, detail="Agent job not found")
-    return job
 
 
 def _is_feedback_memory(memory: ConversationMemory) -> bool:

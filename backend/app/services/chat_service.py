@@ -2,6 +2,7 @@
 Chat service for handling chat sessions and messages.
 """
 
+import re
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -20,6 +21,19 @@ from app.services.llm_service import LLMService, UserLLMSettings
 from app.services.memory_service import MemoryService
 from app.services.query_processor import QueryProcessor
 from app.services.vector_store import vector_store_service
+
+#: The title a session gets when nobody names it. Only this exact shape is
+#: replaced by a generated title.
+_DEFAULT_TITLE = re.compile(r"^Chat \d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
+
+
+def has_default_title(title: Optional[str]) -> bool:
+    """Whether a session's title is the placeholder, not one someone chose.
+
+    Anything starting "Chat " used to count, so a user's own "Chat about
+    prefetchers" was overwritten after the first reply.
+    """
+    return not title or bool(_DEFAULT_TITLE.match(title))
 
 
 class ChatService:
@@ -740,7 +754,7 @@ class ChatService:
                 select(ChatSession).where(ChatSession.id == session_id)
             )
             session = session_result.scalar_one_or_none()
-            if session and (not session.title or session.title.startswith("Chat ")):
+            if session and has_default_title(session.title):
                 try:
                     from app.tasks.chat_tasks import generate_chat_title
 

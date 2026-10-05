@@ -92,6 +92,48 @@ _BY_EVIDENCE_FIRST: Dict[str, ToolEvidence] = {
 }
 
 
+#: Evidence a packaged sandbox skill yields.
+#:
+#: Everything above is fixed at import: a tool declares what it produces and
+#: the map is derived from that. A skill is data a user writes, so the evidence
+#: it yields has no spec to be derived from -- and a module-level map has no
+#: idea whose skills exist. What *is* fixed is the route: every skill's result
+#: is recorded by one tool, under a type in a namespace no built-in occupies.
+#: So the rule is about the namespace rather than about any one skill.
+#:
+#: This answers "could a tool produce it" and nothing more. Whether the skill
+#: a contract names actually exists and is active is a question about a user,
+#: asked where there is one (`sandbox_skill_service.unmet_skill_evidence`).
+SKILL_EVIDENCE_PREFIX = "skill_"
+SKILL_RUNNER = "run_sandbox_skill"
+
+
+def is_skill_evidence(finding_type: str) -> bool:
+    name = str(finding_type or "").strip()
+    return name.startswith(SKILL_EVIDENCE_PREFIX) and len(name) > len(
+        SKILL_EVIDENCE_PREFIX
+    )
+
+
+def _skill_runner_entry() -> Optional[ToolEvidence]:
+    spec = tool_specs.spec_for(SKILL_RUNNER)
+    if spec is None:
+        return None
+    return ToolEvidence(
+        tool=spec.name,
+        typical_seconds=spec.typical_seconds,
+        consumes=spec.consumes,
+    )
+
+
+# In `_BY_TOOL` so a chain can plan and price it, and absent from
+# `EVIDENCE_TOOLS` because that tuple is exactly the specs that *declare*
+# evidence -- which this one, yielding a different type per skill, cannot.
+_SKILL_RUNNER_ENTRY = _skill_runner_entry()
+if _SKILL_RUNNER_ENTRY is not None:
+    _BY_TOOL[SKILL_RUNNER] = _SKILL_RUNNER_ENTRY
+
+
 def entry_for(tool: str) -> Optional[ToolEvidence]:
     """What this tool costs and produces, or None if it is not an evidence tool."""
     return _BY_TOOL.get(str(tool or "").strip())
@@ -104,7 +146,10 @@ def producers_of(finding_type: str) -> List[str]:
     planner that knows only one of them sends a run down it even when another
     fits the job better.
     """
-    return [entry.tool for entry in _PRODUCERS.get(str(finding_type).strip(), [])]
+    declared = [entry.tool for entry in _PRODUCERS.get(str(finding_type).strip(), [])]
+    if not declared and is_skill_evidence(finding_type) and SKILL_RUNNER in _BY_TOOL:
+        return [SKILL_RUNNER]
+    return declared
 
 
 def producer_of(finding_type: str) -> str:
@@ -115,8 +160,8 @@ def producer_of(finding_type: str) -> str:
     reordering two specs in a file would have changed which tool every
     pipeline planned, with nothing to notice it.
     """
-    producers = _PRODUCERS.get(str(finding_type).strip())
-    return producers[0].tool if producers else ""
+    producers = producers_of(finding_type)
+    return producers[0] if producers else ""
 
 
 def is_perishable(finding_type: str) -> bool:
@@ -135,13 +180,23 @@ def is_perishable(finding_type: str) -> bool:
     return bool(entry and entry.perishable)
 
 
-def chain_for(required: Iterable[str]) -> List[str]:
+def chain_for(required: Iterable[str], *, job_type: Optional[str] = None) -> List[str]:
     """An order of tools that produces every finding type asked for.
 
     Derived from the requirements rather than recited: a contract that wants a
     settled prediction gets record_prediction before record_measurement because
     one needs the other, not because a list said so.
+
+    With a ``job_type`` the producer chosen for each finding type is one that
+    job type may actually call. Without it the first declared producer wins,
+    which is right for a caller that has no job in hand and wrong for everyone
+    else: a research stage requiring ``papers_ingested`` was planned, priced and
+    described against ``ingest_arxiv_papers``, which no autonomous job may call,
+    while the run would have used ``ingest_paper_by_id`` -- a different tool
+    with a different cost. The estimate a person acknowledges before launching
+    has to be the estimate of the work that will happen.
     """
+    runnable = _callable_by(job_type)
     ordered: List[str] = []
 
     def add(tool: str) -> None:
@@ -154,37 +209,96 @@ def chain_for(required: Iterable[str]) -> List[str]:
             ordered.append(tool)
 
     for finding_type in required:
-        producer = producer_of(finding_type)
+        if runnable is None:
+            producer = producer_of(finding_type)
+        else:
+            producer = next(
+                (name for name in producers_of(finding_type) if name in runnable),
+                "",
+            )
         if producer:
             add(producer)
     return ordered
 
 
-def describe_chain(required: Sequence[str]) -> List[str]:
-    """Lines telling a run how to obtain the evidence its contract demands."""
-    chain = chain_for(required)
+def _callable_by(job_type: Optional[str]) -> Optional[set]:
+    """Tools this job type may actually run, or None when unfiltered."""
+    if not job_type:
+        return None
+    from app.agent_core import tool_specs
+
+    return set(tool_specs.STATIC_CATALOG.tools_for_job_type(job_type))
+
+
+def describe_chain(
+    required: Sequence[str], *, job_type: Optional[str] = None
+) -> List[str]:
+    """Lines telling a run how to obtain the evidence its contract demands.
+
+    Filtered by what the job type may call, because this text is advice the run
+    follows. A stage requiring ``papers_ingested`` was told "ingest_arxiv_papers
+    (or ingest_paper_by_id) yields papers_ingested" while its own job type could
+    call only the second: the recommended tool, named first, would have been
+    refused. That run searched, found 18 papers, and spent its remaining rounds
+    on web search and progress reports without ever ingesting one. Naming a tool
+    the runtime will refuse is worse than naming none, because the run plans
+    around it.
+    """
+    chain = chain_for(required, job_type=job_type)
     if not chain:
         return []
+    runnable = _callable_by(job_type)
     lines: List[str] = []
     for tool in chain:
+        if tool == SKILL_RUNNER:
+            # One line per skill, naming it: the tool is the same for all of
+            # them and only the skill differs, so "run_sandbox_skill yields
+            # ..." with nothing after it would tell the run which tool and
+            # leave out the one argument that decides what it gets.
+            if runnable is not None and tool not in runnable:
+                continue
+            for finding_type in dict.fromkeys(
+                str(t).strip() for t in required if is_skill_evidence(t)
+            ):
+                skill = finding_type[len(SKILL_EVIDENCE_PREFIX) :]
+                lines.append(
+                    f"{SKILL_RUNNER} with skill={skill!r} and collect_result=true "
+                    f"yields {finding_type}. Call load_sandbox_skill first: it "
+                    "returns the procedure to follow and the fields the result "
+                    "must have."
+                )
+            continue
         entry = _BY_TOOL[tool]
-        produced = ", ".join(entry.produces)
-        after = f" after {', '.join(entry.requires)}" if entry.requires else ""
-        detail = f" Takes {entry.consumes}" if entry.consumes else ""
-        # Name the alternatives, so a run whose situation does not suit the
-        # planned tool knows another exists rather than forcing the one it was
-        # given. Without this the second route to a fact is unreachable in
-        # practice: nothing in the prompt ever mentions it.
         alternatives = [
             other
             for produced_type in entry.produces
             for other in producers_of(produced_type)
             if other != tool
         ]
-        instead = (
-            f" (or {', '.join(dict.fromkeys(alternatives))})" if alternatives else ""
+        candidates = [tool, *dict.fromkeys(alternatives)]
+        if runnable is not None:
+            candidates = [name for name in candidates if name in runnable]
+            if not candidates:
+                # Nothing here can produce it. validate() refuses such a
+                # contract, so this is the belt to that braces -- and silence
+                # beats advertising a door that does not open.
+                continue
+        lead, rest = candidates[0], candidates[1:]
+        # Describe the tool actually being recommended: its inputs and
+        # prerequisites are what the run has to satisfy, and they are not
+        # always the planned tool's.
+        lead_entry = _BY_TOOL.get(lead, entry)
+        produced = ", ".join(lead_entry.produces or entry.produces)
+        after = (
+            f" after {', '.join(lead_entry.requires)}" if lead_entry.requires else ""
         )
-        lines.append(f"{tool}{instead} yields {produced}{after}.{detail}")
+        detail = f" Takes {lead_entry.consumes}" if lead_entry.consumes else ""
+        # Name the alternatives, so a run whose situation does not suit the
+        # planned tool knows another exists rather than forcing the one it was
+        # given. Without this the second route to a fact is unreachable in
+        # practice: nothing in the prompt ever mentions it.
+        instead = f" (or {', '.join(rest)})" if rest else ""
+        lines.append(f"{lead}{instead} yields {produced}{after}.{detail}")
     return lines
 
 

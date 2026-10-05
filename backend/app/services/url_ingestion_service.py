@@ -19,8 +19,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import Headers
 
-from app.models.document import Document, DocumentSource
+from app.models.document import Document
 from app.models.user import User
+from app.services.auth_service import is_admin
 from app.services.document_service import DocumentService
 from app.services.web_scraper_service import WebScraperService
 
@@ -82,20 +83,17 @@ class UrlIngestionService:
                 cancel_check=cancel_check,
             )
 
-        is_allowlisted = await self._is_url_allowlisted_for_internal_scrape(url, db)
+        from app.services.web_scraper_service import private_network_access
 
-        allow_private_effective = False
-        if allow_private_networks:
-            if user.role == "admin":
-                allow_private_effective = True
-            elif is_allowlisted:
-                allow_private_effective = True
-            else:
-                return {
-                    "error": "allow_private_networks requires admin role (or an active web source allowlist)"
-                }
-        else:
-            allow_private_effective = bool(is_allowlisted)
+        (
+            allow_private_effective,
+            allowlisted_hosts,
+            refusal,
+        ) = await private_network_access(
+            db, url, asked=bool(allow_private_networks), admin=is_admin(user)
+        )
+        if refusal:
+            return {"error": refusal}
 
         if cancel_check():
             return {"error": "canceled"}
@@ -116,7 +114,11 @@ class UrlIngestionService:
                 include_links=False,
                 allow_private_networks=allow_private_effective,
                 max_content_chars=max_content_chars,
+                private_hosts=allowlisted_hosts,
             )
+        except (TypeError, ValueError) as exc:
+            # A refusal is an answer, not a crash.
+            return {"error": str(exc)}
         finally:
             await scraper.aclose()
 
@@ -493,40 +495,3 @@ class UrlIngestionService:
             }
             publish("complete", {"progress": 100, **result})
             return result
-
-    async def _is_url_allowlisted_for_internal_scrape(
-        self, url: str, db: AsyncSession
-    ) -> bool:
-        parsed = urlparse(url)
-        host = (parsed.hostname or "").lower()
-        if not host:
-            return False
-
-        res = await db.execute(
-            select(DocumentSource).where(
-                DocumentSource.source_type == "web",
-                DocumentSource.is_active.is_(True),
-            )
-        )
-        sources = res.scalars().all()
-
-        def host_matches(allowed: str) -> bool:
-            allowed = (allowed or "").strip().lower()
-            if not allowed:
-                return False
-            return host == allowed or host.endswith("." + allowed)
-
-        for source in sources:
-            cfg = source.config or {}
-            for d in cfg.get("allowed_domains") or []:
-                if host_matches(d):
-                    return True
-            for base in cfg.get("base_urls") or []:
-                try:
-                    base_host = (urlparse(str(base)).hostname or "").lower()
-                except Exception:
-                    base_host = ""
-                if base_host and host_matches(base_host):
-                    return True
-
-        return False

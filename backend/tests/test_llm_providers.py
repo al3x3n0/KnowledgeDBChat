@@ -335,6 +335,14 @@ class TestQwenKimiProviders:
         assert "moonshot" in provider.base_url
         assert provider.default_model == "kimi-latest"
 
+    def test_glm_maps_to_zhipu(self):
+        provider = build_provider("glm", api_key="k")
+        assert isinstance(provider, OpenAICompatibleProvider)
+        assert provider.provider_label == "glm"
+        assert provider.schema_mode == "json_object"
+        assert "bigmodel" in provider.base_url
+        assert provider.default_model == "glm-4.6"
+
     def test_api_url_and_key_overrides_win(self):
         provider = build_provider(
             "qwen", api_url="https://proxy.internal/v1", api_key="override"

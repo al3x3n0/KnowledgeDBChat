@@ -6,6 +6,9 @@ import hashlib
 from copy import deepcopy
 from typing import Any, Dict, List, Mapping
 
+from app.services.config_values import positive_int as _positive_int
+from app.services.config_values import string_list
+
 
 class AutonomousRnDVerificationPlanner:
     """Create bounded local verification tasks without launching them."""
@@ -22,7 +25,7 @@ class AutonomousRnDVerificationPlanner:
         claim_refs = {
             evidence_id
             for claim in claims
-            for evidence_id in _string_list(claim.get("evidence_ids"))
+            for evidence_id in string_list(claim.get("evidence_ids"), split=False)
         }
         links_by_evidence: Dict[str, List[Dict[str, Any]]] = {}
         for link in links:
@@ -99,7 +102,7 @@ class AutonomousRnDVerificationPlanner:
             {
                 kind
                 for link in links
-                for kind in _string_list(link.get("artifact_kinds"))
+                for kind in string_list(link.get("artifact_kinds"), split=False)
             }
         )
         if not required_artifact_kinds:
@@ -198,20 +201,6 @@ def _records(value: Any) -> List[Dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [dict(item) for item in value if isinstance(item, Mapping)]
-
-
-def _string_list(value: Any) -> List[str]:
-    if not isinstance(value, list):
-        return []
-    return [str(item).strip() for item in value if str(item).strip()]
-
-
-def _positive_int(value: Any, default: int) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return parsed if parsed > 0 else default
 
 
 autonomous_rnd_verification_planner = AutonomousRnDVerificationPlanner()

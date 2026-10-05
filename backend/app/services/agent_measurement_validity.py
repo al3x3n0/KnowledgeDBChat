@@ -23,7 +23,10 @@ The vocabulary a contract may use, under `contract["validity"]`:
                             measurement
     bounds                  per finding type, a numeric field and the range it
                             must fall in, for values that are impossible
-                            rather than merely surprising
+                            rather than merely surprising. With `"any": true`
+                            the rule is instead that AT LEAST ONE finding of
+                            the type lies in range -- "some proposal won" --
+                            and a finding without the field does not count
     records_method          the run must record at least one method, so what
                             it learned about *how* to investigate outlives it
     traces_one_regime       no finding may be measured across a break in the
@@ -37,6 +40,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from app.services import agent_evidence_map
+from app.services.config_values import as_number as _as_number
 
 #: Every boolean predicate a contract may declare. This is the ONE place they
 #: are registered: the job-config normaliser imports it rather than keeping its
@@ -84,15 +88,6 @@ def _findings(state: Mapping[str, Any]) -> List[Dict[str, Any]]:
 def _actions(state: Mapping[str, Any]) -> List[Dict[str, Any]]:
     raw = state.get("actions_taken")
     return [a for a in raw if isinstance(a, dict)] if isinstance(raw, list) else []
-
-
-def _as_number(value: Any) -> Optional[float]:
-    if isinstance(value, bool):
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _find_number(finding: Mapping[str, Any], field: str) -> Optional[float]:
@@ -302,9 +297,36 @@ def evaluate(contract: Mapping[str, Any], state: Mapping[str, Any]) -> Dict[str,
             #
             # A rule may say `"latest": false` to check every occurrence, which
             # is right for a durable type where each reading stands on its own.
+            if rule.get("any"):
+                # "At least one of these is in range." A finding that lacks
+                # the field is NOT in range: the plain rule skips it, which
+                # let a proposal that diverged -- and so carries no speedup --
+                # satisfy a bound on speedup by saying nothing at all.
+                in_range = [
+                    v
+                    for v in (_find_number(f, field) for f in matching)
+                    if v is not None
+                    and (low is None or v >= low)
+                    and (high is None or v <= high)
+                ]
+                if not in_range:
+                    missing.append(f"validity:bounds:{type_name}")
+                    details.setdefault("out_of_bounds", {})[str(type_name)] = {
+                        "field": field,
+                        "min": low,
+                        "max": high,
+                        "any": True,
+                        "values": [_find_number(f, field) for f in matching[:5]],
+                    }
+                continue
             latest_only = rule.get("latest")
             if latest_only is None:
-                latest_only = agent_evidence_map.is_perishable(str(type_name))
+                # A sandbox skill declares perishability per skill, and the
+                # finding carries it: the evidence map is fixed at import.
+                latest_only = agent_evidence_map.is_perishable(str(type_name)) or any(
+                    isinstance(f, Mapping) and f.get("perishable") is True
+                    for f in matching
+                )
             if latest_only and matching:
                 matching = matching[-1:]
 
@@ -455,7 +477,8 @@ def describe(spec: Any) -> Sequence[str]:
             if not isinstance(rule, Mapping):
                 continue
             lines.append(
-                f"{type_name}.{rule.get('field')} must lie in "
+                ("at least one " if rule.get("any") else "")
+                + f"{type_name}.{rule.get('field')} must lie in "
                 f"[{rule.get('min')}, {rule.get('max')}]"
             )
     return lines

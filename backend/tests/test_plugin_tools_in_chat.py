@@ -235,30 +235,60 @@ def test_the_prompt_survives_a_schema_an_author_left_incomplete():
     assert "(no description)" in described
 
 
-def test_both_chat_planners_accept_contributed_tools():
-    """Streaming chat plans through a different entry point than the
-    agent-routed path. Offering a user's tools on one and not the other is the
-    "works over there" failure: the same question typed into the same box would
-    find the tool or not, depending on which handler took it.
+def test_there_is_one_chat_planner_and_one_responder():
+    """Streaming chat had its own copy of both. Every fix to one -- contributed
+    tools, the tool menu, tool rounds, agent routing -- had to be made twice or
+    it applied to the REST endpoint and not to the chat window. A second copy
+    is refused here rather than kept in step by hand.
     """
-    import inspect
-
-    for planner in (
-        AgentService._plan_tool_calls,
-        AgentService._plan_tool_calls_for_agent,
-    ):
-        assert (
-            "contributed" in inspect.signature(planner).parameters
-        ), f"{planner.__name__} cannot be given contributed tools"
+    assert not hasattr(AgentService, "_plan_tool_calls")
+    assert not hasattr(AgentService, "_generate_response")
+    assert hasattr(AgentService, "_plan_tool_calls_for_agent")
 
 
-def test_the_streaming_path_actually_passes_them():
-    """A parameter nothing passes is the same as no parameter at all."""
+def test_the_streaming_path_goes_through_the_shared_turn():
     import inspect
 
     from app.api.endpoints import agent as agent_endpoints
 
     source = inspect.getsource(agent_endpoints._process_message_with_streaming)
 
-    assert "_contributed_tool_schemas" in source
-    assert "contributed=contributed" in source
+    assert "agent_service.process_message(" in source
+    assert "on_event=" in source
+    # It plans and answers nothing itself.
+    assert "_plan_tool_calls" not in source
+    assert "_generate_response" not in source
+
+
+def test_chat_offers_only_tools_it_can_run():
+    """Chat described every declared tool, and most are answered only by the
+    autonomous-job providers: 180 of 250 came back as "Unknown tool". A model
+    cannot tell those from the ones that work."""
+    from app.services.agent_tool_dispatch import AgentToolExecutionContext
+
+    service = AgentService()
+    offered = service._chat_tools()
+    assert offered, "an empty menu would pass every check below vacuously"
+
+    probe = AgentToolExecutionContext(mode="chat", db=None, service=service)
+    unanswered = [
+        t["name"]
+        for t in offered
+        if service.tool_registry.resolve(t["name"], probe) is None
+    ]
+    assert not unanswered
+
+    names = {t["name"] for t in offered}
+    # A chat tool, a tool answered in both modes, and an autonomous-only one.
+    assert "search_documents" in names
+    assert "run_sandbox_skill" in names
+    assert "simulate_mechanism" not in names
+    assert len(offered) < len(AGENT_TOOLS)
+
+
+def test_the_planning_prompt_describes_only_what_chat_can_run():
+    service = AgentService()
+    described = get_tools_description(tools=service._chat_tools())
+    assert "Tool: search_documents" in described
+    assert "Tool: simulate_mechanism" not in described
+    assert len(described) < len(get_tools_description()) / 2

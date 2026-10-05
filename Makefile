@@ -135,7 +135,35 @@ validate-env: ## Validate backend environment variables
 check-health: ## Run local health checks (Docker + services)
 	bash scripts/check_health.sh
 
-doctor: validate-env check-health ## Validate env + health checks
+doctor: validate-env check-health stale-code ## Validate env + health checks
+
+stale-code: ## Warn when a container is running code older than the source tree
+	@# Python imports a module once, at process start. The backend reloads under
+	@# uvicorn; the celery worker does not, so editing a service the worker
+	@# executes changes nothing until it is recreated -- and the run that follows
+	@# fails against the old code while the file on disk shows the fix. That has
+	@# cost real debugging here: a job was told "no tool here produces
+	@# axis_equivalence_proof" by a worker holding a spec table from the previous
+	@# day, and the conclusion drawn was about the model rather than the worker.
+	@newest=$$(find backend/app -name '*.py' -print0 2>/dev/null \
+	  | xargs -0 stat -f '%m' 2>/dev/null | sort -rn | head -1); \
+	test -n "$$newest" || newest=0; \
+	for service in backend celery celery_beat; do \
+	  container=$$(docker compose ps -q $$service 2>/dev/null); \
+	  if [ -z "$$container" ]; then \
+	    printf '  %-14s %s\n' "$$service" "not running"; continue; \
+	  fi; \
+	  started=$$(docker inspect -f '{{.State.StartedAt}}' $$container 2>/dev/null); \
+	  started_epoch=$$(date -j -u -f '%Y-%m-%dT%H:%M:%S' "$$(echo $$started | cut -c1-19)" '+%s' 2>/dev/null \
+	    || date -u -d "$$started" '+%s' 2>/dev/null || echo 0); \
+	  if [ "$$started_epoch" -le 0 ]; then \
+	    printf '  %-14s %s\n' "$$service" "unknown (could not read the start time)"; \
+	  elif [ "$$newest" -gt "$$started_epoch" ]; then \
+	    printf '  %-14s %s\n' "$$service" "STALE -- started before the newest backend/app change; recreate it"; \
+	  else \
+	    printf '  %-14s %s\n' "$$service" "current"; \
+	  fi; \
+	done
 
 fmt-backend: ## Format backend code (isort + black)
 	$(DC) exec backend isort .
@@ -292,15 +320,24 @@ sandbox-gem5: ## Build the gem5-research image (arm64 only -- see deploy/sandbox
 	  -t $(SANDBOX_REGISTRY)/kdbc-gem5-research:latest \
 	  deploy/sandbox-images/gem5-research
 
+sandbox-pass-dev: sandbox-base ## Build the pass-dev image (LLVM headers, for building plugins)
+	docker build -f deploy/sandbox-images/pass-dev/Dockerfile \
+	  -t $(SANDBOX_REGISTRY)/kdbc-pass-dev:latest .
+
 sandbox-axis: ## Build the axis-research image (needs AXIS_PATH=/path/to/axis)
 	@test -n "$(AXIS_PATH)" || { \
 	  echo "AXIS_PATH is required: AXIS lives in its own repository and is the"; \
 	  echo "build context. e.g. make sandbox-axis AXIS_PATH=/path/to/KevinAI/axis"; \
 	  exit 1; }
 	docker build -f deploy/sandbox-images/axis-research/Dockerfile \
+	  --build-arg AXIS_GIT_REV="$$(git -C $(AXIS_PATH) describe --always --dirty 2>/dev/null || echo unknown)" \
 	  -t $(SANDBOX_REGISTRY)/kdbc-axis-research:latest $(AXIS_PATH)
 
-sandbox-images: sandbox-compiler sandbox-polyglot sandbox-profiling sandbox-microarch ## Build every sandbox image this repo can build
+sandbox-bolt: sandbox-base ## Build the bolt-research image (llvm-bolt 19, for rewriting linked executables)
+	docker build -f deploy/sandbox-images/bolt-research/Dockerfile \
+	  -t $(SANDBOX_REGISTRY)/kdbc-bolt-research:latest .
+
+sandbox-images: sandbox-compiler sandbox-polyglot sandbox-profiling sandbox-microarch sandbox-pass-dev sandbox-bolt ## Build every sandbox image this repo can build
 	@echo "Built from this repository. gem5 (make sandbox-gem5, arm64) and"
 	@echo "axis (make sandbox-axis AXIS_PATH=...) are separate: see"
 	@echo "deploy/sandbox-images/README.md for why."
@@ -308,7 +345,8 @@ sandbox-images: sandbox-compiler sandbox-polyglot sandbox-profiling sandbox-micr
 sandbox-check: ## Report which sandbox images exist locally and what they carry
 	@for image in kdbc-sandbox-base kdbc-compiler-research kdbc-polyglot-slim \
 	              kdbc-profiling-research \
-	              kdbc-microarch-research kdbc-gem5-research kdbc-axis-research; do \
+	              kdbc-microarch-research kdbc-gem5-research kdbc-axis-research \
+	              kdbc-pass-dev kdbc-bolt-research; do \
 	  if docker image inspect $(SANDBOX_REGISTRY)/$$image:latest >/dev/null 2>&1; then \
 	    printf '  %-28s %s\n' "$$image" \
 	      "$$(docker image ls --format '{{.Size}}' \
@@ -335,3 +373,32 @@ sandbox-check: ## Report which sandbox images exist locally and what they carry
 	done
 	@docker image inspect $(SANDBOX_REGISTRY)/kdbc-compiler-research:latest >/dev/null 2>&1 \
 	  || echo "  (compiler-research image not built: run make sandbox-compiler)"
+	@echo ""
+	@echo "What built each image, where it says so. A binary that cannot report"
+	@echo "its own source is one a stale-image failure cannot be attributed to."
+	@for image in kdbc-axis-research; do \
+	  rev=$$(docker image inspect --format \
+	    '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+	    $(SANDBOX_REGISTRY)/$$image:latest 2>/dev/null); \
+	  test -n "$$rev" || rev="(no revision label: rebuilt via make sandbox-axis to record one)"; \
+	  printf '  %-28s %s\n' "$$image" "$$rev"; \
+	done
+	@echo ""
+	@echo "Whether the app can reach any of this. Everything above is asked of the"
+	@echo "host; the runtime asks from inside backend and celery, and the two"
+	@echo "differ. A stack brought up without docker-compose.docker-tools.yml has"
+	@echo "no socket, and then every sandbox-backed tool fails in the one way that"
+	@echo "reads as nobody having called it."
+	@for service in backend celery; do \
+	  if ! docker compose ps --status running --services 2>/dev/null | grep -qx "$$service"; then \
+	    printf '  %-28s %s\n' "$$service" "not running"; \
+	  elif docker compose exec -T $$service sh -c 'docker ps >/dev/null 2>&1' 2>/dev/null; then \
+	    printf '  %-28s %s\n' "$$service" "socket OK"; \
+	  else \
+	    printf '  %-28s %s\n' "$$service" "NO SOCKET -- every sandbox tool will fail"; \
+	  fi; \
+	done
+	@docker compose ps --status running --services 2>/dev/null | grep -qx backend && \
+	  docker compose exec -T backend sh -c 'docker ps >/dev/null 2>&1' 2>/dev/null || \
+	  echo "  remedy: docker compose -f docker-compose.yml -f docker-compose.override.yml \
+-f docker-compose.docker-tools.yml up -d --no-build backend celery"

@@ -7,7 +7,11 @@ registration went wrong most often, which is why they moved first.
 from __future__ import annotations
 
 from app.agent_core.tool_specs.spec import ToolSpec
-from app.services.agent_toolchains import SUPPORTED, describe_rust_crates
+from app.services.agent_toolchains import (
+    SUPPORTED,
+    describe_llvm_passes,
+    describe_rust_crates,
+)
 
 #: Named once and used in both tool descriptions, so the crate set a model is
 #: told about cannot differ between the tool that checks code and the tool that
@@ -15,13 +19,730 @@ from app.services.agent_toolchains import SUPPORTED, describe_rust_crates
 #: manifest from the same list.
 _RUST_CRATES_HINT = describe_rust_crates()
 
+#: Read from the same table, for the same reason. A pass that exists in the
+#: image and is named in no tool description is reachable and undiscoverable,
+#: which for a model is the same as absent.
+_LLVM_PASSES_HINT = describe_llvm_passes()
+
 #: Read from the toolchain table, never restated. A language the table can
 #: build but the schema does not offer is unreachable -- the model is refused
 #: for naming it -- and a language the schema offers but the table cannot build
 #: fails at compile time with an error that blames the code.
 _LANGUAGES = list(SUPPORTED)
 
+
+_HARNESS_PROPS = {
+    "driver": {
+        "type": "string",
+        "description": (
+            "C source defining main: reads a workload from stdin, calls the "
+            "kernel's functions, and PRINTS what they computed (a checksum "
+            "is fine). It is yours and fixed -- compiled separately, so a "
+            "candidate cannot change what is measured or printed. Because it "
+            "is a separate file it sees NOTHING from the kernel: declare every "
+            "type and prototype it uses (repeat a struct the kernel defines). "
+            "Make the bench workload run for >=250 ms or the host's noise "
+            "decides."
+        ),
+    },
+    "inputs": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": (
+            "stdin texts for the driver, up to 12. Output must match on "
+            "EVERY one, so include edge cases (size 1, extremes of each "
+            "parameter), not only the bench workload."
+        ),
+    },
+    "bench_input": {
+        "type": "integer",
+        "description": (
+            "0-based INDEX into inputs of the input that is timed (default "
+            "0) -- a number such as 2, not the input text."
+        ),
+    },
+    "flags": {
+        "type": "string",
+        "description": "clang flags for every arm (default '-O2').",
+    },
+    "label": {"type": "string", "description": "Names the result in the finding."},
+}
+
+_REFERENCE_PROP = {
+    "reference": {
+        "type": "object",
+        "description": (
+            "Check the extracted kernel against the REPOSITORY's real function "
+            "before anything is judged -- without it, nothing confirms the "
+            "kernel computes what the code it came from computes. An object: "
+            "adapter (C implementing the kernel's exact interface by calling "
+            "the repository's real function; declare its own copy of any "
+            "struct the driver passes, and stub helpers the path needs from "
+            "files not listed, e.g. TraceLog), paths (repository .c files "
+            "defining the real function, e.g. ['src/rtextures.c']), "
+            "include_dirs, flags (defines, e.g. '-DPLATFORM_DESKTOP'). The "
+            "driver is linked against both; they must print the same on every "
+            "input, or the verdict is extraction_unfaithful. The adapter must "
+            "CALL the real function, not copy it: one that calls nothing the "
+            "repository files define is refused as reference_not_called. "
+            'Findings then carry verified_win. Example: {"adapter": '
+            '"#include \\"raylib.h\\"\\n#include <stdlib.h>\\n#include <string.h>\\n'
+            "typedef struct { int w, h; unsigned char *px; } K;\\n"
+            "void TraceLog(int l, const char *t, ...) {}\\n"
+            "void tint(K *k, Color c) { size_t n = (size_t)k->w * k->h * 4; "
+            "unsigned char *cp = malloc(n); memcpy(cp, k->px, n); "
+            "Image im = { cp, k->w, k->h, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 }; "
+            'ImageColorTint(&im, c); memcpy(k->px, im.data, n); free(im.data); }", '
+            '"paths": ["src/rtextures.c"], "include_dirs": ["src", '
+            '"src/external/glfw/include"], "flags": "-DPLATFORM_DESKTOP"}'
+        ),
+    },
+}
+
+_VERDICTS_HINT = (
+    "Verdicts: did_not_compile (errors verbatim), crashed, diverged (the "
+    "first input where output differs, never timed), slower, unresolved "
+    "(inside the trial noise), compiler_already_can (faster than the "
+    "original but not than the original at -O3 / -ffast-math -- a flag, not "
+    "an optimisation), faster_than_original (beats the original; against the ceiling it is inside the noise), faster (beats both), and baseline_broken (the "
+    "ORIGINAL did not build or run: fix the driver or inputs)."
+)
+
+_PROGRAM_PROPS = {
+    "sources": {
+        "type": "object",
+        "description": "Bare .c filenames mapped to source text. Give this OR paths.",
+    },
+    "paths": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": (
+            "Repository-relative .c files in the coding workspace to compile "
+            "and link into one executable, e.g. ['onelua.c']."
+        ),
+    },
+    "include_dirs": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Repository-relative -I directories.",
+    },
+    "workspace_id": {
+        "type": "string",
+        "description": "Workspace for paths (default: current).",
+    },
+    "build_flags": {
+        "type": "string",
+        "description": (
+            "clang flags and defines (default '-O2'). The tool adds -fno-pie "
+            "-no-pie -Wl,--emit-relocs itself: BOLT needs relocations, and "
+            "instrumenting a PIE build failed on Lua's hottest function."
+        ),
+    },
+    "libs": {"type": "string", "description": "Link libraries (default '-lm')."},
+    "inputs": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": (
+            "stdin texts, up to 12. Output must match on every one. The "
+            "profile comes from all but the timed one unless profile_inputs "
+            "says otherwise, so give several DIFFERENT workloads."
+        ),
+    },
+    "run_args": {
+        "type": "string",
+        "description": "Arguments for every run, e.g. '- 300000' for an interpreter reading stdin.",
+    },
+    "profile_run_args": {
+        "type": "string",
+        "description": (
+            "Arguments for the PROFILING runs, when they should differ from "
+            "run_args -- e.g. a large workload to profile and a small one to "
+            "simulate. A thin profile makes a worse layout: on Lua, n=300 "
+            "profiles turned a 2.6% gain into a 6.8% loss."
+        ),
+    },
+    "profile_inputs": {
+        "type": "array",
+        "items": {"type": "integer"},
+        "description": "Indices of inputs to profile on (default: all but bench_input).",
+    },
+    "bench_input": {
+        "type": "integer",
+        "description": "0-based INDEX into inputs of the timed input (default 0), not its text.",
+    },
+    "label": {"type": "string", "description": "Names the result in the finding."},
+}
+
 SPECS: tuple[ToolSpec, ...] = (
+    ToolSpec(
+        name="build_llvm_pass",
+        description=(
+            "Compile an LLVM pass plugin, run it on test code, and report what "
+            "it changed. Separates the four ways a pass fails, because they "
+            "look alike and need different fixes: it did not compile (the "
+            "compiler's errors come back verbatim); it compiled but `opt` does "
+            "not know the pass name, so the registration and the name disagree; "
+            "it compiled, registered and left the IR IDENTICAL, which is the "
+            "one worth reading twice, since a pass that loads and silently does "
+            "nothing looks exactly like one that works; or it fired, and the "
+            "opcode and call-target deltas say what it did. Says nothing about "
+            "whether the transformation is CORRECT or WORTH anything -- those "
+            "need differential execution and a cycle count."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string",
+                    "description": (
+                        "C++ of an LLVM 14 pass plugin: a PassInfoMixin struct "
+                        "and an llvmGetPassPluginInfo that registers it. "
+                        "Register a pipeline extension point too (e.g. "
+                        "registerVectorizerStartEPCallback) if it is meant to "
+                        "be usable through clang -fpass-plugin, or the flag "
+                        "will load the plugin and run nothing."
+                    ),
+                },
+                "pass_name": {
+                    "type": "string",
+                    "description": (
+                        "The lowercase name the plugin registers, exactly as "
+                        "`opt -passes=` will be asked for it."
+                    ),
+                },
+                "test_code": {
+                    "type": "string",
+                    "description": (
+                        "C source to run the pass over. Required: a pass that "
+                        "builds is not a pass that works, and without an input "
+                        "there is no way to tell whether it fired. Include a "
+                        "case it should DECLINE as well as one it should "
+                        "transform."
+                    ),
+                },
+                "flags": {
+                    "type": "string",
+                    "description": "Flags for compiling test_code to IR (default '-O1').",
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Names the pass in the finding.",
+                },
+            },
+            "required": ["source", "pass_name", "test_code"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("pass_built",),
+        typical_seconds=60,
+        consumes="C++ of a pass plugin and C to try it on; returns whether it built, registered and fired.",
+    ),
+    ToolSpec(
+        name="scan_for_optimizations",
+        description=(
+            "Scan C sources for places a known optimisation applies, and for "
+            "shapes that have none yet. Returns two answers kept apart: "
+            "`suggestions`, each naming the pass that handles it, the "
+            "-fpass-plugin flag to apply it and whether it preserves results; "
+            "and `shapes_without_a_pass`, a tally of what feeds each expensive "
+            "operation, which is where a new pass comes from. Counts are "
+            "STATIC -- how often a pattern is written, not how often it runs -- "
+            "so this is a list of places to look and ranking them needs a "
+            "profile. Sources that fail to compile are named rather than "
+            "dropped, because a scan of nothing must not read as a clean bill."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "sources": {
+                    "type": "object",
+                    "description": (
+                        "Bare .c filenames mapped to their source text, e.g. "
+                        "{'raymath.c': '...'}, for self-contained files. Give "
+                        "this OR paths."
+                    ),
+                },
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Repository-relative .c files in the coding workspace "
+                        "(clone_and_index_repo first), e.g. ['src/rtextures.c'], "
+                        "or a directory, meaning the .c files directly in it "
+                        "(not recursive). "
+                        "Each is compiled in place, so its includes resolve as "
+                        "in the repo's own build. Up to 64."
+                    ),
+                },
+                "include_dirs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Repository-relative -I directories for paths, e.g. "
+                        "['src', 'src/external/glfw/include']. Defines go in "
+                        "flags. A file that fails to compile is reported with "
+                        "its first error."
+                    ),
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace to read paths from (default: the current one).",
+                },
+                "flags": {
+                    "type": "string",
+                    "description": (
+                        "Compiler flags for the IR the scan reads (default "
+                        "'-O1'). Use -O1 unless there is a reason: at -O0 the "
+                        "shapes the passes match have not formed yet, and at "
+                        "-O2 the vectoriser may already have rewritten them."
+                    ),
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Names the scan in the finding it records.",
+                },
+            },
+            "required": [],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("optimization_opportunity",),
+        typical_seconds=30,
+        consumes="C sources; returns where known optimisations apply and what shapes have none.",
+    ),
+    ToolSpec(
+        name="propose_restructurings",
+        description=(
+            "Ask a model for APPLICATION-SPECIFIC optimisations of a C kernel "
+            "-- changes valid or worthwhile only because of something true of "
+            "this program (an invariant parameter, a bounded value range, a "
+            "repeated computation, a better layout or algorithm for these "
+            "inputs) which a compiler may not assume -- and judge every one. "
+            "The model is shown the compiler's own -O2 output so it does not "
+            "re-propose what is already done. Each proposal is run against the "
+            "original on every input, timed interleaved against the original "
+            "and against the original at -O3, and repaired once if it fails. "
+            "When several win, each is re-measured against the best, so a "
+            "proposal that only carries another's idea is credited with "
+            "nothing. The model's claims (`invariant`, `why_compiler_cannot`) "
+            "ride beside measured verdicts, never as evidence. " + _VERDICTS_HINT
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "kernel": {
+                    "type": "string",
+                    "description": (
+                        "The application code to optimise: one C file with "
+                        "no main. Candidates replace this file and keep its "
+                        "external functions."
+                    ),
+                },
+                **_HARNESS_PROPS,
+                **_REFERENCE_PROP,
+                "focus": {
+                    "type": "string",
+                    "description": (
+                        "Where to look, e.g. a hot function from "
+                        "profile_c_workload or a shape from "
+                        "scan_for_optimizations."
+                    ),
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Proposals to ask for, 1-5 (default 3).",
+                },
+            },
+            "required": ["kernel", "driver", "inputs"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("restructuring_result",),
+        typical_seconds=600,
+        consumes="a C kernel, a driver and inputs; returns model-proposed rewrites, each with a measured verdict.",
+    ),
+    ToolSpec(
+        name="evaluate_restructuring",
+        description=(
+            "Judge YOUR rewrite of a C kernel: same output as the original on "
+            "every input, and faster than both the original and the original "
+            "rebuilt at -O3 (-ffast-math too if value_preserving is false)? "
+            "Timed interleaved, trial by trial, so host load lands on both. "
+            + _VERDICTS_HINT
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "kernel": {
+                    "type": "string",
+                    "description": "The original C file (no main).",
+                },
+                "candidate": {
+                    "type": "string",
+                    "description": "The complete rewritten C file, same external functions.",
+                },
+                **_HARNESS_PROPS,
+                **_REFERENCE_PROP,
+                "value_preserving": {
+                    "type": "boolean",
+                    "description": (
+                        "true (default) demands identical output; false "
+                        "allows 1e-6 relative drift and compares against "
+                        "-ffast-math."
+                    ),
+                },
+                "invariant": {
+                    "type": "string",
+                    "description": (
+                        "The fact about this application the rewrite relies "
+                        "on. Carried on the finding: equivalence is checked "
+                        "on the inputs given, not proved."
+                    ),
+                },
+                "trials": {
+                    "type": "integer",
+                    "description": "Interleaved trials, 3-15 (default 7).",
+                },
+            },
+            "required": ["kernel", "candidate", "driver", "inputs"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("restructuring_result",),
+        typical_seconds=90,
+        consumes="original and rewritten C kernels, a driver and inputs; returns equivalence and a speed verdict.",
+    ),
+    ToolSpec(
+        name="disassemble_symbol",
+        description=(
+            "Disassemble one function of a relocatable aarch64 object, with "
+            "relocations, so it can be rewritten without source. Takes the "
+            "object as base64, or C that is compiled to one. Also reports how "
+            "many calls inside the object go through the symbol (replacing it "
+            "reaches those, not copies the compiler inlined) and the ABI a "
+            "replacement must keep."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "The function's symbol name.",
+                },
+                "object_b64": {
+                    "type": "string",
+                    "description": "A relocatable ELF .o, base64. Give this or kernel.",
+                },
+                "kernel": {
+                    "type": "string",
+                    "description": "C to compile to the object instead.",
+                },
+                "flags": {
+                    "type": "string",
+                    "description": "clang flags when compiling kernel (default '-O2').",
+                },
+            },
+            "required": ["symbol"],
+        },
+        effects="write",
+        cost_tier="medium",
+        pii_risk="medium",
+        typical_seconds=15,
+        consumes="an object (or C) and a symbol; returns its disassembly with relocations.",
+    ),
+    ToolSpec(
+        name="propose_binary_rewrites",
+        description=(
+            "The binary counterpart of propose_restructurings: a model reads "
+            "ONE function's disassembly -- never its source, even when "
+            "`kernel` is given, which is compiled and withheld -- and proposes "
+            "replacement aarch64 assembly. Each is spliced in by weakening the "
+            "original symbol, so the rest of the object links exactly as it "
+            "came, then run against the original on every input and timed. A "
+            "replacement that does not export the symbol is refused by name, "
+            "because the link would otherwise succeed against the original "
+            "and measure it twice. " + _VERDICTS_HINT
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "The function to rewrite."},
+                "object_b64": {
+                    "type": "string",
+                    "description": "A relocatable ELF .o, base64. Give this or kernel.",
+                },
+                "kernel": {
+                    "type": "string",
+                    "description": "C compiled to the object, then withheld from the model.",
+                },
+                **_HARNESS_PROPS,
+                "focus": {
+                    "type": "string",
+                    "description": "What to look at in the function.",
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Proposals to ask for, 1-5 (default 3).",
+                },
+            },
+            "required": ["symbol", "driver", "inputs"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("binary_rewrite_result",),
+        typical_seconds=600,
+        consumes="an object and a symbol, a driver and inputs; returns model-written assembly rewrites with verdicts.",
+    ),
+    ToolSpec(
+        name="evaluate_binary_rewrite",
+        description=(
+            "Judge YOUR assembly replacement for one symbol of an object: the "
+            "original symbol is weakened and yours linked beside it, then both "
+            "programs are run on every input and timed interleaved. Give "
+            "baseline_asm to measure one rewrite against another. " + _VERDICTS_HINT
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "The function replaced."},
+                "replacement_asm": {
+                    "type": "string",
+                    "description": "A complete GNU-as file defining the symbol with .globl.",
+                },
+                "object_b64": {
+                    "type": "string",
+                    "description": "A relocatable ELF .o, base64. Give this or kernel.",
+                },
+                "kernel": {
+                    "type": "string",
+                    "description": "C compiled to the object instead.",
+                },
+                "baseline_asm": {
+                    "type": "string",
+                    "description": "Optional: another replacement to use as the baseline.",
+                },
+                **_HARNESS_PROPS,
+                "value_preserving": {
+                    "type": "boolean",
+                    "description": "false allows 1e-6 relative drift.",
+                },
+                "invariant": {
+                    "type": "string",
+                    "description": "What about this application the rewrite relies on.",
+                },
+                "trials": {
+                    "type": "integer",
+                    "description": "Interleaved trials, 3-15 (default 7).",
+                },
+            },
+            "required": ["symbol", "replacement_asm", "driver", "inputs"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("binary_rewrite_result",),
+        typical_seconds=90,
+        consumes="an object, a symbol and replacement assembly; returns equivalence and a speed verdict.",
+    ),
+    ToolSpec(
+        name="synthesize_pass_from_rewrite",
+        description=(
+            "Generalise a winning hand rewrite of a C kernel (e.g. a 'faster' "
+            "result from propose_restructurings) into an LLVM 14 pass that "
+            "makes the same change to any code with the same shape, and judge "
+            "the pass. A model writes it -- or answers not_expressible when "
+            "the rewrite relies on a fact the IR does not carry, which is a "
+            "result: it marks an optimisation only the application's author "
+            "can make. The pass must FIRE on the kernel under clang "
+            "-fpass-plugin (else did_not_fire), keep output identical on "
+            "every input, and leave a must_decline case untouched (else "
+            "overreaches, whatever its speed). `recovered` is the share of "
+            "the rewrite's gain the pass reproduces, both timed in one run. "
+            "Up to three attempts, each repaired with the evidence; the "
+            "must_decline case is frozen after the first."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "kernel": {
+                    "type": "string",
+                    "description": "The original C kernel (no main).",
+                },
+                "rewrite_kernel": {
+                    "type": "string",
+                    "description": "The hand-optimised kernel to generalise.",
+                },
+                **_HARNESS_PROPS,
+                "idea": {"type": "string", "description": "What the rewrite does."},
+                "invariant": {
+                    "type": "string",
+                    "description": "What the rewrite relies on about the application.",
+                },
+            },
+            "required": ["kernel", "rewrite_kernel", "driver", "inputs"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("pass_evaluation",),
+        typical_seconds=600,
+        consumes="a kernel and its winning rewrite, a driver and inputs; returns a pass and its measured verdict.",
+    ),
+    ToolSpec(
+        name="evaluate_pass_on_kernel",
+        description=(
+            "Judge YOUR LLVM pass plugin on a real kernel: does it fire under "
+            "clang -fpass-plugin, is the compiled program's output identical "
+            "on every input, is it faster than the original and than -O3, how "
+            "much of a hand rewrite's gain does it recover (give "
+            "rewrite_kernel), and does it leave must_decline alone? "
+            "Verdicts add did_not_fire, pass_crashed and overreaches to the "
+            "usual ones. Complements build_llvm_pass, which only says whether "
+            "a pass changed some test IR."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "pass_source": {"type": "string", "description": "C++ of the plugin."},
+                "pass_name": {
+                    "type": "string",
+                    "description": "The name it registers.",
+                },
+                "kernel": {
+                    "type": "string",
+                    "description": "The C kernel to compile with it.",
+                },
+                **_HARNESS_PROPS,
+                "rewrite_kernel": {
+                    "type": "string",
+                    "description": "Optional hand rewrite, timed alongside for `recovered`.",
+                },
+                "must_decline": {
+                    "type": "string",
+                    "description": "Optional C file the pass must NOT change.",
+                },
+                "value_preserving": {
+                    "type": "boolean",
+                    "description": "false allows 1e-6 drift.",
+                },
+                "precondition": {
+                    "type": "string",
+                    "description": "The IR condition the pass checks.",
+                },
+                "trials": {
+                    "type": "integer",
+                    "description": "Interleaved trials, 3-15 (default 7).",
+                },
+            },
+            "required": ["pass_source", "pass_name", "kernel", "driver", "inputs"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("pass_evaluation",),
+        typical_seconds=180,
+        consumes="a pass plugin, a kernel, a driver and inputs; returns firing, equivalence, speed and recovery.",
+    ),
+    ToolSpec(
+        name="propose_bolt_configurations",
+        description=(
+            "Optimise a whole LINKED EXECUTABLE with BOLT (llvm-bolt 19), with "
+            "a model proposing configurations tuned to this program's profile. "
+            "The program is built non-PIE with relocations, instrumented, and "
+            "profiled on held-out workloads (every input but the timed one). "
+            "The model sees the hottest functions and what the standard recipe "
+            "achieved, and proposes one configuration per call from an "
+            "allowlist of BOLT options. Each is judged: identical output on "
+            "every input, then timed interleaved against the unoptimised "
+            "binary and against the standard recipe -- matching the recipe is "
+            "compiler_already_can. BOLT's branch statistics are reported as "
+            "the mechanism; the verdict rests on timing. " + _VERDICTS_HINT
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                **_PROGRAM_PROPS,
+                "focus": {
+                    "type": "string",
+                    "description": "What the program is, e.g. 'a bytecode interpreter'.",
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Configurations to ask for, 1-5 (default 3).",
+                },
+            },
+            "required": ["inputs"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("binary_layout_result",),
+        typical_seconds=900,
+        consumes="a program (sources or workspace paths) and workloads; returns BOLT configurations with measured verdicts.",
+    ),
+    ToolSpec(
+        name="optimize_executable_with_bolt",
+        description=(
+            "Judge ONE BOLT configuration you choose on a linked executable: "
+            "build (non-PIE, --emit-relocs), instrument, profile on held-out "
+            "inputs, apply your options, check output on every input, time "
+            "against the unoptimised binary and the standard recipe ("
+            "-reorder-blocks=ext-tsp -reorder-functions=cdsort "
+            "-split-functions -split-all-cold -icf=1). Options outside the "
+            "allowlist are refused by name. " + _VERDICTS_HINT
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                **_PROGRAM_PROPS,
+                "options": {
+                    "type": "string",
+                    "description": "BOLT options, space-separated, e.g. '-reorder-blocks=ext-tsp -split-functions'.",
+                },
+                "rationale": {
+                    "type": "string",
+                    "description": "What about this program's profile the configuration relies on.",
+                },
+                "measure": {
+                    "type": "string",
+                    "enum": ["wall", "cycles"],
+                    "description": (
+                        "'wall' (default) times natively. 'cycles' simulates "
+                        "every arm in gem5 on a named core -- deterministic, so "
+                        "it resolves effects under the host's noise, which "
+                        "layout effects usually are. Keep the timed input "
+                        "small (~100k simulated instructions a second)."
+                    ),
+                },
+                "core": {
+                    "type": "string",
+                    "description": (
+                        "gem5 core for measure='cycles' (default NeoverseV2). "
+                        "The generic O3CPU's weak TournamentBP credited BOLT on "
+                        "Lua with 12x the gain NeoverseV2's TAGE-SC-L did. "
+                        "NeoverseV2 cannot execute scalar fmadd: build with "
+                        "-ffp-contract=off."
+                    ),
+                },
+                "trials": {
+                    "type": "integer",
+                    "description": "Interleaved trials, 3-15 (default 7).",
+                },
+            },
+            "required": ["options", "inputs"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("binary_layout_result",),
+        typical_seconds=300,
+        consumes="a program, BOLT options and workloads; returns equivalence and a speed verdict.",
+    ),
     ToolSpec(
         name="compile_c_snippet",
         description="Compile a C snippet in the compiler research sandbox and return "
@@ -40,7 +761,9 @@ SPECS: tuple[ToolSpec, ...] = (
                     "description": (
                         "Compiler flags, e.g. '-O2' or '-O3 -ffast-math'. The "
                         "sandbox targets aarch64: use '-mcpu=native' to tune "
-                        "for the host, as clang there rejects '-march=native'."
+                        "for the host, as clang there rejects '-march=native'. "
+                        "Research LLVM passes built into the image, added with "
+                        "the flag shown: " + _LLVM_PASSES_HINT
                     ),
                 },
                 "emit": {
@@ -301,7 +1024,10 @@ SPECS: tuple[ToolSpec, ...] = (
                 },
                 "flags": {
                     "type": "string",
-                    "description": "Compiler flags used when code is given (default -O3)",
+                    "description": (
+                        "Compiler flags used when code is given (default -O3). "
+                        "Research LLVM passes in this image: " + _LLVM_PASSES_HINT
+                    ),
                 },
                 "target": {
                     "type": "string",
@@ -383,6 +1109,7 @@ SPECS: tuple[ToolSpec, ...] = (
                         "'-O2' -- use '-O' or '-C opt-level=3', and note that "
                         "its default build is unoptimised, which times the "
                         "debug binary rather than the algorithm."
+                        "C only, and only in this image: " + _LLVM_PASSES_HINT
                     ),
                 },
                 "repeat": {
@@ -769,6 +1496,105 @@ SPECS: tuple[ToolSpec, ...] = (
         produces=("headroom_bound",),
         typical_seconds=240,
         consumes="a program and a list of structures; bounds each one's payoff.",
+    ),
+    ToolSpec(
+        name="retract_finding",
+        description=(
+            "Withdraw a finding from an earlier run that this run has shown to be "
+            "wrong, so later runs stop recalling it. Requires the evidence that "
+            "overturns it, named among the findings THIS run produced -- a "
+            "retraction that cites nothing is an opinion with the power to delete "
+            "evidence. The finding is withdrawn, not deleted, and the reason is "
+            "kept so a reader can tell a number withdrawn for a harness defect "
+            "from one withdrawn because the question changed."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": (
+                        "The finding to withdraw, as the `ref` field that "
+                        "recall_prior_findings reports on every finding it returns "
+                        "(`<job_id>#<index>`)."
+                    ),
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "What is wrong with it, specifically enough to act on.",
+                },
+                "contradicted_by": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Findings this run produced that overturn the claim, by type "
+                        "or title."
+                    ),
+                },
+            },
+            "required": ["ref", "reason", "contradicted_by"],
+        },
+    ),
+    ToolSpec(
+        name="measure_marginal",
+        description=(
+            "Cycles attributable to the measured loop, with setup cancelled. A "
+            "kernel initialises an array and then reads it, and gem5 times both -- "
+            "so a single run reports the initialisation as though it were the work. "
+            "Runs the same source at two repetition counts and differences them, "
+            "which cancels the fixed cost exactly instead of assuming it small. "
+            "Refuses a kernel whose measured loop does not miss L2 unless "
+            "memory_bound is false, because a resident working set compares "
+            "nothing about memory. A refused measurement returns no cycle "
+            "counts, only what was wrong with it. Use this rather than "
+            "simulate_c_workload whenever the number is meant to describe a "
+            "loop instead of a program."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": (
+                        "Self-contained C program whose outer loop bound is the bare "
+                        "token REPS, e.g. `for(int r=0;r<REPS;r++)`. It is substituted "
+                        "with each repetition count."
+                    ),
+                },
+                "configs": {
+                    "type": "object",
+                    "description": (
+                        "Named machine configurations to compare, each the nested "
+                        'shape e.g. {"stride": {"caches": {"l2": '
+                        '{"prefetcher": "StridePrefetcher"}}}}. An empty object '
+                        "is the unmodified machine."
+                    ),
+                },
+                "reps": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": (
+                        "Exactly two different repetition counts; their difference is "
+                        "the measurement. Defaults to [2, 8]."
+                    ),
+                },
+                "memory_bound": {
+                    "type": "boolean",
+                    "description": (
+                        "Whether this study is about the memory system (default true). "
+                        "When true, a kernel whose measured loop never misses L2 is "
+                        "refused, because a resident working set compares nothing about "
+                        "memory. Pass false when the kernel is resident on purpose "
+                        "because the study is about compute -- a kernel measuring an "
+                        "adder should be resident, or it measures memory instead."
+                    ),
+                },
+                "flags": {"type": "string", "description": "Compiler flags."},
+                "label": {"type": "string", "description": "Names the comparison."},
+            },
+            "required": ["code", "configs"],
+        },
+        produces=("simulated_measurement",),
     ),
     ToolSpec(
         name="sweep_mechanism",
@@ -1362,7 +2188,7 @@ SPECS: tuple[ToolSpec, ...] = (
         effects="write",
         cost_tier="high",
         pii_risk="medium",
-        produces=("axis_description",),
+        produces=("axis_description_valid",),
         consumes="an .axisl description of an instruction.",
     ),
     ToolSpec(
@@ -1397,7 +2223,7 @@ SPECS: tuple[ToolSpec, ...] = (
         effects="write",
         cost_tier="high",
         pii_risk="medium",
-        produces=("equivalence_proof",),
+        produces=("axis_equivalence_proof",),
         requires=("axis_check",),
         typical_seconds=30,
         consumes="an .axisl description and the sequence it should be equivalent to.",
@@ -1433,6 +2259,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["source", "target"],
         },
         effects="write",
+        produces=("axis_artifact",),
         cost_tier="high",
         pii_risk="medium",
     ),

@@ -22,6 +22,7 @@ from app.core.config import settings
 from app.models.document import Document, DocumentChunk
 from app.models.knowledge_graph import Entity, EntityMention, Relationship
 from app.services import llm_json, llm_structured
+from app.services.kg_entities import get_or_create_entity
 
 if TYPE_CHECKING:
     from app.services.llm_service import LLMService, UserLLMSettings
@@ -172,22 +173,6 @@ class KnowledgeExtractor:
         # Keep basic for now; can be extended
         return relations
 
-    async def _get_or_create_entity(
-        self, db: AsyncSession, name: str, etype: str
-    ) -> Entity:
-        q = await db.execute(
-            select(Entity).where(
-                Entity.canonical_name == name, Entity.entity_type == etype
-            )
-        )
-        ent = q.scalar_one_or_none()
-        if ent:
-            return ent
-        ent = Entity(canonical_name=name, entity_type=etype)
-        db.add(ent)
-        await db.flush()
-        return ent
-
     async def index_chunk(
         self, db: AsyncSession, document: Document, chunk: DocumentChunk
     ) -> Tuple[int, int]:
@@ -215,7 +200,7 @@ class KnowledgeExtractor:
                 if key in seen:
                     continue
                 seen.add(key)
-                ent = await self._get_or_create_entity(db, e.text[:512], e.entity_type)
+                ent = (await get_or_create_entity(db, e.text[:512], e.entity_type))[0]
                 mention = EntityMention(
                     entity_id=ent.id,
                     document_id=document.id,
@@ -249,13 +234,13 @@ class KnowledgeExtractor:
                 if not head or not tail:
                     # Try to create lazily if missing
                     if not head:
-                        head = await self._get_or_create_entity(
-                            db, r.head_text[:512], "person"
-                        )
+                        head = (
+                            await get_or_create_entity(db, r.head_text[:512], "person")
+                        )[0]
                     if not tail:
-                        tail = await self._get_or_create_entity(
-                            db, r.tail_text[:512], "org"
-                        )
+                        tail = (
+                            await get_or_create_entity(db, r.tail_text[:512], "org")
+                        )[0]
 
                 # Upsert-like: rely on unique constraint per doc
                 rel = Relationship(
@@ -693,7 +678,7 @@ Return ONLY valid JSON matching the original structure (keys: entities, relation
                 seen.add(key)
 
                 # Get or create entity
-                ent = await self._get_or_create_entity(db, name, etype)
+                ent = (await get_or_create_entity(db, name, etype))[0]
                 ent_map[name.lower()] = ent
 
                 # Create mention
@@ -723,10 +708,10 @@ Return ONLY valid JSON matching the original structure (keys: entities, relation
                 tail = ent_map.get(tail_name.lower())
 
                 if not head:
-                    head = await self._get_or_create_entity(db, head_name, "other")
+                    head = (await get_or_create_entity(db, head_name, "other"))[0]
                     ent_map[head_name.lower()] = head
                 if not tail:
-                    tail = await self._get_or_create_entity(db, tail_name, "other")
+                    tail = (await get_or_create_entity(db, tail_name, "other"))[0]
                     ent_map[tail_name.lower()] = tail
 
                 rtype = self._normalize_relation_type(r.get("type", "related_to"))
@@ -766,23 +751,6 @@ Return ONLY valid JSON matching the original structure (keys: entities, relation
                     db, document, chunk, rule_extractor
                 )
             return (0, 0)
-
-    async def _get_or_create_entity(
-        self, db: AsyncSession, name: str, etype: str
-    ) -> Entity:
-        """Get existing entity or create new one."""
-        q = await db.execute(
-            select(Entity).where(
-                Entity.canonical_name == name, Entity.entity_type == etype
-            )
-        )
-        ent = q.scalar_one_or_none()
-        if ent:
-            return ent
-        ent = Entity(canonical_name=name, entity_type=etype)
-        db.add(ent)
-        await db.flush()
-        return ent
 
     async def _index_with_rule_extractor(
         self,

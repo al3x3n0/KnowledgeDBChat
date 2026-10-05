@@ -83,14 +83,34 @@ async def _async_process_document(task, document_id: str) -> Dict[str, Any]:
             # Refresh document to get updated state
             await db.refresh(document)
 
+            # _process_document_async records a failure on the row and
+            # returns normally, so success is what the row says, not that
+            # nothing raised.
+            if not document.is_processed:
+                return {
+                    "document_id": document_id,
+                    "success": False,
+                    "error": document.processing_error or "Processing failed",
+                }
+
+            # Counted with a query. `len(document.chunks)` lazy-loaded on an
+            # async session and raised MissingGreenlet, which the handler
+            # below then recorded over a document that had processed fine.
+            from sqlalchemy import func, select
+
+            from app.models.document import DocumentChunk
+
+            chunks_count = await db.scalar(
+                select(func.count())
+                .select_from(DocumentChunk)
+                .where(DocumentChunk.document_id == document.id)
+            )
             result = {
                 "document_id": document_id,
                 "title": document.title,
                 "success": True,
-                "processed": document.is_processed,
-                "chunks_count": len(document.chunks)
-                if hasattr(document, "chunks")
-                else 0,
+                "processed": True,
+                "chunks_count": int(chunks_count or 0),
             }
 
             logger.info(f"Document processing completed: {document.title}")

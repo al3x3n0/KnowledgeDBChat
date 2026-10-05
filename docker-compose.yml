@@ -49,10 +49,12 @@ services:
 
   # MinIO for object storage
   minio:
-    # quay.io, and pinned: MinIO withdrew these images from Docker Hub, so
-    # `minio/minio:latest` resolves only on a machine that cached it before
-    # the removal. A fresh clone could not start the stack at all.
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    # pgsty's community build, pinned. MinIO no longer serves its images to
+    # anonymous pulls (Docker Hub, then quay.io from 2026-10), so a fresh
+    # clone could not start the stack; a cached image hides that. Built like
+    # the official image (same entrypoint, curl for the healthcheck), and it
+    # reads data the official server wrote. See the chart's values.yaml.
+    image: docker.io/pgsty/minio:RELEASE.2026-08-04T00-00-00Z
     container_name: knowledge_db_minio
     ports:
       - "${KDBC_MINIO_PORT:-29000}:9000"  # API
@@ -172,6 +174,18 @@ services:
     # after editing backend code. That is what was already happening, six times,
     # unplanned. Celery has never hot-reloaded and always needed exactly this.
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 30
+    # The only app service that had neither a ceiling nor a restart policy,
+    # and the only one that has been OOM-killed here: twice in a day, once
+    # staying dead for eleven hours while every other container stayed up.
+    # A study launched through the API simply fails in that window, and a
+    # stopped container looks nothing like the cause.
+    #
+    # The ceiling is for attribution rather than thrift -- uncapped, the
+    # kernel picks a victim and the death is unexplained; capped, this
+    # container dies with a reason. Sized for `pytest --cov` over ~93k
+    # statements, which is the heaviest thing that runs in here.
+    restart: unless-stopped
+    mem_limit: 4g
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s

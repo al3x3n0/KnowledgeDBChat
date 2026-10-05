@@ -66,6 +66,9 @@ class ResearchInboxItem(Base):
         String(16), nullable=False, default="new"
     )  # new | accepted | rejected
     feedback = Column(Text, nullable=True)
+    # Why a rejection happened, which decides what the monitor profile is
+    # entitled to learn from it (see services/research_rejection_reasons.py).
+    rejection_reason = Column(String(32), nullable=True)
 
     # Source-specific metadata
     item_metadata = Column("metadata", JSON, nullable=True)

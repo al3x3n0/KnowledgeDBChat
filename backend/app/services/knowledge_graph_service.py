@@ -38,28 +38,34 @@ class KnowledgeGraphService:
         q: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
+        entity_type: Optional[str] = None,
     ) -> List[Entity]:
         stmt = select(Entity).order_by(Entity.updated_at.desc())
         if q:
-            like = f"%{q}%"
-            from sqlalchemy import or_
-
-            stmt = stmt.where(
-                or_(Entity.canonical_name.ilike(like), Entity.entity_type.ilike(like))
-            )
+            stmt = stmt.where(self._matches(q))
+        if entity_type:
+            # In the query, not after it: filtering the page that came back
+            # misses every match beyond the limit.
+            stmt = stmt.where(func.lower(Entity.entity_type) == entity_type.lower())
         stmt = stmt.offset(offset).limit(limit)
         res = await db.execute(stmt)
         return res.scalars().all()
 
+    @staticmethod
+    def _matches(q: str):
+        """What a text search over entities looks at; one definition, so the
+        list and its count cannot disagree."""
+        like = f"%{q}%"
+        return or_(
+            Entity.canonical_name.ilike(like),
+            Entity.entity_type.ilike(like),
+            Entity.description.ilike(like),
+        )
+
     async def entities_count(self, db: AsyncSession, q: Optional[str] = None) -> int:
         stmt = select(func.count(Entity.id))
         if q:
-            like = f"%{q}%"
-            from sqlalchemy import or_
-
-            stmt = stmt.where(
-                or_(Entity.canonical_name.ilike(like), Entity.entity_type.ilike(like))
-            )
+            stmt = stmt.where(self._matches(q))
         res = await db.execute(stmt)
         return int(res.scalar() or 0)
 
@@ -1029,6 +1035,10 @@ class KnowledgeGraphService:
 
         # Normalize relation type
         relation_type = relation_type.lower().replace(" ", "_").replace("-", "_")
+        if not relation_type or len(relation_type) > 64:
+            # The column holds 64 characters. SQLite does not enforce that
+            # and Postgres does, with an error that names no field.
+            raise ValueError("relation_type must be between 1 and 64 characters")
 
         # Check for existing relationship (manual relationships have document_id=None)
         existing = await db.execute(

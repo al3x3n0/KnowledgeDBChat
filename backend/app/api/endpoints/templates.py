@@ -2,11 +2,9 @@
 Template filling API endpoints.
 """
 
-import json
 from typing import Optional
 from uuid import UUID, uuid4
 
-import redis
 from fastapi import (
     APIRouter,
     Depends,
@@ -16,19 +14,17 @@ from fastapi import (
     Query,
     UploadFile,
     WebSocket,
-    WebSocketDisconnect,
 )
 from fastapi.responses import Response
 from loguru import logger
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.core.database import get_db
 from app.models.template import TemplateJob
 from app.models.user import User
 from app.schemas.template import TemplateJobListResponse, TemplateJobResponse
-from app.services.auth_service import get_current_user
+from app.services.auth_service import get_current_user, is_admin
 from app.services.storage_service import storage_service
 from app.tasks.template_tasks import fill_template
 
@@ -173,7 +169,7 @@ async def get_template_job(
     if not job:
         raise HTTPException(status_code=404, detail="Template job not found")
 
-    if job.user_id != current_user.id and current_user.role != "admin":
+    if job.user_id != current_user.id and not is_admin(current_user):
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Generate download URL if completed
@@ -224,7 +220,7 @@ async def download_filled_template(
     if not job:
         raise HTTPException(status_code=404, detail="Template job not found")
 
-    if job.user_id != current_user.id and current_user.role != "admin":
+    if job.user_id != current_user.id and not is_admin(current_user):
         raise HTTPException(status_code=403, detail="Access denied")
 
     if job.status != "completed" or not job.filled_file_path:
@@ -340,7 +336,7 @@ async def delete_template_job(
     if not job:
         raise HTTPException(status_code=404, detail="Template job not found")
 
-    if job.user_id != current_user.id and current_user.role != "admin":
+    if job.user_id != current_user.id and not is_admin(current_user):
         raise HTTPException(status_code=403, detail="Access denied")
 
     try:
@@ -385,53 +381,27 @@ async def template_job_progress(
         job_id: Template job UUID
         token: Authentication token
     """
+    from app.core.database import AsyncSessionLocal
+    from app.utils.websocket_auth import authorize_owner
+    from app.utils.websocket_progress import forward_progress
+
     await websocket.accept()
 
+    # Whose job this is. The handler used to check the token and nothing
+    # else, so any signed-in user could watch any template job.
+    owner = None
     try:
-        # Verify token using websocket auth utility
-        from app.utils.websocket_auth import authenticate_websocket
+        async with AsyncSessionLocal() as db:
+            job = await db.get(TemplateJob, UUID(str(job_id)))
+            owner = job.user_id if job else None
+    except (ValueError, TypeError):
+        owner = None
+    if await authorize_owner(websocket, owner) is None:
+        return
 
-        user = await authenticate_websocket(websocket, token)
-        if not user:
-            await websocket.close(code=4001, reason="Invalid token")
-            return
-
-        # Subscribe to Redis channel
-        redis_client = redis.from_url(settings.REDIS_URL)
-        pubsub = redis_client.pubsub()
-        channel = f"template_progress:{job_id}"
-        pubsub.subscribe(channel)
-
-        logger.info(f"WebSocket connected for template job {job_id}")
-
-        # Listen for messages
-        try:
-            while True:
-                message = pubsub.get_message(timeout=1.0)
-                if message and message["type"] == "message":
-                    data = message["data"]
-                    if isinstance(data, bytes):
-                        data = data.decode("utf-8")
-                    await websocket.send_text(data)
-
-                    # Check if job is complete or failed
-                    try:
-                        msg_data = json.loads(data)
-                        if msg_data.get("type") in ("complete", "error"):
-                            break
-                    except json.JSONDecodeError:
-                        pass
-
-        except WebSocketDisconnect:
-            logger.info(f"WebSocket disconnected for template job {job_id}")
-        finally:
-            pubsub.unsubscribe(channel)
-            pubsub.close()
-            redis_client.close()
-
-    except Exception as e:
-        logger.error(f"WebSocket error for template job {job_id}: {e}")
-        try:
-            await websocket.close(code=4000, reason=str(e))
-        except Exception:
-            pass
+    logger.info(f"WebSocket connected for template job {job_id}")
+    await forward_progress(
+        websocket,
+        f"template_progress:{job_id}",
+        is_terminal=lambda m: m.get("type") in ("complete", "error"),
+    )

@@ -38,6 +38,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from app.services import agent_evidence_map
 from app.services import agent_evidence_map as evidence
+from app.services.config_values import safe_int
 
 #: How a loop is allowed to decide it is finished.
 #:
@@ -74,6 +75,25 @@ class LoopPolicy:
 
 
 @dataclass(frozen=True)
+class SpawnPolicy:
+    """When a stage's successors start *without waiting for it to finish*.
+
+    Every other dependency in a pipeline means "after": a stage runs, meets its
+    contract, and its successors begin. That cannot describe a stage which never
+    ends — a continuous monitor raising alerts is still monitoring, and a
+    successor waiting for it waits forever.
+
+    So a stage may say it releases its successors early, on evidence rather than
+    on completion. The two then run together. This is the one place a pipeline
+    edge does not mean "after", which is why it is a named policy rather than a
+    flag: reading the spec should make the exception obvious.
+    """
+
+    #: Findings of the stage's required types before successors are released.
+    findings: int
+
+
+@dataclass(frozen=True)
 class PipelineStage:
     """One stage: what must be true when it is done, and what it needs first."""
 
@@ -91,6 +111,9 @@ class PipelineStage:
     #: A deterministic runner, when the stage must not vary at all.
     runner: str = ""
     loop: Optional[LoopPolicy] = None
+    #: Set when successors start before this stage ends. See SpawnPolicy: the
+    #: one place a pipeline edge does not mean "after".
+    spawn_on: Optional[SpawnPolicy] = None
     #: Require a human decision before anything downstream starts. This is what
     #: makes a pipeline semi-autonomous rather than unattended.
     checkpoint: bool = False
@@ -172,10 +195,14 @@ def normalize(spec: Mapping[str, Any]) -> Pipeline:
         loop = None
         if isinstance(loop_raw, Mapping):
             loop = LoopPolicy(
-                max_iterations=_as_int(loop_raw.get("max_iterations"), 0),
+                max_iterations=safe_int(loop_raw.get("max_iterations"), 0),
                 until=str(loop_raw.get("until") or "contract_satisfied").strip(),
-                dry_rounds=_as_int(loop_raw.get("dry_rounds"), 2),
+                dry_rounds=safe_int(loop_raw.get("dry_rounds"), 2),
             )
+        spawn_raw = raw.get("spawn_on")
+        spawn = None
+        if isinstance(spawn_raw, Mapping):
+            spawn = SpawnPolicy(findings=safe_int(spawn_raw.get("findings"), 0))
         contract = raw.get("contract")
         stages.append(
             PipelineStage(
@@ -187,6 +214,7 @@ def normalize(spec: Mapping[str, Any]) -> Pipeline:
                 job_type=str(raw.get("job_type") or "research").strip(),
                 runner=str(raw.get("runner") or "").strip(),
                 loop=loop,
+                spawn_on=spawn,
                 checkpoint=bool(raw.get("checkpoint")),
                 may_revisit=_as_tuple(raw.get("may_revisit")),
             )
@@ -195,16 +223,108 @@ def normalize(spec: Mapping[str, Any]) -> Pipeline:
         name=str(spec.get("name") or "").strip(),
         stages=tuple(stages),
         revisit_budget=max(
-            0, _as_int(spec.get("revisit_budget"), DEFAULT_REVISIT_BUDGET)
+            0, safe_int(spec.get("revisit_budget"), DEFAULT_REVISIT_BUDGET)
         ),
     )
 
 
-def _as_int(value: Any, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
+#: Result keys a run can actually end up with, and what puts them there.
+#: Everything else in ``job.results`` is written unconditionally by the
+#: finalizer, so requiring one of those is vacuous rather than impossible.
+#: A key outside both sets can never appear, because no tool writes arbitrary
+#: top-level result keys -- the finalizer builds them from a fixed vocabulary.
+PRODUCIBLE_RESULT_KEYS = {
+    "structured_output": "set_output_schema",
+    "formatted_outputs": "format_as_table or format_as_report",
+}
+
+ALWAYS_WRITTEN_RESULT_KEYS = frozenset(
+    {
+        "summary",
+        "findings",
+        "actions",
+        "iterations",
+        "actions_count",
+        "findings_count",
+        "goal_contract",
+        "goal_progress",
+        "source_scope_id",
+        "execution_strategy",
+        "research",
+        "research_bundle",
+        "project_profile",
+    }
+)
+
+
+def _result_keys_nothing_can_write(stage: "PipelineStage") -> List[str]:
+    """Required result keys no tool can put in ``job.results``.
+
+    The same failure as requiring evidence with no producer, on the other
+    half of the contract: nothing writes arbitrary top-level result keys, so
+    a contract asking for ``fraction_removed`` can never be satisfied however
+    well the run performs. It exhausts its iteration budget and finishes
+    `completed` with the contract unmet, which reads as a run that underperformed
+    rather than one that was asked the impossible.
+    """
+    contract = stage.contract if isinstance(stage.contract, dict) else {}
+    wanted = contract.get("required_result_keys")
+    if not isinstance(wanted, list):
+        return []
+    out: List[str] = []
+    for raw in wanted:
+        key = str(raw).strip()
+        if not key:
+            continue
+        if key in PRODUCIBLE_RESULT_KEYS or key in ALWAYS_WRITTEN_RESULT_KEYS:
+            continue
+        out.append(key)
+    return out
+
+
+def _evidence_no_producer_can_make(stage: PipelineStage) -> List[Tuple[str, str]]:
+    """Required evidence that *no* tool this stage may call can produce.
+
+    Distinct from :func:`_tools_the_job_type_cannot_call`, which flags one
+    barred tool in a chain. Several evidence types have alternative producers,
+    so a single barred tool proves nothing -- ``papers_ingested`` names both
+    ``ingest_arxiv_papers`` (which no autonomous job may call) and
+    ``ingest_paper_by_id`` (which research may), and is perfectly satisfiable.
+    What makes a contract impossible is *every* producer being out of reach.
+
+    The distinction that matters is ``job_types is None`` (no restriction)
+    against ``job_types == ()`` (no autonomous job type at all, which is a real
+    case: 58 tools are reachable only from chat or MCP). Reading the empty tuple
+    as "unrestricted" is what let ``literature_review`` validate on a saved
+    pipeline whose stage could never have completed: both of its producers are
+    chat-only, so nothing the run could call would ever satisfy it.
+
+    Returns (evidence, job types that would work) so the message can say what to
+    change rather than only that something is wrong.
+    """
+    from app.agent_core import tool_specs
+    from app.services import agent_pipeline_vocabulary as vocabulary
+
+    catalog = tool_specs.STATIC_CATALOG
+    by_evidence = {item.name: item for item in vocabulary.evidence_types()}
+    impossible: List[Tuple[str, str]] = []
+    for name in _required_types(stage.contract):
+        item = by_evidence.get(name)
+        if item is None or not item.producers:
+            continue
+        runnable_here = set(catalog.tools_for_job_type(stage.job_type))
+        if any(producer in runnable_here for producer in item.producers):
+            continue
+        elsewhere = [
+            job_type
+            for job_type in vocabulary.job_types()
+            if any(
+                producer in set(catalog.tools_for_job_type(job_type))
+                for producer in item.producers
+            )
+        ]
+        impossible.append((name, ", ".join(elsewhere)))
+    return impossible
 
 
 def _tools_the_job_type_cannot_call(stage: PipelineStage) -> List[Tuple[str, str]]:
@@ -299,6 +419,35 @@ def _revisit_problems(pipeline: Pipeline) -> List[str]:
     problems: List[str] = []
     known = {s.id for s in pipeline.stages}
     for stage in pipeline.stages:
+        if stage.spawn_on is None:
+            continue
+        if stage.spawn_on.findings <= 0:
+            problems.append(
+                f"{stage.id}: spawn_on.findings must be a positive number of "
+                "findings; zero would release the successors immediately, which "
+                "is a dependency on nothing"
+            )
+        if stage.checkpoint:
+            problems.append(
+                f"{stage.id}: cannot both spawn_on and checkpoint. One releases "
+                "its successors without waiting at all; the other holds them "
+                "for a person. They cannot both be true of the same stage."
+            )
+        if not any(stage.id in other.depends_on for other in pipeline.stages):
+            problems.append(
+                f"{stage.id}: spawn_on says when to release successors, and "
+                "this stage has none. Either something should depend on it or "
+                "the policy says nothing."
+            )
+        required = stage.required_finding_types()
+        if not required:
+            problems.append(
+                f"{stage.id}: spawn_on counts findings of the types its "
+                "contract requires, and this contract requires none, so "
+                "nothing would ever be counted."
+            )
+
+    for stage in pipeline.stages:
         for target in stage.may_revisit:
             if target not in known:
                 problems.append(
@@ -349,6 +498,29 @@ def _stage_problems(stage: PipelineStage, pipeline: Pipeline) -> List[str]:
         problems.append(
             f"{stage.id}: needs {tool}, which job_type {stage.job_type!r} may "
             f"not call (allowed: {allowed}). Set the stage's job_type."
+        )
+
+    for key in _result_keys_nothing_can_write(stage):
+        producible = ", ".join(sorted(PRODUCIBLE_RESULT_KEYS))
+        problems.append(
+            f"{stage.id}: requires result_key {key!r}, which nothing writes. "
+            f"No tool sets arbitrary keys in job.results; the ones a run can "
+            f"produce are {producible} (via "
+            f"{PRODUCIBLE_RESULT_KEYS['structured_output']} and "
+            f"{PRODUCIBLE_RESULT_KEYS['formatted_outputs']}). Put the number "
+            f"inside structured_output rather than beside it."
+        )
+
+    for name, elsewhere in _evidence_no_producer_can_make(stage):
+        problems.append(
+            f"{stage.id}: requires {name}, which no tool job_type "
+            f"{stage.job_type!r} may call can produce"
+            + (
+                f". Job types that could: {elsewhere}"
+                if elsewhere
+                else ", and no job type can -- its producers are reachable only "
+                "from chat or MCP"
+            )
         )
 
     required = stage.required_finding_types()
@@ -475,7 +647,9 @@ def topological_order(pipeline: Pipeline) -> List[str]:
 
 
 def _incremental_chain(
-    required: Sequence[str], inherited: Iterable[str]
+    required: Sequence[str],
+    inherited: Iterable[str],
+    job_type: Optional[str] = None,
 ) -> Tuple[str, ...]:
     """The tools this stage still has to run, given what precedes it.
 
@@ -492,7 +666,9 @@ def _incremental_chain(
     """
     have = {str(x) for x in inherited}
     kept: List[str] = []
-    for tool in evidence.chain_for(required):
+    # With the stage's job type, so the chain is priced against the tool the
+    # run will actually call rather than the first producer declared.
+    for tool in evidence.chain_for(required, job_type=job_type):
         entry = evidence.entry_for(tool)
         produces = set(entry.produces) if entry else set()
         # Keep a tool unless everything it makes is already in hand. A tool
@@ -594,7 +770,7 @@ def plan(pipeline: Pipeline) -> PipelinePlan:
         required = stage.required_finding_types()
         iterations = stage.iterations()
         inherited = _upstream_finding_types(stage, pipeline)
-        tools = _incremental_chain(required, inherited)
+        tools = _incremental_chain(required, inherited, stage.job_type)
         seconds = _chain_seconds(tools) * iterations
         cost[stage_id] = seconds
         upstream_finish = max(

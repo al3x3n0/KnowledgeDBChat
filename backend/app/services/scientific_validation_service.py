@@ -12,6 +12,9 @@ from app.models.experiment import ExperimentRun
 from app.models.research_note import ResearchNote
 from app.models.scientific_sandbox_profile import ScientificSandboxProfile
 from app.models.synthesis_job import SynthesisJob
+from app.services.config_values import safe_float as _safe_float
+from app.services.config_values import safe_int as _safe_int
+from app.services.config_values import unique_strings
 
 DEFAULT_VALIDATION_BACKOFF_POLICY: Dict[str, Any] = {
     "max_consecutive_failures": 2,
@@ -314,38 +317,12 @@ SCIENTIFIC_VALIDATION_RECIPE_DEFINITIONS: Dict[str, Dict[str, Any]] = {
 }
 
 
-def _safe_float(value: Any, default: float) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return default
-
-
-def _safe_int(value: Any, default: int) -> int:
-    try:
-        return int(value)
-    except Exception:
-        return default
-
-
 def _clean_string(value: Any) -> str:
     return str(value or "").strip()
 
 
 def _clean_string_list(value: Any, *, limit: int = 24) -> List[str]:
-    if not isinstance(value, list):
-        return []
-    out: List[str] = []
-    seen: set[str] = set()
-    for item in value:
-        text = _clean_string(item)
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        out.append(text)
-        if len(out) >= limit:
-            break
-    return out
+    return unique_strings(value, limit)
 
 
 def _parse_csv_setting(value: str) -> List[str]:

@@ -196,6 +196,10 @@ async def test_the_tool_stores_a_method_and_refuses_a_fabricated_one(db_session)
     assert stored["success"] is True
     assert stored["data"]["status"] == method.VALIDATED
     assert stored["findings"][0]["type"] == "method_recorded"
+    # Kept on the run as well, which is where the run's own record reads it.
+    (kept,) = state["recorded_methods"]
+    assert kept["name"] == stored["data"]["name"]
+    assert kept["procedure"] and kept["prevents"]
 
     refused = await provider.execute(
         "record_method",

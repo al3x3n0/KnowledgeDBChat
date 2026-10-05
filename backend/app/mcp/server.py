@@ -24,6 +24,7 @@ from app.mcp.tools.chat import ChatTool
 from app.mcp.tools.docker_execute import DockerExecuteTool
 from app.mcp.tools.documents import DocumentsTool
 from app.mcp.tools.generation import GenerationTool
+from app.mcp.tools.sandbox_skills import SandboxSkillTool
 from app.mcp.tools.search import SearchTool
 from app.mcp.tools.web_scrape import WebScrapeTool
 
@@ -34,6 +35,7 @@ chat_tool = ChatTool()
 generation_tool = GenerationTool()
 web_scrape_tool = WebScrapeTool()
 docker_execute_tool = DockerExecuteTool()
+sandbox_skill_tool = SandboxSkillTool()
 
 # Create router
 mcp_router = APIRouter(prefix="/mcp", tags=["MCP"])
@@ -197,6 +199,16 @@ async def list_tools(
             "docker_execute",
             "Run a bounded command inside a Docker container",
             docker_execute_tool.input_schema,
+        ),
+        # Sandbox skills, described by the same specs every other surface
+        # reads, so there is no second description to drift.
+        *(
+            (
+                name,
+                sandbox_skill_tool.description(name),
+                sandbox_skill_tool.input_schema(name),
+            )
+            for name in sandbox_skill_tool.names
         ),
     ]
 
@@ -441,6 +453,11 @@ async def call_tool(
                 network_enabled=args.get("network_enabled", False),
                 environment=args.get("environment"),
                 working_dir=args.get("working_dir", "/workspace"),
+            )
+
+        elif tool_name in sandbox_skill_tool.names:
+            result = await sandbox_skill_tool.execute(
+                tool_name, auth=auth, db=db, arguments=args
             )
 
         else:

@@ -330,10 +330,25 @@ async def _send_the_work_back(
     return True
 
 
+async def _record_tool_usage_lessons(job: AgentJob, state: Dict[str, Any], db) -> None:
+    """Keep what this run learned about calling its tools.
+
+    Separate from the blocked path on purpose: the runs worth learning from are
+    usually the ones that recovered and finished, and those never block.
+    """
+    try:
+        from app.services import agent_tool_usage_methods
+
+        await agent_tool_usage_methods.record_corrections(job, state, db)
+    except Exception as exc:  # pragma: no cover - never fatal
+        logger.warning(f"Could not record tool-usage methods for {job.id}: {exc}")
+
+
 async def finalize_job(
     executor: Any, job: AgentJob, state: Dict[str, Any], db: AsyncSession
 ) -> Dict[str, Any]:
     """Finalize a runtime job and build the terminal result payload."""
+    await _record_tool_usage_lessons(job, state, db)
     # Determine final status
     limited, limit_reason = job.is_resource_limited()
 
@@ -434,6 +449,38 @@ async def finalize_job(
                 "missing": missing,
                 "resumable": True,
             }
+            # The stall's shape is honest but not answerable. Say what would
+            # end it, when the run's own history names something: an available
+            # tool, an accepted call shape, a reachable piece of evidence.
+            try:
+                from app.services import agent_unblock_request
+
+                need = agent_unblock_request.describe(
+                    state, missing=missing, job_type=str(job.job_type or "research")
+                )
+                if need:
+                    blocked_payload["needs"] = need
+            except Exception as exc:  # pragma: no cover - never fatal
+                logger.warning(f"Could not describe the blocker for {job.id}: {exc}")
+            # A run blocked by a *tool* that cannot do what it was asked is a
+            # coding task with its symptom and evidence already written down,
+            # and it used to sit in a paused job until a person read the logs.
+            # File it. Never fatal: a run that stopped for one reason should
+            # not also fail for a bookkeeping error on the way out.
+            try:
+                from app.services import agent_blocked_to_backlog
+
+                filed = await agent_blocked_to_backlog.file_blocker(job, state, db)
+                if filed is not None:
+                    blocked_payload["filed_backlog_item"] = True
+                    job.add_log_entry(
+                        {
+                            "phase": "blocker_filed_as_coding_work",
+                            "tool": filed.title,
+                        }
+                    )
+            except Exception as exc:  # pragma: no cover - never fatal
+                logger.warning(f"Could not file blocker for job {job.id}: {exc}")
         else:
             job.status = AgentJobStatus.COMPLETED.value
             job.add_log_entry(
@@ -522,7 +569,26 @@ async def finalize_job(
         }
     ]
 
+    # What other jobs sent this one. It lives in `results`, written by their
+    # sessions, and replacing `results` wholesale threw it away at the moment
+    # the run ended. Read from the database: the copy in memory predates
+    # anything delivered while the run was going.
+    delivered: Dict[str, Any] = {}
+    try:
+        stored_results = (
+            await db.execute(select(AgentJob.results).where(AgentJob.id == job.id))
+        ).scalar_one_or_none()
+        if isinstance(stored_results, dict):
+            delivered = {
+                key: stored_results[key]
+                for key in ("agent_messages", "shared_findings")
+                if stored_results.get(key)
+            }
+    except Exception:
+        delivered = {}
+
     job.results = {
+        **delivered,
         "findings_count": len(state.get("findings", [])),
         "actions_count": len(state.get("actions_taken", [])),
         "actions": autonomous_rnd_trajectory_adapter.compact_action_ledger(
@@ -538,6 +604,11 @@ async def finalize_job(
     output_schema = state.get("output_schema")
     if isinstance(output_schema, dict) and output_schema:
         job.results["structured_output"] = output_schema
+
+    # Methods from record_method, which the run's own record lists verbatim.
+    recorded_methods = state.get("recorded_methods", [])
+    if isinstance(recorded_methods, list) and recorded_methods:
+        job.results["methods"] = recorded_methods[-20:]
 
     # Formatted outputs from format_as_table / format_as_report tools
     formatted_outputs = state.get("formatted_outputs", [])
@@ -1594,7 +1665,7 @@ async def finalize_job(
         try:
             from app.services.data_sandbox_service import sandbox_manager
 
-            sandbox_manager.cleanup(job_id_str)
+            sandbox_manager.remove(job_id_str)
         except Exception as e:
             logger.warning(f"Failed to cleanup data sandbox for job {job.id}: {e}")
         del executor._data_analysis_tools[job_id_str]

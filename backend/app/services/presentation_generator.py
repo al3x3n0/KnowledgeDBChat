@@ -17,15 +17,13 @@ from typing import Any, Callable, Dict, List, Optional
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.memory import UserPreferences
 from app.models.presentation import PresentationJob
 from app.schemas.presentation import PresentationOutline, SlideContent
 from app.services import llm_json
-from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.llm_service import LLMService, UserLLMSettings, load_user_llm_settings
 from app.services.mermaid_renderer import get_mermaid_renderer
 from app.services.pptx_builder import PPTXBuilder
 from app.services.storage_service import StorageService
@@ -64,18 +62,7 @@ class PresentationGeneratorService:
         self, user_id: Optional[UUID], db: AsyncSession
     ) -> Optional[UserLLMSettings]:
         """Load user LLM settings from preferences."""
-        if not user_id:
-            return None
-        try:
-            result = await db.execute(
-                select(UserPreferences).where(UserPreferences.user_id == user_id)
-            )
-            user_prefs = result.scalar_one_or_none()
-            if user_prefs:
-                return UserLLMSettings.from_preferences(user_prefs)
-        except Exception as e:
-            logger.debug(f"Could not load user preferences: {e}")
-        return None
+        return await load_user_llm_settings(db, user_id)
 
     async def generate_presentation(
         self,

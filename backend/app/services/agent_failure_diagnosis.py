@@ -53,12 +53,22 @@ _ERROR_CLASSES = (
     ("timeout", re.compile(r"timed out|timeout|deadline exceeded", re.I)),
     ("compilation", re.compile(r"compil|assembler|undefined reference|linker", re.I)),
     ("not_found", re.compile(r"not found|no such|does not exist|unknown \w+", re.I)),
-    (
-        "invalid_argument",
-        re.compile(r"invalid|unsupported|not of the form|required", re.I),
-    ),
     ("permission", re.compile(r"permission|denied|not allowlisted|disabled", re.I)),
     ("resource", re.compile(r"out of memory|oom|killed|no space|exceeds", re.I)),
+    (
+        # Checked last, because it is the broad one. A tool refusing the
+        # arguments it was handed says so in whatever words its author chose --
+        # "required", "needed", "must be", "at least two" -- and a refusal
+        # landing in "unknown" is one the diagnosis cannot describe back to the
+        # model. Ordering it after the narrow buckets keeps "at least 1GB
+        # needed" a resource problem rather than an argument one.
+        "invalid_argument",
+        re.compile(
+            r"invalid|unsupported|not of the form|required|needed|"
+            r"must be|at least \w+ ",
+            re.I,
+        ),
+    ),
 )
 
 
@@ -70,6 +80,52 @@ _BLAMES_THE_SOURCE = re.compile(
     r"expected .*(before|token)|\^~*\s*$",
     re.I | re.M,
 )
+
+
+#: A failure that happened *before* the tool could judge the input at all: a
+#: daemon that is not listening, an upstream answering with a status, a binary
+#: that is not in the image. Deliberately narrow. "not found" on its own is far
+#: too broad -- an unknown mnemonic is also a `not_found` error, and there the
+#: tool ran and refused the input, which is a different situation with a
+#: different remedy.
+_COULD_NOT_RUN = re.compile(
+    r"cannot connect to|could not connect|connection refused|connection reset|"
+    r"is the docker daemon running|docker\.sock|"
+    r"HTTP (?:Error )?[45]\d\d|"
+    # A bare status with its standard phrase, which is how a fetch tool or an
+    # apt mirror reports one: "503 Service Unavailable". Anchored to the phrase
+    # so a run reporting "503 cycles" is not mistaken for an outage.
+    r"\b[45]\d\d\s+(?:service unavailable|not acceptable|bad gateway|"
+    r"gateway time-?out|forbidden|unauthorized|too many requests|"
+    r"internal server error)|"
+    r"(?:clang|rustc|python3?|gem5|cargo|llvm-mca)\s*:?\s*(?:command )?not found|"
+    r"executable (?:file )?not found|"
+    r"name or service not known|temporary failure in name resolution|"
+    r"network is unreachable|no route to host",
+    re.I,
+)
+
+
+def could_not_run(error: Any) -> bool:
+    """True when the tool never got as far as judging the input.
+
+    The distinction the long stalls of one session all turned on: a run whose
+    tool cannot reach its daemon, its upstream or its binary will rewrite its
+    arguments for as many iterations as it is given, because every message it
+    gets back looks like something it might have caused. Measured: a discovery
+    stage spent 19 iterations rewriting calls while arXiv answered 406 to every
+    one of them, and a gem5 tool reported "Cannot connect to the Docker daemon"
+    eight times before anyone looked.
+
+    A compiler pointing at a line in the submitted source is never this, even
+    when the words overlap.
+    """
+    message = str(error or "")
+    if not message.strip():
+        return False
+    if blames_the_submitted_code(message):
+        return False
+    return bool(_COULD_NOT_RUN.search(message))
 
 
 def blames_the_submitted_code(error: Any) -> bool:
@@ -93,6 +149,37 @@ def blames_the_submitted_code(error: Any) -> bool:
     return bool(_BLAMES_THE_SOURCE.search(message))
 
 
+#: A message in which the tool describes the INPUT it was given: it names a
+#: field, the keys it takes, or the values it accepts. Deliberately about what
+#: the message talks about rather than its severity, because that is the thing
+#: that decides whether a person could answer it. An upstream that errored, a
+#: simulation that aborted and an ingestion that never landed all fail without
+#: ever judging the arguments, and they wear the same shape in the ledger as a
+#: refusal that does.
+_DESCRIBES_THE_INPUT = re.compile(
+    r"\bit takes\b|\bnot part of\b|\bshould be one of\b|\bexpected one of\b|"
+    r"\bmust be one of\b|\bfield \w+|\bparameter[s]?\b|\bargument[s]?\b|"
+    r"\baccepts?\b|\bis named inside\b",
+    re.I,
+)
+
+
+def describes_the_input(text: Any) -> bool:
+    """Did the tool judge the arguments it was handed?
+
+    True when the message talks about the input -- a named field, the keys it
+    takes, the values it accepts -- or when it classifies as an argument
+    problem outright. False for a failure that happened without the input ever
+    being read, which is not a question any operator can answer.
+    """
+    message = str(text or "").strip()
+    if not message:
+        return False
+    if classify_error(message) == "invalid_argument":
+        return True
+    return bool(_DESCRIBES_THE_INPUT.search(message))
+
+
 def classify_error(text: Any) -> str:
     """Bucket an error message by what kind of problem it describes.
 
@@ -109,12 +196,13 @@ def classify_error(text: Any) -> str:
     return "unknown"
 
 
-def _canonical_params(params: Any) -> str:
+def _canonical_params(params: Any, ignored: Any = IGNORED_PARAMS) -> str:
+    """``ignored`` is the caller's own: which params say nothing about what was
+    asked differs between a failure and a success (see agent_repeated_success).
+    """
     if not isinstance(params, Mapping):
         return ""
-    salient = {
-        key: value for key, value in params.items() if str(key) not in IGNORED_PARAMS
-    }
+    salient = {key: value for key, value in params.items() if str(key) not in ignored}
     try:
         return json.dumps(salient, sort_keys=True, default=str)
     except Exception:  # pragma: no cover - defensive
@@ -221,6 +309,27 @@ def analyze(
 
     by_class = class_signature(tool, error)
     class_attempt = prior_failures(state, by_class, by_class=True) + 1
+
+    # An unavailable tool is worth saying so on the FIRST failure. The usual
+    # silence at attempt 1 is right when the tool ran and refused the input --
+    # its own message is the remedy -- and wrong here, where no edit to the
+    # call can help and the run will otherwise spend its iterations proving
+    # that one at a time.
+    if could_not_run(error):
+        return {
+            "signature": target,
+            "attempt": attempt,
+            "error_class": classify_error(error),
+            "unavailable": True,
+            "guidance": (
+                f"{tool} could not run: this failure happened before it looked "
+                "at your input, so editing the call and retrying will produce "
+                "the same message. Confirm with a trivial control, then use "
+                "another route to the same evidence or report the tool as "
+                "unavailable rather than continuing to vary the arguments."
+            ),
+            "protocol": diagnostic_protocol(tool),
+        }
 
     if attempt < CALL_OUT_AFTER:
         # The arguments changed, so this is not a verbatim retry -- but a run

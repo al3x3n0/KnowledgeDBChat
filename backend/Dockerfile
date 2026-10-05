@@ -154,6 +154,14 @@ COPY --from=builder /opt/venv /opt/venv
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=ffmpeg /out/ /
 
+# libclang is essential: the coding agents' symbol lookup reads C and C++
+# through it and nothing else. Proved in the image that ships -- loading the
+# bindings is not enough, since they import fine without the shared library
+# they drive -- so an image where libclang cannot parse fails to build.
+RUN /opt/venv/bin/python -c "from clang import cindex; \
+tu = cindex.Index.create().parse('t.c', unsaved_files=[('t.c', 'int f(void) { return 0; }')]); \
+assert [c.spelling for c in tu.cursor.get_children() if c.is_definition()] == ['f']"
+
 # ffmpeg proved here, not in a transcription job an hour into a run. A file
 # closure can be short a library that is only reached through a codec, and
 # `ffmpeg -version` would not notice: this builds a real container -- H.264

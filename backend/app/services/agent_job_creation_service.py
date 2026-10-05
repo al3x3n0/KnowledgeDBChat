@@ -21,6 +21,7 @@ from app.services.agent_scope_service import (
     normalize_scope_config,
     normalize_scope_keys_deep,
 )
+from app.services.config_values import coerce_bool
 
 
 class AgentJobCreationError(RuntimeError):
@@ -393,19 +394,7 @@ class AgentJobCreationService:
     def _clean(value: Any) -> Optional[str]:
         return str(value or "").strip() or None
 
-    @staticmethod
-    def _coerce_bool(value: Any, *, default: bool) -> bool:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return bool(value)
-        if isinstance(value, str):
-            normalized = value.strip().lower()
-            if normalized in {"true", "1", "yes", "y", "on"}:
-                return True
-            if normalized in {"false", "0", "no", "n", "off"}:
-                return False
-        return default
+    _coerce_bool = staticmethod(coerce_bool)
 
 
 agent_job_creation_service = AgentJobCreationService()

@@ -5,7 +5,6 @@ Manages training datasets: creation, validation, sample management, and export.
 """
 
 import json
-import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -28,6 +27,7 @@ from app.schemas.training import (
     GenerateDatasetRequest,
     TrainingDatasetCreate,
 )
+from app.services import llm_json
 from app.services.ai_hub_dataset_preset_service import ai_hub_dataset_preset_service
 from app.services.llm_service import LLMService, UserLLMSettings
 from app.services.storage_service import storage_service
@@ -345,6 +345,31 @@ class TrainingDatasetService:
                 }
             )
 
+        # The two limits below were declared and never read, so a dataset of
+        # any size validated as READY and the first thing to refuse it was a
+        # trainer running out of memory.
+        max_samples = int(getattr(settings, "DATASET_MAX_SAMPLES", 0) or 0)
+        if max_samples > 0 and len(samples) > max_samples:
+            errors.append(
+                {
+                    "code": "SAMPLE_LIMIT",
+                    "message": f"Dataset exceeds sample limit ({len(samples)} > {max_samples}).",
+                }
+            )
+
+        max_bytes = int(getattr(settings, "DATASET_MAX_SIZE_MB", 0) or 0) * 1024 * 1024
+        if max_bytes > 0 and int(dataset.file_size or 0) > max_bytes:
+            errors.append(
+                {
+                    "code": "SIZE_LIMIT",
+                    "message": (
+                        f"Dataset exceeds size limit "
+                        f"({int(dataset.file_size) // (1024 * 1024)} MB > "
+                        f"{settings.DATASET_MAX_SIZE_MB} MB)."
+                    ),
+                }
+            )
+
         # Check token limits
         if total_tokens > settings.DATASET_MAX_TOKEN_COUNT:
             errors.append(
@@ -407,11 +432,10 @@ class TrainingDatasetService:
 
         # Upload to MinIO
         file_path = f"training/datasets/{dataset_id}/dataset.jsonl"
-        await self.storage.upload_file(
-            object_name=file_path,
-            data=file_bytes,
-            content_type="application/jsonl",
-        )
+        # upload_to_path stores at this path. upload_file takes a document id
+        # and a filename and raised TypeError here, so a dataset was never
+        # exported -- and a training job on one never started.
+        await self.storage.upload_to_path(file_path, file_bytes, "application/jsonl")
 
         # Update dataset record
         dataset.file_path = file_path
@@ -458,18 +482,9 @@ class TrainingDatasetService:
         total_tokens = 0
 
         # Apply per-user LLM settings (provider/model/api_url/etc.) for dataset generation.
-        user_settings = None
-        try:
-            from app.models.memory import UserPreferences
-            from app.services.llm_service import UserLLMSettings
+        from app.services.llm_service import load_user_llm_settings
 
-            prefs_res = await db.execute(
-                select(UserPreferences).where(UserPreferences.user_id == user_id)
-            )
-            prefs = prefs_res.scalar_one_or_none()
-            user_settings = UserLLMSettings.from_preferences(prefs) if prefs else None
-        except Exception:
-            user_settings = None
+        user_settings = await load_user_llm_settings(db, user_id)
 
         for doc in documents:
             # Generate samples from document
@@ -574,9 +589,8 @@ Generate exactly {num_samples} training samples. Output only valid JSON array.""
             )
 
             # Parse JSON from response
-            json_match = re.search(r"\[.*\]", response, re.DOTALL)
-            if json_match:
-                samples = json.loads(json_match.group())
+            samples = llm_json.extract_json_array(response)
+            if samples:
                 return [
                     {
                         "instruction": s.get("instruction", s.get("question", "")),

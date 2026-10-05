@@ -3,7 +3,6 @@ Celery tasks for DOCX/PDF export generation.
 """
 
 import asyncio
-import json
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
@@ -15,33 +14,16 @@ from app.core.celery import celery_app
 from app.core.database import create_celery_session
 from app.models.export_job import ExportJob
 from app.services.export_service import export_service
+from app.tasks import job_support
 
 
 async def _publish_progress(
     job_id: str, progress: int, stage: str, status: str, error: Optional[str] = None
 ):
     """Publish progress update to Redis for WebSocket subscribers."""
-    import redis.asyncio as redis
-
-    from app.core.config import settings
-
-    try:
-        redis_client = redis.from_url(settings.REDIS_URL)
-        channel = f"export:{job_id}:progress"
-
-        message = {
-            "type": "progress",
-            "progress": progress,
-            "stage": stage,
-            "status": status,
-        }
-        if error:
-            message["error"] = error
-
-        await redis_client.publish(channel, json.dumps(message))
-        await redis_client.close()
-    except Exception as e:
-        logger.warning(f"Failed to publish progress for export job {job_id}: {e}")
+    await job_support.publish_progress(
+        f"export:{job_id}:progress", progress, stage, status, error
+    )
 
 
 async def _process_export_async(job_id: str):
@@ -123,18 +105,7 @@ def process_export_task(self, job_id: str):
         error_text = str(e)
 
         async def _mark_failed():
-            job_uuid = UUID(job_id)
-            session_factory = create_celery_session()
-            async with session_factory() as db:
-                result = await db.execute(
-                    select(ExportJob).where(ExportJob.id == job_uuid)
-                )
-                job = result.scalar_one_or_none()
-                if job and job.status not in ("completed", "failed", "cancelled"):
-                    job.status = "failed"
-                    job.error = f"Task error: {error_text}"
-                    job.completed_at = datetime.utcnow()
-                    await db.commit()
+            await job_support.mark_job_failed(ExportJob, job_id, error_text)
 
         try:
             asyncio.run(_mark_failed())
@@ -152,52 +123,24 @@ def cleanup_old_exports(days: int = 30):
     Cleanup task to remove old export jobs and files.
 
     Removes exports older than the specified number of days.
-    Scheduled to run periodically via Celery Beat.
+    Not in the beat schedule, deliberately: nothing is deleted on a timer
+    (decided 2026-10-05). Run it by hand or add it to the schedule.
 
     Args:
         days: Number of days to keep exports
     """
-    from datetime import timedelta
-
-    from sqlalchemy import and_
-
-    logger.info(f"Starting cleanup of exports older than {days} days")
+    from app.services.storage_service import StorageService
+    from app.tasks.job_support import prune_finished_jobs
 
     async def _cleanup():
         session_factory = create_celery_session()
         async with session_factory() as db:
-            from app.services.storage_service import StorageService
-
-            storage = StorageService()
-
-            cutoff_date = datetime.utcnow() - timedelta(days=days)
-
-            # Find old completed/failed jobs
-            result = await db.execute(
-                select(ExportJob).where(
-                    and_(
-                        ExportJob.created_at < cutoff_date,
-                        ExportJob.status.in_(["completed", "failed", "cancelled"]),
-                    )
-                )
+            return await prune_finished_jobs(
+                db,
+                ExportJob,
+                older_than_days=days,
+                storage=StorageService(),
+                label="export",
             )
-            old_jobs = result.scalars().all()
 
-            deleted_count = 0
-            for job in old_jobs:
-                try:
-                    # Delete file from MinIO
-                    if job.file_path:
-                        await storage.delete_file(job.file_path)
-
-                    # Delete job from database
-                    await db.delete(job)
-                    deleted_count += 1
-
-                except Exception as e:
-                    logger.warning(f"Failed to cleanup export job {job.id}: {e}")
-
-            await db.commit()
-            logger.info(f"Cleaned up {deleted_count} old export jobs")
-
-    asyncio.run(_cleanup())
+    return asyncio.run(_cleanup())

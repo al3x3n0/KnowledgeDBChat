@@ -73,6 +73,35 @@ async def authenticate_websocket(
         return None
 
 
+async def authorize_owner(
+    websocket: WebSocket, owner_id: object, *, what: str = "Job"
+) -> Optional[User]:
+    """The caller, if they may watch something owned by ``owner_id``.
+
+    For a stream about one user's job. Three progress streams accepted any
+    connection: knowing a job id -- which appears in URLs and logs -- was
+    enough to watch someone else's work as it ran. Closes the socket and
+    returns None otherwise; the caller only has to stop.
+
+    A stranger is told the thing does not exist rather than that it is
+    forbidden, the same answer the HTTP endpoints give: confirming that an id
+    is real is itself the thing being withheld.
+
+    The connection must already be accepted.
+    """
+    user = await authenticate_websocket(websocket)
+    if user is None:
+        await websocket.close(code=4001, reason="Authentication required")
+        return None
+    if owner_id is None:
+        await websocket.close(code=4004, reason=f"{what} not found")
+        return None
+    if str(owner_id) != str(user.id) and not user.is_admin():
+        await websocket.close(code=4004, reason=f"{what} not found")
+        return None
+    return user
+
+
 async def require_websocket_auth(websocket: WebSocket) -> User:
     """
     Require WebSocket authentication, reject connection if not authenticated.

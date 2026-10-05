@@ -29,6 +29,8 @@ import api from '../services/api';
 import { AgentDefinitionSummary } from '../types';
 import JsonViewer from '../components/common/JsonViewer';
 import { PluginsPanel } from '../components/tools/PluginsPanel';
+import { SandboxSkillsPanel } from '../components/tools/SandboxSkillsPanel';
+import { useAuth } from '../contexts/AuthContext';
 import { CompOpsConnectionsPanel } from '../components/tools/CompOpsConnectionsPanel';
 import { MLflowConnectionsPanel } from '../components/tools/MLflowConnectionsPanel';
 
@@ -94,6 +96,7 @@ const TOOL_TYPES = {
 };
 
 const ToolsPage: React.FC = () => {
+  const { user } = useAuth();
   const [tools, setTools] = useState<UserTool[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -195,6 +198,7 @@ const ToolsPage: React.FC = () => {
       </div>
 
       <PluginsPanel />
+      <SandboxSkillsPanel isAdmin={user?.role === 'admin'} />
       <CompOpsConnectionsPanel onConnectionsChanged={loadTools} />
       <MLflowConnectionsPanel onConnectionsChanged={loadTools} />
 

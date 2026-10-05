@@ -187,7 +187,7 @@ SPECS: tuple[ToolSpec, ...] = (
                 "requirements": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "pip packages to install from whitelist (pandas, numpy, scipy, etc.)",
+                    "description": "Leave empty. The sandbox has no network, so nothing can be installed; a non-empty list is refused. Only the standard library is available.",
                 },
                 "arguments": {
                     "type": "array",
@@ -215,17 +215,32 @@ SPECS: tuple[ToolSpec, ...] = (
         produces=("repo_workspace",),
         typical_seconds=90,
         consumes="A document source pointing at a git repo; returns the workspace every other coding tool needs.",
-        description="Clone a git repository into a temporary coding workspace and index its file tree. Returns a workspace_id for subsequent file operations.",
+        description=(
+            "Clone a git repository into a temporary coding workspace and index "
+            "its file tree. Returns a workspace_id for subsequent file "
+            "operations. For a public repository give repo_url (and branch); "
+            "source_id is only for a repository already ingested into the "
+            "knowledge base. An empty result is reported as an error."
+        ),
         parameters={
             "type": "object",
             "properties": {
                 "source_id": {
                     "type": "string",
-                    "description": "UUID of a git DocumentSource in KB (preferred)",
+                    "description": (
+                        "UUID of a git DocumentSource that ALREADY EXISTS in the "
+                        "knowledge base. Omit it when cloning by repo_url -- never "
+                        "invent or guess one: a name like 'raylib' is refused, and "
+                        "a made-up UUID names nothing."
+                    ),
                 },
                 "repo_url": {
                     "type": "string",
-                    "description": "Git clone URL (alternative to source_id, requires code execution enabled)",
+                    "description": (
+                        "Git clone URL, e.g. 'https://github.com/owner/repo.git'. "
+                        "Use this for any repository not already in the knowledge "
+                        "base, with branch for a tag or branch."
+                    ),
                 },
                 "branch": {
                     "type": "string",
@@ -733,9 +748,11 @@ SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="capture_snapshot",
         produces=("workspace_snapshot",),
-        requires=("clone_and_index_repo",),
+        # Nothing: it records the run's own state (findings, progress, tool
+        # stats). Requiring clone_and_index_repo told a stage that needed a
+        # snapshot to clone a repository first, and priced the clone.
         typical_seconds=10,
-        consumes="A workspace id; records its state for comparison.",
+        consumes="A label; records the run's current state for comparison.",
         description="Capture a named snapshot of current workspace state metrics (findings count, progress, tool stats, etc.) for later comparison or drift detection.",
         parameters={
             "type": "object",

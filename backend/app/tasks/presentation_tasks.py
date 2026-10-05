@@ -3,7 +3,6 @@ Celery tasks for AI-powered presentation generation.
 """
 
 import asyncio
-import json
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
@@ -19,33 +18,16 @@ from app.services.presentation_generator import (
     PresentationGenerationError,
     PresentationGeneratorService,
 )
+from app.tasks import job_support
 
 
 async def _publish_progress(
     job_id: str, progress: int, stage: str, status: str, error: Optional[str] = None
 ):
     """Publish progress update to Redis for WebSocket subscribers."""
-    import redis.asyncio as redis
-
-    from app.core.config import settings
-
-    try:
-        redis_client = redis.from_url(settings.REDIS_URL)
-        channel = f"presentation:{job_id}:progress"
-
-        message = {
-            "type": "progress",
-            "progress": progress,
-            "stage": stage,
-            "status": status,
-        }
-        if error:
-            message["error"] = error
-
-        await redis_client.publish(channel, json.dumps(message))
-        await redis_client.close()
-    except Exception as e:
-        logger.warning(f"Failed to publish progress for job {job_id}: {e}")
+    await job_support.publish_progress(
+        f"presentation:{job_id}:progress", progress, stage, status, error
+    )
 
 
 async def _generate_presentation_async(job_id: str, user_id: str):
@@ -174,18 +156,7 @@ def generate_presentation_task(self, job_id: str, user_id: str):
         error_text = str(e)
 
         async def _mark_failed():
-            job_uuid = UUID(job_id)
-            session_factory = create_celery_session()
-            async with session_factory() as db:
-                result = await db.execute(
-                    select(PresentationJob).where(PresentationJob.id == job_uuid)
-                )
-                job = result.scalar_one_or_none()
-                if job and job.status not in ("completed", "failed", "cancelled"):
-                    job.status = "failed"
-                    job.error = f"Task error: {error_text}"
-                    job.completed_at = datetime.utcnow()
-                    await db.commit()
+            await job_support.mark_job_failed(PresentationJob, job_id, error_text)
 
         try:
             asyncio.run(_mark_failed())
@@ -203,54 +174,24 @@ def cleanup_old_presentations(days: int = 30):
     Cleanup task to remove old presentation jobs and files.
 
     Removes presentations older than the specified number of days.
-    Scheduled to run periodically via Celery Beat.
+    Not in the beat schedule, deliberately: nothing is deleted on a timer
+    (decided 2026-10-05). Run it by hand or add it to the schedule.
 
     Args:
         days: Number of days to keep presentations
     """
-    from datetime import timedelta
-
-    from sqlalchemy import and_
-
-    logger.info(f"Starting cleanup of presentations older than {days} days")
+    from app.services.storage_service import StorageService
+    from app.tasks.job_support import prune_finished_jobs
 
     async def _cleanup():
         session_factory = create_celery_session()
         async with session_factory() as db:
-            from app.services.storage_service import StorageService
-
-            storage = StorageService()
-
-            cutoff_date = datetime.utcnow() - timedelta(days=days)
-
-            # Find old completed/failed jobs
-            result = await db.execute(
-                select(PresentationJob).where(
-                    and_(
-                        PresentationJob.created_at < cutoff_date,
-                        PresentationJob.status.in_(
-                            ["completed", "failed", "cancelled"]
-                        ),
-                    )
-                )
+            return await prune_finished_jobs(
+                db,
+                PresentationJob,
+                older_than_days=days,
+                storage=StorageService(),
+                label="presentation",
             )
-            old_jobs = result.scalars().all()
 
-            deleted_count = 0
-            for job in old_jobs:
-                try:
-                    # Delete file from MinIO
-                    if job.file_path:
-                        await storage.delete_file(job.file_path)
-
-                    # Delete job from database
-                    await db.delete(job)
-                    deleted_count += 1
-
-                except Exception as e:
-                    logger.warning(f"Failed to cleanup presentation job {job.id}: {e}")
-
-            await db.commit()
-            logger.info(f"Cleaned up {deleted_count} old presentation jobs")
-
-    asyncio.run(_cleanup())
+    return asyncio.run(_cleanup())

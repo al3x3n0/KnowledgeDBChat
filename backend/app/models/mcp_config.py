@@ -243,4 +243,39 @@ MCP_TOOLS = {
             "network_enabled_default": {"type": "boolean", "default": False},
         },
     },
+    # Sandbox skills. Narrower than docker_execute: the image is one the server
+    # allows, there is no network, and only a skill whose control has passed
+    # can be run.
+    "list_sandbox_skills": {
+        "name": "list_sandbox_skills",
+        "display_name": "List Sandbox Skills",
+        "description": "List the sandbox skills active for this user",
+        "category": "read",
+        "required_scope": "read",
+        "config_schema": {},
+    },
+    "load_sandbox_skill": {
+        "name": "load_sandbox_skill",
+        "display_name": "Load Sandbox Skill",
+        "description": "Read a sandbox skill's procedure, files and result shape",
+        "category": "read",
+        "required_scope": "read",
+        "config_schema": {},
+    },
+    "run_sandbox_skill": {
+        "name": "run_sandbox_skill",
+        "display_name": "Run Sandbox Skill",
+        "description": "Run a command inside a skill's confined sandbox",
+        "category": "write",
+        "required_scope": "write",
+        "config_schema": {},
+    },
+    "propose_sandbox_skill": {
+        "name": "propose_sandbox_skill",
+        "display_name": "Propose Sandbox Skill",
+        "description": "Propose a new sandbox skill, stored as a draft for review",
+        "category": "write",
+        "required_scope": "write",
+        "config_schema": {},
+    },
 }

@@ -80,7 +80,7 @@ const KGAdminPage: React.FC = () => {
   };
 
   return (
-    <div className="p-6 space-y-4">
+    <div className="max-w-7xl mx-auto p-6 space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-gray-900">Knowledge Graph Admin</h1>
           <div className="text-sm text-gray-600">

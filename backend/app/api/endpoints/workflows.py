@@ -8,18 +8,10 @@ Provides:
 - WebSocket for real-time execution updates
 """
 
-import json
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import (
-    APIRouter,
-    Depends,
-    HTTPException,
-    Query,
-    WebSocket,
-    WebSocketDisconnect,
-)
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket
 from loguru import logger
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,7 +47,7 @@ from app.services.workflow_synthesis_service import WorkflowSynthesisService
 
 # Try to import redis for WebSocket pub/sub
 try:
-    import redis.asyncio as aioredis
+    import redis.asyncio  # noqa: F401 - only to learn whether it is installed
 
     REDIS_AVAILABLE = True
 except ImportError:
@@ -473,38 +465,17 @@ async def execute_workflow_async(
     Returns the execution ID. Use WebSocket or polling to monitor progress.
     """
     try:
-        # Verify workflow exists
-        result = await db.execute(
-            select(Workflow).where(
-                Workflow.id == workflow_id, Workflow.user_id == current_user.id
+        try:
+            execution = await WorkflowEngine(db, current_user).queue_workflow(
+                workflow_id=workflow_id,
+                trigger_type=execution_data.trigger_type,
+                trigger_data=execution_data.trigger_data,
+                initial_context=execution_data.inputs,
             )
-        )
-        workflow = result.scalar_one_or_none()
-
-        if not workflow:
-            raise HTTPException(status_code=404, detail="Workflow not found")
-
-        if not workflow.is_active:
-            raise HTTPException(status_code=400, detail="Workflow is not active")
-
-        # Create pending execution
-        execution = WorkflowExecution(
-            workflow_id=workflow_id,
-            user_id=current_user.id,
-            trigger_type=execution_data.trigger_type,
-            trigger_data=execution_data.trigger_data,
-            status="pending",
-            progress=0,
-            context=execution_data.inputs,
-        )
-        db.add(execution)
-        await db.commit()
-        await db.refresh(execution)
-
-        # Queue Celery task
-        from app.tasks.workflow_tasks import execute_workflow_task
-
-        execute_workflow_task.delay(str(execution.id))
+        except WorkflowExecutionError as e:
+            status_code = 404 if "not found" in str(e) else 400
+            detail = "Workflow not found" if status_code == 404 else str(e)
+            raise HTTPException(status_code=status_code, detail=detail)
 
         return {
             "execution_id": str(execution.id),
@@ -659,6 +630,22 @@ async def execution_stream(
     """
     await websocket.accept()
 
+    # Who is asking, and whose execution this is, before anything is sent:
+    # the stream carries node outputs as the workflow runs.
+    from app.core.database import AsyncSessionLocal as _Session
+    from app.utils.websocket_auth import authorize_owner
+
+    async with _Session() as _db:
+        _owner = (
+            await _db.execute(
+                select(WorkflowExecution.user_id).where(
+                    WorkflowExecution.id == execution_id
+                )
+            )
+        ).scalar_one_or_none()
+    if await authorize_owner(websocket, _owner, what="Execution") is None:
+        return
+
     if not REDIS_AVAILABLE:
         await websocket.send_json(
             {
@@ -669,67 +656,30 @@ async def execution_stream(
         await websocket.close()
         return
 
-    try:
-        # Create Redis connection
-        from app.core.config import settings
-        from app.core.database import AsyncSessionLocal
+    from app.utils.websocket_progress import forward_progress
 
-        redis = await aioredis.from_url(
-            settings.REDIS_URL, encoding="utf-8", decode_responses=True
-        )
-
-        pubsub = redis.pubsub()
-        channel = f"workflow:{execution_id}"
-        await pubsub.subscribe(channel)
-
-        # Send initial status
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(
+    async with _Session() as _db:
+        execution = (
+            await _db.execute(
                 select(WorkflowExecution).where(WorkflowExecution.id == execution_id)
             )
-            execution = result.scalar_one_or_none()
+        ).scalar_one_or_none()
 
-        if execution:
-            await websocket.send_json(
-                {
-                    "type": "initial",
-                    "status": execution.status,
-                    "progress": execution.progress,
-                    "current_node_id": execution.current_node_id,
-                }
-            )
-
-        # Listen for updates
-        async for message in pubsub.listen():
-            if message["type"] == "message":
-                try:
-                    data = json.loads(message["data"])
-                    await websocket.send_json(data)
-
-                    # Close on completion or error
-                    if data.get("type") in ["complete", "error"]:
-                        break
-                except json.JSONDecodeError:
-                    pass
-
-    except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected for execution {execution_id}")
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-        try:
-            await websocket.send_json({"type": "error", "message": str(e)})
-        except Exception:
-            pass
-    finally:
-        try:
-            await pubsub.unsubscribe(channel)
-            await redis.close()
-        except Exception:
-            pass
-        try:
-            await websocket.close()
-        except Exception:
-            pass
+    await forward_progress(
+        websocket,
+        f"workflow:{execution_id}",
+        initial=(
+            {
+                "type": "initial",
+                "status": execution.status,
+                "progress": execution.progress,
+                "current_node_id": execution.current_node_id,
+            }
+            if execution
+            else None
+        ),
+        is_terminal=lambda m: m.get("type") in ("complete", "error"),
+    )
 
 
 # =============================================================================
@@ -1297,35 +1247,6 @@ async def import_workflow_template(
 
     return {
         "message": f"Template '{template['name']}' imported successfully",
-        "workflow": WorkflowResponse(
-            id=workflow.id,
-            name=workflow.name,
-            description=workflow.description,
-            is_active=workflow.is_active,
-            trigger_config=workflow.trigger_config,
-            created_at=workflow.created_at,
-            updated_at=workflow.updated_at,
-            nodes=[
-                {
-                    "node_id": n.node_id,
-                    "node_type": n.node_type,
-                    "tool_id": n.tool_id,
-                    "builtin_tool": n.builtin_tool,
-                    "config": n.config,
-                    "position_x": n.position_x,
-                    "position_y": n.position_y,
-                }
-                for n in workflow.nodes
-            ],
-            edges=[
-                {
-                    "source_node_id": e.source_node_id,
-                    "target_node_id": e.target_node_id,
-                    "source_handle": e.source_handle,
-                    "condition": e.condition,
-                }
-                for e in workflow.edges
-            ],
-        ),
+        "workflow": WorkflowResponse.model_validate(workflow),
         "template_id": template_id,
     }

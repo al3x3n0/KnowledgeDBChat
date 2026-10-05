@@ -33,6 +33,11 @@ jest.mock('../../services/api', () => ({
     // silent catch — the tests pass while the page errors on every render,
     // which is worse than a failure because nothing says so.
     listSavedPipelines: jest.fn(),
+    // Same reason: the chain-import survey also loads on mount into a silent
+    // catch.
+    surveyChainsForImport: jest.fn(),
+    suggestContracts: jest.fn(),
+    importChainAsPipeline: jest.fn(),
     saveSavedPipeline: jest.fn(),
     updateSavedPipeline: jest.fn(),
     deleteSavedPipeline: jest.fn(),
@@ -126,6 +131,9 @@ beforeEach(() => {
   // an empty answer.
   apiClient.getPipelineRun.mockRejectedValue({ response: { status: 404 } });
   apiClient.getPipelineVocabulary.mockResolvedValue(vocabulary);
+  apiClient.surveyChainsForImport.mockResolvedValue({ candidates: [] });
+  // Follows the editor on a debounce; unmocked it throws into a silent catch.
+  apiClient.suggestContracts.mockResolvedValue({ suggestions: {} });
 });
 
 const typeSpec = (text: string) =>
@@ -156,7 +164,12 @@ it('reports a checkpoint before the run stops at it, not when it does', async ()
 
 it('separates unparseable text from an invalid pipeline', async () => {
   render(<PipelineStudioPage />);
-  await screen.findByText('profile_c_workload');
+  // findAll, like every other wait on this text in this file: the tool appears
+  // once per stage that lists it, so the singular form asserts a render order
+  // rather than that the page rendered. It passed only while this file happened
+  // to run early enough to catch a single stage, and any edit that perturbed
+  // jest's file ordering broke it.
+  await screen.findAllByText('profile_c_workload');
 
   typeSpec('{ not json');
 
@@ -441,5 +454,199 @@ describe('the starters', () => {
       // And it loops: writing an algorithm from prose does not work first try.
       expect(implement.loop.max_iterations).toBeGreaterThan(1);
     });
+  });
+});
+
+
+describe('importing a job chain', () => {
+  const convertible = {
+    chain_id: 'chain-1',
+    name: 'literature_review_pipeline',
+    steps: 4,
+    convertible: true,
+    blockers: [],
+    contracts_to_write: 4,
+    variables: [],
+  };
+  const blocked = {
+    chain_id: 'chain-2',
+    name: 'continuous_monitoring_with_alerts',
+    steps: 2,
+    convertible: false,
+    blockers: [
+      {
+        step: 'Topic Monitoring',
+        trigger: 'on_findings',
+        reason: 'fires while the parent is still running',
+      },
+    ],
+    contracts_to_write: 0,
+    variables: [],
+  };
+
+  it('says nothing at all when there are no chains to import', async () => {
+    render(<PipelineStudioPage />);
+    await waitFor(() => expect(apiClient.surveyChainsForImport).toHaveBeenCalled());
+    expect(screen.queryByLabelText('Job chains you can import')).not.toBeInTheDocument();
+  });
+
+  it('says how much work a convertible chain leaves behind', async () => {
+    apiClient.surveyChainsForImport.mockResolvedValue({ candidates: [convertible] });
+    render(<PipelineStudioPage />);
+
+    expect(await screen.findByText('literature_review_pipeline')).toBeInTheDocument();
+    // The number is the point: importing is faithful, not finished.
+    expect(screen.getByText('4 contracts to write')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Import' })).toBeInTheDocument();
+  });
+
+  it('names the blocking step instead of offering to import', async () => {
+    apiClient.surveyChainsForImport.mockResolvedValue({ candidates: [blocked] });
+    render(<PipelineStudioPage />);
+
+    expect(await screen.findByText(/Topic Monitoring needs on_findings/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Import' })).not.toBeInTheDocument();
+  });
+
+  it('survives a server that does not send variables at all', async () => {
+    // The field was added after this endpoint shipped, and a running server can
+    // be older than the page. TypeScript's `variables: string[]` is erased at
+    // runtime, so the absent case has to be tested, not declared. This crashed
+    // the whole studio with "undefined is not an object" until it was guarded.
+    const { variables, ...withoutVariables } = { ...convertible };
+    apiClient.surveyChainsForImport.mockResolvedValue({
+      candidates: [withoutVariables],
+    });
+    render(<PipelineStudioPage />);
+
+    expect(await screen.findByText('literature_review_pipeline')).toBeInTheDocument();
+    // Nothing to ask for, so it imports directly.
+    expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled();
+  });
+
+  it('will not import a templated chain until its variables are given', async () => {
+    // A chain fills {topic} at launch; a pipeline goal is literal. Importing
+    // without a value would leave the braces in the goal.
+    apiClient.surveyChainsForImport.mockResolvedValue({
+      candidates: [{ ...convertible, variables: ['topic'] }],
+    });
+    render(<PipelineStudioPage />);
+
+    const importButton = await screen.findByRole('button', { name: 'Import' });
+    expect(importButton).toBeDisabled();
+
+    fireEvent.change(
+      screen.getByLabelText('topic for literature_review_pipeline'),
+      { target: { value: 'attention sparsity' } }
+    );
+    expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled();
+  });
+
+  it('sends the variables it collected', async () => {
+    apiClient.surveyChainsForImport.mockResolvedValue({
+      candidates: [{ ...convertible, variables: ['topic'] }],
+    });
+    apiClient.importChainAsPipeline.mockResolvedValue({
+      id: 'p1', name: 'lit', spec: { name: 'lit', stages: [] }, last_check_valid: 'invalid',
+    });
+    render(<PipelineStudioPage />);
+
+    fireEvent.change(
+      await screen.findByLabelText('topic for literature_review_pipeline'),
+      { target: { value: 'attention sparsity' } }
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+
+    await waitFor(() =>
+      expect(apiClient.importChainAsPipeline).toHaveBeenCalledWith(
+        'chain-1',
+        undefined,
+        { topic: 'attention sparsity' }
+      )
+    );
+  });
+
+  it('opens the imported pipeline in the editor', async () => {
+    apiClient.surveyChainsForImport.mockResolvedValue({ candidates: [convertible] });
+    apiClient.importChainAsPipeline.mockResolvedValue({
+      id: 'pipeline-9',
+      name: 'literature_review_pipeline',
+      spec: { name: 'literature_review_pipeline', stages: [{ id: 'find', goal: 'Find' }] },
+      last_check_valid: 'invalid',
+    });
+    apiClient.listSavedPipelines.mockResolvedValue([]);
+    render(<PipelineStudioPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Import' }));
+
+    await waitFor(() =>
+      expect(apiClient.importChainAsPipeline).toHaveBeenCalledWith(
+        'chain-1',
+        undefined,
+        undefined
+      )
+    );
+    // Straight into the editor, because the contracts are what happens next.
+    await waitFor(() => {
+      const editor = screen.getByLabelText('Pipeline specification') as HTMLTextAreaElement;
+      expect(editor.value).toContain('literature_review_pipeline');
+    });
+  });
+});
+
+describe('suggesting what evidence a stage needs', () => {
+  const SPEC = JSON.stringify({
+    name: 'lit',
+    stages: [{ id: 'gaps', goal: 'Identify research gaps', job_type: 'analysis' }],
+  });
+
+  it('offers the evidence with the words that matched, so a weak one is visible', async () => {
+    apiClient.suggestContracts.mockResolvedValue({
+      suggestions: {
+        gaps: [
+          { finding_type: 'research_gap', produced_by: 'identify_research_gaps',
+            matched: ['research', 'gap'], typical_seconds: 60, perishable: false },
+          { finding_type: 'research_graph', produced_by: 'build_research_graph',
+            matched: ['research'], typical_seconds: 90, perishable: false },
+        ],
+      },
+    });
+    render(<PipelineStudioPage />);
+    typeSpec(SPEC);
+
+    expect(await screen.findByText('research_gap')).toBeInTheDocument();
+    // The one-word match is shown as such rather than looking equally good.
+    expect(screen.getByTitle(/matched research$/)).toBeInTheDocument();
+  });
+
+  it('writes the chosen evidence into that stage and leaves the rest alone', async () => {
+    apiClient.suggestContracts.mockResolvedValue({
+      suggestions: {
+        gaps: [
+          { finding_type: 'research_gap', produced_by: 'identify_research_gaps',
+            matched: ['gap'], typical_seconds: 60, perishable: false },
+        ],
+      },
+    });
+    render(<PipelineStudioPage />);
+    typeSpec(SPEC);
+
+    fireEvent.click(await screen.findByText('research_gap'));
+
+    const editor = screen.getByLabelText('Pipeline specification') as HTMLTextAreaElement;
+    const spec = JSON.parse(editor.value);
+    expect(spec.stages[0].contract.required_finding_types).toEqual(['research_gap']);
+    // Nothing else about the stage was rewritten.
+    expect(spec.stages[0].goal).toBe('Identify research gaps');
+    expect(spec.name).toBe('lit');
+  });
+
+  it('says nothing when every stage already has a contract', async () => {
+    apiClient.suggestContracts.mockResolvedValue({ suggestions: {} });
+    render(<PipelineStudioPage />);
+    typeSpec(SPEC);
+
+    await waitFor(() => expect(apiClient.suggestContracts).toHaveBeenCalled());
+    expect(screen.queryByText('Evidence these stages might need')).not.toBeInTheDocument();
   });
 });

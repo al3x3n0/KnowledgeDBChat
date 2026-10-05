@@ -83,6 +83,35 @@ def _is_a_report_of_absence(finding: Dict[str, Any], ftype: str) -> bool:
     return False
 
 
+#: Where a result key lives *before* the finalizer copies it into
+#: ``job.results``. A run stages these in its state, so checking only
+#: ``job.results`` mid-run reports every one of them missing no matter what
+#: the run has done -- which is why the in-run check used to skip result keys
+#: entirely, and why a contract requiring one could never be seen by the run
+#: expected to satisfy it.
+RESULT_KEY_STAGING = {
+    "structured_output": "output_schema",
+    "formatted_outputs": "formatted_outputs",
+}
+
+
+def _result_key_present(
+    key: str, results: Dict[str, Any], state: Dict[str, Any]
+) -> bool:
+    """Whether a required result key is satisfied, finalized or still staged."""
+    if key in results:
+        return True
+    slot = RESULT_KEY_STAGING.get(key)
+    if not slot:
+        return False
+    staged = state.get(slot) if isinstance(state, dict) else None
+    if isinstance(staged, dict):
+        return bool(staged)
+    if isinstance(staged, (list, tuple)):
+        return bool(staged)
+    return staged is not None
+
+
 class AgentGoalContractService:
     """Evaluate deterministic completion contracts and build operator digests."""
 
@@ -202,7 +231,7 @@ class AgentGoalContractService:
         if include_result_keys and isinstance(required_result_keys, list):
             results = job.results if isinstance(job.results, dict) else {}
             for key in [str(x).strip() for x in required_result_keys if str(x).strip()]:
-                if key not in results:
+                if not _result_key_present(key, results, state):
                     missing.append(f"result_key:{key}")
 
         # Everything above counts outputs, which cannot distinguish a

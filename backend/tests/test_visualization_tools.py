@@ -1,187 +1,515 @@
-"""Tests for data visualization tools (create_chart, render_diagram)."""
+"""`create_chart` and `render_diagram`, called through their real handlers.
+
+The earlier version of this file restated each handler's parameter handling
+inline and asserted on its own copy, so it passed whatever the tools did. These
+tests call the handlers registered in the provider. Charts are rendered by the
+real matplotlib and Graphviz diagrams by the real `dot`; only two edges are
+replaced: object storage, and the HTTP call to the Mermaid renderer.
+"""
+
+import shutil
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
+
+from app.services.agent_tool_dispatch import (
+    AgentToolExecutionContext,
+    build_autonomous_notification_visualization_provider,
+)
+from app.services.mermaid_renderer import MermaidRenderer
+from app.services.storage_service import storage_service
+from app.services.visualization_service import VisualizationService
+
+pytestmark = pytest.mark.unit
+
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+FAKE_PNG = PNG_MAGIC + b"rendered-by-the-fake-mermaid-service"
+FAKE_SVG = b"<svg xmlns='http://www.w3.org/2000/svg'><rect/></svg>"
+
+ADVERTISED_CHART_TYPES = (
+    "bar",
+    "line",
+    "pie",
+    "scatter",
+    "histogram",
+    "heatmap",
+    "box",
+    "area",
+)
+
+# One payload per chart type, each in a shape the tool schema documents.
+SCHEMA_SHAPED_DATA = {
+    "bar": {"labels": ["-O2", "-O3"], "values": [1.63, 1.69]},
+    "line": {
+        "labels": ["q1", "q2", "q3"],
+        "datasets": [
+            {"label": "revenue", "values": [10, 20, 15]},
+            {"label": "cost", "values": [7, 9, 12]},
+        ],
+    },
+    "pie": {"labels": ["a", "b", "c"], "values": [5, 3, 2]},
+    "scatter": {"points": [{"x": 1, "y": 2}, {"x": 2, "y": 4}, {"x": 3, "y": 5}]},
+    "histogram": {"labels": ["a", "b", "c", "d"], "values": [1, 2, 2, 5]},
+    "heatmap": {"labels": ["a", "b"], "matrix": [[1.0, 0.2], [0.2, 1.0]]},
+    "box": {"labels": ["a", "b", "c", "d"], "values": [1, 2, 2, 9]},
+    "area": {"labels": ["q1", "q2", "q3"], "values": [3, 4, 6]},
+}
+
+needs_matplotlib = pytest.mark.skipif(
+    not VisualizationService()._enabled, reason="matplotlib/pandas not installed"
+)
+needs_dot = pytest.mark.skipif(
+    shutil.which("dot") is None, reason="graphviz `dot` binary not installed"
+)
 
 
-class TestCreateChart:
-    """Tests for create_chart tool logic."""
+class FakeStorage:
+    """Records what a handler stores, in place of MinIO."""
 
-    def test_requires_chart_type(self):
-        params = {"data": {"labels": ["A"], "values": [1]}}
-        chart_type = str(params.get("chart_type", "")).strip().lower()
-        assert not chart_type
+    def __init__(self):
+        self.uploads = []
+        self.initialized = 0
+        self.fail_upload = False
 
-    def test_requires_data(self):
-        params = {"chart_type": "bar"}
-        data = params.get("data")
-        assert not data or not isinstance(data, dict)
+    def install(self, monkeypatch):
+        async def initialize():
+            self.initialized += 1
 
-    def test_data_must_be_dict(self):
-        params = {"chart_type": "bar", "data": "not a dict"}
-        data = params.get("data")
-        assert not isinstance(data, dict)
+        async def upload_to_path(object_path, content, content_type=None):
+            if self.fail_upload:
+                raise RuntimeError("bucket unavailable")
+            self.uploads.append(
+                {"path": object_path, "content": content, "content_type": content_type}
+            )
+            return object_path
 
-    def test_accepts_valid_params(self):
-        params = {
-            "chart_type": "bar",
-            "data": {"labels": ["A", "B", "C"], "values": [10, 20, 30]},
-        }
-        chart_type = str(params.get("chart_type", "")).strip().lower()
-        data = params.get("data")
-        assert chart_type == "bar"
-        assert isinstance(data, dict)
+        async def get_presigned_download_url(object_path, expiry=None):
+            return f"https://storage.test/{object_path}?signed=1"
 
-    def test_valid_chart_types(self):
-        valid = {"bar", "line", "pie", "scatter", "histogram", "heatmap", "box", "area"}
-        for ct in valid:
-            assert ct in valid
+        monkeypatch.setattr(storage_service, "initialize", initialize)
+        monkeypatch.setattr(storage_service, "upload_to_path", upload_to_path)
+        monkeypatch.setattr(
+            storage_service, "get_presigned_download_url", get_presigned_download_url
+        )
+        return self
 
-    def test_invalid_chart_type_rejected(self):
-        chart_type = "treemap"
-        valid = {"bar", "line", "pie", "scatter", "histogram", "heatmap", "box", "area"}
-        assert chart_type not in valid
 
-    def test_format_defaults_to_png(self):
-        params = {"chart_type": "bar", "data": {}}
-        fmt = str(params.get("format", "png")).strip().lower()
-        assert fmt == "png"
+@pytest.fixture
+def storage(monkeypatch):
+    return FakeStorage().install(monkeypatch)
 
-    def test_format_svg_accepted(self):
-        params = {"chart_type": "bar", "data": {}, "format": "svg"}
-        fmt = str(params.get("format", "png")).strip().lower()
-        assert fmt == "svg"
 
-    def test_invalid_format_falls_back_to_png(self):
-        params = {"chart_type": "bar", "data": {}, "format": "gif"}
-        fmt = str(params.get("format", "png")).strip().lower()
-        if fmt not in {"png", "svg"}:
-            fmt = "png"
-        assert fmt == "png"
+@pytest.fixture
+def job():
+    return SimpleNamespace(id=uuid4(), user_id=uuid4(), name="viz job", config={})
 
-    def test_title_optional(self):
-        params = {"chart_type": "bar", "data": {}}
-        title = str(params.get("title", "")).strip()
-        assert title == ""
 
-    def test_title_passed_to_config(self):
-        params = {"chart_type": "bar", "data": {}, "title": "Revenue by Quarter"}
-        config = {}
-        title = str(params.get("title", "")).strip()
-        if title:
-            config["title"] = title
-        assert config["title"] == "Revenue by Quarter"
+@pytest.fixture
+def call(job):
+    """Call a visualization tool the way the dispatcher does."""
+    provider = build_autonomous_notification_visualization_provider(SimpleNamespace())
 
-    def test_labels_optional(self):
-        params = {"chart_type": "bar", "data": {}}
-        x_label = str(params.get("x_label", "")).strip()
-        y_label = str(params.get("y_label", "")).strip()
-        assert x_label == ""
-        assert y_label == ""
+    async def _call(tool, params):
+        return await provider._handlers[tool](
+            params,
+            AgentToolExecutionContext(
+                mode="autonomous",
+                db=None,
+                service=None,
+                user_id=str(job.user_id),
+                job=job,
+                state={},
+            ),
+        )
 
-    def test_result_format(self):
-        result = {
-            "success": True,
-            "data": {
+    return _call
+
+
+@pytest.fixture
+def mermaid(monkeypatch):
+    """Stand in for the Mermaid renderer's HTTP service, and record its calls.
+
+    Only the network hop is replaced: cleaning and validating the diagram
+    source still happen in the real `MermaidRenderer`.
+    """
+    calls = []
+    behaviour = {"fail": False}
+
+    async def _render_via_kroki(self, code, format="png", base_url=None):
+        calls.append({"code": code, "format": format, "base_url": base_url})
+        if behaviour["fail"]:
+            raise RuntimeError("connection refused")
+        return FAKE_SVG if format == "svg" else FAKE_PNG
+
+    monkeypatch.setattr(MermaidRenderer, "_render_via_kroki", _render_via_kroki)
+    return SimpleNamespace(calls=calls, behaviour=behaviour)
+
+
+# ---------------------------------------------------------------------------
+# create_chart
+# ---------------------------------------------------------------------------
+
+
+class TestCreateChartRefusals:
+    async def test_chart_type_is_required(self, call, storage):
+        result = await call("create_chart", {"data": SCHEMA_SHAPED_DATA["bar"]})
+
+        assert result == {"error": "chart_type is required"}
+        assert storage.uploads == []
+
+    async def test_data_is_required(self, call, storage):
+        result = await call("create_chart", {"chart_type": "bar"})
+
+        assert "data is required" in result["error"]
+        assert storage.uploads == []
+
+    @pytest.mark.parametrize("data", ["not a dict", [1, 2, 3], 7, {}])
+    async def test_data_must_be_a_non_empty_object(self, call, storage, data):
+        result = await call("create_chart", {"chart_type": "bar", "data": data})
+
+        assert "data is required and must be an object" in result["error"]
+        assert storage.uploads == []
+
+    async def test_an_unadvertised_chart_type_is_refused_by_name(self, call, storage):
+        result = await call(
+            "create_chart",
+            {"chart_type": "treemap", "data": SCHEMA_SHAPED_DATA["bar"]},
+        )
+
+        assert "treemap" in result["error"]
+        for advertised in ADVERTISED_CHART_TYPES:
+            assert advertised in result["error"]
+        assert storage.uploads == []
+
+    @needs_matplotlib
+    async def test_a_series_shorter_than_its_labels_is_an_error(self, call, storage):
+        result = await call(
+            "create_chart",
+            {
                 "chart_type": "bar",
-                "url": "https://minio.local/agent_artifacts/j-1/charts/abc.png",
-                "format": "png",
-                "size_bytes": 45000,
+                "data": {
+                    "labels": ["a", "b", "c"],
+                    "datasets": [{"label": "speed", "values": [1]}],
+                },
             },
+        )
+
+        assert "success" not in result
+        assert "'speed' has 1 values but there are 3 labels" in result["error"]
+        assert storage.uploads == []
+
+    @needs_matplotlib
+    async def test_a_storage_failure_is_reported_not_swallowed(self, call, storage):
+        storage.fail_upload = True
+
+        result = await call(
+            "create_chart", {"chart_type": "bar", "data": SCHEMA_SHAPED_DATA["bar"]}
+        )
+
+        assert "success" not in result
+        assert "bucket unavailable" in result["error"]
+
+
+@needs_matplotlib
+class TestCreateChartRenders:
+    def test_the_spec_advertises_exactly_the_types_tested_here(self):
+        from app.services.agent_tools import get_tool_by_name
+
+        tool = get_tool_by_name("create_chart")
+        text = (
+            tool["description"]
+            + " "
+            + tool["parameters"]["properties"]["chart_type"]["description"]
+        )
+
+        for chart_type in ADVERTISED_CHART_TYPES:
+            assert chart_type in text
+
+    @pytest.mark.parametrize("chart_type", ADVERTISED_CHART_TYPES)
+    async def test_every_advertised_type_renders_a_real_png(
+        self, call, storage, job, chart_type
+    ):
+        result = await call(
+            "create_chart",
+            {"chart_type": chart_type, "data": SCHEMA_SHAPED_DATA[chart_type]},
+        )
+
+        assert result.get("success") is True, result
+        assert len(storage.uploads) == 1
+        upload = storage.uploads[0]
+        assert upload["content"].startswith(PNG_MAGIC)
+        assert len(upload["content"]) > 1000
+        assert upload["content_type"] == "image/png"
+        assert upload["path"].startswith(f"agent_artifacts/{job.id}/charts/")
+        assert upload["path"].endswith(".png")
+        assert result["data"] == {
+            "chart_type": chart_type,
+            "url": f"https://storage.test/{upload['path']}?signed=1",
+            "format": "png",
+            "size_bytes": len(upload["content"]),
         }
+
+    async def test_chart_type_is_matched_whatever_its_case(self, call, storage):
+        result = await call(
+            "create_chart",
+            {"chart_type": "  BAR ", "data": SCHEMA_SHAPED_DATA["bar"]},
+        )
+
+        assert result.get("success") is True, result
         assert result["data"]["chart_type"] == "bar"
-        assert result["data"]["url"].endswith(".png")
-        assert result["data"]["size_bytes"] > 0
 
-    def test_object_path_format(self):
-        import uuid
-
-        job_id = uuid.uuid4()
-        chart_id = uuid.uuid4()
-        fmt = "png"
-        path = f"agent_artifacts/{job_id}/charts/{chart_id}.{fmt}"
-        assert "agent_artifacts" in path
-        assert "charts" in path
-        assert path.endswith(".png")
-
-    def test_mime_type_mapping(self):
-        for fmt in ["png", "svg"]:
-            mime = f"image/{fmt}"
-            if fmt == "png":
-                assert mime == "image/png"
-            else:
-                assert mime == "image/svg"
-
-
-class TestRenderDiagram:
-    """Tests for render_diagram tool logic."""
-
-    def test_requires_diagram_code(self):
-        params = {}
-        code = str(params.get("diagram_code", "")).strip()
-        assert not code
-
-    def test_accepts_mermaid_code(self):
-        params = {"diagram_code": "graph TD\n  A-->B\n  B-->C"}
-        code = str(params.get("diagram_code", "")).strip()
-        assert code.startswith("graph")
-
-    def test_diagram_type_defaults_to_mermaid(self):
-        params = {"diagram_code": "graph TD\n  A-->B"}
-        dtype = str(params.get("diagram_type", "mermaid")).strip().lower()
-        assert dtype == "mermaid"
-
-    def test_graphviz_type_accepted(self):
-        params = {"diagram_code": "digraph { A -> B }", "diagram_type": "graphviz"}
-        dtype = str(params.get("diagram_type", "mermaid")).strip().lower()
-        assert dtype == "graphviz"
-
-    def test_format_defaults_to_png(self):
-        params = {"diagram_code": "graph TD\n  A-->B"}
-        fmt = str(params.get("format", "png")).strip().lower()
-        assert fmt == "png"
-
-    def test_svg_format_accepted(self):
-        params = {"diagram_code": "graph TD\n  A-->B", "format": "svg"}
-        fmt = str(params.get("format", "png")).strip().lower()
-        assert fmt == "svg"
-
-    def test_mime_type_for_svg(self):
-        fmt = "svg"
-        mime = f"image/{fmt}" if fmt == "png" else "image/svg+xml"
-        assert mime == "image/svg+xml"
-
-    def test_mime_type_for_png(self):
-        fmt = "png"
-        mime = f"image/{fmt}" if fmt == "png" else "image/svg+xml"
-        assert mime == "image/png"
-
-    def test_result_format(self):
-        result = {
-            "success": True,
-            "data": {
-                "url": "https://minio.local/agent_artifacts/j-1/diagrams/abc.svg",
-                "diagram_type": "mermaid",
+    async def test_svg_is_rendered_as_svg(self, call, storage):
+        result = await call(
+            "create_chart",
+            {
+                "chart_type": "line",
+                "data": SCHEMA_SHAPED_DATA["line"],
                 "format": "svg",
-                "size_bytes": 12000,
             },
-        }
-        assert result["data"]["diagram_type"] == "mermaid"
+        )
+
+        assert result.get("success") is True, result
+        upload = storage.uploads[0]
+        assert b"<svg" in upload["content"]
+        assert not upload["content"].startswith(PNG_MAGIC)
+        assert upload["path"].endswith(".svg")
         assert result["data"]["format"] == "svg"
-        assert result["data"]["size_bytes"] > 0
+        assert result["data"]["url"].startswith(
+            f"https://storage.test/{upload['path']}"
+        )
 
-    def test_object_path_format(self):
-        import uuid
+    async def test_an_svg_chart_is_stored_with_the_svg_media_type(self, call, storage):
+        await call(
+            "create_chart",
+            {"chart_type": "bar", "data": SCHEMA_SHAPED_DATA["bar"], "format": "svg"},
+        )
 
-        job_id = uuid.uuid4()
-        diag_id = uuid.uuid4()
-        fmt = "svg"
-        path = f"agent_artifacts/{job_id}/diagrams/{diag_id}.{fmt}"
-        assert "diagrams" in path
-        assert path.endswith(".svg")
+        assert storage.uploads[0]["content_type"] == "image/svg+xml"
 
-    def test_svg_render_returns_string_encoded(self):
-        svg_str = "<svg xmlns='http://www.w3.org/2000/svg'><rect/></svg>"
-        image_bytes = svg_str.encode("utf-8") if isinstance(svg_str, str) else svg_str
-        assert isinstance(image_bytes, bytes)
-        assert b"<svg" in image_bytes
+    async def test_an_unknown_format_falls_back_to_png_consistently(
+        self, call, storage
+    ):
+        result = await call(
+            "create_chart",
+            {"chart_type": "bar", "data": SCHEMA_SHAPED_DATA["bar"], "format": "gif"},
+        )
+
+        assert result.get("success") is True, result
+        upload = storage.uploads[0]
+        assert upload["content"].startswith(PNG_MAGIC)
+        assert upload["path"].endswith(".png")
+        assert upload["content_type"] == "image/png"
+        assert result["data"]["format"] == "png"
+
+    @pytest.mark.parametrize(
+        "label_param", [{"title": "Throughput"}, {"x_label": "flag"}, {"y_label": "x"}]
+    )
+    async def test_title_and_axis_labels_change_the_image(
+        self, call, storage, label_param
+    ):
+        base = {"chart_type": "bar", "data": SCHEMA_SHAPED_DATA["bar"]}
+
+        await call("create_chart", dict(base))
+        await call("create_chart", dict(base))
+        await call("create_chart", {**base, **label_param})
+
+        plain, plain_again, labelled = (u["content"] for u in storage.uploads)
+        assert plain == plain_again, "rendering is not deterministic"
+        assert labelled != plain, f"{label_param} did not reach the chart"
+
+    async def test_each_chart_gets_its_own_object(self, call, storage):
+        params = {"chart_type": "bar", "data": SCHEMA_SHAPED_DATA["bar"]}
+
+        first = await call("create_chart", dict(params))
+        second = await call("create_chart", dict(params))
+
+        paths = [upload["path"] for upload in storage.uploads]
+        assert len(set(paths)) == 2
+        assert first["data"]["url"] != second["data"]["url"]
+
+    async def test_several_datasets_are_all_drawn(self, call, storage):
+        one = {
+            "labels": ["q1", "q2"],
+            "datasets": [{"label": "revenue", "values": [10, 20]}],
+        }
+        two = {
+            "labels": ["q1", "q2"],
+            "datasets": [
+                {"label": "revenue", "values": [10, 20]},
+                {"label": "cost", "values": [7, 9]},
+            ],
+        }
+
+        await call("create_chart", {"chart_type": "bar", "data": one})
+        await call("create_chart", {"chart_type": "bar", "data": two})
+
+        assert storage.uploads[0]["content"] != storage.uploads[1]["content"]
+
+
+# ---------------------------------------------------------------------------
+# render_diagram
+# ---------------------------------------------------------------------------
+
+MERMAID = "graph TD\n  A-->B\n  B-->C"
+DOT = "digraph G { A -> B; B -> C; }"
+
+
+class TestRenderDiagramRefusals:
+    @pytest.mark.parametrize("params", [{}, {"diagram_code": "   \n "}])
+    async def test_diagram_code_is_required(self, call, storage, mermaid, params):
+        result = await call("render_diagram", params)
+
+        assert result == {"error": "diagram_code is required"}
+        assert mermaid.calls == []
+        assert storage.uploads == []
+
+    async def test_source_that_is_not_mermaid_is_refused_before_rendering(
+        self, call, storage, mermaid
+    ):
+        result = await call("render_diagram", {"diagram_code": "hello world"})
+
+        assert "success" not in result
+        assert "Invalid" in result["error"]
+        assert mermaid.calls == []
+        assert storage.uploads == []
+
+    async def test_a_renderer_that_is_down_is_an_error(self, call, storage, mermaid):
+        mermaid.behaviour["fail"] = True
+
+        result = await call("render_diagram", {"diagram_code": MERMAID})
+
+        assert "success" not in result
+        assert "connection refused" in result["error"]
+        assert storage.uploads == []
+
+    async def test_a_storage_failure_is_reported(self, call, storage, mermaid):
+        storage.fail_upload = True
+
+        result = await call("render_diagram", {"diagram_code": MERMAID})
+
+        assert "success" not in result
+        assert "bucket unavailable" in result["error"]
+
+    async def test_an_unsupported_diagram_type_is_refused(self, call, storage, mermaid):
+        result = await call(
+            "render_diagram", {"diagram_code": MERMAID, "diagram_type": "plantuml"}
+        )
+
+        assert "success" not in result
+        assert "plantuml" in result["error"]
+        assert storage.uploads == []
+
+
+class TestRenderMermaid:
+    async def test_png_is_the_default_and_is_stored_under_the_job(
+        self, call, storage, mermaid, job
+    ):
+        result = await call("render_diagram", {"diagram_code": MERMAID})
+
+        assert result.get("success") is True, result
+        assert [c["format"] for c in mermaid.calls] == ["png"]
+        assert mermaid.calls[0]["code"] == MERMAID
+        assert len(storage.uploads) == 1
+        upload = storage.uploads[0]
+        assert upload["content"] == FAKE_PNG
+        assert upload["content_type"] == "image/png"
+        assert upload["path"].startswith(f"agent_artifacts/{job.id}/diagrams/")
+        assert upload["path"].endswith(".png")
+        assert result["data"] == {
+            "url": f"https://storage.test/{upload['path']}?signed=1",
+            "diagram_type": "mermaid",
+            "format": "png",
+            "size_bytes": len(FAKE_PNG),
+        }
+
+    async def test_svg_is_stored_as_svg_bytes(self, call, storage, mermaid):
+        result = await call(
+            "render_diagram", {"diagram_code": MERMAID, "format": "svg"}
+        )
+
+        assert result.get("success") is True, result
+        assert [c["format"] for c in mermaid.calls] == ["svg"]
+        upload = storage.uploads[0]
+        assert isinstance(upload["content"], bytes)
+        assert upload["content"] == FAKE_SVG
+        assert upload["content_type"] == "image/svg+xml"
+        assert upload["path"].endswith(".svg")
+        assert result["data"]["format"] == "svg"
+        assert result["data"]["size_bytes"] == len(FAKE_SVG)
+
+    async def test_a_markdown_fence_is_stripped_before_rendering(
+        self, call, storage, mermaid
+    ):
+        result = await call(
+            "render_diagram", {"diagram_code": f"```mermaid\n{MERMAID}\n```"}
+        )
+
+        assert result.get("success") is True, result
+        assert mermaid.calls[0]["code"] == MERMAID
+
+    async def test_an_unknown_format_falls_back_to_png(self, call, storage, mermaid):
+        result = await call(
+            "render_diagram", {"diagram_code": MERMAID, "format": "gif"}
+        )
+
+        assert result.get("success") is True, result
+        assert mermaid.calls[0]["format"] == "png"
+        assert storage.uploads[0]["path"].endswith(".png")
+        assert storage.uploads[0]["content_type"] == "image/png"
+        assert result["data"]["format"] == "png"
+
+    async def test_each_diagram_gets_its_own_object(self, call, storage, mermaid):
+        await call("render_diagram", {"diagram_code": MERMAID})
+        await call("render_diagram", {"diagram_code": MERMAID})
+
+        assert len({upload["path"] for upload in storage.uploads}) == 2
+
+
+@needs_dot
+class TestRenderGraphviz:
+    async def test_graphviz_renders_a_real_png(self, call, storage, mermaid, job):
+        result = await call(
+            "render_diagram", {"diagram_code": DOT, "diagram_type": "graphviz"}
+        )
+
+        assert result.get("success") is True, result
+        assert mermaid.calls == [], "DOT source was sent to the Mermaid renderer"
+        upload = storage.uploads[0]
+        assert upload["content"].startswith(PNG_MAGIC)
+        assert upload["content_type"] == "image/png"
+        assert upload["path"].startswith(f"agent_artifacts/{job.id}/diagrams/")
+        assert upload["path"].endswith(".png")
+        assert result["data"]["diagram_type"] == "graphviz"
+        assert result["data"]["format"] == "png"
+        assert result["data"]["size_bytes"] == len(upload["content"])
+
+    async def test_graphviz_renders_a_real_svg(self, call, storage, mermaid):
+        result = await call(
+            "render_diagram",
+            {"diagram_code": DOT, "diagram_type": "Graphviz", "format": "svg"},
+        )
+
+        assert result.get("success") is True, result
+        upload = storage.uploads[0]
+        assert b"<svg" in upload["content"]
+        assert upload["content_type"] == "image/svg+xml"
+        assert upload["path"].endswith(".svg")
+
+    async def test_dot_that_does_not_parse_is_an_error(self, call, storage, mermaid):
+        result = await call(
+            "render_diagram",
+            {"diagram_code": "digraph {{{ nope", "diagram_type": "graphviz"},
+        )
+
+        assert "success" not in result
+        assert result["error"].startswith("Failed to render diagram")
+        assert storage.uploads == []
+
+
+# ---------------------------------------------------------------------------
+# Declarations
+# ---------------------------------------------------------------------------
 
 
 class TestVisualizationToolSchemas:
@@ -223,6 +551,20 @@ class TestVisualizationToolSchemas:
         tool = get_tool_by_name("render_diagram")
         assert "diagram_type" in tool["parameters"]["properties"]
 
+    def test_every_declared_parameter_is_one_the_handler_reads(self):
+        """A parameter the schema offers and the handler ignores is a lie."""
+        import inspect
+
+        from app.services import agent_tool_dispatch
+        from app.services.agent_tools import get_tool_by_name
+
+        source = inspect.getsource(
+            agent_tool_dispatch.build_autonomous_notification_visualization_provider
+        )
+        for tool_name in ("create_chart", "render_diagram"):
+            for param in get_tool_by_name(tool_name)["parameters"]["properties"]:
+                assert f'"{param}"' in source, f"{tool_name} never reads {param}"
+
 
 class TestVisualizationToolRegistry:
     """Tests for visualization tool registry classification."""
@@ -254,6 +596,19 @@ class TestVisualizationToolRegistry:
         meta = get_tool_metadata("render_diagram")
         assert meta is not None
         assert meta.network == "egress"
+
+    def test_both_tools_are_answered_by_the_provider(self):
+        provider = build_autonomous_notification_visualization_provider(
+            SimpleNamespace()
+        )
+
+        assert "create_chart" in provider._handlers
+        assert "render_diagram" in provider._handlers
+
+
+# ---------------------------------------------------------------------------
+# The service underneath create_chart
+# ---------------------------------------------------------------------------
 
 
 class TestNormalizeChartData:
@@ -299,8 +654,6 @@ class TestNormalizeChartData:
         assert list(frame["s"]) == [1, 2]
 
     def test_a_mismatched_series_says_which_one_is_wrong(self):
-        import pytest
-
         with pytest.raises(ValueError) as error:
             self._normalize(
                 {"labels": ["a", "b", "c"], "datasets": [{"label": "s", "values": [1]}]}
@@ -327,16 +680,11 @@ class TestNormalizeChartData:
 
 
 class TestChartRendersFromSchemaShape:
+    @needs_matplotlib
     def test_bar_chart_renders_from_labels_and_datasets(self):
-        import pytest
+        import base64
 
-        from app.services.visualization_service import VisualizationService
-
-        service = VisualizationService()
-        if not service._enabled:
-            pytest.skip("matplotlib/pandas not installed")
-
-        result = service.create_chart(
+        result = VisualizationService().create_chart(
             chart_type="bar",
             data={
                 "labels": ["-O2", "-O3"],
@@ -346,4 +694,4 @@ class TestChartRendersFromSchemaShape:
         )
 
         assert result["mime_type"] == "image/png"
-        assert len(result["image_base64"]) > 1000
+        assert base64.b64decode(result["image_base64"]).startswith(PNG_MAGIC)

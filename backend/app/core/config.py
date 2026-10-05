@@ -36,7 +36,7 @@ class Settings(BaseSettings):
 
     # LLM Configuration
     # Provider: 'deepseek', 'openai', 'anthropic', 'qwen' (DashScope),
-    # 'kimi' (Moonshot AI), or 'ollama' (local).
+    # 'kimi' (Moonshot AI), 'glm' (Zhipu AI), or 'ollama' (local).
     #
     # Defaults to deepseek because the stack no longer bundles Ollama. The
     # previous default named a service nothing starts, so a stack brought up
@@ -130,6 +130,12 @@ class Settings(BaseSettings):
     KIMI_API_KEY: Optional[str] = None
     KIMI_MODEL: str = "kimi-latest"
 
+    # GLM / Zhipu AI (external, OpenAI-compatible) — optional. The
+    # international endpoint is https://api.z.ai/api/paas/v4.
+    GLM_API_BASE: str = "https://open.bigmodel.cn/api/paas/v4"
+    GLM_API_KEY: Optional[str] = None
+    GLM_MODEL: str = "glm-4.6"
+
     # LLM call snapshots (replay/debug observability). Opt-in: snapshots
     # store full prompt and response text in the llm_call_snapshots table.
     LLM_CALL_SNAPSHOT_ENABLED: bool = False
@@ -182,6 +188,9 @@ class Settings(BaseSettings):
     # Data Sources
     GITLAB_URL: Optional[str] = None
     GITLAB_TOKEN: Optional[str] = None
+    # NOT READ: a Confluence source carries its own URL and credentials in its
+    # config row. Kept because env.example sets them, and removing a field a
+    # deployed .env still names makes Settings refuse to load.
     CONFLUENCE_URL: Optional[str] = None
     CONFLUENCE_USER: Optional[str] = None
     CONFLUENCE_API_TOKEN: Optional[str] = None
@@ -312,7 +321,8 @@ class Settings(BaseSettings):
     KG_EXTRACTION_MODEL: Optional[
         str
     ] = None  # Model for KG extraction (None = use default)
-    KG_EXTRACTION_BATCH_SIZE: int = 3  # Chunks to batch per LLM call
+    # NOT READ: extraction runs one chunk per call. Changing this does nothing.
+    KG_EXTRACTION_BATCH_SIZE: int = 3
     KG_EXTRACTION_MAX_TEXT_LENGTH: int = 3000  # Max chars per extraction call
 
     # Unsafe code execution (disabled by default)
@@ -352,11 +362,25 @@ class Settings(BaseSettings):
     ARXIV_FULL_TEXT_MAX_CHARS: int = 400_000
     ARXIV_FULL_TEXT_TIMEOUT_SECONDS: int = 90
 
+    # A run blocked by a tool that cannot do what it was asked files a coding
+    # backlog item (see services/agent_blocked_to_backlog.py). With this on,
+    # that item is also picked up immediately by the backlog orchestrator, so
+    # a platform gap becomes a proposed patch without a person in the middle.
+    #
+    # Off by default, and the filing happens either way. What this flag buys is
+    # the run *starting*, which spends model budget per blocked job; what it
+    # does not buy is anything landing unattended, because auto-filed items
+    # carry auto_apply_enabled=False and the runner resolves those to
+    # proposal_only.
+    AGENT_BLOCKER_AUTO_CODING_ENABLED: bool = False
+
     SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES: str = (
         "ghcr.io/al3x3n0/kdbc-compiler-research:latest,"
         "ghcr.io/al3x3n0/kdbc-polyglot-slim:latest,"
         "ghcr.io/al3x3n0/kdbc-microarch-research:latest,"
         "ghcr.io/al3x3n0/kdbc-axis-research:latest,"
+        "ghcr.io/al3x3n0/kdbc-pass-dev:latest,"
+        "ghcr.io/al3x3n0/kdbc-bolt-research:latest,"
         "ghcr.io/al3x3n0/kdbc-profiling-research:latest,"
         "ghcr.io/al3x3n0/kdbc-gem5-research:latest,"
         "python:3.11-slim"
@@ -516,6 +540,14 @@ class Settings(BaseSettings):
 
     AGENT_KB_PATCH_APPLY_ENABLED: bool = False
 
+    # Chat tool loop
+    # How many times a chat turn may plan tool calls, each time seeing the
+    # results of the calls before. 1 restores the old single-shot behaviour,
+    # where every call of a turn was planned before any result existed.
+    AGENT_CHAT_MAX_TOOL_ROUNDS: int = 4
+    # Ceiling on tool calls in one chat turn, across all rounds.
+    AGENT_CHAT_MAX_TOOL_CALLS: int = 12
+
     # Custom tools
     # Docker-based tools require access to a Docker daemon (often via host docker socket).
     # Keep disabled by default for safety.
@@ -532,11 +564,25 @@ class Settings(BaseSettings):
     # for if a deployment wants extension to be an operator decision.
     PLUGINS_USER_AUTHORING_ENABLED: bool = True
 
+    # Sandbox skills
+    # Whether a user may author sandbox skills. A skill only ever runs inside
+    # the confined sandbox, in an image that is already allowed, and only once
+    # its control run has passed -- so authoring is on by default. Running one
+    # still needs ENABLE_UNSAFE_CODE_EXECUTION.
+    SANDBOX_SKILLS_AUTHORING_ENABLED: bool = True
+    # Whether an administrator may BUILD an image proposed for a skill. Off by
+    # default: a build runs a Dockerfile on the host daemon with the network
+    # available, which is a far larger grant than running a confined command.
+    SANDBOX_SKILL_IMAGE_BUILD_ENABLED: bool = False
+    SANDBOX_SKILL_IMAGE_BUILD_TIMEOUT_SECONDS: int = 1800
+
     # AI Hub Training Configuration
     TRAINING_ENABLED: bool = True
     TRAINING_MAX_CONCURRENT_JOBS: int = 2
+    # NOT READ: a job names its own backend (default "local" in the schema).
     TRAINING_DEFAULT_BACKEND: str = "local"  # local, modal, runpod
     TRAINING_LOCAL_DEVICE: str = "auto"  # cuda, cpu, mps, auto
+    # NOT READ: the local trainer does not cap GPU memory.
     TRAINING_LOCAL_MAX_GPU_MEMORY_GB: float = 24.0
     TRAINING_CHECKPOINT_INTERVAL_STEPS: int = 100
     TRAINING_OUTPUT_DIR: str = "./data/training_outputs"
@@ -554,6 +600,7 @@ class Settings(BaseSettings):
     ] = None  # Comma-separated preset IDs allowed for non-admin users
 
     # Cloud Training (future - optional)
+    # NOT READ: no cloud trainer exists yet.
     MODAL_API_KEY: Optional[str] = None
     RUNPOD_API_KEY: Optional[str] = None
 

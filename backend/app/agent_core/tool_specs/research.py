@@ -107,7 +107,15 @@ SPECS: tuple[ToolSpec, ...] = (
         },
         effects="write",
         network="egress",
-        job_types=(),
+        # The same allowance as ingest_paper_by_id, which has the same
+        # effects. The difference is the input: this one takes a *query*,
+        # so a discovery stage can start from its topic, while the by-id
+        # tool needs an id the stage does not have and nothing in the
+        # evidence chain says how to get one. Measured: three discovery
+        # stages contracted for papers_ingested ran 28 iterations between
+        # them and called write_progress_report 15 times without a single
+        # ingest; the one run that succeeded had a person name the tool.
+        job_types=("research", "monitor", "knowledge_expansion"),
     ),
     ToolSpec(
         name="literature_review_arxiv",
@@ -157,7 +165,9 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["topic"],
         },
         network="egress",
-        job_types=(),
+        # Searches arXiv and optionally ingests: the same shape as
+        # ingest_paper_by_id, so the same job types.
+        job_types=("research", "monitor", "knowledge_expansion"),
     ),
     ToolSpec(
         name="enrich_arxiv_metadata_for_source",
@@ -180,10 +190,16 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["source_id"],
         },
         job_types=(),
+        effects="write",
+        network="egress",
     ),
     ToolSpec(
         name="generate_literature_review_for_source",
-        produces=("literature_review",),
+        # No `produces`: this queues a Celery task and returns immediately, so
+        # the review is written after the run that asked for it has moved on.
+        # Declaring evidence a caller cannot observe would let a contract
+        # depend on something that never arrives inside the run.
+        produces=(),
         typical_seconds=240,
         consumes="A document source already ingested.",
         description="Generate a literature review document for an arXiv import source (uses available summaries and extracted paper insights).",
@@ -199,7 +215,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["source_id"],
         },
         effects="write",
-        job_types=(),
+        job_types=("research", "synthesis", "knowledge_expansion"),
     ),
     ToolSpec(
         name="add_to_reading_list",
@@ -494,6 +510,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": [],
         },
         job_types=("research", "knowledge_expansion"),
+        network="egress",
     ),
     ToolSpec(
         name="build_research_graph",
@@ -686,6 +703,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["topic"],
         },
         job_types=("monitor",),
+        network="egress",
     ),
     ToolSpec(
         name="ingest_paper_by_id",
@@ -716,6 +734,7 @@ SPECS: tuple[ToolSpec, ...] = (
         },
         effects="write",
         job_types=("research", "monitor", "knowledge_expansion"),
+        network="egress",
     ),
     ToolSpec(
         name="analyze_document_cluster",
@@ -822,6 +841,8 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["arxiv_ids"],
         },
         job_types=("research", "knowledge_expansion"),
+        effects="write",
+        network="egress",
     ),
     ToolSpec(
         name="search_web",

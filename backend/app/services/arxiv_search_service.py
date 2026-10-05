@@ -130,8 +130,13 @@ class ArxivSearchService:
                 if link.get("title") == "pdf" or link.get("type") == "application/pdf":
                     pdf_url = link.get("href")
 
-            # Derive a stable arXiv id (best-effort)
-            paper_id = entry_url.rstrip("/").split("/")[-1]
+            # Everything after /abs/: an old-style id (hep-th/9901001v1) keeps
+            # its archive, which the last URL segment alone would drop.
+            stripped = entry_url.rstrip("/")
+            if "/abs/" in stripped:
+                paper_id = stripped.split("/abs/", 1)[1]
+            else:
+                paper_id = stripped.split("/")[-1]
 
             items.append(
                 {

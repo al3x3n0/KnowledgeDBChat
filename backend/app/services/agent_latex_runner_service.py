@@ -13,6 +13,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.services import llm_structured
 from app.services.agent_artifact_paths import insert_before_end_document
+from app.services.agent_runner_progress import phase_reporter
+from app.services.bibtex import (
+    _bib_key_from_uuid,
+    _bibtex_month_macro,
+    _escape_bibtex,
+    _extract_arxiv_id,
+    _sanitize_bib_filename,
+)
 
 # Keys the reviewer prompt asks for.
 LATEX_REVIEW_SCHEMA = {
@@ -59,7 +67,6 @@ class AgentLatexRunnerService:
           - optional job.config.bib_filename (default 'refs.bib')
         """
         import hashlib as _hashlib
-        from datetime import datetime as _dt
         from uuid import UUID as _UUID
 
         from sqlalchemy import String as _String
@@ -70,87 +77,11 @@ class AgentLatexRunnerService:
         from app.models.latex_project_file import LatexProjectFile
         from app.services.storage_service import storage_service
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "latex_citation_sync", "result": details}
-            )
-
-        def _sanitize_bib_filename(name: str) -> str:
-            s = (name or "").strip()
-            if not s:
-                return "refs.bib"
-            if "/" in s or "\\" in s or s.startswith("."):
-                return "refs.bib"
-            if not s.lower().endswith(".bib"):
-                s = s + ".bib"
-            if len(s) > 100:
-                s = s[:100]
-            return s
+        _emit = phase_reporter(job, "latex_citation_sync")
 
         def _bib_stem(name: str) -> str:
             n = _sanitize_bib_filename(name)
             return n[:-4] if n.lower().endswith(".bib") else n
-
-        def _escape_bibtex(s: str) -> str:
-            t = (s or "").strip()
-            if not t:
-                return ""
-            t = re.sub(r"\s+", " ", t).strip()
-            t = t.replace("\\", r"\textbackslash{}")
-            t = t.replace("{", r"\{").replace("}", r"\}")
-            t = t.replace("&", r"\&")
-            t = t.replace("%", r"\%")
-            t = t.replace("$", r"\$")
-            t = t.replace("#", r"\#")
-            t = t.replace("_", r"\_")
-            t = t.replace("~", r"\textasciitilde{}")
-            t = t.replace("^", r"\textasciicircum{}")
-            return t
-
-        def _extract_arxiv_id(url: str) -> Optional[str]:
-            u = (url or "").strip()
-            if not u:
-                return None
-            m = re.search(
-                r"arxiv\.org/(abs|pdf)/(?P<id>\d{4}\.\d{4,5}(v\d+)?)(?:\.pdf)?",
-                u,
-                flags=re.I,
-            )
-            if not m:
-                return None
-            return (m.group("id") or "").strip() or None
-
-        def _bibtex_month_macro(dt: Optional[_dt]) -> Optional[str]:
-            if not dt:
-                return None
-            try:
-                month = int(dt.month)
-            except Exception:
-                return None
-            months = [
-                "jan",
-                "feb",
-                "mar",
-                "apr",
-                "may",
-                "jun",
-                "jul",
-                "aug",
-                "sep",
-                "oct",
-                "nov",
-                "dec",
-            ]
-            if 1 <= month <= 12:
-                return months[month - 1]
-            return None
-
-        def _bib_key_from_uuid(doc_id: _UUID) -> str:
-            return f"KDB:{str(doc_id)}"
 
         cfg = job.config if isinstance(job.config, dict) else {}
         enabled_raw = cfg.get("enabled")
@@ -510,14 +441,7 @@ class AgentLatexRunnerService:
         from app.services.storage_service import storage_service
         from app.tasks.latex_tasks import compile_latex_project_job
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "latex_compile_project", "result": details}
-            )
+        _emit = phase_reporter(job, "latex_compile_project")
 
         cfg = job.config if isinstance(job.config, dict) else {}
         enabled_raw = cfg.get("enabled")
@@ -826,14 +750,7 @@ class AgentLatexRunnerService:
         from app.services.document_service import DocumentService
         from app.services.storage_service import storage_service
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "latex_publish_project", "result": details}
-            )
+        _emit = phase_reporter(job, "latex_publish_project")
 
         cfg = job.config if isinstance(job.config, dict) else {}
         enabled_raw = cfg.get("enabled")
@@ -1139,18 +1056,7 @@ class AgentLatexRunnerService:
         from app.services.storage_service import storage_service
         from app.services.unified_diff_service import apply_unified_diff_to_text
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {
-                    "phase": phase,
-                    "action": "latex_apply_unified_diff",
-                    "result": details,
-                }
-            )
+        _emit = phase_reporter(job, "latex_apply_unified_diff")
 
         cfg = job.config if isinstance(job.config, dict) else {}
         enabled_raw = cfg.get("enabled")
@@ -1312,14 +1218,7 @@ class AgentLatexRunnerService:
 
         from app.models.latex_project import LatexProject
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "latex_reviewer_critic", "result": details}
-            )
+        _emit = phase_reporter(job, "latex_reviewer_critic")
 
         cfg = job.config if isinstance(job.config, dict) else {}
         enabled_raw = cfg.get("enabled")

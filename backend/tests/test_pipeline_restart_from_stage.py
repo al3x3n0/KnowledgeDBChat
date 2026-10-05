@@ -545,3 +545,78 @@ class TestARestartIsToldWhatWasRejected:
 
         _, child_config = executor.created[0]
         assert "operator_clues" not in child_config["config"]
+
+
+@pytest.mark.asyncio
+class TestAStageAfterASpawningStage:
+    """A `spawn_on` stage releases what follows on evidence and may never
+    complete. Requiring it to complete made every stage after it impossible to
+    restart; what it must have done is reach its threshold."""
+
+    @staticmethod
+    def _monitor(status, *, released, root):
+        job = _stage_job("watch", status, root=root, children=("alert",))
+        job.chain_config = {**job.chain_config, "trigger_condition": "on_findings"}
+        job.chain_config["findings_threshold"] = 3
+        job.chain_triggered = released
+        return job
+
+    async def _restart(self, monkeypatch, db_session, watch, root):
+        alert = _stage_job(
+            "alert", AgentJobStatus.PAUSED.value, parent=watch, root=root
+        )
+
+        async def _load(root_job_id, db):
+            return [
+                restart.StageJob(stage_id="watch", job=watch),
+                restart.StageJob(stage_id="alert", job=alert),
+            ]
+
+        monkeypatch.setattr(restart, "load_run", _load)
+        monkeypatch.setattr(
+            "app.tasks.agent_job_tasks.execute_agent_job_task.delay",
+            lambda job_id, user_id: None,
+        )
+        executor = _Executor()
+        await restart.restart_from_stage(
+            root_job_id=root, stage_id="alert", executor=executor, db=db_session
+        )
+        return executor
+
+    async def test_it_restarts_while_the_monitor_is_still_running(
+        self, monkeypatch, db_session
+    ):
+        root = uuid.uuid4()
+        watch = self._monitor(AgentJobStatus.RUNNING.value, released=True, root=root)
+
+        executor = await self._restart(monkeypatch, db_session, watch, root)
+
+        parent, child_config = executor.created[0]
+        assert parent is watch
+        assert child_config["config"]["pipeline_stage"] == "alert"
+        # Left set: a running spawner whose flag was cleared would release
+        # every successor again at its next finding.
+        assert watch.chain_triggered is True
+
+    async def test_a_monitor_that_has_not_reached_its_threshold_is_refused(
+        self, monkeypatch, db_session
+    ):
+        root = uuid.uuid4()
+        watch = self._monitor(AgentJobStatus.RUNNING.value, released=False, root=root)
+
+        with pytest.raises(restart.PipelineRestartError) as error:
+            await self._restart(monkeypatch, db_session, watch, root)
+        assert "not yet produced the findings" in error.value.detail
+
+    @pytest.mark.parametrize(
+        "status", [AgentJobStatus.FAILED.value, AgentJobStatus.CANCELLED.value]
+    )
+    async def test_a_monitor_that_ended_badly_is_refused(
+        self, monkeypatch, db_session, status
+    ):
+        root = uuid.uuid4()
+        watch = self._monitor(status, released=True, root=root)
+
+        with pytest.raises(restart.PipelineRestartError) as error:
+            await self._restart(monkeypatch, db_session, watch, root)
+        assert "Restart from that stage instead" in error.value.detail

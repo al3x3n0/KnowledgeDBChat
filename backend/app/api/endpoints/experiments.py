@@ -44,6 +44,7 @@ from app.schemas.experiment import (
     ExperimentRunUpdateRequest,
 )
 from app.schemas.research_note import ResearchNoteResponse
+from app.services import llm_json
 from app.services.agent_job_scheduler_state import (
     extract_scheduler_state as _extract_scheduler_state,
 )
@@ -140,16 +141,27 @@ def _scientific_validation_payload(run: ExperimentRun) -> Dict[str, Any]:
     return deepcopy(value) if isinstance(value, dict) else {}
 
 
+def _set_run_config_section(
+    run: ExperimentRun, key: str, payload: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Replace one section of a run's config (an empty payload removes it).
+
+    The config is copied, not edited in place: a JSON column mutated in place
+    is not seen as changed and is never written.
+    """
+    config = deepcopy(run.config) if isinstance(run.config, dict) else {}
+    if payload:
+        config[key] = payload
+    else:
+        config.pop(key, None)
+    run.config = config
+    return config
+
+
 def _set_scientific_validation_payload(
     run: ExperimentRun, payload: Dict[str, Any]
 ) -> Dict[str, Any]:
-    config = deepcopy(run.config) if isinstance(run.config, dict) else {}
-    if payload:
-        config["scientific_validation"] = payload
-    else:
-        config.pop("scientific_validation", None)
-    run.config = config
-    return config
+    return _set_run_config_section(run, "scientific_validation", payload)
 
 
 def _is_scientific_validation_run(run: ExperimentRun) -> bool:
@@ -1228,13 +1240,7 @@ def _run_post_run_actions(run: ExperimentRun) -> Dict[str, Any]:
 def _set_run_post_run_actions(
     run: ExperimentRun, payload: Dict[str, Any]
 ) -> Dict[str, Any]:
-    config = deepcopy(run.config) if isinstance(run.config, dict) else {}
-    if payload:
-        config["post_run_actions"] = payload
-    else:
-        config.pop("post_run_actions", None)
-    run.config = config
-    return config
+    return _set_run_config_section(run, "post_run_actions", payload)
 
 
 def _run_start_commands(run: ExperimentRun, request_commands: list[str]) -> list[str]:
@@ -2754,22 +2760,13 @@ async def generate_experiment_plan(
         logger.warning(f"Experiment plan generation failed: {exc}")
         raise HTTPException(status_code=500, detail="Experiment plan generation failed")
 
-    parsed: Dict[str, Any]
-    try:
-        parsed = json.loads(raw) if isinstance(raw, str) else dict(raw)
-        if not isinstance(parsed, dict):
-            raise ValueError("Plan must be an object")
-    except Exception:
-        # Try to salvage JSON from code fences or extra text
-        try:
-            m = re.search(r"\{.*\}", raw, flags=re.DOTALL)
-            if not m:
-                raise ValueError("No JSON object found")
-            parsed = json.loads(m.group(0))
-        except Exception:
-            raise HTTPException(
-                status_code=422, detail="Model did not return valid JSON"
-            )
+    # Whole reply, fenced block, or an object inside prose: see llm_json.
+    salvaged = llm_json.extract_json_object(
+        raw if isinstance(raw, (str, dict)) else str(raw or "")
+    )
+    if salvaged is None:
+        raise HTTPException(status_code=422, detail="Model did not return valid JSON")
+    parsed: Dict[str, Any] = dict(salvaged)
 
     parsed["plan_scope"] = plan_mode
     parsed["selected_hypothesis_ids"] = (structured_context or {}).get(

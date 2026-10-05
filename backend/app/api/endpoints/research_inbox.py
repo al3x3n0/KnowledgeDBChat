@@ -34,6 +34,7 @@ from app.schemas.research_inbox import (
     ResearchInboxListResponse,
     ResearchInboxStatsResponse,
 )
+from app.services import research_rejection_reasons as rejection_reasons
 from app.services.auth_service import get_current_user
 from app.services.research_inbox_follow_up_service import (
     _resolve_follow_up_opportunity_origin,
@@ -222,6 +223,159 @@ async def inbox_stats(
         raise HTTPException(status_code=500, detail="Failed to compute inbox stats")
 
 
+@router.get("/rejection-reasons")
+async def list_rejection_reasons(
+    current_user: User = Depends(get_current_user),
+):
+    """The rejection vocabulary, and what each choice teaches the profile.
+
+    Served rather than restated in the client, so the effect a person is shown
+    beside a choice is the effect the learner actually applies.
+    """
+    return {"reasons": rejection_reasons.describe()}
+
+
+class ResearchInboxBulkUpdateRequest(ResearchInboxItemUpdateRequest):
+    item_ids: list[UUID]
+
+
+@router.patch("/bulk")
+async def bulk_update_inbox_items(
+    payload: ResearchInboxBulkUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Bulk update status/feedback for multiple inbox items owned by the current user.
+    """
+    if not payload.item_ids:
+        raise HTTPException(status_code=422, detail="item_ids is required")
+
+    new_status = None
+    if payload.status is not None:
+        s = str(payload.status).strip().lower()
+        if s not in {"new", "accepted", "rejected"}:
+            raise HTTPException(status_code=422, detail="Invalid status")
+        new_status = s
+
+    new_feedback = None
+    if payload.feedback is not None:
+        new_feedback = (payload.feedback or "").strip() or None
+
+    if payload.rejection_reason is not None and not rejection_reasons.is_valid(
+        payload.rejection_reason
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Invalid rejection_reason; expected one of "
+                f"{', '.join(rejection_reasons.VALID_KEYS)}"
+            ),
+        )
+
+    if new_status is None and payload.feedback is None:
+        return {"updated": 0}
+
+    # Capture impacted customers so we can recompute profiles after update.
+    try:
+        cust_res = await db.execute(
+            select(ResearchInboxItem.customer).where(
+                ResearchInboxItem.user_id == current_user.id,
+                ResearchInboxItem.id.in_(payload.item_ids),
+            )
+        )
+        customers = {r[0] for r in cust_res.all()}
+    except Exception:
+        customers = set()
+
+    try:
+        if new_status == "accepted":
+            result = await db.execute(
+                select(ResearchInboxItem).where(
+                    ResearchInboxItem.user_id == current_user.id,
+                    ResearchInboxItem.id.in_(payload.item_ids),
+                )
+            )
+            items = list(result.scalars().all())
+            updated = 0
+            for item in items:
+                previous_status = str(item.status or "").strip().lower()
+                item.status = "accepted"
+                if payload.feedback is not None:
+                    item.feedback = new_feedback
+                item.rejection_reason = None
+                if previous_status != "accepted":
+                    await _apply_follow_up_policy_on_accept(
+                        item=item,
+                        current_user=current_user,
+                        db=db,
+                    )
+                updated += 1
+            await db.commit()
+        else:
+            values: dict = {}
+            if new_status is not None:
+                values["status"] = new_status
+                values["rejection_reason"] = (
+                    rejection_reasons.normalize(payload.rejection_reason)
+                    if new_status == "rejected"
+                    else None
+                )
+                if new_status != "accepted":
+                    values.update(
+                        {
+                            "follow_up_decision": None,
+                            "follow_up_policy_mode": None,
+                            "follow_up_launch_status": None,
+                            "follow_up_block_reason": None,
+                            "follow_up_budget_decision": None,
+                            "follow_up_budget_reason": None,
+                            "follow_up_budget_throttle_state": None,
+                            "follow_up_customer_budget_decision": None,
+                            "follow_up_customer_budget_reason": None,
+                            "follow_up_customer_budget_throttle_state": None,
+                            "follow_up_recommendation_key": None,
+                            "follow_up_operator_decision": None,
+                            "follow_up_operator_note": None,
+                            "follow_up_operator_acted_at": None,
+                            "follow_up_operator_user_id": None,
+                            "follow_up_job_id": None,
+                            "follow_up_chain_definition_id": None,
+                            "follow_up_launched_at": None,
+                            "follow_up_outcome_status": None,
+                            "follow_up_outcome_recorded_at": None,
+                            "follow_up_outcome_summary": None,
+                        }
+                    )
+            if payload.feedback is not None:
+                values["feedback"] = new_feedback
+
+            result = await db.execute(
+                sa.update(ResearchInboxItem)
+                .where(
+                    ResearchInboxItem.user_id == current_user.id,
+                    ResearchInboxItem.id.in_(payload.item_ids),
+                )
+                .values(**values)
+            )
+            updated = int(result.rowcount or 0)
+            await db.commit()
+
+        # Recompute profiles for impacted customers (best-effort).
+        for cust in customers:
+            try:
+                await research_monitor_profile_service.recompute_profile(
+                    db=db, user_id=current_user.id, customer=cust
+                )
+            except Exception:
+                pass
+
+        return {"updated": updated}
+    except Exception as exc:
+        logger.error(f"Failed to bulk update inbox items: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to bulk update inbox items")
+
+
 @router.patch("/{item_id}", response_model=ResearchInboxItemResponse)
 async def update_inbox_item(
     item_id: str,
@@ -269,6 +423,22 @@ async def update_inbox_item(
 
     if payload.feedback is not None:
         item.feedback = (payload.feedback or "").strip() or None
+
+    if payload.rejection_reason is not None:
+        if not rejection_reasons.is_valid(payload.rejection_reason):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Invalid rejection_reason; expected one of "
+                    f"{', '.join(rejection_reasons.VALID_KEYS)}"
+                ),
+            )
+        item.rejection_reason = rejection_reasons.normalize(payload.rejection_reason)
+
+    # A reason explains a rejection. Left behind on an item that is no longer
+    # rejected it would go on teaching the profile something nobody said.
+    if str(item.status or "").strip().lower() != "rejected":
+        item.rejection_reason = None
 
     if payload.metadata_patch is not None:
         patch = (
@@ -337,130 +507,6 @@ async def update_inbox_item(
         pass
 
     return await _serialize_research_inbox_item(item, db)
-
-
-class ResearchInboxBulkUpdateRequest(ResearchInboxItemUpdateRequest):
-    item_ids: list[UUID]
-
-
-@router.patch("/bulk")
-async def bulk_update_inbox_items(
-    payload: ResearchInboxBulkUpdateRequest,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Bulk update status/feedback for multiple inbox items owned by the current user.
-    """
-    if not payload.item_ids:
-        raise HTTPException(status_code=422, detail="item_ids is required")
-
-    new_status = None
-    if payload.status is not None:
-        s = str(payload.status).strip().lower()
-        if s not in {"new", "accepted", "rejected"}:
-            raise HTTPException(status_code=422, detail="Invalid status")
-        new_status = s
-
-    new_feedback = None
-    if payload.feedback is not None:
-        new_feedback = (payload.feedback or "").strip() or None
-
-    if new_status is None and payload.feedback is None:
-        return {"updated": 0}
-
-    # Capture impacted customers so we can recompute profiles after update.
-    try:
-        cust_res = await db.execute(
-            select(ResearchInboxItem.customer).where(
-                ResearchInboxItem.user_id == current_user.id,
-                ResearchInboxItem.id.in_(payload.item_ids),
-            )
-        )
-        customers = {r[0] for r in cust_res.all()}
-    except Exception:
-        customers = set()
-
-    try:
-        if new_status == "accepted":
-            result = await db.execute(
-                select(ResearchInboxItem).where(
-                    ResearchInboxItem.user_id == current_user.id,
-                    ResearchInboxItem.id.in_(payload.item_ids),
-                )
-            )
-            items = list(result.scalars().all())
-            updated = 0
-            for item in items:
-                previous_status = str(item.status or "").strip().lower()
-                item.status = "accepted"
-                if payload.feedback is not None:
-                    item.feedback = new_feedback
-                if previous_status != "accepted":
-                    await _apply_follow_up_policy_on_accept(
-                        item=item,
-                        current_user=current_user,
-                        db=db,
-                    )
-                updated += 1
-            await db.commit()
-        else:
-            values: dict = {}
-            if new_status is not None:
-                values["status"] = new_status
-                if new_status != "accepted":
-                    values.update(
-                        {
-                            "follow_up_decision": None,
-                            "follow_up_policy_mode": None,
-                            "follow_up_launch_status": None,
-                            "follow_up_block_reason": None,
-                            "follow_up_budget_decision": None,
-                            "follow_up_budget_reason": None,
-                            "follow_up_budget_throttle_state": None,
-                            "follow_up_customer_budget_decision": None,
-                            "follow_up_customer_budget_reason": None,
-                            "follow_up_customer_budget_throttle_state": None,
-                            "follow_up_recommendation_key": None,
-                            "follow_up_operator_decision": None,
-                            "follow_up_operator_note": None,
-                            "follow_up_operator_acted_at": None,
-                            "follow_up_operator_user_id": None,
-                            "follow_up_job_id": None,
-                            "follow_up_chain_definition_id": None,
-                            "follow_up_launched_at": None,
-                            "follow_up_outcome_status": None,
-                            "follow_up_outcome_recorded_at": None,
-                            "follow_up_outcome_summary": None,
-                        }
-                    )
-            if payload.feedback is not None:
-                values["feedback"] = new_feedback
-
-            result = await db.execute(
-                sa.update(ResearchInboxItem)
-                .where(
-                    ResearchInboxItem.user_id == current_user.id,
-                    ResearchInboxItem.id.in_(payload.item_ids),
-                )
-                .values(**values)
-            )
-            updated = int(result.rowcount or 0)
-            await db.commit()
-
-        # Recompute profiles for impacted customers (best-effort).
-        for cust in customers:
-            try:
-                await research_monitor_profile_service.recompute_profile(
-                    db=db, user_id=current_user.id, customer=cust
-                )
-            except Exception:
-                pass
-
-        return {"updated": updated}
-    except Exception as exc:
-        logger.error(f"Failed to bulk update inbox items: {exc}")
-        raise HTTPException(status_code=500, detail="Failed to bulk update inbox items")
 
 
 @router.post("/{item_id}/relaunch-follow-up", response_model=ResearchInboxItemResponse)

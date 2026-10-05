@@ -220,6 +220,60 @@ class WorkflowEngine:
 
         return execution
 
+    async def queue_workflow(
+        self,
+        workflow_id: UUID,
+        trigger_type: str = "manual",
+        trigger_data: Optional[Dict[str, Any]] = None,
+        initial_context: Optional[Dict[str, Any]] = None,
+    ) -> WorkflowExecution:
+        """Create a pending execution and hand it to the workflow task.
+
+        `execute_workflow` runs the whole graph before it returns, which is
+        right for the synchronous endpoint and wrong for an agent tool that
+        says it launches: the run waited on every node, LLM calls included.
+        What can be known without running is checked here -- the workflow is
+        the caller's, active, and has one start node -- so a workflow that
+        cannot start is refused now rather than failing later in a worker.
+        Like the engine, a refused start is recorded as a failed execution.
+        """
+        result = await self.db.execute(
+            select(Workflow)
+            .options(selectinload(Workflow.nodes))
+            .where(Workflow.id == workflow_id, Workflow.user_id == self.user.id)
+        )
+        workflow = result.scalar_one_or_none()
+        if not workflow:
+            raise WorkflowExecutionError(f"Workflow {workflow_id} not found")
+        if not workflow.is_active:
+            raise WorkflowExecutionError("Workflow is not active")
+
+        execution = WorkflowExecution(
+            workflow_id=workflow_id,
+            user_id=self.user.id,
+            trigger_type=trigger_type,
+            trigger_data=trigger_data or {},
+            status="pending",
+            progress=0,
+            context=initial_context or {},
+        )
+        self.db.add(execution)
+        starts = [n for n in workflow.nodes if n.node_type == "start"]
+        if len(starts) != 1:
+            message = "Workflow must have exactly one start node"
+            execution.status = "failed"
+            execution.error = message
+            execution.completed_at = datetime.utcnow()
+            await self.db.commit()
+            raise WorkflowExecutionError(message)
+        await self.db.commit()
+        await self.db.refresh(execution)
+
+        from app.tasks.workflow_tasks import execute_workflow_task
+
+        execute_workflow_task.delay(str(execution.id))
+        return execution
+
     async def execute_existing_execution(
         self, execution: WorkflowExecution
     ) -> WorkflowExecution:
@@ -279,12 +333,28 @@ class WorkflowEngine:
                     "Workflow must have exactly one start node"
                 )
 
+            # What started the run, where the nodes can read it. Templates read
+            # `{{context.trigger_data.topic}}`; a sub-workflow got this key and
+            # a top-level run did not, so every such input resolved to None.
+            if execution.trigger_data and "trigger_data" not in (
+                execution.context or {}
+            ):
+                execution.context = {
+                    **(execution.context or {}),
+                    "trigger_data": execution.trigger_data,
+                }
+                # Committed now: the cancellation check below refreshes the
+                # row, which would discard an uncommitted change.
+                self._context_changed(execution)
+                await self.db.commit()
+
             # Detect output key collisions
             collision_warnings = self._detect_output_key_collisions(workflow.nodes)
             if collision_warnings:
                 logger.warning(f"Output key collisions detected: {collision_warnings}")
                 execution.context["_warnings"] = execution.context.get("_warnings", [])
                 execution.context["_warnings"].extend(collision_warnings)
+                self._context_changed(execution)
                 await self.db.commit()
 
             await self._raise_if_cancelled(execution)
@@ -342,6 +412,36 @@ class WorkflowEngine:
         await self.db.refresh(execution)
         if execution.status == "cancelled":
             raise WorkflowCancelledError("Cancelled by user")
+
+    def _context_changed(
+        self, execution: WorkflowExecution, context: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Store what a run has written to its context.
+
+        The column is plain JSON and the engine writes into a dict in place,
+        which SQLAlchemy cannot see. Worse, the dict it writes into stops
+        being the row's: the cancellation check refreshes the execution
+        between nodes, the row gets a new dict loaded from the database, and
+        the chain goes on writing to the one it captured at the start. Later
+        nodes read that same captured dict, so workflows ran correctly -- and
+        stored nothing: an execution finished with every node's output in
+        memory and only the initial context in the database.
+
+        A parallel branch works on its own copy, which is merged into the
+        parent when the branch ends; a branch's copy is not the execution's
+        context and is not stored as if it were.
+        """
+        from sqlalchemy.orm.attributes import flag_modified
+
+        if context is not None and context is not execution.context:
+            if id(context) in getattr(self, "_branch_contexts", ()):
+                return
+            # Diagnostics the engine wrote straight onto the row are kept.
+            for key, value in (execution.context or {}).items():
+                if str(key).startswith("_") and key not in context:
+                    context[key] = value
+            execution.context = context
+        flag_modified(execution, "context")
 
     def _detect_output_key_collisions(self, nodes: List[WorkflowNode]) -> List[str]:
         """
@@ -587,6 +687,7 @@ class WorkflowEngine:
             output_key = node.config.get("output_key", node.node_id)
             context[output_key] = self._trim_for_context(output)
             written_keys.add(output_key)
+            self._context_changed(execution, context)
 
             # Update node execution
             node_execution.status = "completed"
@@ -740,7 +841,18 @@ class WorkflowEngine:
                 )
 
             path = value[2:-2].strip()
-            resolved_val, exists = self._get_nested_value(context, path)
+            # `{{context.x}}` is the documented spelling (the docstring above,
+            # 77 uses in the shipped templates, the synthesis prompt and the
+            # editor's input mapper) and names the run context itself, which
+            # has no key called "context". Looked up literally it resolved to
+            # None, and the node ran on None while the run reported success.
+            lookup = path
+            if "context" not in context:
+                if lookup == "context":
+                    return ResolvedValue(value=context, exists=True, path=path)
+                if lookup.startswith("context."):
+                    lookup = lookup[len("context.") :]
+            resolved_val, exists = self._get_nested_value(context, lookup)
 
             return ResolvedValue(
                 value=resolved_val, exists=exists, path=path, error=None
@@ -989,6 +1101,7 @@ class WorkflowEngine:
                 execution.context["_validation_warnings"][
                     node.node_id
                 ] = validation_errors
+                self._context_changed(execution)
 
             # Use validated (potentially coerced) inputs
             input_data = validated_inputs
@@ -1197,6 +1310,9 @@ class WorkflowEngine:
             try:
                 # Use isolated context per branch
                 branch_context = copy.deepcopy(context)
+                if not hasattr(self, "_branch_contexts"):
+                    self._branch_contexts = set()
+                self._branch_contexts.add(id(branch_context))
                 branch_written: Set[str] = set()
 
                 await self._execute_node_chain(

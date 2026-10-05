@@ -203,42 +203,63 @@ def _apply_cpu_params(cpu, params):
     an unknown parameter is refused rather than absorbed.
     """
     for path, value in params.items():
-        name, _, member = path.partition("[")
-        if member:
-            index = member.rstrip("]")
-            vector = getattr(cpu, name, None)
-            if vector is None:
-                raise SpecError("%s has no %r to index" % (type(cpu).__name__, name))
-            index, _, field = index.partition("].")
-            if not field:
-                raise SpecError(
-                    "%s names a vector member but no parameter on it; write "
-                    "%s[*].numEntries" % (path, name)
-                )
-            members = list(vector) if index == "*" else [vector[int(index)]]
-            if not members:
-                raise SpecError("%s has no members to set" % name)
-            for target in members:
-                if field not in type(target)._params:
-                    raise SpecError(
-                        "%s has no parameter %r. It declares: %s"
-                        % (type(target).__name__, field,
-                           ", ".join(sorted(type(target)._params)))
-                    )
-                setattr(target, field, value)
-            MANIFEST["applied"].append("cpu.%s=%s (%d members)"
-                                       % (path, value, len(members)))
-            continue
+        # A path is a dotted walk with optional [i] or [*] at any level, so a
+        # functional unit is reachable: fuPool.FUList[3].opList[0].opLat is
+        # three levels deep, and a walker that handled one level could name
+        # the issue queue and nothing about the units that do the work.
+        segments = path.split(".")
+        field = segments[-1]
+        walk = segments[:-1]
 
-        if name not in type(cpu)._params:
+        if "[" in field:
+            raise SpecError(
+                "%s ends at a vector member and names no parameter on it; "
+                "write %s.<parameter>" % (path, path))
+
+        if not walk and field not in type(cpu)._params:
             raise SpecError(
                 "%s has no parameter %r. Structure sizes that moved in gem5 "
                 "25.1 live on sub-objects: the issue queue is "
-                "instQueues[*].numEntries, not numIQEntries." % (
-                    type(cpu).__name__, name)
-            )
-        setattr(cpu, name, value)
-        MANIFEST["applied"].append("cpu.%s=%s" % (name, value))
+                "instQueues[*].numEntries, not numIQEntries. Functional unit "
+                "timing is fuPool.FUList[i].opList[j].opLat." % (
+                    type(cpu).__name__, field))
+
+        targets = [cpu]
+        for segment in walk:
+            seg_name, _, seg_index = segment.partition("[")
+            stepped = []
+            for target in targets:
+                attr = getattr(target, seg_name, None)
+                if attr is None:
+                    raise SpecError(
+                        "%s has no %r to walk through in %s"
+                        % (type(target).__name__, seg_name, path))
+                if seg_index:
+                    key = seg_index.rstrip("]")
+                    if key == "*":
+                        stepped.extend(list(attr))
+                        continue
+                    try:
+                        stepped.append(attr[int(key)])
+                    except (IndexError, ValueError, TypeError):
+                        raise SpecError(
+                            "%s[%s] is out of range in %s; it has %d members"
+                            % (seg_name, key, path, len(list(attr))))
+                else:
+                    stepped.append(attr)
+            targets = stepped
+            if not targets:
+                raise SpecError("%s names nothing to set in %s" % (segment, path))
+
+        for target in targets:
+            if field not in type(target)._params:
+                raise SpecError(
+                    "%s has no parameter %r. It declares: %s"
+                    % (type(target).__name__, field,
+                       ", ".join(sorted(type(target)._params))))
+            setattr(target, field, value)
+        MANIFEST["applied"].append(
+            "cpu.%s=%s (%d members)" % (path, value, len(targets)))
     MANIFEST["cpu"]["params"] = dict(params)
 
 
@@ -397,11 +418,7 @@ def mechanism_activity(
     candidates came back with an empty activation column because the extractor
     only looked under `dcache`.
     """
-    level_paths = {
-        "l1i": "system.cpu.icache",
-        "l1d": "system.cpu.dcache",
-        "l2": "system.l2cache",
-    }
+    level_paths = CACHE_STAT_PORTS
     activity: Dict[str, Dict[str, float]] = {}
     for level, described in (manifest.get("caches") or {}).items():
         if described.get("prefetcher", "none") == "none":
@@ -464,6 +481,116 @@ def _spec_for(base: Dict[str, Any], binary: str, args: Sequence[str]) -> Dict[st
 def _read(workdir: str, name: str) -> str:
     path = Path(workdir, name)
     return path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+
+
+#: Where each cache level's statistics live. gem5 names them by the object,
+#: not the level, so a hardcoded prefix reports a mechanism as inactive
+#: precisely when it is working.
+CACHE_STAT_PORTS = {
+    "l1i": "system.cpu.icache",
+    "l1d": "system.cpu.dcache",
+    "l2": "system.l2cache",
+}
+
+
+def inert_prefetchers(config: Dict[str, Any], stats: Dict[str, float]) -> List[str]:
+    """Cache levels whose configured prefetcher issued nothing at all.
+
+    A prefetcher that identifies zero candidates is present in the simulated
+    machine and absent from its behaviour, so a comparison against it measures
+    the *other* arm and nothing else. Measured: an
+    IrregularStreamBufferPrefetcher on L2 produced `pfIdentified = 0,
+    pfIssued = 0` and a cycle count equal to the no-prefetcher run to the
+    cycle, while a StridePrefetcher on the same kernel issued 63,127. The
+    study built on it read as "the mechanism is 2x worse" when what it had
+    measured was the mechanism doing nothing.
+
+    Counters, not cycles: two arms can coincide for honest reasons, but a
+    prefetcher reporting zero identified candidates has said itself that it
+    never engaged.
+    """
+    out: List[str] = []
+    for level, spec in ((config or {}).get("caches") or {}).items():
+        if not isinstance(spec, dict) or not spec.get("prefetcher"):
+            continue
+        port = CACHE_STAT_PORTS.get(level)
+        if not port:
+            continue
+        identified = stats.get(f"{port}.prefetcher.pfIdentified")
+        issued = stats.get(f"{port}.prefetcher.pfIssued")
+        if identified is None and issued is None:
+            continue  # this build does not report them; say nothing
+        if (identified or 0) == 0 and (issued or 0) == 0:
+            out.append(f"{spec['prefetcher']} on {level}")
+    return out
+
+
+#: SIMD op classes gem5's default FUPool prices at `opLat=1, pipelined=True`
+#: across four units, which is a placeholder rather than a model. For SIMD
+#: integer and add/multiply work that is defensible. For divide and square
+#: root it is not: the scalar counterparts in the same pool are FloatDiv
+#: opLat=12 and FloatSqrt opLat=24, both *unpipelined*, on two units.
+MISPRICED_SIMD_OPS = ("SimdFloatDiv", "SimdFloatSqrt", "SimdDiv", "SimdSqrt")
+
+#: Below this share of issued instructions, the mispriced ops are present but
+#: are not what the cycle count is made of, so the warning would be noise.
+MISPRICED_SHARE_FLOOR = 0.01
+
+
+def mispriced_simd_ops(stats: Dict[str, float]) -> Dict[str, Any]:
+    """Vector divides and square roots this run issued, which the model cannot price.
+
+    gem5's default FUPool gives every SIMD op `opLat=1, pipelined=True` on four
+    units while the scalar FloatDiv is opLat=12 unpipelined on two. A two-lane
+    divide therefore costs a fraction of the scalar divide that does half its
+    work. Measured on one kernel of independent double divides: 21.132
+    cycles/element scalar against 2.573 vectorised, an 8.2x per-element speedup
+    from two lanes -- and 2.573 is *below* the scalar divider's own throughput
+    floor of one divide per six cycles, so the vector divides are not reaching
+    that unit at all.
+
+    The consequence is narrow and total: any comparison whose winning arm wins
+    by vectorising divide or square root has measured the placeholder. Two
+    headline figures were withdrawn to this -- `-fno-math-errno` at 91.6% and
+    `-ffast-math` at 87.3% on a normalise kernel, both of which win by removing
+    a libm call that blocks gcc's vectoriser. The arms that stayed scalar were
+    unaffected, which is why this reports rather than refuses: the run may be
+    about SIMD integer work, or the ops may be incidental.
+
+    Counters, not cycles, for the same reason `inert_prefetchers` reads
+    counters: the cycle count cannot say whether it was built from mispriced
+    ops, and the issue counts can. A build that does not publish
+    `issuedInstType_0` accuses nobody.
+    """
+    total = stats.get("system.cpu.issuedInstType_0::total")
+    if not total:
+        return {}
+    issued = {}
+    for op in MISPRICED_SIMD_OPS:
+        count = stats.get(f"system.cpu.issuedInstType_0::{op}")
+        if count:
+            issued[op] = float(count)
+    if not issued:
+        return {}
+    share = sum(issued.values()) / float(total)
+    if share < MISPRICED_SHARE_FLOOR:
+        return {}
+    return {
+        "ops": issued,
+        "share_of_issued": round(share, 4),
+        "warning": (
+            "This run issued "
+            + ", ".join(f"{int(v)} {k}" for k, v in sorted(issued.items()))
+            + f" ({share:.1%} of issued instructions). gem5's default FUPool "
+            "prices every SIMD op at opLat=1 pipelined on four units, while the "
+            "scalar FloatDiv it replaces is opLat=12 unpipelined on two, so a "
+            "vector divide costs far less than the scalar divide doing half its "
+            "work. A cycle count that depends on these is not a measurement of "
+            "the machine. No argument to this tool makes it valid: either keep "
+            "the inner loop scalar, or price the SIMD unit before believing the "
+            "number."
+        ),
+    }
 
 
 def stats_identical(left: Dict[str, float], right: Dict[str, float]) -> bool:
@@ -798,6 +925,11 @@ async def run_configs(
         )
     if "-static" not in safe_flags.split():
         safe_flags = f"{safe_flags} -static"
+    if not timeout_seconds or timeout_seconds <= 0:
+        # None reached asyncio.wait_for as "no limit": a hung simulation held
+        # its worker for ever. Every study that does not choose gets the
+        # bound the single-study tools already use.
+        timeout_seconds = DEFAULT_TIMEOUT_SECONDS
 
     if not agent_sandbox_runtime.execution_enabled():
         raise SandboxRunFailed(
@@ -910,6 +1042,9 @@ async def run_configs(
                 {"success": False, "error": f"Simulation failed: {exc}"}
             )
 
+        never_ran = agent_sandbox_runtime.could_not_run(returncode, stderr, image)
+        if never_ran:
+            raise SandboxRunFailed({"success": False, "error": never_ran})
         if returncode == 89:
             raise SandboxRunFailed(
                 {
@@ -942,10 +1077,25 @@ async def run_configs(
                 {"success": False, "error": line.replace("SPEC_ERROR ", "", 1)}
             )
         if returncode != 0:
+            # Say what failed, not only that something did. The branches above
+            # explain a compiler failure and extract a SPEC_ERROR line; this
+            # one captured gem5's own reason in `stderr` and then reported
+            # "A simulation failed." The action ledger records `error` alone,
+            # so the reason never reached the run: measured, three
+            # measure_headroom calls in one job, each reporting exactly that
+            # sentence, with nothing anywhere to act on.
+            detail = _gem5_failure_line(stderr)
             raise SandboxRunFailed(
                 {
                     "success": False,
-                    "error": "A simulation failed.",
+                    "error": (
+                        f"A simulation failed: {detail}"
+                        if detail
+                        else (
+                            "A simulation failed and gem5 printed nothing to "
+                            "explain it; its output is in `stderr`."
+                        )
+                    ),
                     "stderr": stderr[-MAX_OUTPUT_CHARS:],
                 }
             )
@@ -965,7 +1115,15 @@ async def run_configs(
                 manifest = json.loads(_read(workdir, f"{name}.manifest.json") or "{}")
             except json.JSONDecodeError:
                 manifest = {}
-            runs[name] = {"stats": stats, "manifest": manifest}
+            # Attached here rather than left to each caller: five study
+            # functions consume these runs and only one remembered to ask.
+            # A run that cannot be priced should not be separable from the
+            # fact that it cannot be priced.
+            runs[name] = {
+                "stats": stats,
+                "manifest": manifest,
+                "mispriced_simd": mispriced_simd_ops(stats) or None,
+            }
         return runs
 
 
@@ -1233,6 +1391,101 @@ def explain_probe_failure(stderr: str) -> str:
     )
 
 
+#: A gem5 frame in a libc backtrace: `/opt/gem5/build/ARM/gem5.opt(_ZN4gem5...)`.
+_GEM5_FRAME = re.compile(r"gem5[^(]*\((_ZN[A-Za-z0-9_]+)")
+
+
+def _demangle_nested(symbol: str) -> str:
+    """The qualified name inside an Itanium `_ZN...E` symbol, or "".
+
+    Only the nested-name case, which is every frame gem5 prints. Written out
+    rather than shelled to `c++filt`, which the API image does not carry.
+    """
+    if not symbol.startswith("_ZN"):
+        return ""
+    body, parts = symbol[3:], []
+    while body and body[0].isdigit():
+        match = re.match(r"\d+", body)
+        length, start = int(match.group()), match.end()
+        segment = body[start : start + length]
+        if len(segment) < length:  # truncated in the captured output
+            return ""
+        parts.append(segment)
+        body = body[start + length :]
+    return "::".join(parts)
+
+
+def _crash_site(lines: Sequence[str]) -> str:
+    """Where gem5 was when it died, for a crash that printed no diagnostic.
+
+    A `panic:` or `fatal:` is gem5 explaining itself; a bare libc backtrace is
+    gem5 dying without a word, and then the top frame is the only account of
+    what happened that exists. Measured on the L1d-idealisation crash: no
+    diagnostic line anywhere in stderr, and the useful fact -- that it died in
+    the cache's deferred-packet queue -- was legible only from a mangled
+    symbol nobody was reading.
+    """
+    for line in lines:
+        match = _GEM5_FRAME.search(line)
+        if not match:
+            continue
+        name = _demangle_nested(match.group(1))
+        if name:
+            return name
+    return ""
+
+
+def _gem5_failure_line(stderr: str) -> str:
+    """The line of gem5 output that explains a non-zero exit, if there is one.
+
+    gem5 announces what went wrong on a line of its own -- `fatal:`, `panic:`
+    or `error:` -- and then keeps printing, so the last line is usually not the
+    useful one. Preferring the announcement and falling back to the final line
+    beats quoting either blindly.
+    """
+    lines = [ln.strip() for ln in (stderr or "").splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    # The harness's own marker first: it names which arm died, which is the
+    # one thing the caller cannot work out from anything else. Measured: a
+    # headroom run printed `ARM_FAILED ideal_l1d_capacity` and then a libc
+    # backtrace, and reporting the shell's "Aborted" instead said nothing
+    # about which idealisation was at fault.
+    arm = ""
+    for line in lines:
+        if line.startswith("ARM_FAILED"):
+            arm = line.split(None, 1)[1] if " " in line else ""
+            break
+
+    reason = ""
+    for marker in ("panic:", "fatal:", "error:"):
+        for line in lines:
+            if marker in line.lower():
+                reason = line
+                break
+        if reason:
+            break
+
+    # Both halves or neither. Returning on the marker alone left the caller
+    # holding "the ideal_l1d_capacity arm did not run" -- which names the arm
+    # and discards gem5's own account of why, the half nobody can reconstruct.
+    # Measured on the L1d-idealisation crash: the panic naming the structure
+    # gem5 could not build was in `stderr` throughout and reached no one.
+    if not reason:
+        # No diagnostic at all: gem5 aborted rather than explaining itself.
+        site = _crash_site(lines)
+        if site:
+            reason = f"gem5 aborted in {site} without printing a diagnostic"
+
+    if arm and reason:
+        return f"the {arm} arm did not run: {reason}"[:400]
+    if arm:
+        return f"the {arm} arm did not run"
+    if reason:
+        return reason[:300]
+    return lines[-1][:300]
+
+
 async def describe_gem5_mechanisms(
     *,
     kind: str = "",
@@ -1325,4 +1578,21 @@ async def describe_gem5_mechanisms(
             "prefetcher no capacity to issue into, and it measures as no "
             "mechanism at all."
         ),
+        # The same answer as a finding, because goal contracts count finding
+        # types and this tool's spec declares it produces mechanism_catalog.
+        # Returning it only under "mechanisms" made that contract unsatisfiable
+        # by its only producer -- the defect create_synthesis_document had, and
+        # the reason mechanism_catalog had never once been recorded here.
+        "findings": [
+            {
+                "type": "mechanism_catalog",
+                "categories": sorted(catalog),
+                "classes": {
+                    category: sorted(options)
+                    for category, options in (
+                        {wanted: catalog[wanted]} if wanted else catalog
+                    ).items()
+                },
+            }
+        ],
     }

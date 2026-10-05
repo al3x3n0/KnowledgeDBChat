@@ -278,3 +278,19 @@ async def list_collaboration_users(
         )
     query = query.order_by(User.username.asc())
     return list((await db.execute(query)).scalars().all())
+
+
+async def build_collaboration_user_lookup(
+    db: AsyncSession,
+    *,
+    current_user: User,
+) -> dict[str, User]:
+    visible_user_ids = await list_collaboration_user_ids(db, current_user=current_user)
+    if current_user.id not in visible_user_ids:
+        visible_user_ids.add(current_user.id)
+    rows = list(
+        (await db.execute(select(User).where(User.id.in_(visible_user_ids))))
+        .scalars()
+        .all()
+    )
+    return {str(row.id): row for row in rows}

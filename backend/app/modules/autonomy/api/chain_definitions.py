@@ -50,13 +50,25 @@ async def list_chain_definitions(
     "/chains",
     response_model=AgentJobChainDefinitionResponse,
     status_code=status.HTTP_201_CREATED,
+    deprecated=True,
 )
 async def create_chain_definition(
     chain_create: AgentJobChainDefinitionCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
-    """Create a reusable autonomous-job chain definition."""
+    """Create a reusable autonomous-job chain definition. **Deprecated.**
+
+    A chain and a pipeline describe the same runtime, and a chain says only
+    *when* the next step fires while a pipeline says *what must be true* when a
+    stage is done. New work should be written as a pipeline; an existing chain
+    converts with ``POST /agent-pipelines/import/chains``, which copies rather
+    than moves, so nothing that runs today stops running.
+
+    Still served, and still runs: this is deprecated as a way to *write work
+    down*, not as a runtime. Removing it before a person has a working pipeline
+    in its place would take away the thing that works.
+    """
     try:
         chain = await agent_chain_definition_service.create(
             request=chain_create,
@@ -87,7 +99,11 @@ async def get_chain_definition(
     return agent_chain_definition_service.to_response(chain)
 
 
-@router.patch("/chains/{chain_id}", response_model=AgentJobChainDefinitionResponse)
+@router.patch(
+    "/chains/{chain_id}",
+    response_model=AgentJobChainDefinitionResponse,
+    deprecated=True,
+)
 async def update_chain_definition(
     chain_id: UUID,
     chain_update: AgentJobChainDefinitionUpdate,

@@ -13,8 +13,7 @@ from app.core.celery import celery_app
 from app.core.config import settings
 from app.core.database import create_celery_session
 from app.models.chat import ChatMessage, ChatSession
-from app.models.memory import UserPreferences
-from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.llm_service import LLMService, load_user_llm_settings
 
 
 @celery_app.task(bind=True, name="app.tasks.chat_tasks.generate_chat_title")
@@ -51,13 +50,11 @@ async def _async_generate_chat_title(task, session_id: str) -> Dict[str, Any]:
                     "error": "Session not found",
                 }
 
-            # Check if title is already generated (not a default date-based title)
-            # Allow regeneration if title starts with "Chat " (default format) or matches date pattern
-            if (
-                session.title
-                and not session.title.startswith("Chat ")
-                and " - " in session.title
-            ):
+            # Only the placeholder title is replaced; anything a person (or an
+            # earlier run) chose stays.
+            from app.services.chat_service import has_default_title
+
+            if not has_default_title(session.title):
                 # Title already has date format with generated content, skip
                 logger.info(
                     f"Session {session_id} already has a generated title: {session.title}"
@@ -97,20 +94,7 @@ async def _async_generate_chat_title(task, session_id: str) -> Dict[str, Any]:
             )
 
             # Load user preferences for task-specific model selection
-            user_settings = None
-            try:
-                prefs_result = await db.execute(
-                    select(UserPreferences).where(
-                        UserPreferences.user_id == session.user_id
-                    )
-                )
-                user_prefs = prefs_result.scalar_one_or_none()
-                if user_prefs:
-                    user_settings = UserLLMSettings.from_preferences(user_prefs)
-            except Exception as e:
-                logger.warning(
-                    f"Failed to load user preferences for title generation: {e}"
-                )
+            user_settings = await load_user_llm_settings(db, session.user_id)
 
             # Generate title using LLM
             llm_service = LLMService()

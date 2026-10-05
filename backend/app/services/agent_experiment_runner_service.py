@@ -11,7 +11,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob, AgentJobStatus
+from app.services import agent_sandbox_runtime, llm_json
 from app.services.agent_artifact_paths import insert_before_end_document, safe_relpath
+from app.services.agent_runner_progress import phase_reporter
 from app.services.llm_service import LLMService
 from app.services.project_profile_service import build_project_profile
 
@@ -49,18 +51,7 @@ class AgentExperimentRunnerService:
         from app.models.experiment import ExperimentPlan
         from app.models.research_note import ResearchNote
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {
-                    "phase": phase,
-                    "action": "experiment_plan_generate",
-                    "result": details,
-                }
-            )
+        _emit = phase_reporter(job, "experiment_plan_generate")
 
         def _extract_hypothesis_section(markdown: str) -> Optional[str]:
             if not markdown:
@@ -166,18 +157,14 @@ class AgentExperimentRunnerService:
             db=db,
         )
 
-        try:
-            parsed = json.loads(raw) if isinstance(raw, str) else dict(raw)
-            if not isinstance(parsed, dict):
-                raise ValueError("Plan must be an object")
-        except Exception:
-            m = re.search(r"\{.*\}", str(raw), flags=re.DOTALL)
-            if not m:
-                job.status = AgentJobStatus.FAILED.value
-                job.error = "Model did not return valid JSON"
-                await db.commit()
-                return {"status": "failed", "error": job.error}
-            parsed = json.loads(m.group(0))
+        parsed = llm_json.extract_json_object(
+            raw if isinstance(raw, (str, dict)) else str(raw or "")
+        )
+        if parsed is None:
+            job.status = AgentJobStatus.FAILED.value
+            job.error = "Model did not return valid JSON"
+            await db.commit()
+            return {"status": "failed", "error": job.error}
 
         plan = ExperimentPlan(
             user_id=job.user_id,
@@ -231,14 +218,7 @@ class AgentExperimentRunnerService:
         """
         cfg = job.config if isinstance(job.config, dict) else {}
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "experiment_loop_seed", "result": details}
-            )
+        _emit = phase_reporter(job, "experiment_loop_seed")
 
         research_note_id = str(
             cfg.get("research_note_id") or cfg.get("note_id") or ""
@@ -387,14 +367,7 @@ class AgentExperimentRunnerService:
         """
         cfg = job.config if isinstance(job.config, dict) else {}
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "experiment_decide_next", "result": details}
-            )
+        _emit = phase_reporter(job, "experiment_decide_next")
 
         iteration = int(cfg.get("experiment_iteration") or 0)
         variants = (
@@ -458,11 +431,7 @@ class AgentExperimentRunnerService:
                 user_id=job.user_id,
                 db=db,
             )
-            try:
-                payload = json.loads(raw)
-            except Exception:
-                m = re.search(r"\{.*\}", str(raw), flags=re.DOTALL)
-                payload = json.loads(m.group(0)) if m else {}
+            payload = llm_json.extract_json_object(str(raw or "")) or {}
             if isinstance(payload, dict):
                 rn = str(payload.get("run_name") or "").strip()
                 cmds = payload.get("commands")
@@ -521,18 +490,7 @@ class AgentExperimentRunnerService:
         from app.models.experiment import ExperimentPlan, ExperimentRun
         from app.models.research_note import ResearchNote
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {
-                    "phase": phase,
-                    "action": "experiment_persist_results",
-                    "result": details,
-                }
-            )
+        _emit = phase_reporter(job, "experiment_persist_results")
 
         cfg = job.config if isinstance(job.config, dict) else {}
         inherited = (
@@ -820,14 +778,7 @@ class AgentExperimentRunnerService:
             get_scientific_validation_runtime_limits,
         )
 
-        def _emit(progress: int, phase: str, details: str):
-            job.progress = max(0, min(100, int(progress)))
-            job.current_phase = phase
-            job.phase_details = details
-            job.last_activity_at = datetime.utcnow()
-            job.add_log_entry(
-                {"phase": phase, "action": "experiment_runner", "result": details}
-            )
+        _emit = phase_reporter(job, "experiment_runner")
 
         async def _linked_run() -> Optional[ExperimentRun]:
             run_id_raw = str(cfg.get("experiment_run_id") or "").strip()
@@ -1435,6 +1386,7 @@ class AgentExperimentRunnerService:
                             "stderr": "",
                             "duration_ms": 0,
                         }
+                        container_name = ""
                         try:
                             if backend_effective == "docker":
                                 mem_mb = int(
@@ -1462,33 +1414,20 @@ class AgentExperimentRunnerService:
                                         128,
                                     )
                                 )
-                                command = [
-                                    "docker",
-                                    "run",
-                                    "--rm",
-                                    "--network",
-                                    "none",
-                                    "--cap-drop",
-                                    "ALL",
-                                    "--security-opt",
-                                    "no-new-privileges",
-                                    "--pids-limit",
-                                    str(max(32, min(pids, 1024))),
-                                    "--memory",
-                                    f"{max(128, min(mem_mb, 8192))}m",
-                                    "--cpus",
-                                    str(max(0.25, min(cpus, 8.0))),
-                                    "--user",
-                                    "65534:65534",
-                                    "-v",
-                                    f"{tmp}:/work:rw",
-                                    "-w",
-                                    "/work",
-                                    image_effective,
-                                    "/bin/sh",
-                                    "-lc",
-                                    cmd,
-                                ]
+                                # Named, so a run that outlives its timeout can be removed:
+                                # killing the `docker run` client leaves the container running.
+                                container_name = (
+                                    agent_sandbox_runtime.new_container_name()
+                                )
+                                command = agent_sandbox_runtime.docker_command(
+                                    image=image_effective,
+                                    workdir=str(tmp),
+                                    script=cmd,
+                                    memory=f"{max(128, min(mem_mb, 8192))}m",
+                                    cpus=str(max(0.25, min(cpus, 8.0))),
+                                    pids_limit=str(max(32, min(pids, 1024))),
+                                    name=container_name,
+                                )
                                 run_kwargs = {
                                     "cwd": str(tmp_path),
                                     "env": env,
@@ -1525,8 +1464,18 @@ class AgentExperimentRunnerService:
                             rec["stderr"] = (
                                 str(getattr(e, "stderr", "") or "") or "Timed out"
                             )[:stderr_cap]
+                            await _asyncio.to_thread(
+                                agent_sandbox_runtime.remove_container_sync,
+                                container_name,
+                            )
                         except Exception as e:
                             rec["stderr"] = str(e)[:stderr_cap]
+                            # Includes the outer wait_for giving up, which
+                            # abandons the thread and the container with it.
+                            await _asyncio.to_thread(
+                                agent_sandbox_runtime.remove_container_sync,
+                                container_name,
+                            )
                         finally:
                             rec["duration_ms"] = int(
                                 (datetime.utcnow() - start).total_seconds() * 1000

@@ -11,28 +11,20 @@ from __future__ import annotations
 
 import hashlib
 import re
+from functools import partial
 from typing import Any, Callable, Dict, List, Optional
 
 from app.models.agent_job import AgentJob, ChainTriggerCondition
+from app.services.config_values import clamped_float, clamped_int
 
 
 def get_swarm_config(job: AgentJob) -> Dict[str, Any]:
     """Get normalized config for swarm child-agent generation."""
     cfg = job.config if isinstance(job.config, dict) else {}
 
-    def _as_int(key: str, default: int, lo: int, hi: int) -> int:
-        try:
-            val = int(cfg.get(key, default))
-        except Exception:
-            val = default
-        return max(lo, min(val, hi))
+    _as_int = partial(clamped_int, cfg)
 
-    def _as_float(key: str, default: float, lo: float, hi: float) -> float:
-        try:
-            val = float(cfg.get(key, default))
-        except Exception:
-            val = default
-        return max(lo, min(val, hi))
+    _as_float = partial(clamped_float, cfg)
 
     roles = cfg.get("swarm_roles")
     if isinstance(roles, str):

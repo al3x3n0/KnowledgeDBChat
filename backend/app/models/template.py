@@ -13,7 +13,17 @@ from app.core.database import Base
 
 
 class TemplateJob(Base):
-    """Template filling job record."""
+    """One run of filling a document template.
+
+    NOT an agent job template. This is the document subsystem: a DOCX in MinIO
+    whose sections are written from source documents, tracked here while it
+    runs. The similarly-named `AgentJobTemplate` (models/agent_job.py, table
+    `agent_job_templates`) is a preset for creating an autonomous agent job and
+    shares nothing with this but the word "template".
+
+    The two are told apart by which noun leads: a *template job* fills a
+    template; an *agent job template* describes an agent job.
+    """
 
     __tablename__ = "template_jobs"
 

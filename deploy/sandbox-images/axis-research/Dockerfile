@@ -27,6 +27,7 @@ COPY . .
 RUN cargo build --release --locked || cargo build --release
 
 FROM debian:bookworm-slim
+
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         z3 \
@@ -39,6 +40,21 @@ RUN set -eux; \
     axis --help >/dev/null 2>&1 || axis 2>&1 | head -1; \
     z3 --version; \
     python3 --version
+
+# What built this image. `axis --version` reports "(unknown)" because the crate
+# reads git at compile time and the build context carries no .git, so the
+# running binary cannot say which source produced it -- which is exactly the
+# detector that catches a stale image. A rebuilt binary once fixed a validation
+# failure that had been read as a real defect; without provenance the next such
+# failure is unattributable. Passed by `make sandbox-axis` from the AXIS repo.
+#
+# Deliberately the last layers: the revision changes on every commit, and
+# anything below it would be rebuilt with it. The apt install above must stay
+# cached, because the package mirrors are not always reachable from here.
+ARG AXIS_GIT_REV=unknown
+LABEL org.opencontainers.image.title=kdbc-axis-research
+LABEL org.opencontainers.image.revision=$AXIS_GIT_REV
+RUN printf '%s\n' "$AXIS_GIT_REV" > /etc/axis-build-rev
 
 ENV HOME=/work
 WORKDIR /work

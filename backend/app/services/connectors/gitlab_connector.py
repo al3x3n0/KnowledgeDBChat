@@ -11,9 +11,10 @@ import httpx
 from loguru import logger
 
 from .base_connector import BaseConnector
+from .repo_tree import RepoTreeMixin
 
 
-class GitLabConnector(BaseConnector):
+class GitLabConnector(RepoTreeMixin, BaseConnector):
     """Connector for GitLab repositories and content."""
 
     def __init__(self):
@@ -76,12 +77,17 @@ class GitLabConnector(BaseConnector):
 
         except Exception as e:
             logger.error(f"Failed to initialize GitLab connector: {e}")
+            self.last_error = str(e)
             return False
 
     async def test_connection(self) -> bool:
         """Test connection to GitLab."""
         try:
             response = await self.client.get(f"{self.base_url}/api/v4/user")
+            if response.status_code != 200:
+                self.last_error = (
+                    f"GitLab rejected the credentials (HTTP {response.status_code})"
+                )
             return response.status_code == 200
         except Exception as e:
             logger.error(f"GitLab connection test failed: {e}")
@@ -345,17 +351,6 @@ class GitLabConnector(BaseConnector):
             )
 
         return files
-
-    def _should_ignore(self, path: str) -> bool:
-        try:
-            from fnmatch import fnmatch
-
-            for pat in self.ignore_globs:
-                if fnmatch(path, pat):
-                    return True
-        except Exception:
-            return False
-        return False
 
     async def _merge_gitignore(
         self, project_id: int, default_branch: Optional[str] = None
@@ -1201,26 +1196,6 @@ class GitLabConnector(BaseConnector):
         except Exception as e:
             logger.error(f"Error getting file tree for {project_id}: {e}")
             return {"tree": None, "text": ""}
-
-    def _tree_to_text(self, node: Dict, prefix: str, lines: List[str]) -> None:
-        """Convert tree node to text lines recursively."""
-        children = node.get("children", [])
-        children = sorted(
-            children,
-            key=lambda x: (x.get("type") != "directory", x.get("name", "").lower()),
-        )
-
-        for i, child in enumerate(children):
-            is_last = i == len(children) - 1
-            connector = "└── " if is_last else "├── "
-            name = child.get("name", "")
-            if child.get("type") == "directory":
-                name += "/"
-            lines.append(f"{prefix}{connector}{name}")
-
-            if child.get("type") == "directory" and child.get("children"):
-                extension = "    " if is_last else "│   "
-                self._tree_to_text(child, prefix + extension, lines)
 
     async def get_open_issues(
         self, project_id: str, limit: int = 20

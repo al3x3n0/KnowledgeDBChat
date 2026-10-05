@@ -50,18 +50,8 @@ class AgentDecision(BaseModel):
 
     @field_validator("goal_achieved", "should_stop", mode="before")
     @classmethod
-    def coerce_bool(cls, v: Any) -> bool:
-        if isinstance(v, bool):
-            return v
-        if isinstance(v, (int, float)):
-            return bool(v)
-        if isinstance(v, str):
-            lowered = v.strip().lower()
-            if lowered in {"true", "yes", "1", "y"}:
-                return True
-            if lowered in {"false", "no", "0", "n"}:
-                return False
-        return False
+    def _coerce_flag(cls, v: Any) -> bool:
+        return coerce_bool(v)
 
     @field_validator("reasoning", mode="before")
     @classmethod

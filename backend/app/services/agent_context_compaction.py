@@ -199,6 +199,15 @@ class AgentContextCompactionService:
             # settings -- silently, for every compaction. The executor holds
             # them as an attribute.
             user_settings = getattr(executor, "user_settings", None)
+            if user_settings is None:
+                # The executor proper has no such attribute -- only its
+                # runtime adapter does -- so this was None for every
+                # compaction and the owner's provider and model were ignored.
+                from app.services.llm_service import load_user_llm_settings
+
+                user_settings = await load_user_llm_settings(
+                    db, getattr(job, "user_id", None)
+                )
 
             routing: Optional[Dict[str, Any]] = None
             get_routing = getattr(executor, "_llm_routing_from_job_config", None)

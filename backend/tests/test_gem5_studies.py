@@ -7,6 +7,8 @@ stride-64B scan where idealising the L1 recovered 84.5% and the issue queue
 reason these tools exist.
 """
 
+import json
+
 import pytest
 
 from app.services import agent_gem5_studies as st
@@ -171,3 +173,479 @@ class TestNamingAStructure:
         catalogue rather than silently idealising something else."""
         assert st.resolve_target("l2_cache") == "l2_cache"
         assert "l2_cache" not in st.IDEALISATIONS
+
+
+class TestTheEvaluationCarriesItsDistribution:
+    """Measured from job de85bc66: ISB vs stride across four kernels.
+
+    Every kernel was slower, but by amounts spanning a halving and a blip on
+    the control -- which is the case a bare list of names cannot express.
+    """
+
+    MEASURED = [
+        {"kernel": "strided", "speedup": 0.5007},
+        {"kernel": "pointer_chase", "speedup": 0.9012},
+        {"kernel": "indirect_gather", "speedup": 0.8318},
+        {"kernel": "dense_reuse", "speedup": 0.9856},
+    ]
+
+    def test_a_regression_is_named_with_how_far_it_fell(self):
+        line = st._with_magnitudes(self.MEASURED, [k["kernel"] for k in self.MEASURED])
+        assert "strided 0.50x" in line
+        assert "dense_reuse 0.99x" in line
+
+    def test_the_worst_is_named_first(self):
+        line = st._with_magnitudes(self.MEASURED, [k["kernel"] for k in self.MEASURED])
+        assert line.index("strided") < line.index("dense_reuse")
+
+    def test_only_the_named_kernels_appear(self):
+        line = st._with_magnitudes(self.MEASURED, ["indirect_gather"])
+        assert line == "indirect_gather 0.83x"
+
+
+class TestTheFindingKeepsThePerKernelNumbers:
+    """A multi-kernel evaluation exists to produce a distribution.
+
+    The first real one recorded geomean, best and worst on the finding and
+    dropped `per_kernel`, so the four numbers it was run to produce survived
+    only in a checkpoint that happened to be written.
+    """
+
+    CYCLES = {
+        "strided": (806490.0, 1610867.0),
+        "dense_reuse": (880662.0, 893565.0),
+    }
+
+    async def _evaluate(self, monkeypatch):
+        async def fake_run_configs(*, code, configs, **kwargs):
+            name = code.strip()
+            base, var = self.CYCLES[name]
+            return {
+                "baseline": {"stats": {"simTicks": base}, "cycles": base},
+                "variant": {"stats": {"simTicks": var}, "cycles": var},
+            }
+
+        monkeypatch.setattr(st, "run_configs", fake_run_configs)
+        monkeypatch.setattr(st, "_cycles", lambda run: run["cycles"])
+        monkeypatch.setattr(st, "stats_identical", lambda a, b: False)
+        return await st.evaluate_across_kernels(
+            kernels=[{"name": n, "code": n} for n in self.CYCLES],
+            variant={
+                "caches": {"l2": {"prefetcher": "IrregularStreamBufferPrefetcher"}}
+            },
+            baseline={"caches": {"l2": {"prefetcher": "StridePrefetcher"}}},
+            label="isb_vs_stride",
+        )
+
+    async def test_the_finding_carries_every_kernel(self, monkeypatch):
+        result = await self._evaluate(monkeypatch)
+        finding = result["findings"][0]
+        assert {k["kernel"] for k in finding["per_kernel"]} == set(self.CYCLES)
+
+    async def test_the_title_distinguishes_a_halving_from_a_blip(self, monkeypatch):
+        result = await self._evaluate(monkeypatch)
+        title = result["findings"][0]["title"]
+        assert "strided 0.50x" in title
+        assert "dense_reuse 0.99x" in title
+
+
+class TestTheOnePairingThatCrashesGem5:
+    """Idealised l1d above a prefetching L2 dies inside gem5's cache code.
+
+    Each case below was measured one factor at a time on the kernel that first
+    hit it, which is what makes the rule this narrow: the crash needs both a
+    16MiB L1d and a prefetcher on L2, and every other pairing is real work
+    somebody should be allowed to do.
+    """
+
+    PF = {"caches": {"l2": {"prefetcher": "StridePrefetcher"}}}
+
+    def test_the_measured_crash_is_refused(self):
+        refusal = st._l1d_prefetcher_conflict(["l1d_capacity"], self.PF)
+        assert refusal
+        assert "StridePrefetcher" in refusal
+
+    def test_the_refusal_names_alternatives_that_were_measured(self):
+        refusal = st._l1d_prefetcher_conflict(["l1d_capacity"], self.PF)
+        for alternative in ("l1i_capacity", "l2_capacity", "caches.l1d.prefetcher"):
+            assert alternative in refusal, alternative
+
+    def test_idealising_l1d_without_a_mechanism_is_allowed(self):
+        assert not st._l1d_prefetcher_conflict(["l1d_capacity"], {})
+
+    def test_the_same_prefetcher_one_level_up_is_allowed(self):
+        assert not st._l1d_prefetcher_conflict(
+            ["l1d_capacity"],
+            {"caches": {"l1d": {"prefetcher": "StridePrefetcher"}}},
+        )
+
+    def test_the_other_cache_idealisations_are_allowed(self):
+        for target in ("l1i_capacity", "l2_capacity"):
+            assert not st._l1d_prefetcher_conflict([target], self.PF), target
+
+    def test_a_non_cache_idealisation_is_allowed(self):
+        assert not st._l1d_prefetcher_conflict(["issue_queue"], self.PF)
+
+    async def test_it_refuses_before_simulating_anything(self):
+        """The baseline arm runs first, so a doomed run must not start."""
+        result = await st.measure_headroom(
+            code="int main(void){return 0;}",
+            targets=["l1d_capacity"],
+            config=self.PF,
+        )
+        assert result["success"] is False
+        assert "crashes gem5" in result["error"]
+
+
+class TestAnEvaluationOfAMechanismThatNeverRan:
+    """`geomean 1.0000x` was recorded as a finding and accepted by a contract.
+
+    An IrregularStreamBufferPrefetcher on L2 identified zero candidates on all
+    four kernels and matched the no-prefetcher run to the cycle. Against a
+    baseline that does prefetch, the same null reads as the baseline's own
+    gain inverted -- 1/2.1028 = 0.4756 -- and was reported as the mechanism
+    being twice as slow.
+    """
+
+    ZERO = {
+        "system.l2cache.prefetcher.pfIdentified": 0.0,
+        "system.l2cache.prefetcher.pfIssued": 0.0,
+    }
+    BUSY = {
+        "system.l2cache.prefetcher.pfIdentified": 63127.0,
+        "system.l2cache.prefetcher.pfIssued": 63127.0,
+    }
+    VARIANT = {"caches": {"l2": {"prefetcher": "IrregularStreamBufferPrefetcher"}}}
+
+    def _kernels(self):
+        return [
+            {"name": "a", "code": "int main(void){return 0;}"},
+            {"name": "b", "code": "int main(void){return 1;}"},
+        ]
+
+    async def _evaluate(self, monkeypatch, variant_stats):
+        async def fake_run_configs(*, code, configs, **kwargs):
+            cycles = 1000.0 if code.strip().endswith("0;}") else 2000.0
+            return {
+                "baseline": {"stats": {}, "cycles": cycles},
+                "variant": {"stats": dict(variant_stats), "cycles": cycles},
+            }
+
+        monkeypatch.setattr(st, "run_configs", fake_run_configs)
+        monkeypatch.setattr(st, "_cycles", lambda run: run["cycles"])
+        monkeypatch.setattr(st, "stats_identical", lambda a, b: False)
+        return await st.evaluate_across_kernels(
+            kernels=self._kernels(), variant=self.VARIANT, label="null"
+        )
+
+    async def test_a_mechanism_inert_everywhere_is_refused(self, monkeypatch):
+        result = await self._evaluate(monkeypatch, self.ZERO)
+        assert result["success"] is False
+        assert "issued no prefetches" in result["error"]
+        assert "IrregularStreamBufferPrefetcher" in result["error"]
+
+    async def test_the_refusal_says_which_kernels(self, monkeypatch):
+        result = await self._evaluate(monkeypatch, self.ZERO)
+        assert result["inert_on"] == ["a", "b"]
+
+    async def test_a_mechanism_that_engaged_is_measured_normally(self, monkeypatch):
+        """Equal cycles are only damning when the mechanism reported nothing."""
+        result = await self._evaluate(monkeypatch, self.BUSY)
+        assert result["success"] is True
+        assert result["geomean_speedup"] == 1.0
+
+
+class TestASweepWhoseCurveNeverMoves:
+    """Five points at 427,572 cycles were recorded as "saturating at 1".
+
+    The path swept was `caches.l2.prefetcher.degree`, which puts the value
+    beside `class` where nothing reads it, so every point ran the same
+    machine. Swept properly the setting is worth 2.01x from degree 1 to 16
+    and has not saturated there, so the recorded advice -- that tuning it is
+    pointless -- was backwards.
+    """
+
+    POINTS = [1, 2, 4, 8, 16]
+
+    async def _sweep(self, monkeypatch, cycles_for):
+        async def fake_run_configs(*, code, configs, **kwargs):
+            return {name: {"stats": {}, "cycles": cycles_for(name)} for name in configs}
+
+        monkeypatch.setattr(st, "run_configs", fake_run_configs)
+        monkeypatch.setattr(st, "_cycles", lambda run: run["cycles"])
+        return await st.sweep_mechanism(
+            code="int main(void){return 0;}",
+            variant={"caches": {"l2": {"prefetcher": "StridePrefetcher"}}},
+            vary="caches.l2.prefetcher.degree",
+            values=self.POINTS,
+            label="degree",
+        )
+
+    async def test_a_flat_curve_is_refused(self, monkeypatch):
+        result = await self._sweep(
+            monkeypatch, lambda name: 1000.0 if name == "baseline" else 427572.0
+        )
+        assert result["success"] is False
+        assert "did not reach the simulated machine" in result["error"]
+
+    async def test_the_refusal_shows_where_the_parameter_belongs(self, monkeypatch):
+        result = await self._sweep(
+            monkeypatch, lambda name: 1000.0 if name == "baseline" else 427572.0
+        )
+        assert "params" in result["error"]
+
+    async def test_a_curve_that_moves_is_measured(self, monkeypatch):
+        """Real degrees: 1 -> 1,029,650 and 16 -> 511,980 cycles per iteration."""
+        order = {}
+
+        def cycles_for(name):
+            if name == "baseline":
+                return 1610867.0
+            order.setdefault(name, 1110061.0 - 20000.0 * len(order))
+            return order[name]
+
+        result = await self._sweep(monkeypatch, cycles_for)
+        assert result["success"] is True
+        assert len({p["cycles"] for p in result["curve"]}) > 1
+
+
+class TestMeasuringTheLoopAndNotItsSetup:
+    """A kernel measured once reports its setup as if it were the work.
+
+    Every case here is a shape that invalidated a real study: a working set
+    that fits in cache (the error that withdrew a whole prefetcher survey), and
+    an initialisation loop larger than the loop it sets up (90% of the runtime
+    in the kernel that reported 2.19x for a mechanism worth 1.0001x).
+    """
+
+    CODE = "int main(void){for(int r=0;r<REPS;r++){} return 0;}"
+
+    async def _measure(self, monkeypatch, *, cycles, misses, code=None, **kw):
+        async def fake_run_configs(*, code, configs, **kwargs):
+            reps = int(code.split("r<")[1].split(";")[0])
+            return {
+                n: {
+                    "stats": {
+                        "system.cpu.numCycles": cycles(n, reps),
+                        "system.l2cache.overallMisses::total": misses(n, reps),
+                    }
+                }
+                for n in configs
+            }
+
+        monkeypatch.setattr(st, "run_configs", fake_run_configs)
+        monkeypatch.setattr(
+            st, "_cycles", lambda run: run["stats"]["system.cpu.numCycles"]
+        )
+        return await st.measure_marginal(
+            code=code or self.CODE, configs={"a": {}}, **kw
+        )
+
+    async def test_setup_is_cancelled(self, monkeypatch):
+        """1,000,000 fixed + 50,000 per repetition, whatever the counts."""
+        out = await self._measure(
+            monkeypatch,
+            cycles=lambda n, r: 1_000_000 + 50_000 * r,
+            misses=lambda n, r: 5_000 * r,
+        )
+        assert out["success"] is True
+        a = out["per_config"]["a"]
+        assert a["cycles_per_repetition"] == 50_000.0
+        assert a["fixed_cost_cycles"] == 1_000_000.0
+
+    async def test_a_resident_working_set_is_refused(self, monkeypatch):
+        """The error that withdrew a prefetcher survey: the measured loop
+        never reaches memory, so the comparison is not about the cache."""
+        out = await self._measure(
+            monkeypatch,
+            cycles=lambda n, r: 100_000 + 5_000 * r,
+            misses=lambda n, r: 10 * r,
+        )
+        assert out["success"] is False
+        assert "resident" in out["error"]
+        # No cycle counts come back from a refused measurement -- the earlier
+        # version returned them as diagnostics and a live run built a study on
+        # them. What comes back is what was wrong.
+        assert "per_config" not in out
+        assert out["misses_per_repetition"]["a"] == 10.0
+
+    async def test_setup_domination_is_reported_not_refused(self, monkeypatch):
+        """This tool has already corrected for it -- but the caller's kernel is
+        shaped wrong for anyone else's tool, and should hear so."""
+        out = await self._measure(
+            monkeypatch,
+            cycles=lambda n, r: 9_000_000 + 100_000 * r,
+            misses=lambda n, r: 50_000 * r,
+        )
+        assert out["success"] is True
+        assert out["setup_dominated_configs"] == ["a"]
+        assert out["per_config"]["a"]["fixed_cost_dominates"] is True
+
+    async def test_a_loop_that_costs_nothing_extra_is_refused(self, monkeypatch):
+        """More repetitions costing no more cycles means the loop was
+        optimised away, or the count never reached the program."""
+        out = await self._measure(
+            monkeypatch,
+            cycles=lambda n, r: 1_000_000,
+            misses=lambda n, r: 50_000 * r,
+        )
+        assert out["success"] is False
+        assert "did not cost more" in out["error"]
+
+    async def test_code_without_the_token_is_refused_with_the_shape(self):
+        out = await st.measure_marginal(
+            code="int main(void){return 0;}", configs={"a": {}}
+        )
+        assert out["success"] is False
+        assert "REPS" in out["error"]
+
+    async def test_two_distinct_counts_are_required(self):
+        out = await st.measure_marginal(code=self.CODE, configs={"a": {}}, reps=(4, 4))
+        assert out["success"] is False
+        assert "two different" in out["error"]
+
+
+class TestARefusalThatHandsBackItsNumbers:
+    """A live run took the per-config block out of two refused measurements and
+    built a study on it -- prediction, verdict, structured output, contract
+    satisfied. The numbers were diagnostics; they read as results.
+
+    And the refusal itself was wrong for that study. A kernel measuring an
+    adder SHOULD be cache-resident, or it measures the memory system instead.
+    Only the caller knows which study it is.
+    """
+
+    CODE = "int main(void){for(int r=0;r<REPS;r++){} return 0;}"
+
+    async def _run(self, monkeypatch, *, memory_bound=True):
+        async def fake_run_configs(*, code, configs, **kwargs):
+            reps = int(code.split("r<")[1].split(";")[0])
+            return {
+                n: {
+                    "stats": {
+                        "system.cpu.numCycles": 100_000 + 5_000 * reps,
+                        "system.l2cache.overallMisses::total": 3 * reps,  # resident
+                    }
+                }
+                for n in configs
+            }
+
+        monkeypatch.setattr(st, "run_configs", fake_run_configs)
+        monkeypatch.setattr(
+            st, "_cycles", lambda run: run["stats"]["system.cpu.numCycles"]
+        )
+        return await st.measure_marginal(
+            code=self.CODE, configs={"a": {}}, memory_bound=memory_bound
+        )
+
+    async def test_a_refusal_carries_no_cycle_counts(self, monkeypatch):
+        out = await self._run(monkeypatch)
+        assert out["success"] is False
+        assert "per_config" not in out
+        blob = json.dumps(out)
+        assert "cycles_per_repetition" not in blob
+
+    async def test_a_refusal_still_says_how_wrong_it_is(self, monkeypatch):
+        """Refusing without evidence would just be a wall."""
+        out = await self._run(monkeypatch)
+        assert out["misses_per_repetition"]["a"] == 3.0
+
+    async def test_a_refusal_names_the_way_out(self, monkeypatch):
+        out = await self._run(monkeypatch)
+        assert "memory_bound=false" in out["error"]
+
+    async def test_a_compute_study_may_be_resident_on_purpose(self, monkeypatch):
+        out = await self._run(monkeypatch, memory_bound=False)
+        assert out["success"] is True
+        assert out["per_config"]["a"]["cycles_per_repetition"] == 5_000.0
+        assert out["resident_configs"] == ["a"]
+        assert out["memory_bound"] is False
+
+
+class TestAWarningThatTravelsWithTheNumber:
+    """The cycle count and the reason not to trust it must arrive together.
+
+    `compact_action_ledger` keeps raw tool output out of results.actions, so a
+    warning that lives only in the result dict is gone by the time anyone reads
+    the run back. The finding is what survives, so the finding carries it.
+    """
+
+    CODE = "int main(void){for(int r=0;r<REPS;r++){} return 0;}"
+
+    async def _run(self, monkeypatch, *, simd_divides):
+        async def fake_run_configs(*, code, configs, **kwargs):
+            reps = int(code.split("r<")[1].split(";")[0])
+            return {
+                n: {
+                    "stats": {
+                        "system.cpu.numCycles": 100_000 + 5_000 * reps,
+                        "system.l2cache.overallMisses::total": 4_000 * reps,
+                        "system.cpu.issuedInstType_0::total": 100_000.0,
+                        "system.cpu.issuedInstType_0::SimdFloatDiv": float(
+                            simd_divides
+                        ),
+                    }
+                }
+                for n in configs
+            }
+
+        monkeypatch.setattr(st, "run_configs", fake_run_configs)
+        return await st.measure_marginal(code=self.CODE, configs={"a": {}})
+
+    async def test_the_finding_carries_the_warning(self, monkeypatch):
+        out = await self._run(monkeypatch, simd_divides=8192)
+        assert out["success"] is True
+        assert out["mispriced_simd_configs"] == ["a"]
+        assert "opLat=1" in out["findings"][0]["model_warning"]
+
+    async def test_a_scalar_run_says_nothing(self, monkeypatch):
+        """A warning on every run is one nobody reads."""
+        out = await self._run(monkeypatch, simd_divides=0)
+        assert out["mispriced_simd_configs"] == []
+        assert out["model_warning"] is None
+        assert "model_warning" not in out["findings"][0]
+
+
+class TestEveryStudySaysWhenTheModelCannotPriceIt:
+    """A guard on one of five entry points leaves four silently wrong.
+
+    `mispriced_simd_ops` first shipped inside measure_marginal. The other four
+    study functions turn the same gem5 stats into the same kind of conclusion
+    and said nothing, which is the gap this module keeps finding in other
+    people's code. This reads the source rather than the behaviour, because the
+    failure it prevents is someone adding a sixth study and not knowing the
+    rule exists -- and a test that only exercises today's five would pass.
+    """
+
+    GUARDS = ("model_warnings(", "mispriced_simd_ops(")
+
+    def _bodies(self):
+        import inspect
+        import re
+
+        src = inspect.getsource(st).split("\n")
+        starts = [
+            (i, re.match(r"async def ([a-z_]+)\(", line).group(1))
+            for i, line in enumerate(src)
+            if re.match(r"async def [a-z_]+\(", line)
+        ]
+        out = {}
+        for k, (i, name) in enumerate(starts):
+            end = starts[k + 1][0] if k + 1 < len(starts) else len(src)
+            out[name] = "\n".join(src[i:end])
+        return out
+
+    def test_there_are_studies_to_check(self):
+        """A source-reading test that finds nothing passes for the wrong reason."""
+        assert len(self._bodies()) >= 5
+
+    def test_every_study_that_runs_configs_carries_the_guard(self):
+        unguarded = [
+            name
+            for name, body in self._bodies().items()
+            if "run_configs(" in body and not any(g in body for g in self.GUARDS)
+        ]
+        assert unguarded == [], (
+            "these study functions turn gem5 stats into a conclusion without "
+            f"saying whether the model could price it: {unguarded}"
+        )

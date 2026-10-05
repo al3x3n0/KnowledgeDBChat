@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.api_key import APIKey, APIKeyUsageLog
 from app.models.user import User
+from app.services.auth_service import is_admin
 
 
 class MCPAuthContext:
@@ -37,7 +38,7 @@ class MCPAuthContext:
 
     @property
     def is_admin(self) -> bool:
-        return self.user.role == "admin"
+        return is_admin(self.user)
 
     def has_scope(self, scope: str) -> bool:
         """Check if context has a specific scope."""

@@ -75,6 +75,7 @@ class WebConnector(BaseConnector):
 
         except Exception as e:
             logger.error(f"Failed to initialize web connector: {e}")
+            self.last_error = str(e)
             return False
 
     async def test_connection(self) -> bool:

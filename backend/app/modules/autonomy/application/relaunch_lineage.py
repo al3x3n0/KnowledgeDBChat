@@ -9,6 +9,7 @@ from app.schemas.agent_job import (
     AgentJobRelaunchLineageNode,
     AgentJobRelaunchLineageResponse,
 )
+from app.services.agent_job_queue_helpers import extract_launch_mode
 
 
 def extract_parent_job_id(config: Optional[dict]) -> Optional[UUID]:
@@ -37,10 +38,7 @@ def build_children_counts(
 
 
 def _launch_mode(config: Optional[dict]) -> Optional[str]:
-    if not isinstance(config, dict):
-        return None
-    launch_mode = str(config.get("launch_mode") or "").strip().lower()
-    return launch_mode or None
+    return extract_launch_mode(config) or None
 
 
 def to_lineage_node(job: Any) -> AgentJobRelaunchLineageNode:

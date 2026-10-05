@@ -543,3 +543,230 @@ class TestWhenTheProbeItselfFails:
 
         assert "catalog.py 2>/dev/null" not in source
         assert "catalog.py" in source
+
+
+class TestTheCatalogIsEvidenceNotJustAnAnswer:
+    """`describe_gem5_mechanisms` declares produces=("mechanism_catalog",).
+
+    It returned the classes under "mechanisms" and recorded no finding, so a
+    contract requiring mechanism_catalog could not be satisfied by its only
+    producer -- the defect create_synthesis_document had, and the reason this
+    evidence type had never once been recorded in a corpus holding 114
+    mechanism_comparison findings.
+    """
+
+    def test_the_function_records_a_finding_of_the_declared_type(self):
+        import inspect
+
+        source = inspect.getsource(mech.describe_gem5_mechanisms)
+        assert '"type": "mechanism_catalog"' in source
+
+    def test_the_spec_and_the_handler_agree(self):
+        from app.agent_core import tool_specs
+
+        spec = tool_specs.STATIC_CATALOG.spec_for("describe_gem5_mechanisms")
+        assert "mechanism_catalog" in (spec.produces or ())
+
+    def test_the_answer_itself_is_still_returned(self):
+        # The finding is what a contract counts; "mechanisms" is what a person
+        # reads. Adding the first must not cost the second.
+        import inspect
+
+        source = inspect.getsource(mech.describe_gem5_mechanisms)
+        assert '"mechanisms":' in source and '"how_to_use":' in source
+
+
+class TestASimulationFailureSaysWhy:
+    """gem5's reason was captured and then not reported.
+
+    The compiler branch explains a compiler failure and the SPEC_ERROR branch
+    extracts the offending line; the generic non-zero-exit branch put gem5's
+    output in `stderr` and set the error to "A simulation failed." The action
+    ledger records `error` alone, so the reason never reached the run --
+    measured as three measure_headroom calls in one job, each reporting that
+    sentence and nothing else.
+    """
+
+    def test_the_harness_marker_names_the_arm_that_died(self):
+        # Measured: a headroom run printed `ARM_FAILED ideal_l1d_capacity`
+        # followed by a libc backtrace, and the shell's "Aborted" was reported
+        # instead -- true, and useless, since it says nothing about which
+        # idealisation was at fault.
+        stderr = "ARM_FAILED ideal_l1d_capacity\nFor more info visit ...\nAborted"
+        assert (
+            mech._gem5_failure_line(stderr) == "the ideal_l1d_capacity arm did not run"
+        )
+
+    def test_the_announcement_beats_the_last_line(self):
+        # gem5 keeps printing after it fails, so the final line is usually
+        # cleanup rather than the cause.
+        stderr = "building system\nfatal: Can not find template 'L1D'\nexiting\ncleanup"
+        assert mech._gem5_failure_line(stderr) == "fatal: Can not find template 'L1D'"
+
+    def test_a_panic_is_found_too(self):
+        assert "panic:" in mech._gem5_failure_line(
+            "warn: x\npanic: assert failed\nnoise"
+        )
+
+    def test_the_last_line_is_the_fallback(self):
+        assert mech._gem5_failure_line("warn: x\nsomething odd") == "something odd"
+
+    def test_silence_stays_silent_rather_than_inventing_a_cause(self):
+        assert mech._gem5_failure_line("  \n \n") == ""
+
+    def test_the_failure_path_quotes_it(self):
+        import inspect
+
+        source = inspect.getsource(mech)
+        assert "A simulation failed: {detail}" in source
+        # And when gem5 says nothing, the message says where to look rather
+        # than pretending to a reason.
+        assert "its output is in `stderr`" in source
+
+
+class TestACrashThatExplainsNothing:
+    """gem5 dying without a diagnostic is the case with the least to go on.
+
+    Verbatim stderr from the L1d-idealisation crash: an ARM_FAILED marker, a
+    libc backtrace, and no `panic:`, `fatal:` or `error:` line anywhere. The
+    only account of what happened is the top gem5 frame, and it is mangled.
+    """
+
+    REAL = (
+        "ARM_FAILED ideal_l1d_capacity\n"
+        "/opt/gem5/build/ARM/gem5.opt(_ZN4gem59BaseCache19CacheReqPacketQueue"
+        "18sendDeferredPacketEv+0xb0)[0xaaaae64d46d0]\n"
+        "/opt/gem5/build/ARM/gem5.opt(_ZN4gem510EventQueue10serviceOneEv+0xb4)"
+        "[0xaaaae46330c8]\n"
+        "--- END LIBC BACKTRACE ---\n"
+        "Aborted"
+    )
+
+    def test_it_names_both_the_arm_and_where_gem5_died(self):
+        line = mech._gem5_failure_line(self.REAL)
+        assert "ideal_l1d_capacity" in line
+        assert "BaseCache::CacheReqPacketQueue::sendDeferredPacket" in line
+
+    def test_a_real_diagnostic_is_preferred_over_the_frame(self):
+        """A panic is gem5 explaining itself; a frame is a last resort."""
+        line = mech._gem5_failure_line(
+            "ARM_FAILED ideal_x\npanic: Invalid cache size\n"
+            "/opt/gem5/build/ARM/gem5.opt(_ZN4gem59BaseCache4funcEv)[0x1]\nAborted"
+        )
+        assert "panic: Invalid cache size" in line
+        assert "BaseCache" not in line
+
+
+class TestReadingAMangledFrame:
+    def test_a_nested_name_becomes_readable(self):
+        assert (
+            mech._demangle_nested("_ZN4gem510EventQueue10serviceOneEv")
+            == "gem5::EventQueue::serviceOne"
+        )
+
+    def test_a_length_that_runs_past_the_end_is_refused(self):
+        """Backtraces get truncated; half a symbol is not a name."""
+        assert mech._demangle_nested("_ZN9truncated99") == ""
+
+    def test_a_symbol_that_is_not_a_nested_name_is_left_alone(self):
+        for plain in ("main", "_start", ""):
+            assert mech._demangle_nested(plain) == ""
+
+
+class TestAMechanismThatNeverEngaged:
+    """Counters from the real runs that prompted this.
+
+    IrregularStreamBufferPrefetcher on L2 reported zero identified candidates
+    and a cycle count equal to the no-prefetcher run to the cycle;
+    StridePrefetcher on the same kernel issued 63,127 with 4,171 useful.
+    """
+
+    CFG = {"caches": {"l2": {"prefetcher": "IrregularStreamBufferPrefetcher"}}}
+
+    def test_a_prefetcher_that_identified_nothing_is_inert(self):
+        inert = mech.inert_prefetchers(
+            self.CFG,
+            {
+                "system.l2cache.prefetcher.pfIdentified": 0.0,
+                "system.l2cache.prefetcher.pfIssued": 0.0,
+            },
+        )
+        assert inert == ["IrregularStreamBufferPrefetcher on l2"]
+
+    def test_a_working_prefetcher_is_not(self):
+        assert not mech.inert_prefetchers(
+            self.CFG,
+            {
+                "system.l2cache.prefetcher.pfIdentified": 63127.0,
+                "system.l2cache.prefetcher.pfIssued": 63127.0,
+            },
+        )
+
+    def test_a_build_that_reports_no_counters_is_not_accused(self):
+        """Silence from the build is not evidence the mechanism was idle."""
+        assert not mech.inert_prefetchers(self.CFG, {})
+
+    def test_the_level_is_read_from_the_config_not_assumed(self):
+        """gem5 names stats by object: an L1d prefetcher is under `dcache`."""
+        inert = mech.inert_prefetchers(
+            {"caches": {"l1d": {"prefetcher": "StridePrefetcher"}}},
+            {
+                "system.cpu.dcache.prefetcher.pfIdentified": 0.0,
+                "system.cpu.dcache.prefetcher.pfIssued": 0.0,
+            },
+        )
+        assert inert == ["StridePrefetcher on l1d"]
+
+    def test_a_level_with_no_mechanism_is_not_reported(self):
+        assert not mech.inert_prefetchers({"caches": {"l2": {"size": "2MiB"}}}, {})
+
+
+class TestOpsTheModelCannotPrice:
+    """gem5's default FUPool gives every SIMD op opLat=1 pipelined on four
+    units. For SIMD integer work that is defensible; for divide and square root
+    it is not, because the scalar counterparts in the same pool are FloatDiv
+    opLat=12 and FloatSqrt opLat=24, both unpipelined, on two units.
+
+    Measured on independent double divides: 21.132 cycles/element scalar
+    against 2.573 vectorised. Two lanes cannot buy 8.2x, and 2.573 is below the
+    scalar divider's own throughput floor of one per six cycles -- the vector
+    divides are not reaching that unit. Two headline figures were withdrawn to
+    this before the check existed.
+    """
+
+    def _stats(self, **ops):
+        base = {
+            "system.cpu.issuedInstType_0::total": 100_000.0,
+            "system.cpu.issuedInstType_0::IntAlu": 50_000.0,
+        }
+        base.update({f"system.cpu.issuedInstType_0::{k}": v for k, v in ops.items()})
+        return base
+
+    def test_a_vectorised_divide_is_reported(self):
+        out = mech.mispriced_simd_ops(self._stats(SimdFloatDiv=8192.0))
+        assert out["ops"] == {"SimdFloatDiv": 8192.0}
+        assert "opLat=1" in out["warning"]
+
+    def test_the_share_is_reported_so_a_reader_can_judge_it(self):
+        out = mech.mispriced_simd_ops(self._stats(SimdFloatDiv=8192.0))
+        assert out["share_of_issued"] == 0.0819
+
+    def test_a_handful_of_them_is_not_worth_a_warning(self):
+        """Present is not the same as load-bearing; below the floor it is noise."""
+        assert mech.mispriced_simd_ops(self._stats(SimdFloatDiv=12.0)) == {}
+
+    def test_scalar_work_is_never_accused(self):
+        assert mech.mispriced_simd_ops(self._stats(FloatDiv=8192.0)) == {}
+
+    def test_simd_integer_work_is_never_accused(self):
+        """Only divide and square root are mispriced at opLat=1; add and
+        multiply at that latency are approximately right."""
+        assert mech.mispriced_simd_ops(self._stats(SimdFloatAdd=50_000.0)) == {}
+
+    def test_a_build_that_does_not_publish_the_counters_accuses_nobody(self):
+        assert mech.mispriced_simd_ops({}) == {}
+        assert mech.mispriced_simd_ops({"system.cpu.numCycles": 5.0}) == {}
+
+    def test_square_root_counts_too(self):
+        out = mech.mispriced_simd_ops(self._stats(SimdFloatSqrt=9000.0))
+        assert "SimdFloatSqrt" in out["ops"]

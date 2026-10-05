@@ -81,17 +81,35 @@ class TestEscalationSkipsTheRunsOwnCode:
             "tool is broken sends it to test the compiler"
         )
 
-    def test_four_broken_toolchain_errors_still_escalate(self):
+    def test_a_broken_toolchain_escalates_without_waiting(self):
         """The control, and the reason this is not a blanket exclusion: both
-        are `compilation` errors and only one is the run's fault."""
+        are `compilation` errors and only one is the run's fault.
+
+        It used to take four before the protocol appeared. A missing compiler
+        is not something a fifth attempt discovers, so it now escalates on
+        first contact -- the assertion is that it escalates and hands over the
+        protocol, not when.
+        """
         state = _history("check_implementation", self.BROKEN, 4)
         action = {"tool": "check_implementation", "params": {"code": "attempt 5"}}
 
         verdict = diag.analyze(action, {"success": False, "error": self.BROKEN}, state)
 
         assert verdict is not None
-        assert verdict["attempt"] >= diag.CLASS_ESCALATE_AFTER
         assert verdict["protocol"], "a broken tool is what the protocol is for"
+
+    def test_the_broken_toolchain_is_named_on_the_very_first_failure(self):
+        """Measured: runs spent 19 and 8 iterations rewriting calls against a
+        tool that had never run. One failure is enough to say so."""
+        action = {"tool": "check_implementation", "params": {"code": "first try"}}
+
+        verdict = diag.analyze(
+            action, {"success": False, "error": self.BROKEN}, {"actions_taken": []}
+        )
+
+        assert verdict is not None
+        assert verdict["attempt"] == 1
+        assert verdict.get("unavailable") is True
 
     def test_the_identical_code_twice_is_still_called_out(self):
         """Not everything is forgiven. Submitting the SAME source and getting

@@ -166,6 +166,17 @@ class FakeMinio:
         monkeypatch.setattr(cls, "upload_to_path", upload_to_path)
         monkeypatch.setattr(cls, "delete_file", delete_file)
         monkeypatch.setattr(cls, "get_file_content", get_file_content)
+
+        # A method patched on the shared `storage_service` *instance* by an
+        # earlier test (monkeypatch.setattr) is restored as an instance
+        # attribute, which then shadows any class-level patch for the rest of
+        # the run -- this fake was bypassed and the real MinIO client called.
+        # Lift those leftovers for this test; monkeypatch puts them back.
+        from app.services.storage_service import storage_service as _singleton
+
+        for _name in list(vars(_singleton)):
+            if callable(getattr(cls, _name, None)) and _name not in ("_get_client",):
+                monkeypatch.delattr(_singleton, _name)
         return self
 
     def _put(self, path, content, content_type):

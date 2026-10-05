@@ -19,6 +19,17 @@ from app.utils.websocket_manager import websocket_manager
 pytestmark = pytest.mark.unit
 
 
+def _eventually(condition, timeout=5.0):
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.02)
+    return bool(condition())
+
+
 @pytest.fixture
 def signed_in(monkeypatch, test_user):
     async def _auth(websocket):
@@ -59,9 +70,15 @@ def test_a_known_document_answers_pings_and_lets_go(
     ) as websocket:
         websocket.send_text("ping")
         assert websocket.receive_text() == "pong"
-        assert websocket_manager.active_connections.get(str(document_id))
+        assert _eventually(
+            lambda: websocket_manager.active_connections.get(str(document_id))
+        )
 
-    assert not websocket_manager.active_connections.get(str(document_id))
+    # The server unregisters after the client has gone, on its own thread:
+    # checked at once this raced, and lost on a busy CI runner.
+    assert _eventually(
+        lambda: not websocket_manager.active_connections.get(str(document_id))
+    )
 
 
 @pytest.mark.parametrize("stream", ["transcription", "summarization"])

@@ -74,10 +74,25 @@ To switch back to embedded Chroma for dev:
 VECTOR_STORE_PROVIDER=chroma
 ```
 
-#### Optional: Enable Docker-based custom tools (unsafe)
+#### Sandbox images
 
-By default, the stack does **not** mount the host Docker socket and `docker_container` custom tools are disabled.
-To enable them for local dev only:
+Sandboxed agent tools (compiler, profiling, gem5, sandbox skills) run in the
+stack's own Docker daemon, the `sandbox-docker` service. It never touches the
+host's Docker socket, and its image store is separate from the host's. Build the
+images on the host, then copy them in:
+
+```bash
+make sandbox-images   # or just the ones you need, e.g. make sandbox-compiler
+make sandbox-load     # copies whatever was built into sandbox-docker
+make sandbox-check    # says which images the backend's daemon still lacks
+```
+
+#### Optional: Use the host Docker daemon instead (unsafe)
+
+`docker_container` custom tools are disabled by default. The overlay below
+enables them and points backend and celery at the host's Docker socket instead
+of `sandbox-docker`. The socket gives the container root on the host, so use
+this only on a development machine:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.docker-tools.yml up -d

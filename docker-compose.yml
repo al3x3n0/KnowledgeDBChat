@@ -76,13 +76,54 @@ services:
       start_period: 10s
 
   # Backend API
+  # The daemon sandbox tools run their containers in. Private to this stack:
+  # backend and celery reach it over TLS on the internal network and never get
+  # the host's Docker socket (which would be root-equivalent control of the
+  # host). It is privileged because Docker-in-Docker must be; its blast radius
+  # is this one container rather than every app container. Its image store
+  # persists in sandbox_docker_data; the sandbox images are not published, so
+  # `make sandbox-load` copies the locally built ones in.
+  sandbox-docker:
+    image: docker:27-dind
+    container_name: knowledge_db_sandbox_docker
+    hostname: sandbox-docker  # in the server certificate's names
+    privileged: true
+    environment:
+      - DOCKER_TLS_CERTDIR=/certs
+    volumes:
+      - sandbox_docker_certs:/certs
+      - sandbox_docker_data:/var/lib/docker
+      - sandbox_work:/sandbox-work
+    networks:
+      - knowledge_net
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        # The CLI that talks to sandbox-docker (see below).
+        WITH_DOCKER_CLI: "true"
     image: knowledge_db_backend:latest  # Tag image so celery can reuse it
     container_name: knowledge_db_backend
     environment:
+      # Sandbox tools run in the private Docker daemon `sandbox-docker`, not
+      # the host one: this container never sees the host socket. TLS client
+      # certs come from the daemon's own volume. TMPDIR is the shared work
+      # volume, mounted at the same path in the daemon, because `-v dir:/work`
+      # is resolved by the daemon's filesystem. Not under /tmp: the dind
+      # entrypoint mounts a tmpfs over its /tmp, which hides a volume there and
+      # leaves every sandbox an empty /work.
+      - DOCKER_HOST=tcp://sandbox-docker:2376
+      - DOCKER_TLS_VERIFY=1
+      - DOCKER_CERT_PATH=/certs/client
+      - TMPDIR=/sandbox-work
       - DATABASE_URL=postgresql://user:password@postgres:5432/knowledge_db
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/0
@@ -125,6 +166,8 @@ services:
     ports:
       - "${KDBC_BACKEND_PORT:-28000}:8000"
     volumes:
+      - sandbox_docker_certs:/certs:ro
+      - sandbox_work:/sandbox-work
       - ./data:/app/data
       - ./backend:/app
       # Mount Whisper model cache directory
@@ -135,6 +178,7 @@ services:
       - ./data/torch_cache:/root/.cache/torch
       - ./data/yt_dlp_cache:/root/.cache/yt-dlp
     depends_on:
+      - sandbox-docker
       - postgres
       - redis
       - qdrant
@@ -310,9 +354,23 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        # The CLI that talks to sandbox-docker (see below).
+        WITH_DOCKER_CLI: "true"
     image: knowledge_db_backend:latest  # Share image with backend to avoid duplicate builds
     container_name: knowledge_db_celery
     environment:
+      # Sandbox tools run in the private Docker daemon `sandbox-docker`, not
+      # the host one: this container never sees the host socket. TLS client
+      # certs come from the daemon's own volume. TMPDIR is the shared work
+      # volume, mounted at the same path in the daemon, because `-v dir:/work`
+      # is resolved by the daemon's filesystem. Not under /tmp: the dind
+      # entrypoint mounts a tmpfs over its /tmp, which hides a volume there and
+      # leaves every sandbox an empty /work.
+      - DOCKER_HOST=tcp://sandbox-docker:2376
+      - DOCKER_TLS_VERIFY=1
+      - DOCKER_CERT_PATH=/certs/client
+      - TMPDIR=/sandbox-work
       - DATABASE_URL=postgresql://user:password@postgres:5432/knowledge_db
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/0
@@ -351,6 +409,8 @@ services:
       - OMP_NUM_THREADS=4
       - MKL_NUM_THREADS=4
     volumes:
+      - sandbox_docker_certs:/certs:ro
+      - sandbox_work:/sandbox-work
       - ./data:/app/data
       - ./backend:/app
       # Mount Whisper model cache directory (shared with backend)
@@ -361,6 +421,7 @@ services:
       - ./data/torch_cache:/root/.cache/torch
       - ./data/yt_dlp_cache:/root/.cache/yt-dlp
     depends_on:
+      - sandbox-docker
       - postgres
       - redis
       - qdrant
@@ -585,3 +646,10 @@ services:
 networks:
   knowledge_net:
     driver: bridge
+
+volumes:
+  # Sandbox daemon: its TLS certs (client half read by backend/celery), its
+  # image store, and the work directories it bind-mounts into sandbox runs.
+  sandbox_docker_certs:
+  sandbox_docker_data:
+  sandbox_work:

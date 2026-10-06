@@ -1,10 +1,9 @@
 # Local override: route the LLM stack at DeepSeek instead of Ollama, and turn on
 # Docker-backed sandbox execution for scientific-validation runs.
 #
-# The API key comes from the (gitignored) root .env file. Sandbox execution also
-# needs docker-compose.docker-tools.yml, which mounts the Docker socket:
-#   docker compose -f docker-compose.yml -f docker-compose.override.yml \
-#                  -f docker-compose.docker-tools.yml up -d
+# The API key comes from the (gitignored) root .env file. Sandboxes run in the
+# stack's own `sandbox-docker` daemon; copy the locally built images into it
+# once with `make sandbox-load`.
 services:
   backend:
     environment:

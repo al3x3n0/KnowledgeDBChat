@@ -58,14 +58,15 @@ RUN pip install --no-cache-dir --no-compile -r requirements.txt \
 RUN pip uninstall -y numba llvmlite \
     && ! python -c "import numba" 2>/dev/null
 
-# Docker CLI for the optional Docker-backed tool execution -- off by default.
+# Docker CLI for Docker-backed tool execution -- off by default in the image.
 #
-# The binary is 65 MB, and it is only usable when the host's Docker socket is
-# bind-mounted, which docker-compose.docker-tools.yml does and nothing else in
-# this repo does. That overlay grants the container control of the host daemon,
-# which is effectively root on the host, so this follows the same rule as every
-# other dangerous capability here: absent unless asked for. The overlay passes
-# the build arg.
+# The binary is 65 MB and is only usable with a daemon to talk to. The compose
+# stack provides one (the `sandbox-docker` sidecar, reached over TLS through
+# DOCKER_HOST) and passes this build arg for backend and celery; the optional
+# docker-compose.docker-tools.yml points the same CLI at the host's socket
+# instead. A bare `docker build` of this image (prod, Helm) stays without it,
+# following the rule for every dangerous capability here: absent unless asked
+# for.
 #
 # The "false" stage installs a stub at the same path rather than leaving none:
 # a `docker` that explains itself beats "command not found" three layers inside
@@ -77,8 +78,8 @@ RUN mkdir -p /usr/local/bin \
     && printf '%s\n' \
         '#!/bin/sh' \
         'echo "docker: this image was built without the Docker CLI." >&2' \
-        'echo "Rebuild with --build-arg WITH_DOCKER_CLI=true, or use" >&2' \
-        'echo "docker-compose.docker-tools.yml, which passes it." >&2' \
+        'echo "Rebuild with --build-arg WITH_DOCKER_CLI=true, as the" >&2' \
+        'echo "compose stack does for backend and celery." >&2' \
         'exit 127' \
         > /usr/local/bin/docker \
     && chmod +x /usr/local/bin/docker

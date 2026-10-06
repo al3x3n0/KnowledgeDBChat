@@ -342,11 +342,40 @@ sandbox-images: sandbox-compiler sandbox-polyglot sandbox-profiling sandbox-micr
 	@echo "axis (make sandbox-axis AXIS_PATH=...) are separate: see"
 	@echo "deploy/sandbox-images/README.md for why."
 
-sandbox-check: ## Report which sandbox images exist locally and what they carry
-	@for image in kdbc-sandbox-base kdbc-compiler-research kdbc-polyglot-slim \
-	              kdbc-profiling-research \
-	              kdbc-microarch-research kdbc-gem5-research kdbc-axis-research \
-	              kdbc-pass-dev kdbc-bolt-research; do \
+SANDBOX_IMAGE_NAMES := kdbc-sandbox-base kdbc-compiler-research kdbc-polyglot-slim \
+                       kdbc-profiling-research kdbc-microarch-research \
+                       kdbc-gem5-research kdbc-axis-research kdbc-pass-dev \
+                       kdbc-bolt-research
+
+SANDBOX_IMAGE_FINGERPRINT := {{.Created}}{{range .RootFS.Layers}} {{.}}{{end}}
+
+sandbox-load: ## Copy the locally built sandbox images into the stack's private sandbox daemon
+	@# Sandbox tools run in the `sandbox-docker` daemon, whose image store is
+	@# its own: it cannot see what `make sandbox-*` built on the host, and the
+	@# images are not published anywhere to pull. This copies each one that
+	@# exists locally and differs from the daemon's copy. Compared by layers and
+	@# creation time, not image ID: a host on the containerd image store reports
+	@# the manifest digest as the ID and the daemon the config digest, so the
+	@# IDs of one image never match.
+	@$(DC) up -d sandbox-docker >/dev/null 2>&1
+	@until $(DC) exec -T sandbox-docker docker info >/dev/null 2>&1; do sleep 2; done
+	@for image in $(SANDBOX_IMAGE_NAMES); do \
+	  ref=$(SANDBOX_REGISTRY)/$$image:latest; \
+	  here=$$(docker image inspect --format '$(SANDBOX_IMAGE_FINGERPRINT)' $$ref 2>/dev/null) || { \
+	    printf '  %-28s %s\n' "$$image" "not built locally, skipped"; continue; }; \
+	  there=$$($(DC) exec -T sandbox-docker docker image inspect --format '$(SANDBOX_IMAGE_FINGERPRINT)' $$ref 2>/dev/null); \
+	  if [ "$$here" = "$$there" ]; then \
+	    printf '  %-28s %s\n' "$$image" "up to date"; continue; fi; \
+	  printf '  %-28s %s\n' "$$image" "loading..."; \
+	  docker save $$ref | $(DC) exec -T sandbox-docker docker load >/dev/null || exit 1; \
+	done
+	@echo ""
+	@echo "Sandbox images the sandbox daemon holds:"
+	@$(DC) exec -T sandbox-docker docker image ls --format '{{.Repository}}:{{.Tag}}  {{.Size}}' \
+	  | grep kdbc- | sed 's/^/  /' || echo "  (none)"
+
+sandbox-check: ## Report which sandbox images exist, what they carry, and whether the app's daemon has them
+	@for image in $(SANDBOX_IMAGE_NAMES); do \
 	  if docker image inspect $(SANDBOX_REGISTRY)/$$image:latest >/dev/null 2>&1; then \
 	    printf '  %-28s %s\n' "$$image" \
 	      "$$(docker image ls --format '{{.Size}}' \
@@ -385,20 +414,25 @@ sandbox-check: ## Report which sandbox images exist locally and what they carry
 	done
 	@echo ""
 	@echo "Whether the app can reach any of this. Everything above is asked of the"
-	@echo "host; the runtime asks from inside backend and celery, and the two"
-	@echo "differ. A stack brought up without docker-compose.docker-tools.yml has"
-	@echo "no socket, and then every sandbox-backed tool fails in the one way that"
-	@echo "reads as nobody having called it."
+	@echo "host; the runtime asks from inside backend and celery, of whichever daemon"
+	@echo "DOCKER_HOST names there -- normally the stack's own sandbox-docker, whose"
+	@echo "image store is separate. An image built here and never loaded there fails"
+	@echo "in the one way that reads as nobody having called the tool."
 	@for service in backend celery; do \
-	  if ! docker compose ps --status running --services 2>/dev/null | grep -qx "$$service"; then \
-	    printf '  %-28s %s\n' "$$service" "not running"; \
-	  elif docker compose exec -T $$service sh -c 'docker ps >/dev/null 2>&1' 2>/dev/null; then \
-	    printf '  %-28s %s\n' "$$service" "socket OK"; \
+	  if ! $(DC) ps --status running --services 2>/dev/null | grep -qx "$$service"; then \
+	    printf '  %-28s %s\n' "$$service" "not running"; continue; fi; \
+	  if ! $(DC) exec -T $$service sh -c 'docker ps >/dev/null 2>&1' 2>/dev/null; then \
+	    printf '  %-28s %s\n' "$$service" "NO DAEMON -- every sandbox tool will fail"; continue; fi; \
+	  daemon=$$($(DC) exec -T $$service sh -c 'echo $${DOCKER_HOST:-host socket}' 2>/dev/null); \
+	  missing=""; \
+	  for image in $(SANDBOX_IMAGE_NAMES); do \
+	    docker image inspect $(SANDBOX_REGISTRY)/$$image:latest >/dev/null 2>&1 || continue; \
+	    $(DC) exec -T $$service docker image inspect $(SANDBOX_REGISTRY)/$$image:latest >/dev/null 2>&1 \
+	      || missing="$$missing $$image"; \
+	  done; \
+	  if [ -z "$$missing" ]; then \
+	    printf '  %-28s %s\n' "$$service" "daemon OK ($$daemon), holds every image built here"; \
 	  else \
-	    printf '  %-28s %s\n' "$$service" "NO SOCKET -- every sandbox tool will fail"; \
+	    printf '  %-28s %s\n' "$$service" "daemon OK ($$daemon), MISSING:$$missing -- run make sandbox-load"; \
 	  fi; \
 	done
-	@docker compose ps --status running --services 2>/dev/null | grep -qx backend && \
-	  docker compose exec -T backend sh -c 'docker ps >/dev/null 2>&1' 2>/dev/null || \
-	  echo "  remedy: docker compose -f docker-compose.yml -f docker-compose.override.yml \
--f docker-compose.docker-tools.yml up -d --no-build backend celery"

@@ -125,7 +125,9 @@ class TestTheDefaultReachesTheAgent:
     def test_the_wrapper_does_not_restate_the_default(self):
         import inspect
 
-        from app.services.agent_tool_providers import workspace_mutation as agent_tool_dispatch
+        from app.services.agent_tool_providers import (
+            workspace_mutation as agent_tool_dispatch,
+        )
 
         source = inspect.getsource(agent_tool_dispatch)
         start = source.index("async def _benchmark_c_snippet")
@@ -137,7 +139,9 @@ class TestTheDefaultReachesTheAgent:
     def test_an_explicit_repeat_is_still_forwarded(self):
         import inspect
 
-        from app.services.agent_tool_providers import workspace_mutation as agent_tool_dispatch
+        from app.services.agent_tool_providers import (
+            workspace_mutation as agent_tool_dispatch,
+        )
 
         source = inspect.getsource(agent_tool_dispatch)
         start = source.index("async def _benchmark_c_snippet")

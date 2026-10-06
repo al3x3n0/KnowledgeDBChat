@@ -192,9 +192,7 @@ from app.services.agent_swarm_collaboration_service import (
     store_swarm_collaboration as _store_swarm_collaboration,
 )
 from app.services.autonomy_event_service import record_autonomy_decision_event
-from app.services.autonomy_service import (
-    resolve_domain_profile_automation_contract,
-)
+from app.services.autonomy_service import resolve_domain_profile_automation_contract
 from app.services.collaboration_service import (
     build_collaboration_user_lookup as _build_collaboration_user_lookup,
 )

@@ -434,12 +434,12 @@ class AgentLatexRunnerService:
         from app.models.latex_project import LatexProject
         from app.models.latex_project_file import LatexProjectFile
         from app.models.user import User as _User
+        from app.services.job_dispatch import enqueue
         from app.services.latex_compiler_service import (
             LatexSafetyError,
             latex_compiler_service,
         )
         from app.services.storage_service import storage_service
-        from app.services.job_dispatch import enqueue
 
         _emit = phase_reporter(job, "latex_compile_project")
 

@@ -14,7 +14,6 @@ from app.services.agent_tool_providers.base import (
 )
 from app.services.data_analysis_tools import DATA_ANALYSIS_EXPOSED_NAMES
 
-
 # The exposed names live with the definitions, in data_analysis_tools: the
 # rename below is part of each tool's public name, and every surface that
 # advertises or governs these tools has to agree with dispatch about it.

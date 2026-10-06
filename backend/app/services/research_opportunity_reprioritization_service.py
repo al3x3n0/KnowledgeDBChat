@@ -22,6 +22,7 @@ from app.services.autonomy_service import (
 from app.services.config_values import safe_float as _safe_float
 from app.services.config_values import safe_int as _safe_int
 from app.services.config_values import unique_strings
+from app.services.job_dispatch import enqueue_agent_job
 from app.services.research_opportunity_service import (
     collect_research_opportunity_linked_ids,
     compute_research_opportunity_evidence_revision,
@@ -32,7 +33,6 @@ from app.services.scientific_validation_service import (
     normalize_portfolio_automation_profile,
     resolve_portfolio_automation_policy,
 )
-from app.services.job_dispatch import enqueue_agent_job
 
 
 def _text(value: Any) -> str:

@@ -38,11 +38,6 @@ from app.services.coding_backlog_decomposition import (
     timeline_entry,
     upsert_promotion_decision,
 )
-from app.services.collaboration_service import build_collaboration_summary
-from app.services.collaboration_service import (
-    build_collaboration_user_lookup as _build_backlog_user_lookup,
-)
-from app.services.collaboration_service import normalize_collaboration_visibility
 from app.services.coding_backlog_items import (
     create_orchestrator_job as _create_orchestrator_job,
 )
@@ -55,6 +50,11 @@ from app.services.coding_backlog_items import (
 from app.services.coding_backlog_items import (
     recompute_portfolio_progress as _recompute_portfolio_progress,
 )
+from app.services.collaboration_service import build_collaboration_summary
+from app.services.collaboration_service import (
+    build_collaboration_user_lookup as _build_backlog_user_lookup,
+)
+from app.services.collaboration_service import normalize_collaboration_visibility
 from app.services.config_values import uuid_list
 from app.services.job_dispatch import enqueue_agent_job
 

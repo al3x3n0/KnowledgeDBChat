@@ -19,9 +19,9 @@ The rules:
 - inside ``app/modules/<domain>``, ``application`` and ``domain`` do not
   import ``api`` (``app/modules/README.md``).
 
-``ALLOWED`` is what was already true when the rule was written. It may only
-shrink: a new entry is a new violation, and an entry no longer needed fails
-the test until it is removed, so progress is recorded where it happens.
+``ALLOWED`` started as the 19 violations that existed when the rule was
+written, and was emptied in the same branch. It may only shrink: a new entry
+is a new violation, and an entry no longer needed fails the test.
 """
 
 import ast
@@ -39,10 +39,7 @@ BELOW_TASKS = {"services", "models", "schemas", "core", "agent_core", "utils", "
 TASK_GATEWAY = "services/job_dispatch.py"
 
 #: (importing file, forbidden package) pairs that existed when this was written.
-ALLOWED = {
-    # Composes the operator queue from about twenty endpoint-private pieces.
-    ("tasks/monitoring_tasks.py", "app.api"),
-}
+ALLOWED: set[tuple[str, str]] = set()
 
 
 def _imported_modules(path: Path):

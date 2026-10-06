@@ -1464,9 +1464,13 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   and in `app/modules/<domain>`, `application` and `domain` do not import
   `api`. 891 function-local imports had let 51 modules (services, tasks,
   endpoints and `modules/autonomy`) form one import cycle Python never
-  reports. The test's `ALLOWED` set may only shrink, and a stale entry fails
-  too; one entry is left (`monitoring_tasks` composes the operator queue from
-  endpoint-private pieces).
+  reports. The test's `ALLOWED` set started at 19 entries and is empty; it may
+  only shrink, and a stale entry fails too. The last one was the monitoring
+  task importing the operator-queue composer from its endpoint: that composer
+  and the job presenter it binds now live in
+  `modules/autonomy/application/checkpoint_queue_builder.py`. With these gone
+  the cross-layer cycle is broken; the largest cycle left is 10 modules, all
+  inside `app/services`.
 - **Work is queued through `services/job_dispatch`**: `enqueue(db,
   "app.tasks.<module>.<task>", *args)`, `enqueue_agent_job(db, job_id,
   user_id)`, and `send_now(...)` for a caller with no session to wait on.

@@ -70,7 +70,6 @@ from app.modules.autonomy.api.quick_starts import (
 from app.modules.autonomy.api.swarm_analytics import build_swarm_analytics_api
 from app.modules.autonomy.api.swarm_outcomes import build_swarm_outcomes_api
 from app.modules.autonomy.application import (
-    checkpoint_queue_composer,
     checkpoint_queue_priority,
     coding_swarm_relaunch,
     decision_trace_events,
@@ -94,7 +93,6 @@ from app.modules.autonomy.application import (
     job_action_interventions,
     job_action_plan_state,
     job_operator_events,
-    job_presenters,
     memory_presenters,
     operator_queue_context,
     portfolio_queue_state,
@@ -104,6 +102,24 @@ from app.modules.autonomy.application import (
     repair_verification,
     swarm_outcome_cases,
     swarm_summaries,
+)
+from app.modules.autonomy.application.checkpoint_queue_builder import (
+    build_checkpoint_queue_items as _build_checkpoint_queue_items,
+)
+from app.modules.autonomy.application.checkpoint_queue_builder import (
+    customer_profile_key as _customer_profile_key,
+)
+from app.modules.autonomy.application.checkpoint_queue_builder import (
+    extract_domain_research_promotion as _extract_domain_research_promotion,
+)
+from app.modules.autonomy.application.checkpoint_queue_builder import (
+    portfolio_summary_payload as _portfolio_summary_payload,
+)
+from app.modules.autonomy.application.checkpoint_queue_builder import (
+    present_job as _job_to_response,
+)
+from app.modules.autonomy.application.checkpoint_queue_builder import (
+    profile_summary_payload as _profile_summary_payload,
 )
 from app.modules.autonomy.application.job_action_contracts import (
     JobActionDependencies,
@@ -177,9 +193,6 @@ from app.services.agent_swarm_collaboration_service import (
 )
 from app.services.autonomy_event_service import record_autonomy_decision_event
 from app.services.autonomy_service import (
-    build_autonomy_summary,
-    build_monitor_policy_compat_fields,
-    current_domain_profile_policy_snapshot,
     resolve_domain_profile_automation_contract,
 )
 from app.services.collaboration_service import (
@@ -236,21 +249,6 @@ _build_domain_research_goal = quick_start_builders.build_domain_research_goal
 _build_quick_start_domain_research_config = (
     quick_start_builders.build_domain_research_config
 )
-
-
-def _extract_domain_research_promotion(job: AgentJob) -> dict[str, Any]:
-    cfg = job.config if isinstance(job.config, dict) else {}
-    quick_start = (
-        cfg.get("quick_start") if isinstance(cfg.get("quick_start"), dict) else {}
-    )
-    results = job.results if isinstance(job.results, dict) else {}
-
-    promotion = cfg.get("promotion") if isinstance(cfg.get("promotion"), dict) else {}
-    if not promotion and isinstance(quick_start.get("promotion"), dict):
-        promotion = quick_start.get("promotion") or {}
-    if not promotion and isinstance(results.get("promotion"), dict):
-        promotion = results.get("promotion") or {}
-    return dict(promotion) if isinstance(promotion, dict) else {}
 
 
 def _build_domain_research_promotion_seed(job: AgentJob) -> dict[str, Any]:
@@ -675,40 +673,6 @@ def _derive_swarm_outcome_case(
     )
 
 
-def _extract_goal_contract_summary(job: AgentJob) -> Optional[dict]:
-    """Build compact goal-contract status for quick UI rendering."""
-    results = job.results if isinstance(job.results, dict) else {}
-    contract = (
-        results.get("goal_contract")
-        if isinstance(results.get("goal_contract"), dict)
-        else {}
-    )
-    if not contract:
-        return None
-
-    enabled = bool(contract.get("enabled", False))
-    if not enabled and not contract:
-        return None
-    missing = (
-        contract.get("missing") if isinstance(contract.get("missing"), list) else []
-    )
-    contract_cfg = (
-        contract.get("contract") if isinstance(contract.get("contract"), dict) else {}
-    )
-    metrics = (
-        contract.get("metrics") if isinstance(contract.get("metrics"), dict) else {}
-    )
-    return {
-        "enabled": enabled,
-        "satisfied": bool(contract.get("satisfied", True)),
-        "missing_count": len(missing),
-        "missing": [str(x)[:120] for x in missing[:10]],
-        "strict_completion": bool(contract_cfg.get("strict_completion", False)),
-        "satisfied_iteration": int(contract.get("satisfied_iteration", 0) or 0),
-        "metrics": metrics,
-    }
-
-
 # Scheduler-state helpers moved to app.services.agent_job_scheduler_state;
 # queue field helpers moved to app.services.agent_job_queue_helpers.
 # Aliased here (private names) for backward compatibility with existing
@@ -721,61 +685,6 @@ _parse_optional_datetime = parse_optional_datetime
 _queue_age_minutes = queue_age_minutes
 _queue_customer_for_job = queue_customer_for_job
 _queue_evidence_summary_for_job = queue_evidence_summary_for_job
-
-
-def _portfolio_summary_payload(portfolio: ResearchPortfolio) -> dict[str, Any]:
-    automation_profile = normalize_portfolio_automation_profile(
-        getattr(portfolio, "automation_profile", None), default="balanced"
-    )
-    effective_policy = resolve_portfolio_automation_policy(
-        automation_profile, portfolio.automation_policy
-    )
-    opportunities = list_normalized_research_opportunities(portfolio.opportunities)
-    summary = build_autonomy_summary(
-        raw_summary=portfolio.latest_summary
-        if isinstance(portfolio.latest_summary, dict)
-        else {},
-        opportunities=opportunities,
-        automation_profile=automation_profile,
-        effective_policy=effective_policy,
-        sandbox_profile_id=portfolio.sandbox_profile_id,
-        config_revision_key="portfolio_config_revision",
-    )
-    return {
-        "automation_profile": automation_profile,
-        "effective_policy": effective_policy,
-        "opportunities": opportunities,
-        "summary": summary,
-    }
-
-
-def _profile_summary_payload(profile: DomainResearchProfile) -> dict[str, Any]:
-    automation_profile, effective_policy = resolve_domain_profile_automation_contract(
-        automation_profile=getattr(profile, "automation_profile", None),
-        automation_policy=getattr(profile, "automation_policy", None),
-        current_snapshot=current_domain_profile_policy_snapshot(profile),
-    )
-    opportunities = list_normalized_research_opportunities(
-        (profile.latest_summary or {}).get("opportunities")
-        if isinstance((profile.latest_summary or {}).get("opportunities"), list)
-        else (profile.latest_summary or {}).get("idea_candidates")
-    )
-    summary = build_autonomy_summary(
-        raw_summary=profile.latest_summary
-        if isinstance(profile.latest_summary, dict)
-        else {},
-        opportunities=opportunities,
-        automation_profile=automation_profile,
-        effective_policy=effective_policy,
-        sandbox_profile_id=profile.sandbox_profile_id,
-        config_revision_key="profile_config_revision",
-    )
-    return {
-        "automation_profile": automation_profile,
-        "effective_policy": effective_policy,
-        "opportunities": opportunities,
-        "summary": summary,
-    }
 
 
 _clean_queue_text_list = operator_queue_context.clean_text_list
@@ -1212,10 +1121,6 @@ def _score_follow_up_action_for_item(
     )
 
 
-def _customer_profile_key(customer: Optional[str]) -> str:
-    return str(customer or "").strip().lower()
-
-
 async def _launch_follow_up_action(
     action_row: AgentCheckpointQueueActionResponse,
     *,
@@ -1371,72 +1276,8 @@ async def _load_latest_job_checkpoint(
     return result.scalar_one_or_none()
 
 
-def _extract_executive_digest(job: AgentJob) -> Optional[dict]:
-    """Extract deterministic executive digest payload when present."""
-    results = job.results if isinstance(job.results, dict) else {}
-    digest = (
-        results.get("executive_digest")
-        if isinstance(results.get("executive_digest"), dict)
-        else None
-    )
-    return digest
-
-
 _sanitize_tool_names = feedback_presenters.sanitize_tool_names
 _memory_to_feedback_response = feedback_presenters.memory_to_feedback_response
-
-
-def _job_to_response(
-    job: AgentJob,
-    *,
-    relaunch_children_count: int = 0,
-    current_user_id: Optional[str] = None,
-    user_lookup: Optional[dict[str, User]] = None,
-) -> AgentJobResponse:
-    return job_presenters.present_job(
-        job,
-        relaunch_children_count=relaunch_children_count,
-        current_user_id=current_user_id,
-        user_lookup=user_lookup,
-        deps=job_presenters.JobPresenterDependencies(
-            extract_launch_mode=_extract_launch_mode,
-            extract_promotion=_extract_domain_research_promotion,
-            extract_swarm_summary=_extract_swarm_summary,
-            extract_goal_contract_summary=_extract_goal_contract_summary,
-            extract_approval_checkpoint=_extract_approval_checkpoint,
-            extract_executive_digest=_extract_executive_digest,
-        ),
-    )
-
-
-_build_checkpoint_queue_items = (
-    checkpoint_queue_composer.bind_checkpoint_queue_composer(
-        dependencies_factory=lambda: (
-            checkpoint_queue_composer.CheckpointQueueCompositionDependencies(
-                extract_approval_checkpoint=_extract_approval_checkpoint,
-                extract_scheduler_state=_extract_scheduler_state,
-                queue_customer_for_job=_queue_customer_for_job,
-                present_job=_job_to_response,
-                queue_priority_fields=_queue_priority_fields,
-                queue_evidence_summary_for_job=_queue_evidence_summary_for_job,
-                queue_reason_label=_queue_reason_label,
-                parse_optional_datetime=_parse_optional_datetime,
-                extract_launch_mode=_extract_launch_mode,
-                build_policy_compat_fields=build_monitor_policy_compat_fields,
-                safe_autonomy_recommendations=tuple(
-                    research_monitor_profile_service.SAFE_AUTONOMY_RECOMMENDATIONS
-                ),
-                build_follow_up_actions=_build_follow_up_actions_for_inbox_item,
-                customer_profile_key=_customer_profile_key,
-                build_portfolio_summary=_portfolio_summary_payload,
-                build_profile_summary=_profile_summary_payload,
-                classify_operator_review=classify_portfolio_operator_review,
-                build_operator_context=_build_operator_queue_context,
-                clean_text_list=_clean_queue_text_list,
-            )
-        )
-    )
-)
 
 
 _chain_definition_to_response = agent_chain_definition_service.to_response

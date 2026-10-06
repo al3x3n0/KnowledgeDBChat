@@ -166,9 +166,9 @@ class AgentExternalResponseCorrelationService:
         job.status = AgentJobStatus.PENDING.value
         await db.commit()
         try:
-            from app.tasks.agent_job_tasks import execute_agent_job_task
+            from app.services.job_dispatch import enqueue_agent_job
 
-            execute_agent_job_task.delay(str(job.id), str(job.user_id))
+            enqueue_agent_job(db, str(job.id), str(job.user_id))
         except Exception:
             await db.execute(
                 update(AgentExternalCallOutbox)

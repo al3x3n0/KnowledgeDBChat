@@ -849,11 +849,9 @@ async def materialize_research_opportunity_experiment(
         and job_id
         and _text(decision.get("status")).lower() == "queued"
     ):
-        # Deferred import: agent_job_tasks imports the executor, which imports
-        # this module — a top-level import here is a circular import.
-        from app.tasks.agent_job_tasks import execute_agent_job_task
+        from app.services.job_dispatch import enqueue_agent_job
 
-        execute_agent_job_task.delay(job_id, str(user_id))
+        enqueue_agent_job(db, job_id, str(user_id))
     return {
         "plan_ids": plan_ids,
         "run_id": run_id,

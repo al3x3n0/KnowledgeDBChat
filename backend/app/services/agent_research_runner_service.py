@@ -3792,15 +3792,15 @@ class AgentResearchRunnerService:
         await db.commit()
         for validation_job_id in launched_validation_job_ids:
             try:
-                from app.tasks.agent_job_tasks import execute_agent_job_task
+                from app.services.job_dispatch import enqueue_agent_job
 
-                execute_agent_job_task.delay(validation_job_id, str(job.user_id))
+                enqueue_agent_job(db, validation_job_id, str(job.user_id))
             except Exception:
                 continue
         if follow_up_job_id:
-            from app.tasks.agent_job_tasks import execute_agent_job_task
+            from app.services.job_dispatch import enqueue_agent_job
 
-            execute_agent_job_task.delay(follow_up_job_id, str(job.user_id))
+            enqueue_agent_job(db, follow_up_job_id, str(job.user_id))
 
         return {"status": "completed", "results": job.results}
 
@@ -5155,16 +5155,16 @@ class AgentResearchRunnerService:
 
         for child_id in launched_follow_up_ids:
             try:
-                from app.tasks.agent_job_tasks import execute_agent_job_task
+                from app.services.job_dispatch import enqueue_agent_job
 
-                execute_agent_job_task.delay(child_id, str(job.user_id))
+                enqueue_agent_job(db, child_id, str(job.user_id))
             except Exception:
                 continue
         for child_id in launched_validation_job_ids:
             try:
-                from app.tasks.agent_job_tasks import execute_agent_job_task
+                from app.services.job_dispatch import enqueue_agent_job
 
-                execute_agent_job_task.delay(child_id, str(job.user_id))
+                enqueue_agent_job(db, child_id, str(job.user_id))
             except Exception:
                 continue
 
@@ -5568,18 +5568,16 @@ class AgentResearchRunnerService:
         await db.commit()
         if auto_repair_job is not None:
             try:
-                from app.tasks.agent_job_tasks import execute_agent_job_task
+                from app.services.job_dispatch import enqueue_agent_job
 
-                execute_agent_job_task.delay(str(auto_repair_job.id), str(job.user_id))
+                enqueue_agent_job(db, str(auto_repair_job.id), str(job.user_id))
             except Exception:
                 logger.exception("Failed to queue bug triage swarm repair handoff job")
         if auto_tie_breaker_job is not None:
             try:
-                from app.tasks.agent_job_tasks import execute_agent_job_task
+                from app.services.job_dispatch import enqueue_agent_job
 
-                execute_agent_job_task.delay(
-                    str(auto_tie_breaker_job.id), str(job.user_id)
-                )
+                enqueue_agent_job(db, str(auto_tie_breaker_job.id), str(job.user_id))
             except Exception:
                 logger.exception("Failed to queue bug triage swarm tie-breaker job")
         return {"status": "completed", "results": job.results}

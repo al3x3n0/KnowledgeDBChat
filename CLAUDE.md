@@ -1456,6 +1456,25 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
 - Key dependency chain: `AgentService` → `LLMService`, `DocumentService`, `VectorStoreService`, `MemoryService`
 - The agent runtime is intentionally split into many small `agent_*` services around `autonomous_agent_executor.py` — prefer extending the relevant sub-service over growing the executor
 
+- **Lower layers do not import higher ones** (`tests/test_layering.py`, read
+  from source including imports inside functions). Nothing outside `app/api`
+  imports `app.api`; services, models, schemas, core, agent_core, utils and mcp
+  do not import `app.tasks`; and in `app/modules/<domain>`, `application` and
+  `domain` do not import `api`. 891 function-local imports had let 51 modules
+  (services, tasks, endpoints and `modules/autonomy`) form one import cycle
+  Python never reports. The test's `ALLOWED` set is what was true when it was
+  written and may only shrink: a stale entry fails too.
+- **Agent jobs are queued through `services/job_dispatch.enqueue_agent_job(db,
+  job_id, user_id)`**, the one service module allowed to import a task. With
+  a transaction open it sends when that transaction commits and drops the
+  message on rollback; with none open the row is already committed and it
+  sends now, letting a broker error reach the caller (the chain orchestrator
+  records `chain_dispatch_failed` from it). The coding backlog's three
+  orchestrator starts, its repair and apply spawns, the coding runner's
+  spawns and the opportunity reprioritiser all queued a job the worker could
+  not yet see. A deferred message whose session is never committed is the
+  stalled-job sweep's to re-deliver.
+
 ### Feature Flags (`core/feature_flags.py`)
 - Two-tier resolution: Redis cache → Settings fallback
 - Boolean flags (e.g., `knowledge_graph_enabled`) and string config flags (e.g., `llm_default_model`)

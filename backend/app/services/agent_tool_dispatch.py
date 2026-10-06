@@ -3679,7 +3679,7 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
         import asyncio
 
         from app.models.agent_job import AgentJob, AgentJobStatus
-        from app.tasks.agent_job_tasks import execute_agent_job_task
+        from app.services.job_dispatch import enqueue_agent_job
 
         job = ctx.job
         state = ctx.state if isinstance(ctx.state, dict) else {}
@@ -3751,7 +3751,7 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
             # cannot see a row that has only been flushed, and one that
             # picked the task up first found no job to run.
             await ctx.db.commit()
-            execute_agent_job_task.delay(str(child.id), str(job.user_id))
+            enqueue_agent_job(ctx.db, str(child.id), str(job.user_id))
 
             result = {
                 "success": True,
@@ -3971,7 +3971,7 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
         from datetime import datetime
 
         from app.models.agent_job import AgentJob, AgentJobStatus
-        from app.tasks.agent_job_tasks import execute_agent_job_task
+        from app.services.job_dispatch import enqueue_agent_job
 
         job = ctx.job
         state = ctx.state if isinstance(ctx.state, dict) else {}
@@ -4095,7 +4095,7 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
             # cannot see a row that has only been flushed, and one that
             # picked the task up first found no job to run.
             await ctx.db.commit()
-            execute_agent_job_task.delay(str(child.id), str(job.user_id))
+            enqueue_agent_job(ctx.db, str(child.id), str(job.user_id))
 
             try:
                 await executor._save_checkpoint(job, state, ctx.db)
@@ -9027,7 +9027,7 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
         from app.models.agent_job import AgentJob, AgentJobStatus
-        from app.tasks.agent_job_tasks import execute_agent_job_task
+        from app.services.job_dispatch import enqueue_agent_job
 
         job = ctx.job
         state = ctx.state if isinstance(ctx.state, dict) else {}
@@ -9125,7 +9125,7 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
             # cannot see a row that has only been flushed, and one that
             # picked the task up first found no job to run.
             await ctx.db.commit()
-            execute_agent_job_task.delay(str(child.id), str(job.user_id))
+            enqueue_agent_job(ctx.db, str(child.id), str(job.user_id))
             return {
                 "success": True,
                 "data": {

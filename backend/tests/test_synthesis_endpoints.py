@@ -611,7 +611,7 @@ def test_save_completed_hypothesis_reevaluation_updates_target_note(
         _fake_create_follow_up,
     )
     monkeypatch.setattr(
-        "app.services.research_opportunity_reprioritization_service.execute_agent_job_task.delay",
+        "app.tasks.agent_job_tasks.execute_agent_job_task.delay",
         lambda job_id, user_id: queued_jobs.append((job_id, user_id)),
     )
     monkeypatch.setattr(

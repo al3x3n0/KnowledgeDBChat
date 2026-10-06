@@ -24,11 +24,18 @@ IN_LOOP_MODULES = (
     # calls during a job too, and each unlisted module is a blind spot the
     # export reports as a shortfall without saying where.
     "agent_job_memory_service.py",
-    "agent_tool_dispatch.py",
     "agent_runtime_finalizer.py",
     "agent_action_service.py",
     "agent_observation_service.py",
 )
+
+# Tool handlers, one module per provider (agent_tool_dispatch re-exports them).
+IN_LOOP_MODULES += tuple(
+    f"agent_tool_providers/{path.name}"
+    for path in sorted((SERVICES / "agent_tool_providers").glob("*.py"))
+    if path.name != "__init__.py"
+)
+assert len(IN_LOOP_MODULES) > 20, "the provider modules were not found"
 
 LLM_METHODS = {"generate_response", "generate_structured"}
 

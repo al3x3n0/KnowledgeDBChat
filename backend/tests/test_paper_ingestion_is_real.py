@@ -62,7 +62,8 @@ class TestItWaitsForTheDocumentToLand:
     ):
         """Ingestion runs in a Celery worker, so "queued" and "readable" are
         different facts. Only the second lets the next stage do its job."""
-        from app.services import agent_tool_dispatch as dispatch
+        # Patched where the research provider looks it up.
+        from app.services.agent_tool_providers import research as dispatch
 
         async def _nothing_lands(source_id):
             return []
@@ -76,7 +77,8 @@ class TestItWaitsForTheDocumentToLand:
         assert not result.get("findings"), "a failed ingestion claims no evidence"
 
     async def test_a_landed_document_is_named_in_the_finding(self, monkeypatch):
-        from app.services import agent_tool_dispatch as dispatch
+        # Patched where the research provider looks it up.
+        from app.services.agent_tool_providers import research as dispatch
 
         async def _one_lands(source_id):
             return ["doc-1"]

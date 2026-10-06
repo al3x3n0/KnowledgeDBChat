@@ -112,7 +112,7 @@ class TestTheAdviceWasWrongNotJustUnhelpful:
         reader somewhere useless with confidence."""
         import inspect
 
-        from app.services import agent_tool_dispatch as dispatch
+        from app.services.agent_tool_providers import workspace_mutation as dispatch
 
         source = inspect.getsource(dispatch)
         assert "hot_blocks_from_findings" in source

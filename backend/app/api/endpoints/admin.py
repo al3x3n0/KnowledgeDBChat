@@ -4,7 +4,7 @@ Admin API endpoints for system management.
 
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict
 from uuid import UUID, uuid4
@@ -2179,7 +2179,10 @@ async def get_sources_next_run(
 
         res = await db.execute(select(_DS).where(_DS.is_active.is_(True)))
         sources = res.scalars().all()
-        now = datetime.utcnow()
+        # Aware UTC. `last_sync` comes back aware from Postgres, and against
+        # a naive now the interval branch raised (next_run came back None).
+        # A naive ISO string is also read by the browser as local time.
+        now = datetime.now(timezone.utc)
         items = []
         for s in sources:
             cfg = s.config or {}
@@ -2196,6 +2199,8 @@ async def get_sources_next_run(
                     next_run = nr.isoformat()
                 elif interval_min > 0:
                     last = s.last_sync
+                    if last is not None and last.tzinfo is None:
+                        last = last.replace(tzinfo=timezone.utc)
                     base = last or now
                     nr = base + timedelta(minutes=interval_min)
                     if nr < now:
@@ -2214,7 +2219,7 @@ async def get_sources_next_run(
 async def validate_cron(cron: str, current_user: User = Depends(require_admin)):
     """Validate a cron expression and return the next run timestamp if valid."""
     try:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         it = croniter(cron, now)
         nr = it.get_next(datetime)
         return {"valid": True, "next_run": nr.isoformat()}

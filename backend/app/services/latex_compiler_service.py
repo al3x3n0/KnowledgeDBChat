@@ -328,7 +328,7 @@ class LatexCompilerService:
                     aux_path = out_dir / "main.aux"
                     needs_bib = False
                     try:
-                        if re.search(r"\\bibliography\\s*\\{", tex_source):
+                        if re.search(r"\\bibliography\s*\{", tex_source):
                             needs_bib = True
                         elif aux_path.exists():
                             aux_text = aux_path.read_text(
@@ -360,7 +360,7 @@ class LatexCompilerService:
                         else:
                             # Keep rc non-zero if bibtex failed; the PDF may still exist but citations won't resolve.
                             rc = bib_rc
-                elif want_bibtex and re.search(r"\\bibliography\\s*\\{", tex_source):
+                elif want_bibtex and re.search(r"\\bibliography\s*\{", tex_source):
                     log_parts.append(
                         "BibTeX requested but `bibtex` binary is not available on the server."
                     )

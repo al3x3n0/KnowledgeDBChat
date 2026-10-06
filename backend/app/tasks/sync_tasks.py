@@ -3,7 +3,7 @@ Sync tasks for automated data source synchronization.
 """
 
 import asyncio
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from croniter import croniter
 from loguru import logger
@@ -40,6 +40,38 @@ def sync_all_sources() -> Dict[str, Any]:
     return asyncio.run(_async_sync_all_sources())
 
 
+def _sweep_skips(source: DocumentSource) -> Optional[str]:
+    """Why the hourly/daily sweeps leave this source alone, or None.
+
+    The sweeps used to sync every active source, overruling the per-source
+    settings the 5-minute scan honours: a source with Auto Sync switched off
+    still synced every hour, and a sync longer than an hour got a second,
+    concurrent run. Per-source settings win (decided 2026-10-06):
+
+    - already syncing: never started twice;
+    - Auto Sync explicitly off (the Admin toggle): nobody syncs it;
+    - Auto Sync on with an interval or cron: the scan owns its schedule.
+
+    A source whose config never set `auto_sync` -- every source created from
+    the Documents page, where that request field means "ingest now" and is
+    not stored -- keeps the sweep, as does Auto Sync on with no schedule
+    (the scan would never fire for it).
+    """
+    if getattr(source, "is_syncing", False):
+        return "already syncing"
+    cfg = source.config if isinstance(source.config, dict) else {}
+    if "auto_sync" not in cfg:
+        return None
+    if not cfg.get("auto_sync"):
+        return "auto sync is off"
+    has_schedule = (
+        bool(cfg.get("cron")) or int(cfg.get("sync_interval_minutes") or 0) > 0
+    )
+    if has_schedule:
+        return "scheduled by the source's own interval or cron"
+    return None
+
+
 async def _async_sync_sources_by_type(source_type: str) -> Dict[str, Any]:
     """Sync all sources of a specific type."""
     async with create_celery_session()() as db:
@@ -70,6 +102,17 @@ async def _async_sync_sources_by_type(source_type: str) -> Dict[str, Any]:
             results = []
 
             for source in sources:
+                skip = _sweep_skips(source)
+                if skip:
+                    results.append(
+                        {
+                            "source_id": str(source.id),
+                            "source_name": source.name,
+                            "status": "skipped",
+                            "reason": skip,
+                        }
+                    )
+                    continue
                 try:
                     # Trigger ingestion task
                     task_result = ingest_from_source.delay(str(source.id))
@@ -144,6 +187,8 @@ async def _async_sync_all_sources() -> Dict[str, Any]:
             results_by_type = {}
 
             for source in sources:
+                if _sweep_skips(source):
+                    continue
                 try:
                     # Trigger ingestion task
                     task_result = ingest_from_source.delay(str(source.id))
@@ -212,9 +257,15 @@ async def _async_scan_scheduled_sources() -> Dict[str, Any]:
             )
             sources = result.scalars().all()
             triggered = []
-            from datetime import datetime, timedelta
+            from datetime import datetime, timedelta, timezone
 
-            now = datetime.utcnow()
+            # Aware UTC throughout. `last_sync` is TIMESTAMP WITH TIME ZONE,
+            # which Postgres returns aware; against a naive utcnow() both the
+            # interval and the cron comparison raised TypeError, swallowed
+            # per source below -- so a source that had synced once was never
+            # synced by this scan again. (SQLite returns it naive, which is
+            # why no test saw it.)
+            now = datetime.now(timezone.utc)
             for src in sources:
                 try:
                     cfg = src.config or {}
@@ -226,6 +277,8 @@ async def _async_scan_scheduled_sources() -> Dict[str, Any]:
                     if getattr(src, "is_syncing", False):
                         continue
                     last = src.last_sync
+                    if last is not None and last.tzinfo is None:
+                        last = last.replace(tzinfo=timezone.utc)
                     due = False
                     # Interval-based due
                     if interval_min and interval_min > 0:

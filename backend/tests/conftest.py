@@ -265,6 +265,34 @@ def _no_live_llm_calls(monkeypatch: pytest.MonkeyPatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _no_leftover_singleton_patches():
+    """Lift methods earlier tests left on the shared service singletons.
+
+    `monkeypatch.setattr(instance, "method", fake)` is undone by setting the
+    original *bound method* back on the instance, so after the test the
+    instance carries an attribute it did not have. That attribute shadows any
+    later class-level patch: twice, a new test's fake storage or vector store
+    was bypassed in the full run (and the real MinIO client or embedding
+    model was called) while the file passed on its own. The leftover is the
+    original method, so removing it changes nothing but the shadowing.
+    """
+    from app.services.storage_service import storage_service
+    from app.services.vector_store import vector_store_service
+
+    for singleton in (storage_service, vector_store_service):
+        cls = type(singleton)
+        for name, value in list(vars(singleton).items()):
+            original = getattr(cls, name, None)
+            if (
+                callable(original)
+                and getattr(value, "__self__", None) is singleton
+                and getattr(value, "__func__", None) is original
+            ):
+                delattr(singleton, name)
+    yield
+
+
 @pytest.fixture(scope="function")
 async def db_session() -> AsyncGenerator[AsyncSession, None]:
     """Create a test database session."""
@@ -292,10 +320,15 @@ def client(
     async def _noop(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(vector_store_service, "initialize", _noop)
-    monkeypatch.setattr(storage_service, "initialize", _noop)
-    monkeypatch.setattr(redis_subscriber, "start", _noop)
-    monkeypatch.setattr(redis_subscriber, "stop", _noop)
+    # On the classes, not the singleton instances: undoing an instance-level
+    # monkeypatch leaves the original bound method behind as an instance
+    # attribute, which then shadows every later class-level patch -- a test's
+    # fake storage or vector store was silently bypassed for the rest of the
+    # run (see _no_leftover_singleton_patches).
+    monkeypatch.setattr(type(vector_store_service), "initialize", _noop)
+    monkeypatch.setattr(type(storage_service), "initialize", _noop)
+    monkeypatch.setattr(type(redis_subscriber), "start", _noop)
+    monkeypatch.setattr(type(redis_subscriber), "stop", _noop)
 
     def override_get_db():
         return db_session

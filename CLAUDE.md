@@ -36,7 +36,8 @@ make download-models    # Download embedding + reranking models
 ```bash
 make sandbox-images     # every image this repo can build (base, compiler, polyglot, profiling, microarch)
 make sandbox-polyglot   # C + Rust + Python and nothing else; no crates, so not the default
-make sandbox-check      # which exist locally, plus the compiler image's toolchains and crate count
+make sandbox-load       # copy what was built into the stack's sandbox daemon (see below)
+make sandbox-check      # which exist locally, the compiler image's toolchains, and what the app's daemon lacks
 make sandbox-gem5       # arm64 only; --platform is not optional
 make sandbox-axis AXIS_PATH=/path/to/axis   # context is the AXIS repo, not this one
 ```
@@ -52,24 +53,33 @@ after that mnemonic was added. When the Makefile path is blocked (it rebuilds
 `sandbox-base`, which needs apt), retagging the already-built image is
 equivalent and needs no network.
 
-**Without `docker-compose.docker-tools.yml` in the stack, none of these
-images are reachable and every sandbox-backed tool fails** — gem5, compiler,
-profiling and microarch alike — with `Cannot connect to the Docker daemon`,
-because the backend and celery containers have no socket. `.env` can say
-`UNSAFE_CODE_EXEC_BACKEND=docker` and be simultaneously true and useless. Bring
-it up with:
+**Sandboxes run in the stack's own Docker daemon, `sandbox-docker`**
+(`docker:27-dind`, privileged), not the host's. Backend and celery reach it over
+TLS through `DOCKER_HOST=tcp://sandbox-docker:2376`, with client certs from the
+daemon's own volume, and never see the host socket. Every sandbox path shells out
+to the `docker` CLI, so `DOCKER_HOST` redirects all of them. Two consequences
+follow, each found by running it:
 
-```bash
-docker compose -f docker-compose.yml -f docker-compose.override.yml \
-  -f docker-compose.docker-tools.yml up -d backend celery
-```
+- **Its image store is its own.** An image `make sandbox-*` built on the host is
+  invisible to it, and the `ghcr.io/al3x3n0/kdbc-*` images are not published to
+  pull. `make sandbox-load` copies each locally built image that differs. It
+  compares layers and creation time, not image ID: a host on the containerd
+  image store reports the manifest digest as the ID and dind the config digest,
+  so one image's IDs never match. A missing image is what the overlay era's
+  missing socket used to be: silence in the evidence, a capability reading as
+  0 findings. `make sandbox-check` names what the app's daemon lacks.
+- **The work directory is a volume mounted at `/sandbox-work` in all three
+  containers**, and `TMPDIR` points there, because `-v <dir>:/work` is resolved
+  by the daemon's filesystem. It must not be under `/tmp`: the dind entrypoint
+  mounts a tmpfs over its `/tmp`, which hid a volume there and gave every
+  sandbox an empty, unwritable `/work`.
 
-Add `--build` only if `docker` is absent from the image (`WITH_DOCKER_CLI`);
-where the CLI is already present, `--no-build` avoids needing the package
-mirrors, which this network intercepts. The socket grants the container
-root-equivalent control of the host, so this is for a development machine or an
-isolated runner. The symptom of forgetting it is silence in the evidence: a
-capability reads as 0 findings, indistinguishable from one nobody has used.
+`docker-compose.docker-tools.yml` is now the opt-in alternative: it points the
+same CLI at the host socket (clearing `DOCKER_HOST`), binds a host temp path
+at the same location inside and out, and enables `CUSTOM_TOOL_DOCKER_ENABLED`.
+The socket grants root-equivalent control of the host, so that is for a
+development machine or an isolated runner. Recreate with `--no-build` where the
+CLI is already in the image; this network intercepts the package mirrors.
 
 The images agent tools run submitted code in (`deploy/sandbox-images/`). They
 are coupled to the code: Rust support and the pinned crate set only work
@@ -1546,9 +1556,10 @@ Main services in `docker-compose.yml`:
 - `backend` (8000), `frontend` via `nginx` (3000)
 - `celery` worker + `celery_latex` (dedicated LaTeX compilation queue) + `celery_transcription` (dedicated Whisper queue; its image derives from the backend image, so `make build` builds the backend first — compose does not infer build order from a `FROM`)
 - `kroki-mermaid` (8001) - Mermaid rendering, built from `mermaid-renderer/` (this repo's own: Alpine + Chromium + mermaid-cli, 1.08 GB against `yuzutech/kroki-mermaid`'s 1.54 GB, with mesa and libLLVM deleted because a headless browser never opens them). Speaks the Kroki companion protocol: POST the raw diagram to `/svg` or `/png`
+- `sandbox-docker` - private Docker-in-Docker daemon (privileged) that every sandboxed tool runs in; backend and celery reach it over TLS. Load images with `make sandbox-load`
 - `video-streamer` - Go microservice for video streaming (in `video-streamer/`)
 
-Variants: `docker-compose.prod.yml` (gunicorn, healthchecks) — `celery_beat` runs in the dev stack too, and it is what makes `check_stalled_agent_jobs` fire there: with no beat, a job whose worker died (typically from restarting the celery container) stays `running` for ever until that task is invoked by hand, which requeues it to resume from its last checkpoint rather than failing it. The same sweep also covers the opposite failure: a job whose row was committed but whose Celery task never arrived — a broker restart, a purged queue, an enqueue that failed after the commit — sits in `pending` with no task id and no activity, which the running-job query could not see, so two were found in a live database 14 and 3 days old. Re-delivery is safe because the execution lease decides who runs: a duplicate returns `lease_conflict` without executing. A job holding a live lease, one already claimed, and one with a `schedule_type` are all left alone — firing a recurring job early is a wrong run, not a recovery), `docker-compose.test.yml` (isolated test stack on shifted ports), `docker-compose.docker-tools.yml` (mounts Docker socket for Docker-based tool execution).
+Variants: `docker-compose.prod.yml` (gunicorn, healthchecks) — `celery_beat` runs in the dev stack too, and it is what makes `check_stalled_agent_jobs` fire there: with no beat, a job whose worker died (typically from restarting the celery container) stays `running` for ever until that task is invoked by hand, which requeues it to resume from its last checkpoint rather than failing it. The same sweep also covers the opposite failure: a job whose row was committed but whose Celery task never arrived — a broker restart, a purged queue, an enqueue that failed after the commit — sits in `pending` with no task id and no activity, which the running-job query could not see, so two were found in a live database 14 and 3 days old. Re-delivery is safe because the execution lease decides who runs: a duplicate returns `lease_conflict` without executing. A job holding a live lease, one already claimed, and one with a `schedule_type` are all left alone — firing a recurring job early is a wrong run, not a recovery), `docker-compose.test.yml` (isolated test stack on shifted ports), `docker-compose.docker-tools.yml` (uses the host's Docker socket instead of the `sandbox-docker` sidecar, and enables Docker custom tools).
 
 Access points:
 - Frontend: http://localhost:23000

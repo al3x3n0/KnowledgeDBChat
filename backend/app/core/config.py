@@ -549,7 +549,8 @@ class Settings(BaseSettings):
     AGENT_CHAT_MAX_TOOL_CALLS: int = 12
 
     # Custom tools
-    # Docker-based tools require access to a Docker daemon (often via host docker socket).
+    # Docker-based tools run in whatever daemon DOCKER_HOST names: the compose
+    # stack's private `sandbox-docker`, or the host's with the docker-tools overlay.
     # Keep disabled by default for safety.
     CUSTOM_TOOL_DOCKER_ENABLED: bool = False
 

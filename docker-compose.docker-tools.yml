@@ -1,5 +1,7 @@
-# Overlay that lets the containerised app drive the host Docker daemon, for
-# Docker-backed custom tools and the scientific-validation sandbox.
+# Optional: run sandbox tools on the HOST Docker daemon instead of the stack's
+# private `sandbox-docker` daemon (the default since 2026-10-06, which needs no
+# overlay at all). Use this only if you want sandbox runs to share the host's
+# image cache and engine -- e.g. to skip `make sandbox-load`.
 #
 # Mounting the socket grants the container control of the host daemon, which is
 # effectively root on the host. Use it on a development machine or an isolated
@@ -9,7 +11,9 @@
 # container (-v <tmp>:/work). That path is resolved by the *host* daemon, so a
 # temp dir that exists only inside this container silently mounts as empty.
 # SANDBOX_TMPDIR is therefore bind-mounted at the same absolute path inside and
-# out, and TMPDIR points at it so tempfile lands there.
+# out, and TMPDIR points at it instead of the private daemon's work volume.
+# DOCKER_HOST and DOCKER_TLS_VERIFY are cleared so the CLI uses the mounted
+# socket rather than the private daemon the base file points it at.
 services:
   backend:
     # The Docker CLI is not in the default image -- 65 MB for a binary that
@@ -21,6 +25,8 @@ services:
     environment:
       - CUSTOM_TOOL_DOCKER_ENABLED=true
       - TMPDIR=${SANDBOX_TMPDIR:-/tmp/kdbc-sandbox}
+      - DOCKER_HOST=
+      - DOCKER_TLS_VERIFY=
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${SANDBOX_TMPDIR:-/tmp/kdbc-sandbox}:${SANDBOX_TMPDIR:-/tmp/kdbc-sandbox}
@@ -32,6 +38,8 @@ services:
     environment:
       - CUSTOM_TOOL_DOCKER_ENABLED=true
       - TMPDIR=${SANDBOX_TMPDIR:-/tmp/kdbc-sandbox}
+      - DOCKER_HOST=
+      - DOCKER_TLS_VERIFY=
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${SANDBOX_TMPDIR:-/tmp/kdbc-sandbox}:${SANDBOX_TMPDIR:-/tmp/kdbc-sandbox}

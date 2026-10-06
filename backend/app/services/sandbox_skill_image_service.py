@@ -305,8 +305,9 @@ async def build_image(db: AsyncSession, image: SandboxSkillImage) -> SandboxSkil
         returncode, log = await _docker_build(image.tag, image.dockerfile, timeout)
     except FileNotFoundError:
         returncode, log = 127, (
-            "The docker client is not installed where the build runs. Bring "
-            "the stack up with docker-compose.docker-tools.yml."
+            "The docker client is not installed where the build runs. Rebuild "
+            "backend and celery with WITH_DOCKER_CLI=true, as docker-compose.yml "
+            "does."
         )
     except Exception as exc:
         logger.warning(f"Skill image build for {image.tag} failed: {exc}")

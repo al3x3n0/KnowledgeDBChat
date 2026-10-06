@@ -3,6 +3,8 @@ Database configuration and connection management.
 """
 
 import asyncio
+import os
+import time
 
 from loguru import logger
 from sqlalchemy import MetaData
@@ -13,6 +15,30 @@ from sqlalchemy.pool import NullPool
 
 from . import session_writes  # noqa: F401  (registers write tracking)
 from .config import settings
+
+
+def _pin_process_to_utc() -> None:
+    """Make the process's local time UTC, because naive datetimes here are UTC.
+
+    The code writes ``datetime.utcnow()`` -- naive -- into ``TIMESTAMP WITH
+    TIME ZONE`` columns, and asyncpg converts a naive value from the process's
+    *local* zone. In the containers that is UTC and nothing shows; run the
+    backend anywhere else (the documented ``uvicorn main:app``, a host at
+    UTC+3, a deployment that sets TZ) and every timestamp is stored off by the
+    offset. Measured: a naive 12:00 was stored as 09:00+00:00 at UTC+3. Pinned
+    here because every process that touches the database imports this module.
+    """
+    if os.environ.get("TZ") not in (None, "", "UTC"):
+        logger.warning(
+            f"TZ={os.environ['TZ']} overridden to UTC: this application stores "
+            "naive datetimes as UTC"
+        )
+    os.environ["TZ"] = "UTC"
+    if hasattr(time, "tzset"):
+        time.tzset()
+
+
+_pin_process_to_utc()
 
 # Convert sync database URL to async for async operations
 async_database_url = settings.DATABASE_URL.replace(

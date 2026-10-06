@@ -1551,7 +1551,22 @@ All API endpoints are prefixed with `/api/v1/`. Endpoint groups by domain (see `
 
 ## Testing Patterns
 
-- Backend tests use **in-memory SQLite** with `aiosqlite` (configured in `tests/conftest.py`)
+- Backend tests use **in-memory SQLite** with `aiosqlite` (configured in `tests/conftest.py`).
+  `TEST_DATABASE_URL=postgresql+asyncpg://...` runs them on Postgres instead,
+  and the `backend-postgres` CI job does that for the files in
+  `tests/postgres_slice.txt` -- code whose behaviour depends on the database.
+  On Postgres the schema is created once per run and the tables that hold
+  rows are emptied between tests (`DELETE` with foreign-key triggers
+  suspended; `TRUNCATE ... CASCADE` reached every table through `users`).
+  Tests using the HTTP `client` fixture skip themselves there: TestClient runs
+  the app on its own event loop, and an asyncpg connection belongs to one.
+  Its first run found two things SQLite hides: tests inserting rows for users
+  that do not exist (no foreign keys), and **asyncpg reading a naive datetime
+  in the process's local zone** -- the app writes naive `utcnow()` into
+  `TIMESTAMP WITH TIME ZONE` columns, so on a UTC+3 host every timestamp was
+  stored three hours early. `app/core/database.py` now pins the process to
+  UTC (`_pin_process_to_utc`, with a warning if `TZ` said otherwise);
+  `tests/test_naive_datetimes_are_utc.py` fails without it.
 - Heavy optional dependencies (sentence_transformers, bs4, croniter, mammoth, jsonpath_ng) are stubbed in conftest; `pptx` is stubbed **only when it is not installed** — it used to be stubbed whenever nothing had imported it yet, which was always, so no test built a real presentation and two broken PPTX paths passed — — sentence_transformers is no longer installed at all, so that stub is now the only thing that module means in tests — don't import them at module top-level in code paths tests touch without checking the stubs
 - FastAPI dependency overrides replace `get_db` with test session
 - User fixtures: `test_user` (regular) and `admin_user` with real password hashing; `auth_headers` / `admin_headers` via live token creation

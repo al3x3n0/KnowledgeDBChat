@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool, StaticPool
 
 # Importing the app configures loguru with settings.LOG_FILE, so this has to be
 # set before that import happens. Without it every test run appends to
@@ -197,15 +197,27 @@ def _compile_uuid_sqlite(_element, _compiler, **_kwargs):
     return "CHAR(36)"
 
 
-# Test database URL (in-memory SQLite for testing)
-TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+# In-memory SQLite by default. TEST_DATABASE_URL points a run at Postgres,
+# which production uses and SQLite only resembles: three bugs passed here and
+# failed there -- TIMESTAMP WITH TIME ZONE coming back aware against a naive
+# utcnow(), `.overlap()` on a plain JSON column, and JSON mutated in place.
+# CI runs a slice of the suite this way (the `backend-postgres` job).
+TEST_DATABASE_URL = (
+    os.environ.get("TEST_DATABASE_URL") or "sqlite+aiosqlite:///:memory:"
+)
+TEST_ON_POSTGRES = TEST_DATABASE_URL.startswith("postgresql")
 
 # Create test engine
-test_engine = create_async_engine(
-    TEST_DATABASE_URL,
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-)
+if TEST_ON_POSTGRES:
+    # A connection per use: tests run on more than one event loop, and a pooled
+    # asyncpg connection belongs to the loop that opened it.
+    test_engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
+else:
+    test_engine = create_async_engine(
+        TEST_DATABASE_URL,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
 
 # Create test session factory
 TestSessionLocal = async_sessionmaker(
@@ -296,6 +308,11 @@ def _no_leftover_singleton_patches():
 @pytest.fixture(scope="function")
 async def db_session() -> AsyncGenerator[AsyncSession, None]:
     """Create a test database session."""
+    if TEST_ON_POSTGRES:
+        async for session in _postgres_session():
+            yield session
+        return
+
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
@@ -306,12 +323,65 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
         await conn.run_sync(Base.metadata.drop_all)
 
 
+_postgres_schema_ready = False
+
+
+async def _postgres_session() -> AsyncGenerator[AsyncSession, None]:
+    """The schema once per run, emptied between tests.
+
+    Creating and dropping ~150 tables per test cost about ten seconds each; a
+    TRUNCATE of every table is what isolation actually needs. The first use
+    resets the schema, so a run never inherits a previous one's leftovers.
+    """
+    global _postgres_schema_ready
+    if not _postgres_schema_ready:
+        async with test_engine.begin() as conn:
+            await conn.exec_driver_sql("DROP SCHEMA public CASCADE")
+            await conn.exec_driver_sql("CREATE SCHEMA public")
+            await conn.run_sync(Base.metadata.create_all)
+        _postgres_schema_ready = True
+
+    async with TestSessionLocal() as session:
+        yield session
+
+    async with test_engine.begin() as conn:
+        await conn.exec_driver_sql(_EMPTY_WHAT_WAS_WRITTEN)
+
+
+# One round trip: empty only the tables that hold rows. Most tests touch a
+# handful of ~150 tables. TRUNCATE ... CASCADE was no cheaper than truncating
+# everything, because `users` always has a row and nearly every table
+# references it; DELETE with foreign-key triggers suspended for the
+# transaction touches exactly what was written. (Needs a superuser, which the
+# CI service and a local compose Postgres both run as.)
+_EMPTY_WHAT_WAS_WRITTEN = """
+DO $$
+DECLARE
+    t text;
+    has_rows boolean;
+BEGIN
+    SET LOCAL session_replication_role = replica;
+    FOR t IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP
+        EXECUTE format('SELECT EXISTS (SELECT 1 FROM public.%I)', t) INTO has_rows;
+        IF has_rows THEN
+            EXECUTE format('DELETE FROM public.%I', t);
+        END IF;
+    END LOOP;
+END $$;
+"""
+
+
 @pytest.fixture(scope="function")
 def client(
     db_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> TestClient:
     """Create a test client without contacting production infrastructure."""
+    if TEST_ON_POSTGRES:
+        # TestClient runs the app on its own event loop, and the session it is
+        # handed was opened on pytest's. aiosqlite does not mind; an asyncpg
+        # connection belongs to one loop and fails at close.
+        pytest.skip("the HTTP client cannot share a Postgres session across loops")
     from app.services.storage_service import storage_service
     from app.services.vector_store import vector_store_service
     from app.utils.redis_subscriber import redis_subscriber

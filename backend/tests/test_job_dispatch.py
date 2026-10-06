@@ -58,6 +58,61 @@ async def test_a_failed_immediate_send_reaches_the_caller(
         job_dispatch.enqueue_agent_job(db_session, job.id, test_user.id)
 
 
+async def test_a_transaction_that_only_read_sends_at_once(db_session, test_user, sent):
+    # A SELECT opens a transaction nobody may commit; waiting for it would
+    # lose the message.
+    job = _job(test_user.id)
+    db_session.add(job)
+    await db_session.commit()
+    await db_session.get(AgentJob, job.id, populate_existing=True)
+    assert db_session.sync_session.in_transaction()
+    job_dispatch.enqueue_agent_job(db_session, job.id, test_user.id)
+    assert sent == [(str(job.id), str(test_user.id))]
+
+
+async def test_a_bulk_update_counts_as_a_write(db_session, test_user, sent):
+    from sqlalchemy import update
+
+    job = _job(test_user.id)
+    db_session.add(job)
+    await db_session.commit()
+    await db_session.execute(
+        update(AgentJob).where(AgentJob.id == job.id).values(status="pending")
+    )
+    job_dispatch.enqueue_agent_job(db_session, job.id, test_user.id)
+    assert sent == []
+    await db_session.commit()
+    assert len(sent) == 1
+
+
+def test_every_task_named_in_the_code_exists():
+    # Tasks are named by string so services need not import them; a typo
+    # would only surface when a commit tried to send it.
+    import ast
+    from pathlib import Path
+
+    app = Path(__file__).resolve().parents[1] / "app"
+    names = {job_dispatch.AGENT_JOB_TASK}
+    for path in app.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call) and getattr(
+                node.func, "attr", getattr(node.func, "id", None)
+            ) in {"enqueue", "send_now"}:
+                position = (
+                    1
+                    if getattr(node.func, "attr", getattr(node.func, "id", None))
+                    == "enqueue"
+                    else 0
+                )
+                if len(node.args) > position and isinstance(
+                    node.args[position], ast.Constant
+                ):
+                    names.add(node.args[position].value)
+    assert len(names) > 1, "the scan found no enqueue calls"
+    for name in sorted(names):
+        assert callable(getattr(job_dispatch.resolve_task(name), "delay", None)), name
+
+
 async def test_a_rollback_sends_nothing(db_session, test_user, sent):
     job = _job(test_user.id)
     db_session.add(job)

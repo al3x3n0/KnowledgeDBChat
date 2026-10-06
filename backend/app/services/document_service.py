@@ -22,12 +22,26 @@ from app.core.config import settings
 from app.models.document import Document, DocumentChunk, DocumentSource
 from app.models.persona import DocumentPersonaDetection
 from app.models.user import User
+from app.services.job_dispatch import enqueue, send_now
 from app.services.llm_service import LLMService, UserLLMSettings
 from app.services.persona_service import persona_service
 from app.services.storage_service import storage_service
 from app.services.text_processor import TextProcessor
 from app.services.vector_store import vector_store_service
 from app.tasks import job_support
+
+
+def _publish_media_status(document_id: str, status: dict) -> None:
+    """Tell a document's progress socket which media stage it is in.
+
+    The transcode and transcription task modules each define this for
+    themselves; it is one Redis publish, and the upload path used to import
+    both worker modules to reach it.
+    """
+    job_support.publish_sync(
+        f"transcription_progress:{document_id}",
+        {"type": "status", "document_id": document_id, "status": status},
+    )
 
 
 class DocumentService:
@@ -209,9 +223,8 @@ class DocumentService:
         if user_id is None:
             return
         try:
-            from app.tasks.workflow_tasks import publish_workflow_event
-
-            publish_workflow_event(
+            send_now(
+                "app.tasks.workflow_tasks.trigger_event_workflow",
                 event,
                 {"document_id": str(document_id), "title": title},
                 str(user_id),
@@ -348,12 +361,7 @@ class DocumentService:
                         document.extra_metadata["is_transcoding"] = True
                         document.extra_metadata.pop("is_transcribing", None)
                         try:
-                            from app.tasks.transcode_tasks import (
-                                _publish_status as publish_status,
-                            )
-                            from app.tasks.transcode_tasks import transcode_to_mp4
-
-                            publish_status(
+                            _publish_media_status(
                                 str(document.id),
                                 {
                                     "is_transcoding": True,
@@ -361,7 +369,11 @@ class DocumentService:
                                     "is_transcribed": False,
                                 },
                             )
-                            transcode_to_mp4.delay(str(document.id))
+                            enqueue(
+                                db,
+                                "app.tasks.transcode_tasks.transcode_to_mp4",
+                                str(document.id),
+                            )
                             logger.info(
                                 f"Triggered transcode (then transcribe) for document {document.id}"
                             )
@@ -372,14 +384,7 @@ class DocumentService:
                         # Audio or already MP4 -> transcribe now
                         document.extra_metadata["is_transcribing"] = True
                         try:
-                            from app.tasks.transcription_tasks import (
-                                _publish_status as publish_status,
-                            )
-                            from app.tasks.transcription_tasks import (
-                                transcribe_document,
-                            )
-
-                            publish_status(
+                            _publish_media_status(
                                 str(document.id),
                                 {
                                     "is_transcoding": False,
@@ -387,10 +392,14 @@ class DocumentService:
                                     "is_transcribed": False,
                                 },
                             )
-                            transcribe_document.apply_async(
-                                args=[str(document.id)],
-                                soft_time_limit=5 * 60 * 60,
-                                time_limit=6 * 60 * 60,
+                            enqueue(
+                                db,
+                                "app.tasks.transcription_tasks.transcribe_document",
+                                str(document.id),
+                                _options={
+                                    "soft_time_limit": 5 * 60 * 60,
+                                    "time_limit": 6 * 60 * 60,
+                                },
                             )
                             logger.info(
                                 f"Triggered transcription task for document {document.id} "
@@ -722,11 +731,9 @@ class DocumentService:
                 "auto_summarize_on_process"
             ):
                 try:
-                    from app.tasks.summarization_tasks import (
-                        summarize_document as _summ_task,
-                    )
-
-                    _summ_task.delay(
+                    enqueue(
+                        db,
+                        "app.tasks.summarization_tasks.summarize_document",
                         str(document.id),
                         False,
                         user_id=str(user_id) if user_id else None,

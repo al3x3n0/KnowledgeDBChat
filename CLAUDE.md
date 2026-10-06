@@ -1459,21 +1459,34 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
 - **Lower layers do not import higher ones** (`tests/test_layering.py`, read
   from source including imports inside functions). Nothing outside `app/api`
   imports `app.api`; services, models, schemas, core, agent_core, utils and mcp
-  do not import `app.tasks`; and in `app/modules/<domain>`, `application` and
-  `domain` do not import `api`. 891 function-local imports had let 51 modules
-  (services, tasks, endpoints and `modules/autonomy`) form one import cycle
-  Python never reports. The test's `ALLOWED` set is what was true when it was
-  written and may only shrink: a stale entry fails too.
-- **Agent jobs are queued through `services/job_dispatch.enqueue_agent_job(db,
-  job_id, user_id)`**, the one service module allowed to import a task. With
-  a transaction open it sends when that transaction commits and drops the
-  message on rollback; with none open the row is already committed and it
-  sends now, letting a broker error reach the caller (the chain orchestrator
-  records `chain_dispatch_failed` from it). The coding backlog's three
-  orchestrator starts, its repair and apply spawns, the coding runner's
-  spawns and the opportunity reprioritiser all queued a job the worker could
-  not yet see. A deferred message whose session is never committed is the
-  stalled-job sweep's to re-deliver.
+  do not import a module that defines Celery tasks (a helper under
+  `app/tasks` that defines none, such as `job_support`, is not the worker);
+  and in `app/modules/<domain>`, `application` and `domain` do not import
+  `api`. 891 function-local imports had let 51 modules (services, tasks,
+  endpoints and `modules/autonomy`) form one import cycle Python never
+  reports. The test's `ALLOWED` set may only shrink, and a stale entry fails
+  too; one entry is left (`monitoring_tasks` composes the operator queue from
+  endpoint-private pieces).
+- **Work is queued through `services/job_dispatch`**: `enqueue(db,
+  "app.tasks.<module>.<task>", *args)`, `enqueue_agent_job(db, job_id,
+  user_id)`, and `send_now(...)` for a caller with no session to wait on.
+  Tasks are named by path and resolved when sent, through the task's own
+  `.delay`, so a test patching it still intercepts and a misspelt name fails
+  at the call (`test_every_task_named_in_the_code_exists`). The rule is
+  **"has this transaction written"**, tracked by `core/session_writes.py` from
+  ORM flushes and ORM DML: if it has, the message goes when it commits and is
+  dropped on rollback; if not, it goes now and a broker error reaches the
+  caller (the chain orchestrator records `chain_dispatch_failed` from it).
+  Not "is a transaction open": any SELECT opens one, and a read-only caller's
+  message deferred to a commit nobody makes is lost. `enqueue` returns the
+  `AsyncResult` only when it sent now, so a caller needing the task id commits
+  first or uses `send_now` -- a tool running inside another session's
+  transaction (chat, an autonomous job) cannot know it is clean. Fixed on the
+  way, each queuing work its worker could not yet see or overwriting the
+  worker: the coding backlog's three orchestrator starts and its repair and
+  apply spawns, the coding runner's spawns, the opportunity reprioritiser, and
+  training's `start_job`, which sent the task and then committed `QUEUED`
+  over a worker that had already marked the job running.
 
 ### Feature Flags (`core/feature_flags.py`)
 - Two-tier resolution: Redis cache → Settings fallback

@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -236,14 +236,26 @@ class TrainingService:
                     "of them finishes."
                 )
 
-        # Queue job in Celery
-        from app.tasks.training_tasks import execute_training_job_task
-
-        task = execute_training_job_task.delay(str(job_id), str(job.user_id))
+        # Queued is committed before the task is sent. Sent first, a worker
+        # quick enough to mark the job running was then overwritten by this
+        # commit, leaving a running job reading "queued".
+        from app.services.job_dispatch import enqueue
 
         job.status = TrainingJobStatus.QUEUED.value
-        job.celery_task_id = task.id
+        await db.commit()
+        task = enqueue(
+            db,
+            "app.tasks.training_tasks.execute_training_job_task",
+            str(job_id),
+            str(job.user_id),
+        )
 
+        # Only the id, so a status the worker has written since is kept.
+        await db.execute(
+            update(TrainingJob)
+            .where(TrainingJob.id == job.id)
+            .values(celery_task_id=task.id)
+        )
         await db.commit()
         await db.refresh(job)
 

@@ -2012,14 +2012,15 @@ def published(monkeypatch):
 
     from app.tasks import workflow_tasks
 
-    real = workflow_tasks.publish_workflow_event
+    # The message itself: what reaches the broker, whichever helper sent it.
+    task = workflow_tasks.trigger_event_workflow
     calls = []
 
     def publish(*args, **kwargs):
-        bound = inspect.signature(real).bind(*args, **kwargs)
+        bound = inspect.signature(task.run).bind(*args, **kwargs)
         calls.append(dict(bound.arguments))
 
-    monkeypatch.setattr(workflow_tasks, "publish_workflow_event", publish)
+    monkeypatch.setattr(task, "delay", publish)
     return calls
 
 
@@ -2075,7 +2076,7 @@ async def test_a_broker_that_refuses_the_event_does_not_fail_the_delete(
     def refuse(*args, **kwargs):
         raise ConnectionError("broker down")
 
-    monkeypatch.setattr(workflow_tasks, "publish_workflow_event", refuse)
+    monkeypatch.setattr(workflow_tasks.trigger_event_workflow, "delay", refuse)
     source = await _source(db_session)
     doc = await _doc(db_session, source, "Gone")
 

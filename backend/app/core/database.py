@@ -11,6 +11,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
+from . import session_writes  # noqa: F401  (registers write tracking)
 from .config import settings
 
 # Convert sync database URL to async for async operations

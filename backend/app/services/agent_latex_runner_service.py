@@ -439,7 +439,7 @@ class AgentLatexRunnerService:
             latex_compiler_service,
         )
         from app.services.storage_service import storage_service
-        from app.tasks.latex_tasks import compile_latex_project_job
+        from app.services.job_dispatch import enqueue
 
         _emit = phase_reporter(job, "latex_compile_project")
 
@@ -554,8 +554,11 @@ class AgentLatexRunnerService:
             await db.refresh(compile_job)
 
             try:
-                async_result = compile_latex_project_job.apply_async(
-                    args=[str(compile_job.id)], queue=queue
+                async_result = enqueue(
+                    db,
+                    "app.tasks.latex_tasks.compile_latex_project_job",
+                    str(compile_job.id),
+                    _options={"queue": queue},
                 )
                 compile_job.celery_task_id = async_result.id
                 await db.commit()

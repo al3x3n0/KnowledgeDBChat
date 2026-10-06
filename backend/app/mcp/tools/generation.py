@@ -170,9 +170,14 @@ class GenerationTool:
             await db.refresh(job)
 
             # Dispatch Celery task
-            from app.tasks.presentation_tasks import generate_presentation_task
+            from app.services.job_dispatch import enqueue
 
-            generate_presentation_task.delay(str(job.id), str(auth.user_id))
+            enqueue(
+                db,
+                "app.tasks.presentation_tasks.generate_presentation_task",
+                str(job.id),
+                str(auth.user_id),
+            )
 
             return {
                 "job_id": str(job.id),
@@ -256,9 +261,14 @@ class GenerationTool:
             await db.refresh(job)
 
             # Dispatch Celery task
-            from app.tasks.repo_report_tasks import generate_repo_report_task
+            from app.services.job_dispatch import enqueue
 
-            generate_repo_report_task.delay(str(job.id), str(auth.user_id))
+            enqueue(
+                db,
+                "app.tasks.repo_report_tasks.generate_repo_report_task",
+                str(job.id),
+                str(auth.user_id),
+            )
 
             return {
                 "job_id": str(job.id),

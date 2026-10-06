@@ -1346,9 +1346,11 @@ def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
 
         queued = False
         try:
-            from app.tasks.ingestion_tasks import ingest_from_source
+            from app.services.job_dispatch import enqueue
 
-            ingest_from_source.delay(str(source.id))
+            enqueue(
+                ctx.db, "app.tasks.ingestion_tasks.ingest_from_source", str(source.id)
+            )
             queued = True
         except Exception:
             queued = False
@@ -2364,7 +2366,7 @@ Suggest the single best next action and explain why."""
         Previously reported presentation_queued=True without queueing anything.
         """
         from app.models.presentation import PresentationJob
-        from app.tasks.presentation_tasks import generate_presentation_task
+        from app.services.job_dispatch import enqueue
 
         title = str(params.get("title") or "").strip()
         topic = str(params.get("topic") or "").strip()
@@ -2398,7 +2400,12 @@ Suggest the single best next action and explain why."""
         ctx.db.add(job_record)
         await ctx.db.commit()
         await ctx.db.refresh(job_record)
-        generate_presentation_task.delay(str(job_record.id), str(user_id))
+        enqueue(
+            ctx.db,
+            "app.tasks.presentation_tasks.generate_presentation_task",
+            str(job_record.id),
+            str(user_id),
+        )
 
         return {
             "success": True,
@@ -10588,7 +10595,7 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
         from sqlalchemy.orm.attributes import flag_modified
 
         from app.models.document import Document as DocModel
-        from app.tasks.transcription_tasks import transcribe_document as transcribe_task
+        from app.services.job_dispatch import send_now
 
         doc_id = (params.get("document_id") or "").strip()
         if not doc_id:
@@ -10646,7 +10653,9 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
             # Queue first. With the flag committed before the enqueue, a
             # broker that was down left the document "in progress" for ever
             # and every retry was told so.
-            celery_result = transcribe_task.delay(str(doc.id))
+            celery_result = send_now(
+                "app.tasks.transcription_tasks.transcribe_document", str(doc.id)
+            )
             doc.extra_metadata = {**meta, "is_transcribing": True}
             flag_modified(doc, "extra_metadata")
             await ctx.db.commit()

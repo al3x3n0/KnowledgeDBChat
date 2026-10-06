@@ -12,8 +12,10 @@ The rules:
 - nothing outside ``app/api`` imports ``app.api``. An endpoint module is
   transport; a service that needs its helper needs that helper moved down;
 - the service layer (and models, schemas, core, agent_core, utils, mcp) does
-  not import ``app.tasks``. Work is queued through ``services/job_dispatch``,
-  the one module allowed to, which also sends only after the commit;
+  not import a module that defines Celery tasks. Work is queued through
+  ``services/job_dispatch.enqueue``, which names the task by path and sends
+  only once the caller's writes are committed. (A helper under ``app/tasks``
+  that defines no task, such as ``job_support``, is not the worker.)
 - inside ``app/modules/<domain>``, ``application`` and ``domain`` do not
   import ``api`` (``app/modules/README.md``).
 
@@ -40,27 +42,35 @@ TASK_GATEWAY = "services/job_dispatch.py"
 ALLOWED = {
     # Composes the operator queue from about twenty endpoint-private pieces.
     ("tasks/monitoring_tasks.py", "app.api"),
-    ("mcp/tools/generation.py", "app.tasks"),
-    ("services/agent_ingestion_demo_runner_service.py", "app.tasks"),
-    ("services/agent_latex_runner_service.py", "app.tasks"),
-    ("services/agent_service.py", "app.tasks"),
-    ("services/agent_tool_dispatch.py", "app.tasks"),
-    ("services/chat_service.py", "app.tasks"),
-    ("services/document_service.py", "app.tasks"),
-    ("services/notification_service.py", "app.tasks"),
-    ("services/training_service.py", "app.tasks"),
-    ("services/workflow_engine.py", "app.tasks"),
 }
 
 
 def _imported_modules(path: Path):
+    """Every module ``path`` imports, ``from pkg import mod`` resolved to both."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module and not node.level:
             yield node.module
+            for alias in node.names:
+                yield f"{node.module}.{alias.name}"
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 yield alias.name
+
+
+def _task_modules() -> set[str]:
+    """Modules under app/tasks that define a Celery task.
+
+    A helper living there (``job_support`` publishes to Redis) is not the
+    worker; importing it drags in nothing the rule is about.
+    """
+    found = set()
+    for path in (APP / "tasks").rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        if "@celery_app.task" in text or "@shared_task" in text:
+            rel = path.relative_to(APP.parent).with_suffix("").as_posix()
+            found.add(rel.replace("/", "."))
+    return found
 
 
 def _forbidden(rel: str) -> list[str]:
@@ -84,8 +94,15 @@ def _forbidden(rel: str) -> list[str]:
     return forbidden
 
 
+def _violates(module: str, package: str, task_modules: set[str]) -> bool:
+    if package == "app.tasks":
+        return module in task_modules
+    return module == package or module.startswith(package + ".")
+
+
 def _violations() -> set[tuple[str, str]]:
     found = set()
+    task_modules = _task_modules()
     for path in APP.rglob("*.py"):
         rel = path.relative_to(APP).as_posix()
         rules = _forbidden(rel)
@@ -93,7 +110,7 @@ def _violations() -> set[tuple[str, str]]:
             continue
         for module in _imported_modules(path):
             for package in rules:
-                if module == package or module.startswith(package + "."):
+                if _violates(module, package, task_modules):
                     found.add((rel, package))
     return found
 
@@ -115,10 +132,19 @@ def test_the_allowlist_only_shrinks():
     )
 
 
-def test_the_check_sees_imports_inside_functions():
-    # The control: job_dispatch imports the task module only inside a
-    # function. A check reading top-level imports alone would miss it, and
-    # every lazy violation with it.
-    assert "app.tasks.agent_job_tasks" in set(
-        _imported_modules(APP / "services" / "job_dispatch.py")
+def test_the_check_sees_imports_inside_functions(tmp_path):
+    # The control. A check reading top-level imports alone would pass this
+    # file, and every lazy violation with it.
+    source = tmp_path / "lazy.py"
+    source.write_text(
+        "def later():\n"
+        "    from app.tasks.agent_job_tasks import execute_agent_job_task\n"
+        "    from app.tasks import job_support\n"
     )
+    imported = set(_imported_modules(source))
+    task_modules = _task_modules()
+    assert _violates("app.tasks.agent_job_tasks", "app.tasks", task_modules)
+    assert "app.tasks.agent_job_tasks" in imported
+    # A helper module under app/tasks that defines no task is not the worker.
+    assert "app.tasks.job_support" in imported
+    assert not _violates("app.tasks.job_support", "app.tasks", task_modules)

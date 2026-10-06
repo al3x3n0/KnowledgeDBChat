@@ -349,15 +349,14 @@ class TestDeclaredEvidenceIsActuallyProduced:
 
         from app.agent_core import tool_specs
 
-        source = Path("app/services/agent_tool_dispatch.py")
-        if not source.exists():  # pragma: no cover
-            source = (
-                Path(__file__).resolve().parents[1]
-                / "app"
-                / "services"
-                / "agent_tool_dispatch.py"
-            )
-        text = source.read_text()
+        # Handlers live one module per provider; read them all.
+        providers = (
+            Path(__file__).resolve().parents[1]
+            / "app"
+            / "services"
+            / "agent_tool_providers"
+        )
+        text = "\n".join(path.read_text() for path in sorted(providers.glob("*.py")))
 
         bodies = {}
         for match in re.finditer(r"    async def _([a-z_0-9]+)\(\s*\n?\s*params", text):

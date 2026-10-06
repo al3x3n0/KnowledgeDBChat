@@ -156,10 +156,10 @@ async def file_blocker(job: Any, state: Mapping[str, Any], db: Any) -> Optional[
 
     if getattr(settings, "AGENT_BLOCKER_AUTO_CODING_ENABLED", False):
         try:
-            from app.api.endpoints.coding_backlog import _create_orchestrator_job
+            from app.services.coding_backlog_items import create_orchestrator_job
 
             await db.flush()
-            await _create_orchestrator_job(item, db=db)
+            await create_orchestrator_job(item, db=db)
             logger.info("Started backlog orchestration for %s", item.id)
         except Exception as exc:  # pragma: no cover - never fatal to the run
             logger.warning(f"Could not start orchestration for {item.id}: {exc}")

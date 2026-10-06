@@ -10,7 +10,6 @@ from loguru import logger
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.api.endpoints.agent_jobs import _build_checkpoint_queue_items
 from app.core.celery import celery_app
 from app.core.config import settings
 from app.core.database import create_celery_session
@@ -26,6 +25,9 @@ from app.models.notification import (
 from app.models.research_inbox import ResearchInboxItem
 from app.models.research_note import ResearchNote
 from app.models.synthesis_job import SynthesisJob
+from app.modules.autonomy.application.checkpoint_queue_builder import (
+    build_checkpoint_queue_items as _build_checkpoint_queue_items,
+)
 from app.services.citation_lines import is_line_citable as _is_line_citable
 from app.services.llm_service import LLMService
 from app.services.notification_service import notification_service

@@ -1521,9 +1521,11 @@ Your response:"""
         task_id = None
         if auto_sync:
             try:
-                from app.tasks.ingestion_tasks import ingest_from_source
+                from app.services.job_dispatch import enqueue
 
-                task = ingest_from_source.delay(str(source.id))
+                task = enqueue(
+                    db, "app.tasks.ingestion_tasks.ingest_from_source", str(source.id)
+                )
                 task_id = getattr(task, "id", None)
             except Exception as exc:
                 logger.warning(
@@ -1549,7 +1551,7 @@ Your response:"""
         from sqlalchemy import desc, select
 
         from app.models.document import Document, DocumentSource
-        from app.tasks.summarization_tasks import summarize_document as summarize_task
+        from app.services.job_dispatch import enqueue
 
         source_id = params.get("source_id")
         if not source_id:
@@ -1574,7 +1576,13 @@ Your response:"""
         for doc_id, summary in rows:
             if only_missing and summary and not force:
                 continue
-            summarize_task.delay(str(doc_id), force, user_id=str(user_id))
+            enqueue(
+                db,
+                "app.tasks.summarization_tasks.summarize_document",
+                str(doc_id),
+                force,
+                user_id=str(user_id),
+            )
             queued += 1
 
         return {
@@ -1591,7 +1599,7 @@ Your response:"""
         from uuid import UUID as _UUID
 
         from app.models.document import DocumentSource
-        from app.tasks.paper_enrichment_tasks import enrich_arxiv_source
+        from app.services.job_dispatch import send_now
 
         source_id = params.get("source_id")
         if not source_id:
@@ -1605,7 +1613,14 @@ Your response:"""
 
         force = bool(params.get("force", False))
         limit = bounded_int(params.get("limit"), 500, 0, 5000)
-        task = enrich_arxiv_source.delay(str(src.id), force, limit)
+        # Sent now: it reads only the committed source, and this session is
+        # the chat turn's, which may hold writes of its own.
+        task = send_now(
+            "app.tasks.paper_enrichment_tasks.enrich_arxiv_source",
+            str(src.id),
+            force,
+            limit,
+        )
         return {
             "source_id": str(src.id),
             "queued": True,
@@ -1620,7 +1635,7 @@ Your response:"""
         from uuid import UUID as _UUID
 
         from app.models.document import DocumentSource
-        from app.tasks.research_tasks import generate_literature_review
+        from app.services.job_dispatch import enqueue
 
         source_id = params.get("source_id")
         if not source_id:
@@ -1636,7 +1651,12 @@ Your response:"""
             src.config = cfg
             await db.commit()
 
-        task = generate_literature_review.delay(str(src.id), user_id=str(user_id))
+        task = enqueue(
+            db,
+            "app.tasks.research_tasks.generate_literature_review",
+            str(src.id),
+            user_id=str(user_id),
+        )
         return {"source_id": str(src.id), "queued": True, "task_id": task.id}
 
     async def _tool_generate_slides_for_source(
@@ -1648,7 +1668,7 @@ Your response:"""
 
         from app.models.document import Document, DocumentSource
         from app.models.presentation import PresentationJob
-        from app.tasks.presentation_tasks import generate_presentation_task
+        from app.services.job_dispatch import enqueue
 
         source_id = params.get("source_id")
         if not source_id:
@@ -1709,7 +1729,12 @@ Your response:"""
         db.add(job)
         await db.commit()
         await db.refresh(job)
-        generate_presentation_task.delay(str(job.id), str(user_id))
+        enqueue(
+            db,
+            "app.tasks.presentation_tasks.generate_presentation_task",
+            str(job.id),
+            str(user_id),
+        )
         return {
             "presentation_job_id": str(job.id),
             "source_id": str(src.id),
@@ -2649,10 +2674,15 @@ Your response:"""
                     continue
 
                 # Queue for summarization (use Celery task)
-                from app.tasks.summarization_tasks import summarize_document
+                from app.services.job_dispatch import enqueue
 
                 try:
-                    summarize_document.delay(str(doc_uuid), force=force_regenerate)
+                    enqueue(
+                        db,
+                        "app.tasks.summarization_tasks.summarize_document",
+                        str(doc_uuid),
+                        force=force_regenerate,
+                    )
                 except Exception as exc:
                     # A broker that refuses one must not lose the record of
                     # those already queued.

@@ -22,7 +22,13 @@ from app.agent_core.tool_specs import all_specs
 pytestmark = pytest.mark.unit
 
 APP = Path(__file__).resolve().parents[1] / "app"
-HANDLER_MODULES = ("services/agent_tool_dispatch.py", "services/agent_service.py")
+HANDLER_MODULES = (
+    *(
+        f"services/agent_tool_providers/{path.name}"
+        for path in sorted((APP / "services" / "agent_tool_providers").glob("*.py"))
+    ),
+    "services/agent_service.py",
+)
 
 WRITES = re.compile(
     r"\.commit\(|\bdb\.add\(|\.delete\(|\.delay\(|apply_async|write_text\(|write_bytes\("

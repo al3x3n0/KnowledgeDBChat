@@ -1,0 +1,16 @@
+# Test files CI also runs against Postgres (the backend-postgres job).
+#
+# Chosen for code whose behaviour depends on the database: JSON columns read
+# and searched (tags, documents, memories), time comparisons, and transactions
+# (when queued work is sent). A file here must pass on both databases. Tests
+# that use the HTTP `client` fixture skip themselves on Postgres -- TestClient
+# runs the app on its own event loop, and an asyncpg connection belongs to one.
+tests/test_chat_tags_stats_kg_tools.py
+tests/test_chat_document_read_tools.py
+tests/test_chat_document_write_tools.py
+tests/test_memory_ownership_and_summary.py
+tests/test_admin_source_schedule.py
+tests/test_job_dispatch.py
+tests/test_blocked_to_backlog.py
+tests/test_agent_chain_dispatch.py
+tests/test_naive_datetimes_are_utc.py

@@ -269,9 +269,11 @@ class WorkflowEngine:
         await self.db.commit()
         await self.db.refresh(execution)
 
-        from app.tasks.workflow_tasks import execute_workflow_task
+        from app.services.job_dispatch import enqueue
 
-        execute_workflow_task.delay(str(execution.id))
+        enqueue(
+            self.db, "app.tasks.workflow_tasks.execute_workflow_task", str(execution.id)
+        )
         return execution
 
     async def execute_existing_execution(

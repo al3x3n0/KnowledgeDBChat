@@ -371,12 +371,12 @@ class AgentChainOrchestrationService:
         #
         # An undispatched child stays queued in the database and is picked up
         # by reconciliation, so the loss is a delay rather than the job.
-        from app.tasks.agent_job_tasks import execute_agent_job_task
+        from app.services.job_dispatch import enqueue_agent_job
 
         undispatched: List[str] = []
         for job_id in created_job_ids:
             try:
-                execute_agent_job_task.delay(job_id, str(parent_job.user_id))
+                enqueue_agent_job(db, job_id, str(parent_job.user_id))
             except Exception as exc:
                 undispatched.append(job_id)
                 logger.error(

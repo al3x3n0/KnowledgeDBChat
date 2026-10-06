@@ -176,7 +176,7 @@ class AgentIngestionDemoRunnerService:
 
         from app.models.document import Document
         from app.services.document_service import DocumentService
-        from app.tasks.ingestion_tasks import ingest_from_source
+        from app.services.job_dispatch import enqueue
 
         _emit = phase_reporter(job, "git_repo_ingest_wait")
 
@@ -349,7 +349,7 @@ class AgentIngestionDemoRunnerService:
 
         _emit(30, "ingesting", "Starting ingestion")
         try:
-            ingest_from_source.delay(str(source.id))
+            enqueue(db, "app.tasks.ingestion_tasks.ingest_from_source", str(source.id))
         except Exception:
             pass
 

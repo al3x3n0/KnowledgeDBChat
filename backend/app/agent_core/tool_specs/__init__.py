@@ -14,8 +14,10 @@ ungoverned, or believed to produce no evidence. Three defects found in a single
 day came from exactly that.
 
 The declarations live in the domain modules beside this one, and every registry
-derives from them. The handler stays in ``agent_tool_dispatch`` — that is code
-rather than data, and ``tests/test_tool_specs.py`` asserts every spec has one.
+derives from them. The handler lives in the provider module for its domain,
+under ``app/services/agent_tool_providers/`` (re-exported by
+``agent_tool_dispatch``) — that is code rather than data, and
+``tests/test_tool_specs.py`` asserts every spec has one.
 
 Adding a tool is now: write the handler, write the spec.
 """

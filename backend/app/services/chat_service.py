@@ -756,10 +756,12 @@ class ChatService:
             session = session_result.scalar_one_or_none()
             if session and has_default_title(session.title):
                 try:
-                    from app.tasks.chat_tasks import generate_chat_title
+                    from app.services.job_dispatch import enqueue
 
                     # Trigger async title generation
-                    generate_chat_title.delay(str(session_id))
+                    enqueue(
+                        db, "app.tasks.chat_tasks.generate_chat_title", str(session_id)
+                    )
                     logger.info(f"Triggered title generation for session {session_id}")
                 except Exception as e:
                     logger.warning(

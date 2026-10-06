@@ -212,9 +212,9 @@ async def _rerun_the_head(
     db.add(child)
     await db.commit()
 
-    from app.tasks.agent_job_tasks import execute_agent_job_task
+    from app.services.job_dispatch import enqueue_agent_job
 
-    execute_agent_job_task.delay(str(child.id), str(child.user_id))
+    enqueue_agent_job(db, str(child.id), str(child.user_id))
     logger.info(f"Re-ran pipeline head {head.id} as job {child.id}")
     return child
 
@@ -380,9 +380,9 @@ async def restart_from_stage(
     # exactly the bug this pipeline's launch endpoint had: a created job, a
     # success reported, and nothing queued.
     await db.commit()
-    from app.tasks.agent_job_tasks import execute_agent_job_task
+    from app.services.job_dispatch import enqueue_agent_job
 
-    execute_agent_job_task.delay(str(child.id), str(child.user_id))
+    enqueue_agent_job(db, str(child.id), str(child.user_id))
 
     logger.info(
         f"Restarted pipeline run {root_job_id} from stage {stage_id} "
@@ -548,9 +548,9 @@ async def insert_stage_after(
     )
 
     await db.commit()
-    from app.tasks.agent_job_tasks import execute_agent_job_task
+    from app.services.job_dispatch import enqueue_agent_job
 
-    execute_agent_job_task.delay(str(child.id), str(child.user_id))
+    enqueue_agent_job(db, str(child.id), str(child.user_id))
     logger.info(
         f"Inserted stage {new_id} after {after_stage} in run {root_job_id} "
         f"as job {child.id}"

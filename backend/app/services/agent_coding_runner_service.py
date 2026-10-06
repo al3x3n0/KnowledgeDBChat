@@ -1134,7 +1134,7 @@ class AgentCodingRunnerService:
             REPO_BUG_TRIAGE_REPAIR_TEMPLATE_ID,
             get_builtin_agent_job_template,
         )
-        from app.tasks.agent_job_tasks import execute_agent_job_task
+        from app.services.job_dispatch import enqueue_agent_job
 
         _emit = phase_reporter(job, "coding_backlog_orchestrator")
 
@@ -1792,7 +1792,7 @@ class AgentCodingRunnerService:
                 "active_slice_title": str(slice_state.get("title") or ""),
                 "portfolio_progress": _current_portfolio_progress(),
             }
-            execute_agent_job_task.delay(str(repair_job.id), str(item.user_id))
+            enqueue_agent_job(db, str(repair_job.id), str(item.user_id))
             return repair_job
 
         async def _spawn_apply_child(
@@ -1890,7 +1890,7 @@ class AgentCodingRunnerService:
                 "promotion_evaluation": decision_row,
                 "portfolio_progress": _current_portfolio_progress(),
             }
-            execute_agent_job_task.delay(str(apply_job.id), str(item.user_id))
+            enqueue_agent_job(db, str(apply_job.id), str(item.user_id))
             return apply_job
 
         if last_child is None:

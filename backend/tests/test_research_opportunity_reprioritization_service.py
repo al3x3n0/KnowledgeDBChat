@@ -113,7 +113,7 @@ def test_project_note_reevaluation_updates_profile_and_auto_launches_follow_up(
         _fake_create_follow_up,
     )
     monkeypatch.setattr(
-        "app.services.research_opportunity_reprioritization_service.execute_agent_job_task.delay",
+        "app.tasks.agent_job_tasks.execute_agent_job_task.delay",
         lambda job_id, user_id: queued_jobs.append((job_id, user_id)),
     )
     monkeypatch.setattr(
@@ -342,7 +342,7 @@ def test_project_note_reevaluation_is_idempotent(db_session, test_user, monkeypa
         _fake_create_follow_up,
     )
     monkeypatch.setattr(
-        "app.services.research_opportunity_reprioritization_service.execute_agent_job_task.delay",
+        "app.tasks.agent_job_tasks.execute_agent_job_task.delay",
         lambda job_id, user_id: queued_jobs.append((job_id, user_id)),
     )
     monkeypatch.setattr(

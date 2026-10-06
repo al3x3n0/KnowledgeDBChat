@@ -9,7 +9,6 @@ parent's result as well.
 from __future__ import annotations
 
 from unittest.mock import patch
-from uuid import uuid4
 
 import pytest
 
@@ -50,13 +49,17 @@ class _Executor:
         return child
 
 
-async def _parent_with_chain(db):
-    """A real AgentJob configured to spawn two children on completion."""
+async def _parent_with_chain(db, user_id):
+    """A real AgentJob configured to spawn two children on completion.
+
+    Owned by a real user: Postgres enforces the foreign key that SQLite let a
+    random id through.
+    """
     job = AgentJob(
         name="parent",
         goal="measure something",
         job_type="research",
-        user_id=uuid4(),
+        user_id=user_id,
         status=AgentJobStatus.RUNNING.value,
         config={},
         chain_config={
@@ -73,12 +76,14 @@ async def _parent_with_chain(db):
 
 
 @pytest.mark.asyncio
-async def test_a_broker_outage_does_not_raise_out_of_a_finished_parent(db_session):
+async def test_a_broker_outage_does_not_raise_out_of_a_finished_parent(
+    db_session, test_user
+):
     """The real method, not a copy of it. The children are committed before
     anything is dispatched, so a broker that cannot be reached must cost a
     delay and not the parent's result."""
     executor = _Executor()
-    parent = await _parent_with_chain(db_session)
+    parent = await _parent_with_chain(db_session, test_user.id)
 
     with patch(
         "app.tasks.agent_job_tasks.execute_agent_job_task.delay",
@@ -94,11 +99,11 @@ async def test_a_broker_outage_does_not_raise_out_of_a_finished_parent(db_sessio
 
 
 @pytest.mark.asyncio
-async def test_one_bad_dispatch_does_not_stop_the_others(db_session):
+async def test_one_bad_dispatch_does_not_stop_the_others(db_session, test_user):
     """Guarded per job rather than around the loop: a broker that refuses one
     message and accepts the next should deliver the next."""
     executor = _Executor()
-    parent = await _parent_with_chain(db_session)
+    parent = await _parent_with_chain(db_session, test_user.id)
     calls = []
 
     def _delay(job_id, _user):
@@ -119,9 +124,9 @@ async def test_one_bad_dispatch_does_not_stop_the_others(db_session):
 
 
 @pytest.mark.asyncio
-async def test_a_working_broker_records_no_failure_event(db_session):
+async def test_a_working_broker_records_no_failure_event(db_session, test_user):
     executor = _Executor()
-    parent = await _parent_with_chain(db_session)
+    parent = await _parent_with_chain(db_session, test_user.id)
 
     with patch("app.tasks.agent_job_tasks.execute_agent_job_task.delay"):
         await AgentChainOrchestrationService().trigger_chained_jobs(

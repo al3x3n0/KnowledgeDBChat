@@ -22,6 +22,7 @@ from app.services.autonomy_service import (
 from app.services.config_values import safe_float as _safe_float
 from app.services.config_values import safe_int as _safe_int
 from app.services.config_values import unique_strings
+from app.services.job_dispatch import enqueue_agent_job
 from app.services.research_opportunity_service import (
     collect_research_opportunity_linked_ids,
     compute_research_opportunity_evidence_revision,
@@ -32,7 +33,6 @@ from app.services.scientific_validation_service import (
     normalize_portfolio_automation_profile,
     resolve_portfolio_automation_policy,
 )
-from app.tasks.agent_job_tasks import execute_agent_job_task
 
 
 def _text(value: Any) -> str:
@@ -577,7 +577,7 @@ async def _auto_dispatch_profile_follow_ups(
             if child_job is None:
                 continue
             child_id = str(child_job.id)
-            execute_agent_job_task.delay(child_id, str(profile.user_id))
+            enqueue_agent_job(db, child_id, str(profile.user_id))
             updated["child_job_ids"] = _merge_strings(
                 updated.get("child_job_ids"), [child_id], limit=8
             )
@@ -727,7 +727,7 @@ async def _auto_dispatch_portfolio_follow_ups(
             if child_job is None:
                 continue
             child_id = str(child_job.id)
-            execute_agent_job_task.delay(child_id, str(portfolio.user_id))
+            enqueue_agent_job(db, child_id, str(portfolio.user_id))
             updated["child_job_ids"] = _merge_strings(
                 updated.get("child_job_ids"), [child_id], limit=8
             )

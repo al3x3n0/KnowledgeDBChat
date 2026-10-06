@@ -38,13 +38,25 @@ from app.services.coding_backlog_decomposition import (
     timeline_entry,
     upsert_promotion_decision,
 )
+from app.services.coding_backlog_items import (
+    create_orchestrator_job as _create_orchestrator_job,
+)
+from app.services.coding_backlog_items import (
+    default_decomposition as _default_decomposition,
+)
+from app.services.coding_backlog_items import (
+    normalize_item_decomposition as _normalize_decomposition,
+)
+from app.services.coding_backlog_items import (
+    recompute_portfolio_progress as _recompute_portfolio_progress,
+)
 from app.services.collaboration_service import build_collaboration_summary
 from app.services.collaboration_service import (
     build_collaboration_user_lookup as _build_backlog_user_lookup,
 )
 from app.services.collaboration_service import normalize_collaboration_visibility
 from app.services.config_values import uuid_list
-from app.tasks.agent_job_tasks import execute_agent_job_task
+from app.services.job_dispatch import enqueue_agent_job
 
 router = APIRouter()
 
@@ -142,153 +154,6 @@ async def _get_visible_backlog_item_or_404(
     if not item or not _is_backlog_visible_to_user(item, user_id):
         raise HTTPException(status_code=404, detail="Not found")
     return item
-
-
-def _default_decomposition() -> dict[str, Any]:
-    return {
-        "strategy": "portfolio_goal",
-        "planned_slices": [],
-        "active_slice_id": None,
-        "completed_slices": [],
-        "failed_slices": [],
-        "promotion_decisions": [],
-        "backlog_timeline": [],
-        "lineage_summary": {
-            "repair_job_count": 0,
-            "apply_job_count": 0,
-            "patch_pr_count": 0,
-            "proposal_count": 0,
-            "operator_action_count": 0,
-        },
-        "portfolio_progress": {
-            "total_slices": 0,
-            "pending_slices": 0,
-            "completed_slices": 0,
-            "failed_slices": 0,
-            "auto_applied_slices": 0,
-            "proposal_only_slices": 0,
-        },
-    }
-
-
-def _recompute_portfolio_progress(decomposition: dict[str, Any]) -> dict[str, Any]:
-    planned = (
-        decomposition.get("planned_slices")
-        if isinstance(decomposition.get("planned_slices"), list)
-        else []
-    )
-    completed = [
-        str(v).strip()
-        for v in (
-            decomposition.get("completed_slices")
-            if isinstance(decomposition.get("completed_slices"), list)
-            else []
-        )
-        if str(v).strip()
-    ]
-    failed = [
-        str(v).strip()
-        for v in (
-            decomposition.get("failed_slices")
-            if isinstance(decomposition.get("failed_slices"), list)
-            else []
-        )
-        if str(v).strip()
-    ]
-    return {
-        "total_slices": len(planned),
-        "pending_slices": sum(
-            1
-            for row in planned
-            if str((row or {}).get("status") or "").strip().lower()
-            in {"pending", "repairing", "retrying", "applying", "deferred"}
-        ),
-        "completed_slices": len(completed),
-        "failed_slices": len(failed),
-        "auto_applied_slices": sum(
-            1
-            for row in planned
-            if str((row or {}).get("promotion_decision") or "").strip().lower()
-            == "auto_applied"
-        ),
-        "proposal_only_slices": sum(
-            1
-            for row in planned
-            if str((row or {}).get("promotion_decision") or "").strip().lower()
-            in {"proposal_only", "patch_pr"}
-        ),
-    }
-
-
-def _normalize_decomposition(item: CodingBacklogItem) -> dict[str, Any]:
-    raw = item.decomposition if isinstance(item.decomposition, dict) else {}
-    dec = deepcopy(_default_decomposition())
-    if isinstance(raw, dict):
-        dec.update(
-            {
-                k: deepcopy(v)
-                for k, v in raw.items()
-                if k in dec or k == "planned_slices"
-            }
-        )
-    if not isinstance(dec.get("planned_slices"), list):
-        dec["planned_slices"] = []
-    if not isinstance(dec.get("completed_slices"), list):
-        dec["completed_slices"] = []
-    if not isinstance(dec.get("failed_slices"), list):
-        dec["failed_slices"] = []
-    if not isinstance(dec.get("promotion_decisions"), list):
-        dec["promotion_decisions"] = []
-    if not isinstance(dec.get("backlog_timeline"), list):
-        dec["backlog_timeline"] = []
-    if not isinstance(dec.get("lineage_summary"), dict):
-        dec["lineage_summary"] = deepcopy(_default_decomposition()["lineage_summary"])
-    for row in dec.get("planned_slices") or []:
-        if not isinstance(row, dict):
-            continue
-        if not isinstance(row.get("timeline"), list):
-            row["timeline"] = []
-        if not isinstance(row.get("job_lineage"), dict):
-            row["job_lineage"] = {
-                "repair_job_ids": [],
-                "apply_job_ids": [],
-                "patch_pr_ids": [],
-                "proposal_ids": [],
-                "retry_from_job_ids": [],
-            }
-        if not isinstance(row.get("artifact_history"), list):
-            row["artifact_history"] = []
-        if not isinstance(row.get("manual_promotion_history"), list):
-            row["manual_promotion_history"] = []
-    dec["portfolio_progress"] = _recompute_portfolio_progress(dec)
-    dec["lineage_summary"] = {
-        "repair_job_count": sum(
-            len((row.get("job_lineage") or {}).get("repair_job_ids") or [])
-            for row in dec.get("planned_slices") or []
-            if isinstance(row, dict)
-        ),
-        "apply_job_count": sum(
-            len((row.get("job_lineage") or {}).get("apply_job_ids") or [])
-            for row in dec.get("planned_slices") or []
-            if isinstance(row, dict)
-        ),
-        "patch_pr_count": sum(
-            len((row.get("job_lineage") or {}).get("patch_pr_ids") or [])
-            for row in dec.get("planned_slices") or []
-            if isinstance(row, dict)
-        ),
-        "proposal_count": sum(
-            len((row.get("job_lineage") or {}).get("proposal_ids") or [])
-            for row in dec.get("planned_slices") or []
-            if isinstance(row, dict)
-        ),
-        "operator_action_count": sum(
-            len(row.get("manual_promotion_history") or [])
-            for row in dec.get("planned_slices") or []
-            if isinstance(row, dict)
-        ),
-    }
-    return dec
 
 
 def _append_manual_promotion_history(
@@ -589,52 +454,6 @@ def _attach_terminal_continuation(
     return updated
 
 
-async def _create_orchestrator_job(
-    item: CodingBacklogItem,
-    *,
-    db: AsyncSession,
-    start_immediately: bool = True,
-) -> AgentJob:
-    job = AgentJob(
-        name=f"Coding Backlog — {str(item.title or '').strip()[:120]}",
-        description="Curated coding backlog orchestrator.",
-        job_type="analysis",
-        goal=str(item.portfolio_goal or "").strip()[:8000]
-        or "Orchestrate coding backlog execution",
-        config={
-            "deterministic_runner": "coding_backlog_orchestrator",
-            "coding_backlog_item_id": str(item.id),
-        },
-        user_id=item.user_id,
-        status=AgentJobStatus.PENDING.value,
-        max_iterations=1,
-        max_tool_calls=0,
-        max_llm_calls=0,
-        max_runtime_minutes=10,
-    )
-    db.add(job)
-    await db.flush()
-    item.orchestrator_job_id = job.id
-    item.status = "running"
-    item.started_at = item.started_at or datetime.utcnow()
-    item.updated_at = datetime.utcnow()
-    decomposition = _normalize_decomposition(item)
-    append_backlog_timeline(
-        decomposition,
-        timeline_entry(
-            actor="system",
-            action="orchestrator_started",
-            previous_status="draft" if not item.started_at else str(item.status or ""),
-            new_status="running",
-            related_job_id=str(job.id),
-        ),
-    )
-    item.decomposition = decomposition
-    if start_immediately:
-        execute_agent_job_task.delay(str(job.id), str(item.user_id))
-    return job
-
-
 async def _spawn_slice_repair_job(
     item: CodingBacklogItem,
     slice_state: dict[str, Any],
@@ -749,7 +568,7 @@ async def _spawn_slice_repair_job(
             action="relaunch_slice" if prev_status else "repair_job_started",
             operator_note=operator_note,
         )
-    execute_agent_job_task.delay(str(repair_job.id), str(item.user_id))
+    enqueue_agent_job(db, repair_job.id, item.user_id)
     return repair_job
 
 
@@ -816,7 +635,7 @@ async def _spawn_slice_apply_job(
         proposal_id=proposal_id,
         apply_job_id=str(apply_job.id),
     )
-    execute_agent_job_task.delay(str(apply_job.id), str(item.user_id))
+    enqueue_agent_job(db, apply_job.id, item.user_id)
     return apply_job
 
 

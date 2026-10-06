@@ -609,7 +609,7 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   but it had the same leak and now also sets `no-new-privileges` and a pids
   limit. It still does not drop capabilities: that could break a tool that
   legitimately runs as root, and is a decision rather than a cleanup.
-- **Tool governance** — `tool_registry.py` + `tool_policy_engine.py` + `models/tool_audit.py`; per-user tool policies, approval gates for dangerous tools (`AGENT_REQUIRE_TOOL_APPROVAL`, `AGENT_DANGEROUS_TOOLS`), full execution audit log, user-defined custom tools (optionally Docker-executed). Tool dispatch lives in `agent_tool_dispatch.py`. Every tool is **declared once** in `app/agent_core/tool_specs/` (one module per domain): the schema a model reads, the governance classification, which job types may call it, and — for measurement tools — what evidence it produces. `agent_tools.AGENT_TOOLS`, the catalog, the job-type policy and the evidence map are all views of those specs, so adding a tool is a handler plus a `ToolSpec`, not four files kept in step by hand. `tests/test_tool_specs.py` enforces it.
+- **Tool governance** — `tool_registry.py` + `tool_policy_engine.py` + `models/tool_audit.py`; per-user tool policies, approval gates for dangerous tools (`AGENT_REQUIRE_TOOL_APPROVAL`, `AGENT_DANGEROUS_TOOLS`), full execution audit log, user-defined custom tools (optionally Docker-executed). Tool handlers live one module per provider in `services/agent_tool_providers/` (the registry and provider types in `base`, helpers several providers share in `common`); `agent_tool_dispatch.py` was a 12,000-line module holding all of them and is now a facade re-exporting every name. A test that reads handler source must read the provider modules, and one that patches a module global must patch it where the provider looks it up: three source checks (LLM snapshot coverage, tool effects, the removed 12,000-character cap) look for the *absence* of something and would have passed against the facade while checking nothing. Every tool is **declared once** in `app/agent_core/tool_specs/` (one module per domain): the schema a model reads, the governance classification, which job types may call it, and — for measurement tools — what evidence it produces. `agent_tools.AGENT_TOOLS`, the catalog, the job-type policy and the evidence map are all views of those specs, so adding a tool is a handler plus a `ToolSpec`, not four files kept in step by hand. `tests/test_tool_specs.py` enforces it.
 - **Chains are retired as an authoring concept.** `POST`/`PATCH
   /agent-jobs/chains` are marked `deprecated` in the OpenAPI schema and the
   Chains tab points at Pipeline Studio's import, but both still serve and every
@@ -1456,6 +1456,42 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
 - Key dependency chain: `AgentService` → `LLMService`, `DocumentService`, `VectorStoreService`, `MemoryService`
 - The agent runtime is intentionally split into many small `agent_*` services around `autonomous_agent_executor.py` — prefer extending the relevant sub-service over growing the executor
 
+- **Lower layers do not import higher ones** (`tests/test_layering.py`, read
+  from source including imports inside functions). Nothing outside `app/api`
+  imports `app.api`; services, models, schemas, core, agent_core, utils and mcp
+  do not import a module that defines Celery tasks (a helper under
+  `app/tasks` that defines none, such as `job_support`, is not the worker);
+  and in `app/modules/<domain>`, `application` and `domain` do not import
+  `api`. 891 function-local imports had let 51 modules (services, tasks,
+  endpoints and `modules/autonomy`) form one import cycle Python never
+  reports. The test's `ALLOWED` set started at 19 entries and is empty; it may
+  only shrink, and a stale entry fails too. The last one was the monitoring
+  task importing the operator-queue composer from its endpoint: that composer
+  and the job presenter it binds now live in
+  `modules/autonomy/application/checkpoint_queue_builder.py`. With these gone
+  the cross-layer cycle is broken; the largest cycle left is 10 modules, all
+  inside `app/services`.
+- **Work is queued through `services/job_dispatch`**: `enqueue(db,
+  "app.tasks.<module>.<task>", *args)`, `enqueue_agent_job(db, job_id,
+  user_id)`, and `send_now(...)` for a caller with no session to wait on.
+  Tasks are named by path and resolved when sent, through the task's own
+  `.delay`, so a test patching it still intercepts and a misspelt name fails
+  at the call (`test_every_task_named_in_the_code_exists`). The rule is
+  **"has this transaction written"**, tracked by `core/session_writes.py` from
+  ORM flushes and ORM DML: if it has, the message goes when it commits and is
+  dropped on rollback; if not, it goes now and a broker error reaches the
+  caller (the chain orchestrator records `chain_dispatch_failed` from it).
+  Not "is a transaction open": any SELECT opens one, and a read-only caller's
+  message deferred to a commit nobody makes is lost. `enqueue` returns the
+  `AsyncResult` only when it sent now, so a caller needing the task id commits
+  first or uses `send_now` -- a tool running inside another session's
+  transaction (chat, an autonomous job) cannot know it is clean. Fixed on the
+  way, each queuing work its worker could not yet see or overwriting the
+  worker: the coding backlog's three orchestrator starts and its repair and
+  apply spawns, the coding runner's spawns, the opportunity reprioritiser, and
+  training's `start_job`, which sent the task and then committed `QUEUED`
+  over a worker that had already marked the job running.
+
 ### Feature Flags (`core/feature_flags.py`)
 - Two-tier resolution: Redis cache → Settings fallback
 - Boolean flags (e.g., `knowledge_graph_enabled`) and string config flags (e.g., `llm_default_model`)
@@ -1515,7 +1551,22 @@ All API endpoints are prefixed with `/api/v1/`. Endpoint groups by domain (see `
 
 ## Testing Patterns
 
-- Backend tests use **in-memory SQLite** with `aiosqlite` (configured in `tests/conftest.py`)
+- Backend tests use **in-memory SQLite** with `aiosqlite` (configured in `tests/conftest.py`).
+  `TEST_DATABASE_URL=postgresql+asyncpg://...` runs them on Postgres instead,
+  and the `backend-postgres` CI job does that for the files in
+  `tests/postgres_slice.txt` -- code whose behaviour depends on the database.
+  On Postgres the schema is created once per run and the tables that hold
+  rows are emptied between tests (`DELETE` with foreign-key triggers
+  suspended; `TRUNCATE ... CASCADE` reached every table through `users`).
+  Tests using the HTTP `client` fixture skip themselves there: TestClient runs
+  the app on its own event loop, and an asyncpg connection belongs to one.
+  Its first run found two things SQLite hides: tests inserting rows for users
+  that do not exist (no foreign keys), and **asyncpg reading a naive datetime
+  in the process's local zone** -- the app writes naive `utcnow()` into
+  `TIMESTAMP WITH TIME ZONE` columns, so on a UTC+3 host every timestamp was
+  stored three hours early. `app/core/database.py` now pins the process to
+  UTC (`_pin_process_to_utc`, with a warning if `TZ` said otherwise);
+  `tests/test_naive_datetimes_are_utc.py` fails without it.
 - Heavy optional dependencies (sentence_transformers, bs4, croniter, mammoth, jsonpath_ng) are stubbed in conftest; `pptx` is stubbed **only when it is not installed** — it used to be stubbed whenever nothing had imported it yet, which was always, so no test built a real presentation and two broken PPTX paths passed — — sentence_transformers is no longer installed at all, so that stub is now the only thing that module means in tests — don't import them at module top-level in code paths tests touch without checking the stubs
 - FastAPI dependency overrides replace `get_db` with test session
 - User fixtures: `test_user` (regular) and `admin_user` with real password hashing; `auth_headers` / `admin_headers` via live token creation

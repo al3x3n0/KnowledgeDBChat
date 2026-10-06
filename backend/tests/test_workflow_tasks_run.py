@@ -742,7 +742,8 @@ def test_some_application_code_publishes_workflow_events():
         for path in APP_DIR.rglob("*.py")
         if path.resolve() != this_module
         and re.search(
-            r"publish_workflow_event\s*\(|trigger_event_workflow\.(delay|apply_async)",
+            r"publish_workflow_event\s*\(|trigger_event_workflow\.(delay|apply_async)"
+            r"|app\.tasks\.workflow_tasks\.trigger_event_workflow",
             path.read_text(encoding="utf-8"),
         )
     ]

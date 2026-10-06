@@ -1701,14 +1701,14 @@ class ResearchMonitorProfileService:
         policy: dict[str, Any],
         learning_profile: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        from app.api.endpoints.agent_jobs import _build_follow_up_actions_for_inbox_item
+        from app.modules.autonomy.application.follow_up_recommendations import (
+            build_follow_up_actions,
+        )
 
         normalized_policy = self._normalize_policy_config(policy)
         mode = normalized_policy["mode"]
         allowlist = set(normalized_policy["allowed_recommendations"])
-        actions = _build_follow_up_actions_for_inbox_item(
-            item, learning_profile=learning_profile
-        )
+        actions = build_follow_up_actions(item, learning_profile=learning_profile)
         preferred_action = next(
             (action for action in actions if action.recommended),
             actions[0] if actions else None,

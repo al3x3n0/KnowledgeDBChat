@@ -36,7 +36,7 @@ class TestTheExtractorReadsMoreThanAThirdOfAPaper:
     def test_the_old_hardcoded_cap_is_gone(self):
         import inspect
 
-        from app.services import agent_tool_dispatch
+        from app.services.agent_tool_providers import research as agent_tool_dispatch
 
         source = inspect.getsource(agent_tool_dispatch)
         assert "content[:12000]" not in source
@@ -48,7 +48,7 @@ class TestTruncationIsSaidNotDoneQuietly:
         never given."""
         import inspect
 
-        from app.services import agent_tool_dispatch
+        from app.services.agent_tool_providers import research as agent_tool_dispatch
 
         source = inspect.getsource(agent_tool_dispatch)
         assert "not all of it" in source
@@ -57,7 +57,7 @@ class TestTruncationIsSaidNotDoneQuietly:
     def test_the_finding_records_how_much_was_read(self):
         import inspect
 
-        from app.services import agent_tool_dispatch
+        from app.services.agent_tool_providers import research as agent_tool_dispatch
 
         source = inspect.getsource(agent_tool_dispatch)
         for field in ("paper_truncated", "paper_chars_read", "paper_chars_total"):
@@ -68,7 +68,7 @@ class TestPropertiesAreDistinctFromInventedCases:
     def test_the_prompt_asks_for_properties(self):
         import inspect
 
-        from app.services import agent_tool_dispatch
+        from app.services.agent_tool_providers import research as agent_tool_dispatch
 
         source = inspect.getsource(agent_tool_dispatch)
         assert '"properties"' in source
@@ -79,7 +79,7 @@ class TestPropertiesAreDistinctFromInventedCases:
         input/output pairs -- that rule is the reason the gate means anything."""
         import inspect
 
-        from app.services import agent_tool_dispatch
+        from app.services.agent_tool_providers import research as agent_tool_dispatch
 
         source = inspect.getsource(agent_tool_dispatch)
         assert "a case you made up checks nothing" in source
@@ -88,7 +88,7 @@ class TestPropertiesAreDistinctFromInventedCases:
     def test_the_finding_counts_properties_beside_cases(self):
         import inspect
 
-        from app.services import agent_tool_dispatch
+        from app.services.agent_tool_providers import research as agent_tool_dispatch
 
         source = inspect.getsource(agent_tool_dispatch)
         assert '"property_count"' in source

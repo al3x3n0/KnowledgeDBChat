@@ -1,7 +1,6 @@
 """
 Document-related API endpoints.
 """
-
 import hashlib
 import json
 import os
@@ -33,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.celery import celery_app
 from app.core.database import AsyncSessionLocal, get_db
+from app.core.exceptions import internal_error_detail
 from app.core.logging import log_error
 from app.core.rate_limit import UPLOAD_LIMIT, limiter
 from app.models.document import Document as _Document
@@ -224,7 +224,7 @@ async def search_documents(
         )
     except Exception as e:
         logger.error(f"Search error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.get("/", response_model=PaginatedResponse[DocumentResponse])
@@ -775,7 +775,8 @@ async def download_document(
             except Exception as e:
                 logger.error(f"Error streaming file for document {document_id}: {e}")
                 raise HTTPException(
-                    status_code=500, detail=f"Failed to stream file: {str(e)}"
+                    status_code=500,
+                    detail=internal_error_detail(e, "Failed to stream file"),
                 )
         else:
             # Legacy mode: return presigned URL
@@ -911,7 +912,8 @@ async def upload_document(
             },
         )
         raise HTTPException(
-            status_code=500, detail=f"Failed to upload document: {error_detail}"
+            status_code=500,
+            detail=internal_error_detail(e, "Failed to upload document"),
         )
 
 
@@ -1019,8 +1021,10 @@ async def delete_document(
         raise
     except Exception as e:
         logger.error(f"Error deleting document {document_id}: {e}", exc_info=True)
-        error_detail = str(e) if str(e) else "Failed to delete document"
-        raise HTTPException(status_code=500, detail=error_detail)
+        raise HTTPException(
+            status_code=500,
+            detail=internal_error_detail(e, "Failed to delete document"),
+        )
 
 
 @router.delete("/sources/{source_id}/documents")
@@ -2131,7 +2135,8 @@ async def ingest_arxiv_instant(
     except Exception as e:
         logger.error(f"Error in instant arXiv ingest: {e}", exc_info=True)
         raise HTTPException(
-            status_code=500, detail=f"Failed to ingest arXiv paper: {str(e)}"
+            status_code=500,
+            detail=internal_error_detail(e, "Failed to ingest arXiv paper"),
         )
 
 

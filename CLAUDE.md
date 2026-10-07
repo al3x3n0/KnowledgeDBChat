@@ -1545,6 +1545,31 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   how work is handed to a thread and is not counted); a blocking helper of
   this codebase's own belongs in its `BLOCKING_HELPERS`.
 
+- **The Redis cache holds JSON** (`core/cache.py`). Values were pickled, and
+  reading a pickle runs what it describes: anything able to write to Redis
+  could run code in every API and worker process. Values the old code wrote
+  are still read through an unpickler that refuses every class and function
+  (feature flags have no expiry, so a format change would otherwise reset
+  them). A value JSON cannot hold is refused, not coerced. Two things found
+  there: the `document:{id}` cache pickled whole rows on every upload and
+  **nothing ever read it** (removed); and the scheduled sync wrote
+  `ingestion:task:{id}` through that cache while every reader took the raw
+  string, so a scheduler-started sync could not be cancelled -- it now uses
+  `utils/ingestion_state`, as the other writers do. The test fake had hidden
+  it by keeping Python objects for writer and reader alike.
+- **A 500 does not carry the exception's text** (`core/exceptions.
+  internal_error_detail(exc, "what failed")`). Sixty-seven routes and the
+  handler for unhandled errors returned `str(e)` -- SQL, paths, upstream
+  replies -- to the caller. The client now gets a reference and the exception
+  is logged under it; `EXPOSE_ERROR_DETAILS` (off by default, on in the dev
+  stack and tests) restores the text. `tests/test_error_details_are_hidden.py`
+  refuses a 500 whose `detail` is built from the exception. 4xx responses
+  still carry their message: that text is for the caller.
+- **`except Exception: pass` is capped** (`tests/
+  test_silent_exception_swallows.py`, 227 and only shrinking). Not a demand
+  to rewrite them: a new best-effort step catches what it expects or logs
+  what it ignores.
+
 ### Feature Flags (`core/feature_flags.py`)
 - Two-tier resolution: Redis cache → Settings fallback
 - Boolean flags (e.g., `knowledge_graph_enabled`) and string config flags (e.g., `llm_default_model`)

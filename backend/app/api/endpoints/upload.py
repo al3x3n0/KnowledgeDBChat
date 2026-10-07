@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.database import get_db
+from app.core.exceptions import internal_error_detail
 from app.models.upload_session import UploadSession
 from app.models.user import User
 from app.services.auth_service import get_current_user
@@ -133,7 +134,8 @@ async def init_upload(
     except Exception as e:
         logger.error(f"Error initializing upload: {e}", exc_info=True)
         raise HTTPException(
-            status_code=500, detail=f"Failed to initialize upload: {str(e)}"
+            status_code=500,
+            detail=internal_error_detail(e, "Failed to initialize upload"),
         )
 
 
@@ -344,7 +346,9 @@ async def upload_chunk(
                 await db.commit()
         except Exception as db_error:
             logger.warning(f"Failed to update session status: {db_error}")
-        raise HTTPException(status_code=500, detail=f"Failed to upload chunk: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=internal_error_detail(e, "Failed to upload chunk")
+        )
 
 
 @router.post("/{session_id}/complete")
@@ -760,7 +764,8 @@ async def complete_upload(
         except Exception as db_error:
             logger.warning(f"Failed to update session status: {db_error}")
         raise HTTPException(
-            status_code=500, detail=f"Failed to complete upload: {str(e)}"
+            status_code=500,
+            detail=internal_error_detail(e, "Failed to complete upload"),
         )
 
 

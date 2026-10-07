@@ -128,6 +128,9 @@ services:
       - DOCKER_HOST=tcp://sandbox-docker:2376
       - DOCKER_TLS_VERIFY=1
       - DOCKER_CERT_PATH=/certs/client
+      # Development: 500 responses carry the exception's text. A deployment
+      # leaves this off and gets a reference instead (EXPOSE_ERROR_DETAILS).
+      - EXPOSE_ERROR_DETAILS=true
       - TMPDIR=/sandbox-work
       - DATABASE_URL=postgresql://user:password@postgres:5432/knowledge_db
       - REDIS_URL=redis://redis:6379/0

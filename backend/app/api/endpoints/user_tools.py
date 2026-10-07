@@ -1,7 +1,6 @@
 """
 API endpoints for user-defined custom tools.
 """
-
 from typing import Optional
 from uuid import UUID
 
@@ -11,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.exceptions import internal_error_detail
 from app.models.user import User
 from app.models.workflow import UserTool
 from app.schemas.workflow import (
@@ -62,7 +62,7 @@ async def list_user_tools(
 
     except Exception as e:
         logger.error(f"Error listing user tools: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.post("", response_model=UserToolResponse, status_code=201)
@@ -116,7 +116,7 @@ async def create_user_tool(
     except Exception as e:
         logger.error(f"Error creating user tool: {e}")
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.get("/{tool_id}", response_model=UserToolResponse)
@@ -190,7 +190,7 @@ async def update_user_tool(
     except Exception as e:
         logger.error(f"Error updating user tool: {e}")
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.delete("/{tool_id}", status_code=204)
@@ -221,7 +221,7 @@ async def delete_user_tool(
     except Exception as e:
         logger.error(f"Error deleting user tool: {e}")
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.post("/{tool_id}/test", response_model=UserToolTestResponse)
@@ -324,4 +324,4 @@ async def duplicate_user_tool(
     except Exception as e:
         logger.error(f"Error duplicating tool: {e}")
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))

@@ -2,12 +2,15 @@
 Global exception handlers for FastAPI application.
 """
 
+from uuid import uuid4
+
 from fastapi import Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from loguru import logger
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
+from app.core.config import settings
 from app.utils.exceptions import (
     AuthenticationError,
     DocumentNotFoundError,
@@ -17,6 +20,24 @@ from app.utils.exceptions import (
 from app.utils.exceptions import ValidationError as CustomValidationError
 from app.utils.exceptions import VectorStoreError
 from app.utils.formatters import format_error_response
+
+GENERIC_ERROR = "Internal server error"
+
+
+def internal_error_detail(exc: BaseException, what: str = GENERIC_ERROR) -> str:
+    """What a 500 response may say about the exception behind it.
+
+    ``what`` names the operation ("Failed to render the diagram"). With
+    ``EXPOSE_ERROR_DETAILS`` the exception's text follows it, as every such
+    response used to carry unconditionally -- SQL, file paths and upstream
+    replies included, to any caller. Otherwise the client gets a reference,
+    and the exception is logged under it so the report can be matched.
+    """
+    if settings.EXPOSE_ERROR_DETAILS:
+        return str(exc) if what == GENERIC_ERROR else f"{what}: {exc}"
+    reference = uuid4().hex[:8]
+    logger.error(f"[error {reference}] {what}: {exc!r}")
+    return f"{what} (reference {reference})"
 
 
 async def knowledge_db_exception_handler(
@@ -80,13 +101,14 @@ async def generic_exception_handler(request: Request, exc: Exception) -> JSONRes
             headers={"Retry-After": "3"},
         )
 
+    logger.exception(f"Unhandled exception: {exc}")
     error_response = {
-        "error": exc.__class__.__name__,
-        "detail": str(exc),
+        "error": exc.__class__.__name__
+        if settings.EXPOSE_ERROR_DETAILS
+        else "InternalServerError",
+        "detail": internal_error_detail(exc),
         "status_code": status.HTTP_500_INTERNAL_SERVER_ERROR,
     }
-
-    logger.exception(f"Unhandled exception: {exc}")
 
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content=error_response

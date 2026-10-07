@@ -1,7 +1,6 @@
 """
 API endpoints for DOCX document editing.
 """
-
 import hashlib
 import tempfile
 from pathlib import Path
@@ -13,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.exceptions import internal_error_detail
 from app.models.document import Document
 from app.schemas.docx_editor import DocxEditRequest, DocxEditResponse, DocxSaveResponse
 from app.services.docx_editor_service import docx_editor_service
@@ -92,7 +92,7 @@ async def get_document_for_editing(
     except Exception as e:
         logger.error(f"Failed to prepare document for editing: {e}")
         raise HTTPException(
-            status_code=500, detail=f"Failed to load document: {str(e)}"
+            status_code=500, detail=internal_error_detail(e, "Failed to load document")
         )
     finally:
         # Cleanup temp file
@@ -201,7 +201,7 @@ async def save_document_edits(
         logger.error(f"Failed to save document edits: {e}")
         await db.rollback()
         raise HTTPException(
-            status_code=500, detail=f"Failed to save document: {str(e)}"
+            status_code=500, detail=internal_error_detail(e, "Failed to save document")
         )
     finally:
         # Cleanup temp files

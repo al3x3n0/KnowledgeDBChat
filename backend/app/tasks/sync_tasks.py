@@ -9,11 +9,11 @@ from croniter import croniter
 from loguru import logger
 from sqlalchemy import select
 
-from app.core.cache import cache_service
 from app.core.celery import celery_app
 from app.core.database import create_celery_session
 from app.models.document import DocumentSource
 from app.tasks.ingestion_tasks import ingest_from_source
+from app.utils.ingestion_state import set_force_full_flag, set_ingestion_task_mapping
 
 
 @celery_app.task(name="app.tasks.sync_tasks.sync_all_gitlab_sources")
@@ -300,21 +300,15 @@ async def _async_scan_scheduled_sources() -> Dict[str, Any]:
                         continue
                     # Trigger ingestion
                     # Respect sync_only_changed flag to optionally force full
-                    try:
-                        sync_only_changed = bool(cfg.get("sync_only_changed", True))
-                        if not sync_only_changed:
-                            await cache_service.set(
-                                f"ingestion:force_full:{src.id}", 1, ttl=600
-                            )
-                    except Exception:
-                        pass
+                    # Through the helpers every reader of these keys uses.
+                    # They were written with the pickling cache instead, so
+                    # the task id a cancel request read back was pickle bytes
+                    # rather than an id, and a scheduled sync could not be
+                    # cancelled. Neither helper raises.
+                    if not bool(cfg.get("sync_only_changed", True)):
+                        await set_force_full_flag(str(src.id))
                     task_res = ingest_from_source.delay(str(src.id))
-                    try:
-                        await cache_service.set(
-                            f"ingestion:task:{src.id}", task_res.id, ttl=3600
-                        )
-                    except Exception:
-                        pass
+                    await set_ingestion_task_mapping(str(src.id), task_res.id)
                     triggered.append({"source_id": str(src.id), "task_id": task_res.id})
                 except Exception as e:
                     logger.warning(

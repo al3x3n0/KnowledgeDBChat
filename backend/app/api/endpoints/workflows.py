@@ -7,7 +7,6 @@ Provides:
 - Execution history
 - WebSocket for real-time execution updates
 """
-
 from typing import List, Optional
 from uuid import UUID
 
@@ -16,6 +15,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.exceptions import internal_error_detail
 from app.models.user import User
 from app.modules.workflows.application import workflow_store
 from app.schemas.workflow import (
@@ -92,7 +92,7 @@ async def list_workflows(
         return WorkflowListResponse(workflows=items, total=total)
     except Exception as e:
         logger.error(f"Error listing workflows: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.get("/list-for-selection", response_model=List[WorkflowSummary])
@@ -125,7 +125,7 @@ async def list_workflows_for_selection(
         ]
     except Exception as e:
         logger.error(f"Error listing workflows for selection: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.post("", response_model=WorkflowResponse, status_code=201)
@@ -144,7 +144,7 @@ async def create_workflow(
     except Exception as e:
         logger.error(f"Error creating workflow: {e}")
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.post("/synthesize", response_model=WorkflowSynthesisResponse)
@@ -178,7 +178,7 @@ async def synthesize_workflow(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         logger.error(f"Error synthesizing workflow: {exc}")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=internal_error_detail(exc)) from exc
 
 
 @router.get("/{workflow_id}", response_model=WorkflowResponse)
@@ -216,7 +216,7 @@ async def update_workflow(
     except Exception as e:
         logger.error(f"Error updating workflow: {e}")
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.delete("/{workflow_id}", status_code=204)
@@ -234,7 +234,7 @@ async def delete_workflow(
     except Exception as e:
         logger.error(f"Error deleting workflow: {e}")
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 # =============================================================================
@@ -276,7 +276,7 @@ async def execute_workflow(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Workflow execution failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.post("/{workflow_id}/execute/async", status_code=202)
@@ -314,7 +314,7 @@ async def execute_workflow_async(
         raise
     except Exception as e:
         logger.error(f"Failed to queue workflow execution: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.get("/{workflow_id}/executions", response_model=WorkflowExecutionListResponse)
@@ -356,7 +356,7 @@ async def list_workflow_executions(
         raise HTTPException(status_code=404, detail="Workflow not found")
     except Exception as e:
         logger.error(f"Error listing executions: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.get("/executions/{execution_id}", response_model=WorkflowExecutionResponse)

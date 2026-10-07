@@ -85,6 +85,7 @@ import {
   MCPSourceAccessResponse,
   MCPSourceAccessUpdate,
   AgentJob,
+  AgentJobDetail,
   AutonomousRndJobOutcomeResponse,
   AutonomousRndVerificationAuditEnvelope,
   AutonomousRndVerificationLaunchRequest,
@@ -3298,7 +3299,7 @@ class ApiClient {
     return response.data;
   }
 
-  async getAgentJob(jobId: string): Promise<AgentJob> {
+  async getAgentJob(jobId: string): Promise<AgentJobDetail> {
     const response = await this.client.get(`/api/v1/agent-jobs/${jobId}`);
     return response.data;
   }

@@ -85,6 +85,12 @@ jobs:
         # so a small regression is caught rather than absorbed. It was 44 when
         # the number was 44. Ratchet it up as coverage improves; never lower it.
         run: pytest --cov=app --cov-report=term-missing --cov-fail-under=48
+      - name: The committed API schema matches the code
+        working-directory: backend
+        # frontend/src/api/openapi.json is what the frontend's types are
+        # generated from. A model changed without regenerating it would leave
+        # the UI typed against an API that no longer exists.
+        run: python scripts/export_openapi.py --check
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v4
@@ -141,8 +147,13 @@ jobs:
         # typescript ^3 || ^4 and this project is on 5.x, so strict resolution
         # refuses to install at all.
         run: npm ci
+      - name: Generated API types match the committed schema
+        working-directory: frontend
+        run: npm run check:api
       - name: Typecheck
         working-directory: frontend
+        # Includes src/api/__typechecks__: a hand-written response type that
+        # declares a field the API does not send fails here.
         run: npx tsc --noEmit -p tsconfig.json
       - name: Tests
         working-directory: frontend

@@ -3122,7 +3122,6 @@ export interface AgentJob {
   completed_at?: string;
   last_activity_at?: string;
   celery_task_id?: string;
-  execution_log?: Array<Record<string, any>>;
   // Chain fields
   parent_job_id?: string;
   root_job_id?: string;
@@ -3133,6 +3132,16 @@ export interface AgentJob {
   goal_contract_summary?: AgentJobGoalContractSummary;
   approval_checkpoint?: AgentJobApprovalCheckpoint;
   executive_digest?: AgentJobExecutiveDigest;
+}
+
+/** A job as GET /agent-jobs/{id} returns it: the list shape plus its log.
+ *
+ *  `execution_log` used to be declared on AgentJob, which every list and
+ *  action response is typed as -- and none of them carries it. So a panel
+ *  given a job from the list read an absent log, typed as present, and showed
+ *  nothing. The drift checks in src/api/__typechecks__ now fail on that. */
+export interface AgentJobDetail extends AgentJob {
+  execution_log?: Array<Record<string, any>>;
 }
 
 /** One field of a finding, rendered short by the backend. */

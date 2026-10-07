@@ -46,6 +46,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { apiClient } from '../../services/api';
 import type {
   AgentJob,
+  AgentJobDetail,
   AgentJobOperatorIntervention,
   AgentJobPromoteDomainResearchRequest,
   AgentJobStatus,
@@ -305,8 +306,24 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
       setApprovalEditPurpose(String(action.purpose || '').trim());
       setApprovalEditParams(JSON.stringify((action.params && typeof action.params === 'object') ? action.params : {}, null, 2));
     }, [approvalCheckpoint]);
+    // The launch row lives in execution_log, which only the detail response
+    // carries; a job handed over from a list has none, so fetch the detail
+    // for it rather than reading an absent field as an empty log.
+    const jobHasLog = 'execution_log' in job;
+    const { data: jobDetail } = useQuery(
+      ['agent-job', job.id, 'detail-for-launch-log'],
+      () => apiClient.getAgentJob(String(job.id)),
+      {
+        enabled: Boolean(job.id) && !jobHasLog,
+        staleTime: 30000,
+        refetchOnWindowFocus: false,
+      }
+    );
+    const executionLog = jobHasLog
+      ? (job as AgentJobDetail).execution_log
+      : jobDetail?.execution_log;
     const launchLog = useMemo(() => {
-      const rows = Array.isArray(job.execution_log) ? job.execution_log : [];
+      const rows = Array.isArray(executionLog) ? executionLog : [];
       for (let i = rows.length - 1; i >= 0; i--) {
         const row = rows[i] as any;
         const phase = String(row?.phase || '').toLowerCase();
@@ -314,7 +331,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
         if (phase === 'launch' || action === 'job_launch') return row;
       }
       return null;
-    }, [job.execution_log]);
+    }, [executionLog]);
     const launchResult = (launchLog?.result && typeof launchLog.result === 'object')
       ? (launchLog.result as Record<string, any>)
       : null;

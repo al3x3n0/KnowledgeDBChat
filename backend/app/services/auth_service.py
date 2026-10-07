@@ -3,7 +3,7 @@ Authentication service for user management and JWT tokens.
 
 Supports both JWT token authentication and API key authentication for external tools.
 """
-
+import asyncio
 import hashlib
 from datetime import datetime, timedelta
 from typing import Optional
@@ -141,7 +141,7 @@ class AuthService:
             raise ValueError("Email already exists")
 
         # Create new user
-        hashed_password = self.hash_password(password)
+        hashed_password = await asyncio.to_thread(self.hash_password, password)
         user = User(
             username=username,
             email=email,
@@ -187,7 +187,9 @@ class AuthService:
                 return await self._upsert_user_from_ldap(db, ldap_user, existing=user)
 
             # Optional fallback: keep local login working when LDAP is down/misconfigured.
-            if user.is_active and self.verify_password(password, user.hashed_password):
+            if user.is_active and await asyncio.to_thread(
+                self.verify_password, password, user.hashed_password
+            ):
                 logger.warning(f"LDAP user {username} authenticated via local fallback")
                 return user
 
@@ -197,7 +199,9 @@ class AuthService:
         if (
             user
             and user.is_active
-            and self.verify_password(password, user.hashed_password)
+            and await asyncio.to_thread(
+                self.verify_password, password, user.hashed_password
+            )
         ):
             return user
 
@@ -262,7 +266,9 @@ class AuthService:
                 username=username,
                 email=email,
                 full_name=getattr(ldap_user, "full_name", None),
-                hashed_password=self.hash_password(secrets.token_urlsafe(32)),
+                hashed_password=await asyncio.to_thread(
+                    self.hash_password, secrets.token_urlsafe(32)
+                ),
                 is_active=True,
                 is_verified=True,
                 role=role,
@@ -410,10 +416,12 @@ class AuthService:
         self, user: User, current_password: str, new_password: str, db: AsyncSession
     ) -> bool:
         """Update user password."""
-        if not self.verify_password(current_password, user.hashed_password):
+        if not await asyncio.to_thread(
+            self.verify_password, current_password, user.hashed_password
+        ):
             return False
 
-        user.hashed_password = self.hash_password(new_password)
+        user.hashed_password = await asyncio.to_thread(self.hash_password, new_password)
         user.updated_at = datetime.utcnow()
 
         await db.commit()

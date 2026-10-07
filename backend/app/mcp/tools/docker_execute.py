@@ -78,7 +78,7 @@ class DockerExecuteTool:
         if network_enabled:
             auth.require_scope("admin")
 
-        if not docker_executor.is_docker_available():
+        if not await docker_executor.docker_available():
             return {"error": "Docker is not available on server"}
 
         safe_image = str(image or "").strip()

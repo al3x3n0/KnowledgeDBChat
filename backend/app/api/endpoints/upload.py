@@ -1,7 +1,7 @@
 """
 Chunked upload endpoints for restartable file uploads.
 """
-
+import asyncio
 import math
 import os
 from datetime import datetime, timedelta
@@ -698,9 +698,11 @@ async def complete_upload(
                         )
                         from app.tasks.transcription_tasks import transcribe_document
 
-                        soft_limit, hard_limit = transcription_time_limits(
-                            probe_duration_seconds(temp_check_path)
+                        # ffprobe, up to 30s: in a thread, not on the API's loop.
+                        duration = await asyncio.to_thread(
+                            probe_duration_seconds, temp_check_path
                         )
+                        soft_limit, hard_limit = transcription_time_limits(duration)
 
                         transcribe_document.apply_async(
                             args=[str(document.id)],

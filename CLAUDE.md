@@ -1500,6 +1500,19 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   training's `start_job`, which sent the task and then committed `QUEUED`
   over a worker that had already marked the job running.
 
+- **Nothing blocks the event loop** (`tests/test_no_blocking_calls_in_async.py`).
+  A synchronous subprocess, sleep, HTTP call or bcrypt hash inside `async def`
+  stops every other coroutine in the process -- in the API, every request
+  being served. MCP `docker_execute` ran `docker pull` (up to ten minutes) and
+  `docker info` inline, an upload ran ffprobe, each login ran bcrypt, and
+  agent tools ran graphviz, ffprobe, a LaTeX build and a sandboxed program
+  run. Each now goes through `asyncio.to_thread`; `docker_executor` offers
+  `await docker_available()` beside the sync `is_docker_available()`. The
+  test reads source for known blocking calls made directly in an `async def`
+  (a nested `def`/`lambda`, or a function passed uncalled to `to_thread`, is
+  how work is handed to a thread and is not counted); a blocking helper of
+  this codebase's own belongs in its `BLOCKING_HELPERS`.
+
 ### Feature Flags (`core/feature_flags.py`)
 - Two-tier resolution: Redis cache → Settings fallback
 - Boolean flags (e.g., `knowledge_graph_enabled`) and string config flags (e.g., `llm_default_model`)

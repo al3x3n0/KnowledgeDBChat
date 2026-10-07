@@ -68,6 +68,9 @@ logs-frontend: ## View frontend logs only
 logs-celery: ## View Celery worker logs
 	$(DC) logs -f celery
 
+logs-celery-agents: ## View the agent-job worker's logs
+	$(DC) logs -f celery_agents
+
 shell-backend: ## Open shell in backend container
 	$(DC) exec backend /bin/bash
 

@@ -36,9 +36,14 @@ spec:
             - worker
             - --loglevel={{ lower .Values.config.logLevel }}
             - --concurrency={{ .Values.celery.concurrency }}
-            {{- if .Values.celery.queues }}
+            {{- $queues := .Values.celery.queues }}
+            {{- if not .Values.celeryAgents.enabled }}
+            {{- /* Nothing else would consume agent jobs: they would wait forever. */}}
+            {{- $queues = printf "%s,%s" (.Values.celery.queues | default "celery") (.Values.config.extra.AGENT_JOB_CELERY_QUEUE | default "agents") }}
+            {{- end }}
+            {{- if $queues }}
             - -Q
-            - {{ .Values.celery.queues | quote }}
+            - {{ $queues | quote }}
             {{- end }}
           env:
             {{- include "kdbc.connectionEnv" . | nindent 12 }}

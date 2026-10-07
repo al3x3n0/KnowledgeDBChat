@@ -46,7 +46,8 @@ kubectl -n knowledgedbchat get pods -w
 | Workload | Kind | Notes |
 | --- | --- | --- |
 | `backend` | Deployment | gunicorn + uvicorn workers, `/health` probes, optional HPA/PDB |
-| `celery` | Deployment | default queue; optional HPA; 120s graceful drain |
+| `celery` | Deployment | default queue; optional HPA; 120s graceful drain. Takes the `agents` queue too when `celeryAgents` is disabled |
+| `celery-agents` | Deployment | autonomous agent jobs (`agents` queue, `AGENT_JOB_CELERY_QUEUE`): hours long and mostly waiting on a model, so they no longer hold the general worker's processes; no CPU autoscaling, since an idle-waiting worker shows no CPU |
 | `celery-latex` | Deployment | off by default; read-only rootfs, all caps dropped |
 | `celery-transcription` | Deployment | off by default; the only pod carrying Whisper and the audio stack (~250 MB the backend and celery pods no longer replicate). Its image builds `FROM` the backend image, so build that first (`BUILD_TRANSCRIPTION=1 deploy/minikube/bootstrap.sh`) |
 | `celery-beat` | Deployment | pinned to 1 replica with `Recreate` — two schedulers double-fire tasks |
@@ -96,7 +97,7 @@ account you manage — the Job then uses it.
 
 ### The `/app/data` volume
 
-`backend`, `celery` and `celery-beat` all mount the same `<release>-data` PVC at
+`backend`, `celery`, `celery-agents` and `celery-beat` all mount the same `<release>-data` PVC at
 `/app/data` (documents, ChromaDB, logs, HuggingFace/Whisper/torch caches), so it
 defaults to `ReadWriteMany`. On minikube the single-node hostPath provisioner
 serves RWX fine. **On a real cluster you need a genuine RWX class** (EFS,

@@ -448,9 +448,9 @@ services:
     # host's cores, which on this machine meant ten worker processes at ~450 MB
     # each -- 4.5 GB of a 7.7 GB Docker VM, on four CPUs. Ten CPU-bound workers
     # on four cores is not throughput, and it starved everything else on the
-    # machine, the frontend dev server included. docker-compose.prod.yml has
-    # always passed 4; this brings dev in line.
-    command: celery -A app.core.celery worker --loglevel=info --concurrency=4
+    # machine, the frontend dev server included. Two here and two in
+    # celery_agents keep the total at the four processes this machine held.
+    command: celery -A app.core.celery worker --loglevel=info --concurrency=2
     # 6g was sized when Whisper and torch lived in this image. They moved to
     # celery_transcription, and this ceiling did not move with them.
     mem_limit: 3g
@@ -485,6 +485,24 @@ services:
   # and resume_paused_agent_jobs (15m). A job whose worker dies then stays
   # dead. That was only defined in docker-compose.prod.yml, so the recovery
   # path could not be exercised in development at all.
+  # The agent-job worker: the same image and environment as `celery`, its own
+  # queue (AGENT_JOB_CELERY_QUEUE). Agent jobs run for hours and mostly wait
+  # on a model; on the shared pool they held every process while uploads,
+  # summaries and workflows -- and the ingestion an agent's own tool waited
+  # for -- queued behind them. Nothing else consumes `agents`: with this
+  # service stopped, agent jobs wait rather than run.
+  celery_agents:
+    extends:
+      service: celery
+    container_name: knowledge_db_celery_agents
+    command: celery -A app.core.celery worker -Q agents --loglevel=info --concurrency=2 --hostname=agents@%h
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.core.celery inspect ping -d agents@$$(hostname)"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+      start_period: 40s
+
   celery_beat:
     build:
       context: ./backend

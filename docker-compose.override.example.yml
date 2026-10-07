@@ -16,7 +16,7 @@ services:
       - UNSAFE_CODE_EXEC_TIMEOUT_SECONDS=600
       - LLM_CALL_SNAPSHOT_ENABLED=true
 
-  celery:
+  celery: &celery_worker
     environment:
       - LLM_PROVIDER=deepseek
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
@@ -26,3 +26,6 @@ services:
       - UNSAFE_CODE_EXEC_BACKEND=docker
       - UNSAFE_CODE_EXEC_TIMEOUT_SECONDS=600
       - LLM_CALL_SNAPSHOT_ENABLED=true
+
+  # The agent-job worker takes exactly what the general worker does here.
+  celery_agents: *celery_worker

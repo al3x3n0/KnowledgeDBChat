@@ -54,6 +54,7 @@ backend:
 
 # Covered by rendering; a stand-in would only prove scheduling.
 celery: {enabled: false}
+celeryAgents: {enabled: false}
 celeryBeat: {enabled: false}
 celeryLatex: {enabled: false}
 videoStreamer: {enabled: false}

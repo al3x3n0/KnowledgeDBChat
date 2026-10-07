@@ -31,7 +31,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${SANDBOX_TMPDIR:-/tmp/kdbc-sandbox}:${SANDBOX_TMPDIR:-/tmp/kdbc-sandbox}
 
-  celery:
+  celery: &celery_worker
     build:
       args:
         WITH_DOCKER_CLI: "true"
@@ -43,3 +43,6 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${SANDBOX_TMPDIR:-/tmp/kdbc-sandbox}:${SANDBOX_TMPDIR:-/tmp/kdbc-sandbox}
+
+  # The agent-job worker takes exactly what the general worker does here.
+  celery_agents: *celery_worker

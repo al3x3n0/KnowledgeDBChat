@@ -75,6 +75,11 @@ celery_app.conf.update(
             "queue": getattr(settings, "TRANSCRIPTION_CELERY_QUEUE", "transcription")
             or "transcription"
         },
+        # Hours-long and mostly waiting on a model: its own worker, so it
+        # cannot occupy the processes short tasks need (AGENT_JOB_CELERY_QUEUE).
+        "app.tasks.agent_job_tasks.execute_agent_job_task": {
+            "queue": getattr(settings, "AGENT_JOB_CELERY_QUEUE", "agents") or "agents"
+        },
     },
     task_annotations={
         # Transcription may include model download/init + long media decode on CPU.

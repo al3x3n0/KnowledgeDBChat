@@ -32,6 +32,17 @@ celery:
     limits:
       memory: 3Gi
 
+celeryAgents:
+  # Sized like the general worker here: two agent jobs at once on one node.
+  replicaCount: 1
+  concurrency: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 3Gi
+
 celeryBeat:
   enabled: true
   resources:

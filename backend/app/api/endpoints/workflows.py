@@ -13,13 +13,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket
 from loguru import logger
-from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.models.user import User
-from app.models.workflow import Workflow, WorkflowEdge, WorkflowExecution, WorkflowNode
+from app.modules.workflows.application import workflow_store
 from app.schemas.workflow import (
     ContextSchemaResponse,
     ContextVariable,
@@ -72,50 +70,26 @@ async def list_workflows(
 ):
     """List all workflows for the current user."""
     try:
-        query = select(Workflow).where(Workflow.user_id == current_user.id)
-
-        if is_active is not None:
-            query = query.where(Workflow.is_active == is_active)
-
-        # Get total count
-        count_query = select(func.count()).select_from(query.subquery())
-        total_result = await db.execute(count_query)
-        total = total_result.scalar() or 0
-
-        # Get paginated results with node count
-        query = (
-            query.options(
-                selectinload(Workflow.nodes), selectinload(Workflow.executions)
-            )
-            .order_by(Workflow.updated_at.desc())
-            .offset(offset)
-            .limit(limit)
+        workflows, total = await workflow_store.list_workflows(
+            db, current_user.id, is_active=is_active, limit=limit, offset=offset
         )
-
-        result = await db.execute(query)
-        workflows = result.scalars().all()
-
-        # Build response with counts
-        items = []
-        for wf in workflows:
-            items.append(
-                WorkflowListItem(
-                    id=wf.id,
-                    user_id=wf.user_id,
-                    name=wf.name,
-                    description=wf.description,
-                    is_active=wf.is_active,
-                    trigger_config=wf.trigger_config,
-                    created_at=wf.created_at,
-                    updated_at=wf.updated_at,
-                    node_count=len(wf.nodes),
-                    execution_count=len(wf.executions),
-                    origin_plugin_slug=wf.origin_plugin_slug,
-                )
+        items = [
+            WorkflowListItem(
+                id=wf.id,
+                user_id=wf.user_id,
+                name=wf.name,
+                description=wf.description,
+                is_active=wf.is_active,
+                trigger_config=wf.trigger_config,
+                created_at=wf.created_at,
+                updated_at=wf.updated_at,
+                node_count=len(wf.nodes),
+                execution_count=len(wf.executions),
+                origin_plugin_slug=wf.origin_plugin_slug,
             )
-
+            for wf in workflows
+        ]
         return WorkflowListResponse(workflows=items, total=total)
-
     except Exception as e:
         logger.error(f"Error listing workflows: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -137,22 +111,9 @@ async def list_workflows_for_selection(
     self-references.
     """
     try:
-        query = select(Workflow).where(
-            Workflow.user_id == current_user.id,
-            Workflow.is_active.is_(
-                True
-            ),  # Only active workflows can be used as sub-workflows
+        workflows = await workflow_store.list_selectable_workflows(
+            db, current_user.id, exclude_id=exclude_id
         )
-
-        # Exclude the specified workflow (prevents selecting itself)
-        if exclude_id:
-            query = query.where(Workflow.id != exclude_id)
-
-        query = query.order_by(Workflow.name)
-
-        result = await db.execute(query)
-        workflows = result.scalars().all()
-
         return [
             WorkflowSummary(
                 id=wf.id,
@@ -162,7 +123,6 @@ async def list_workflows_for_selection(
             )
             for wf in workflows
         ]
-
     except Exception as e:
         logger.error(f"Error listing workflows for selection: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -176,55 +136,11 @@ async def create_workflow(
 ):
     """Create a new workflow with nodes and edges."""
     try:
-        # Create workflow
-        workflow = Workflow(
-            user_id=current_user.id,
-            name=workflow_data.name,
-            description=workflow_data.description,
-            is_active=workflow_data.is_active,
-            trigger_config=workflow_data.trigger_config or {},
+        workflow = await workflow_store.create_workflow(
+            db, current_user.id, workflow_data
         )
-        db.add(workflow)
-        await db.flush()
-
-        # Create nodes
-        for node_data in workflow_data.nodes:
-            node = WorkflowNode(
-                workflow_id=workflow.id,
-                node_id=node_data.node_id,
-                node_type=node_data.node_type,
-                tool_id=node_data.tool_id,
-                builtin_tool=node_data.builtin_tool,
-                config=node_data.config,
-                position_x=node_data.position_x,
-                position_y=node_data.position_y,
-            )
-            db.add(node)
-
-        # Create edges
-        for edge_data in workflow_data.edges:
-            edge = WorkflowEdge(
-                workflow_id=workflow.id,
-                source_node_id=edge_data.source_node_id,
-                target_node_id=edge_data.target_node_id,
-                source_handle=edge_data.source_handle,
-                condition=edge_data.condition,
-            )
-            db.add(edge)
-
-        await db.commit()
-
-        # Reload with relationships
-        result = await db.execute(
-            select(Workflow)
-            .options(selectinload(Workflow.nodes), selectinload(Workflow.edges))
-            .where(Workflow.id == workflow.id)
-        )
-        workflow = result.scalar_one()
-
         logger.info(f"Created workflow '{workflow.name}' for user {current_user.id}")
         return WorkflowResponse.model_validate(workflow)
-
     except Exception as e:
         logger.error(f"Error creating workflow: {e}")
         await db.rollback()
@@ -272,19 +188,12 @@ async def get_workflow(
     db: AsyncSession = Depends(get_db),
 ):
     """Get a specific workflow with all nodes and edges."""
-    result = await db.execute(
-        select(Workflow)
-        .options(
-            selectinload(Workflow.nodes).selectinload(WorkflowNode.tool),
-            selectinload(Workflow.edges),
+    try:
+        workflow = await workflow_store.get_owned_workflow(
+            db, workflow_id, current_user.id, with_tools=True
         )
-        .where(Workflow.id == workflow_id, Workflow.user_id == current_user.id)
-    )
-    workflow = result.scalar_one_or_none()
-
-    if not workflow:
+    except workflow_store.WorkflowNotFound:
         raise HTTPException(status_code=404, detail="Workflow not found")
-
     return WorkflowResponse.model_validate(workflow)
 
 
@@ -297,80 +206,13 @@ async def update_workflow(
 ):
     """Update a workflow including its nodes and edges."""
     try:
-        result = await db.execute(
-            select(Workflow)
-            .options(selectinload(Workflow.nodes), selectinload(Workflow.edges))
-            .where(Workflow.id == workflow_id, Workflow.user_id == current_user.id)
+        workflow = await workflow_store.update_workflow(
+            db, workflow_id, current_user.id, workflow_data
         )
-        workflow = result.scalar_one_or_none()
-
-        if not workflow:
-            raise HTTPException(status_code=404, detail="Workflow not found")
-
-        # Update basic fields
-        if workflow_data.name is not None:
-            workflow.name = workflow_data.name
-        if workflow_data.description is not None:
-            workflow.description = workflow_data.description
-        if workflow_data.is_active is not None:
-            workflow.is_active = workflow_data.is_active
-        if workflow_data.trigger_config is not None:
-            workflow.trigger_config = workflow_data.trigger_config
-
-        # Update nodes if provided
-        if workflow_data.nodes is not None:
-            # Delete existing nodes
-            await db.execute(
-                delete(WorkflowNode).where(WorkflowNode.workflow_id == workflow_id)
-            )
-
-            # Create new nodes
-            for node_data in workflow_data.nodes:
-                node = WorkflowNode(
-                    workflow_id=workflow.id,
-                    node_id=node_data.node_id,
-                    node_type=node_data.node_type,
-                    tool_id=node_data.tool_id,
-                    builtin_tool=node_data.builtin_tool,
-                    config=node_data.config,
-                    position_x=node_data.position_x,
-                    position_y=node_data.position_y,
-                )
-                db.add(node)
-
-        # Update edges if provided
-        if workflow_data.edges is not None:
-            # Delete existing edges
-            await db.execute(
-                delete(WorkflowEdge).where(WorkflowEdge.workflow_id == workflow_id)
-            )
-
-            # Create new edges
-            for edge_data in workflow_data.edges:
-                edge = WorkflowEdge(
-                    workflow_id=workflow.id,
-                    source_node_id=edge_data.source_node_id,
-                    target_node_id=edge_data.target_node_id,
-                    source_handle=edge_data.source_handle,
-                    condition=edge_data.condition,
-                )
-                db.add(edge)
-
-        await db.commit()
-
-        # Reload with relationships
-        result = await db.execute(
-            select(Workflow)
-            .options(selectinload(Workflow.nodes), selectinload(Workflow.edges))
-            .where(Workflow.id == workflow.id)
-        )
-        workflow = result.scalar_one()
-
         logger.info(f"Updated workflow '{workflow.name}'")
         return WorkflowResponse.model_validate(workflow)
-
-    except HTTPException:
-        raise
+    except workflow_store.WorkflowNotFound:
+        raise HTTPException(status_code=404, detail="Workflow not found")
     except Exception as e:
         logger.error(f"Error updating workflow: {e}")
         await db.rollback()
@@ -385,23 +227,10 @@ async def delete_workflow(
 ):
     """Delete a workflow and all its nodes, edges, and executions."""
     try:
-        result = await db.execute(
-            select(Workflow).where(
-                Workflow.id == workflow_id, Workflow.user_id == current_user.id
-            )
-        )
-        workflow = result.scalar_one_or_none()
-
-        if not workflow:
-            raise HTTPException(status_code=404, detail="Workflow not found")
-
-        await db.delete(workflow)
-        await db.commit()
-
+        await workflow_store.delete_workflow(db, workflow_id, current_user.id)
         logger.info(f"Deleted workflow {workflow_id}")
-
-    except HTTPException:
-        raise
+    except workflow_store.WorkflowNotFound:
+        raise HTTPException(status_code=404, detail="Workflow not found")
     except Exception as e:
         logger.error(f"Error deleting workflow: {e}")
         await db.rollback()
@@ -435,13 +264,11 @@ async def execute_workflow(
             initial_context=execution_data.inputs,
         )
 
-        # Reload with node executions
-        result = await db.execute(
-            select(WorkflowExecution)
-            .options(selectinload(WorkflowExecution.node_executions))
-            .where(WorkflowExecution.id == execution.id)
+        # Reload with node executions, overwriting what the engine left in the
+        # session -- a plain reload keeps a collection it already loaded.
+        execution = await workflow_store.get_execution(
+            db, execution.id, with_nodes=True, fresh=True
         )
-        execution = result.scalar_one()
 
         return WorkflowExecutionResponse.model_validate(execution)
 
@@ -501,39 +328,14 @@ async def list_workflow_executions(
 ):
     """List executions for a specific workflow."""
     try:
-        # Verify workflow ownership
-        result = await db.execute(
-            select(Workflow).where(
-                Workflow.id == workflow_id, Workflow.user_id == current_user.id
-            )
+        workflow, executions, total = await workflow_store.list_executions(
+            db,
+            workflow_id,
+            current_user.id,
+            status=status,
+            limit=limit,
+            offset=offset,
         )
-        workflow = result.scalar_one_or_none()
-
-        if not workflow:
-            raise HTTPException(status_code=404, detail="Workflow not found")
-
-        # Build query
-        query = select(WorkflowExecution).where(
-            WorkflowExecution.workflow_id == workflow_id
-        )
-
-        if status:
-            query = query.where(WorkflowExecution.status == status)
-
-        # Get total count
-        count_query = select(func.count()).select_from(query.subquery())
-        total_result = await db.execute(count_query)
-        total = total_result.scalar() or 0
-
-        # Get paginated results
-        query = (
-            query.order_by(WorkflowExecution.created_at.desc())
-            .offset(offset)
-            .limit(limit)
-        )
-        result = await db.execute(query)
-        executions = result.scalars().all()
-
         items = [
             WorkflowExecutionListItem(
                 id=e.id,
@@ -549,11 +351,9 @@ async def list_workflow_executions(
             )
             for e in executions
         ]
-
         return WorkflowExecutionListResponse(executions=items, total=total)
-
-    except HTTPException:
-        raise
+    except workflow_store.WorkflowNotFound:
+        raise HTTPException(status_code=404, detail="Workflow not found")
     except Exception as e:
         logger.error(f"Error listing executions: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -566,19 +366,12 @@ async def get_execution(
     db: AsyncSession = Depends(get_db),
 ):
     """Get details of a specific workflow execution."""
-    result = await db.execute(
-        select(WorkflowExecution)
-        .options(selectinload(WorkflowExecution.node_executions))
-        .where(
-            WorkflowExecution.id == execution_id,
-            WorkflowExecution.user_id == current_user.id,
+    try:
+        execution = await workflow_store.get_execution(
+            db, execution_id, user_id=current_user.id, with_nodes=True
         )
-    )
-    execution = result.scalar_one_or_none()
-
-    if not execution:
+    except workflow_store.ExecutionNotFound:
         raise HTTPException(status_code=404, detail="Execution not found")
-
     return WorkflowExecutionResponse.model_validate(execution)
 
 
@@ -589,27 +382,15 @@ async def cancel_execution(
     db: AsyncSession = Depends(get_db),
 ):
     """Cancel a running workflow execution."""
-    result = await db.execute(
-        select(WorkflowExecution).where(
-            WorkflowExecution.id == execution_id,
-            WorkflowExecution.user_id == current_user.id,
-        )
-    )
-    execution = result.scalar_one_or_none()
-
-    if not execution:
+    try:
+        await workflow_store.cancel_execution(db, execution_id, current_user.id)
+    except workflow_store.ExecutionNotFound:
         raise HTTPException(status_code=404, detail="Execution not found")
-
-    if execution.status not in ["pending", "running"]:
+    except workflow_store.ExecutionNotCancellable as e:
         raise HTTPException(
             status_code=400,
-            detail=f"Cannot cancel execution with status '{execution.status}'",
+            detail=f"Cannot cancel execution with status '{e}'",
         )
-
-    execution.status = "cancelled"
-    execution.error = "Cancelled by user"
-    await db.commit()
-
     return {"status": "cancelled", "message": "Execution cancelled"}
 
 
@@ -636,13 +417,10 @@ async def execution_stream(
     from app.utils.websocket_auth import authorize_owner
 
     async with _Session() as _db:
-        _owner = (
-            await _db.execute(
-                select(WorkflowExecution.user_id).where(
-                    WorkflowExecution.id == execution_id
-                )
-            )
-        ).scalar_one_or_none()
+        try:
+            _owner = (await workflow_store.get_execution(_db, execution_id)).user_id
+        except workflow_store.ExecutionNotFound:
+            _owner = None
     if await authorize_owner(websocket, _owner, what="Execution") is None:
         return
 
@@ -659,11 +437,10 @@ async def execution_stream(
     from app.utils.websocket_progress import forward_progress
 
     async with _Session() as _db:
-        execution = (
-            await _db.execute(
-                select(WorkflowExecution).where(WorkflowExecution.id == execution_id)
-            )
-        ).scalar_one_or_none()
+        try:
+            execution = await workflow_store.get_execution(_db, execution_id)
+        except workflow_store.ExecutionNotFound:
+            execution = None
 
     await forward_progress(
         websocket,
@@ -791,17 +568,11 @@ async def get_workflow_context_schema(
     each node based on the outputs of upstream nodes.
     """
     # Load workflow
-    result = await db.execute(
-        select(Workflow)
-        .options(
-            selectinload(Workflow.nodes).selectinload(WorkflowNode.tool),
-            selectinload(Workflow.edges),
+    try:
+        workflow = await workflow_store.get_owned_workflow(
+            db, workflow_id, current_user.id, with_tools=True
         )
-        .where(Workflow.id == workflow_id, Workflow.user_id == current_user.id)
-    )
-    workflow = result.scalar_one_or_none()
-
-    if not workflow:
+    except workflow_store.WorkflowNotFound:
         raise HTTPException(status_code=404, detail="Workflow not found")
 
     # Build a graph to analyze context flow
@@ -983,17 +754,11 @@ async def validate_workflow(
     - Unreachable nodes
     """
     # Load workflow
-    result = await db.execute(
-        select(Workflow)
-        .options(
-            selectinload(Workflow.nodes).selectinload(WorkflowNode.tool),
-            selectinload(Workflow.edges),
+    try:
+        workflow = await workflow_store.get_owned_workflow(
+            db, workflow_id, current_user.id, with_tools=True
         )
-        .where(Workflow.id == workflow_id, Workflow.user_id == current_user.id)
-    )
-    workflow = result.scalar_one_or_none()
-
-    if not workflow:
+    except workflow_store.WorkflowNotFound:
         raise HTTPException(status_code=404, detail="Workflow not found")
 
     issues = []
@@ -1185,65 +950,9 @@ async def import_workflow_template(
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
 
-    # Create workflow from template
-    workflow_name = name_override or template["name"]
-
-    # Check for duplicate name
-    existing = await db.execute(
-        select(Workflow).where(
-            Workflow.user_id == current_user.id, Workflow.name == workflow_name
-        )
+    workflow = await workflow_store.import_template(
+        db, current_user.id, template, name=name_override
     )
-    if existing.scalar_one_or_none():
-        # Append a number to make it unique
-        import time
-
-        workflow_name = f"{workflow_name} ({int(time.time()) % 10000})"
-
-    workflow = Workflow(
-        user_id=current_user.id,
-        name=workflow_name,
-        description=template.get("description"),
-        is_active=True,
-        trigger_config=template.get("trigger_config", {"type": "manual"}),
-    )
-    db.add(workflow)
-    await db.flush()
-
-    # Create nodes
-    for node_data in template.get("nodes", []):
-        node = WorkflowNode(
-            workflow_id=workflow.id,
-            node_id=node_data["node_id"],
-            node_type=node_data["node_type"],
-            builtin_tool=node_data.get("builtin_tool"),
-            config=node_data.get("config", {}),
-            position_x=node_data.get("position_x", 0),
-            position_y=node_data.get("position_y", 0),
-        )
-        db.add(node)
-
-    # Create edges
-    for edge_data in template.get("edges", []):
-        edge = WorkflowEdge(
-            workflow_id=workflow.id,
-            source_node_id=edge_data["source_node_id"],
-            target_node_id=edge_data["target_node_id"],
-            source_handle=edge_data.get("source_handle"),
-            condition=edge_data.get("condition"),
-        )
-        db.add(edge)
-
-    await db.commit()
-    await db.refresh(workflow)
-
-    # Load relationships for response
-    result = await db.execute(
-        select(Workflow)
-        .options(selectinload(Workflow.nodes), selectinload(Workflow.edges))
-        .where(Workflow.id == workflow.id)
-    )
-    workflow = result.scalar_one()
 
     return {
         "message": f"Template '{template['name']}' imported successfully",

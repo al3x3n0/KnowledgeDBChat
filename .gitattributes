@@ -1,0 +1,4 @@
+# Generated from the backend (scripts/export_openapi.py, npm run gen:api):
+# collapsed in diffs, and never merged by hand.
+frontend/src/api/openapi.json linguist-generated=true -merge
+frontend/src/api/schema.ts linguist-generated=true -merge

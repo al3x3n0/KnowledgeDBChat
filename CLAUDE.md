@@ -219,7 +219,21 @@ database that already has a revision recorded.
 - `services/api.ts` - Single `ApiClient` class (~4700 lines, 460+ methods) wrapping Axios with `/api/v1` base, token interceptor, and toast-based error handling — add new endpoints here
 - `contexts/` - `AuthContext.tsx`, `NotificationContext.tsx`
 - `hooks/` - `useWebSocket`, `useKeyboardShortcuts`, `useElementSize`
-- `types/index.ts` - TypeScript interfaces (very large; mirror backend schemas here)
+- `types/index.ts` - TypeScript interfaces (very large; mirror backend schemas here).
+  **They are checked against the API, not trusted.** `backend/scripts/export_openapi.py`
+  writes the schema FastAPI builds to `src/api/openapi.json`, `npm run gen:api`
+  turns it into `src/api/schema.ts`, and CI fails if either is stale (backend
+  job: `export_openapi.py --check`; frontend job: `npm run check:api`). Both are
+  generated -- never edit them by hand. `src/api/__typechecks__/` holds
+  type-level assertions that a hand-written response type declares no field the
+  matching backend schema lacks; `tsc` fails on drift. It covers the 55
+  `AgentJob*` types that have a backend counterpart, and its first run found
+  one: `AgentJob.execution_log`, which only `GET /agent-jobs/{id}` returns, so
+  `JobDetailPanel` -- usually handed a job from the list -- showed no launch
+  log. That field now lives on `AgentJobDetail`, `getAgentJob` returns it, and
+  the panel fetches the detail when it was given a list row. Extend the checks
+  area by area; prefer aliasing a type to `components['schemas'][...]` where
+  the two already agree.
 - Tailwind uses an inverted terminal/dark palette (gray-50 = dark, gray-900 = light) — check `tailwind.config.js` before assuming standard shades
 
 ## Major Subsystems

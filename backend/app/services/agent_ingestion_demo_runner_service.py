@@ -1329,7 +1329,8 @@ class AgentIngestionDemoRunnerService:
             else:
                 _emit(62, "checking", "Running demo.py behavioral check (unsafe)")
                 await db.commit()
-                behavior = _run_behavioral_demo(
+                behavior = await asyncio.to_thread(
+                    _run_behavioral_demo,
                     normalized_files,
                     effective_backend=backend_effective,
                     effective_image=image_effective,

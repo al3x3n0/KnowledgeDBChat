@@ -566,7 +566,7 @@ class CustomToolService:
         )
 
         # Check if Docker is available
-        if not docker_executor.is_docker_available():
+        if not await docker_executor.docker_available():
             raise ToolExecutionError("Docker is not available on this system")
 
         # Execute the container

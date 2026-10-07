@@ -5,6 +5,7 @@ Split out of ``agent_tool_dispatch``, which re-exports every name here.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict
 
 from sqlalchemy import select
@@ -236,7 +237,9 @@ def build_autonomous_notification_visualization_provider(
 
                 ds = DiagramService()
                 image_bytes = b64.b64decode(
-                    ds._render_graphviz(diagram_code, {"output_format": fmt})
+                    await asyncio.to_thread(
+                        ds._render_graphviz, diagram_code, {"output_format": fmt}
+                    )
                 )
             else:
                 from app.services.mermaid_renderer import MermaidRenderer

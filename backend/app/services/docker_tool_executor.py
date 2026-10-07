@@ -376,7 +376,14 @@ class DockerToolExecutor:
 
         Returns:
             True if image is available, False otherwise
+
+        The pull is a blocking `docker pull` of up to ten minutes; it runs in a
+        thread, since on the event loop it stalled every request the API
+        process was serving for as long as the download took.
         """
+        return await asyncio.to_thread(self._pull_image_sync, image)
+
+    def _pull_image_sync(self, image: str) -> bool:
         try:
             # Check if image exists locally
             check_cmd = ["docker", "image", "inspect", image]
@@ -409,6 +416,10 @@ class DockerToolExecutor:
         except Exception as e:
             logger.error(f"Error pulling image {image}: {e}")
             return False
+
+    async def docker_available(self) -> bool:
+        """:meth:`is_docker_available` off the event loop (`docker info`, up to 10s)."""
+        return await asyncio.to_thread(self.is_docker_available)
 
     def is_docker_available(self) -> bool:
         """

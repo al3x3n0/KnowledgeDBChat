@@ -5,6 +5,7 @@ Split out of ``agent_tool_dispatch``, which re-exports every name here.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict
 
 from app.services.agent_tool_providers.base import (
@@ -392,7 +393,8 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
                         "error": "LaTeX compilation is disabled on this "
                         "deployment; export as pdf or docx instead"
                     }
-                compile_result = LatexCompilerService().compile_to_pdf(
+                compile_result = await asyncio.to_thread(
+                    LatexCompilerService().compile_to_pdf,
                     tex_source=markdown_to_latex(markdown, title),
                     timeout_seconds=60,
                     max_source_chars=500000,

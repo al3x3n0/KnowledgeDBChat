@@ -5,6 +5,7 @@ Split out of ``agent_tool_dispatch``, which re-exports every name here.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict
 
 from sqlalchemy import select
@@ -312,7 +313,8 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
                         raise FileNotFoundError(
                             f"{doc.file_path} was not found in storage"
                         )
-                    probe_result = subprocess.run(
+                    probe_result = await asyncio.to_thread(
+                        subprocess.run,
                         [
                             "ffprobe",
                             "-v",

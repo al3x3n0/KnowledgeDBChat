@@ -145,3 +145,94 @@ def test_the_check_sees_imports_inside_functions(tmp_path):
     # A helper module under app/tasks that defines no task is not the worker.
     assert "app.tasks.job_support" in imported
     assert not _violates("app.tasks.job_support", "app.tasks", task_modules)
+
+
+#: The largest import cycle (strongly connected component, function-local
+#: imports included) when this was written. It was 51 modules spanning
+#: services, tasks, endpoints and modules/autonomy; moving work down a layer
+#: and importing provider types from agent_tool_providers.base rather than the
+#: agent_tool_dispatch facade (which imports every provider) brought it to 7.
+#: The 7 that remain are mutual recursion between peers -- a workflow runs
+#: tools and a custom tool can run a workflow -- which needs an interface to
+#: break, not a moved import. May only shrink.
+LARGEST_CYCLE = 7
+
+
+def _module_name(path: Path) -> str:
+    rel = path.relative_to(APP.parent).with_suffix("").as_posix().replace("/", ".")
+    return rel[: -len(".__init__")] if rel.endswith(".__init__") else rel
+
+
+def _largest_cycle() -> list[str]:
+    import sys
+
+    modules = {_module_name(path): path for path in APP.rglob("*.py")}
+    edges: dict[str, set[str]] = {name: set() for name in modules}
+    for name, path in modules.items():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.ImportFrom) and node.module and not node.level
+            ):
+                continue
+            for alias in node.names:
+                target = f"{node.module}.{alias.name}"
+                if target not in modules:
+                    target = node.module
+                while target and target not in modules:
+                    target = target.rpartition(".")[0]
+                # A package's __init__ re-exports; importing it is not a
+                # dependency on every module inside it.
+                if target and target != name and target != "app.services":
+                    edges[name].add(target)
+
+    index: dict[str, int] = {}
+    low: dict[str, int] = {}
+    stack: list[str] = []
+    on_stack: set[str] = set()
+    largest: list[str] = []
+    counter = [0]
+    sys.setrecursionlimit(max(sys.getrecursionlimit(), 10000))
+
+    def visit(node: str) -> None:
+        nonlocal largest
+        index[node] = low[node] = counter[0]
+        counter[0] += 1
+        stack.append(node)
+        on_stack.add(node)
+        for nxt in edges[node]:
+            if nxt not in index:
+                visit(nxt)
+                low[node] = min(low[node], low[nxt])
+            elif nxt in on_stack:
+                low[node] = min(low[node], index[nxt])
+        if low[node] == index[node]:
+            component = []
+            while True:
+                member = stack.pop()
+                on_stack.discard(member)
+                component.append(member)
+                if member == node:
+                    break
+            if len(component) > len(largest):
+                largest = component
+
+    for module in edges:
+        if module not in index:
+            visit(module)
+    return sorted(largest)
+
+
+def test_no_import_cycle_grows():
+    largest = _largest_cycle()
+    assert len(largest) <= LARGEST_CYCLE, (
+        f"An import cycle of {len(largest)} modules (limit {LARGEST_CYCLE}): "
+        + ", ".join(largest)
+        + ". Import from the module that owns a name, not from a facade "
+        "that re-exports it, and move shared code down a layer."
+    )
+
+
+def test_the_cycle_limit_is_not_slack():
+    # Lower LARGEST_CYCLE when a cycle shrinks, so the gain cannot be spent.
+    assert len(_largest_cycle()) == LARGEST_CYCLE

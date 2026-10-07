@@ -1143,7 +1143,7 @@ class WorkflowEngine:
         workflow" long after the change that caused it.
         """
         from app.services.agent_plugin_tool_provider import PluginToolProvider
-        from app.services.agent_tool_dispatch import AgentToolExecutionContext
+        from app.services.agent_tool_providers.base import AgentToolExecutionContext
 
         context = AgentToolExecutionContext(
             mode="workflow",

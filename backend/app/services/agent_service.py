@@ -39,15 +39,19 @@ from app.services import llm_json
 from app.services.agent_memory_integration import AgentMemoryIntegration
 from app.services.agent_plugin_tool_provider import PluginToolProvider
 from app.services.agent_router import AgentRouter
-from app.services.agent_tool_dispatch import (
+from app.services.agent_tool_providers.base import (
     AgentToolExecutionContext,
     AgentToolRegistry,
+)
+from app.services.agent_tool_providers.chat import (
     build_agent_service_analytics_content_provider,
     build_agent_service_chat_core_provider,
     build_agent_service_document_provider,
     build_agent_service_knowledge_graph_provider,
     build_agent_service_research_provider,
     build_agent_service_workflow_provider,
+)
+from app.services.agent_tool_providers.sandbox_skill import (
     build_autonomous_sandbox_skill_provider,
 )
 from app.services.agent_tools import AGENT_TOOLS, validate_tool_params

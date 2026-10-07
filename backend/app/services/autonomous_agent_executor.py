@@ -105,28 +105,62 @@ from app.services.agent_swarm_fan_in import (
     normalize_role_token,
 )
 from app.services.agent_thinking_service import AgentThinkingService
-from app.services.agent_tool_dispatch import (
-    AgentToolRegistry,
+from app.services.agent_tool_providers.base import AgentToolRegistry
+from app.services.agent_tool_providers.collaboration import (
     build_autonomous_collaboration_provider,
+)
+from app.services.agent_tool_providers.data_analysis import (
     build_autonomous_data_analysis_provider,
-    build_autonomous_document_authoring_provider,
+)
+from app.services.agent_tool_providers.document import (
     build_autonomous_document_provider,
-    build_autonomous_kg_provider,
-    build_autonomous_media_provider,
-    build_autonomous_memory_provider,
+)
+from app.services.agent_tool_providers.document_authoring import (
+    build_autonomous_document_authoring_provider,
+)
+from app.services.agent_tool_providers.kg import build_autonomous_kg_provider
+from app.services.agent_tool_providers.media import build_autonomous_media_provider
+from app.services.agent_tool_providers.memory import build_autonomous_memory_provider
+from app.services.agent_tool_providers.notification_visualization import (
     build_autonomous_notification_visualization_provider,
+)
+from app.services.agent_tool_providers.observability import (
     build_autonomous_observability_provider,
+)
+from app.services.agent_tool_providers.output_state import (
     build_autonomous_output_state_provider,
+)
+from app.services.agent_tool_providers.project_bootstrap import (
     build_autonomous_project_bootstrap_provider,
+)
+from app.services.agent_tool_providers.reasoning import (
     build_autonomous_reasoning_provider,
+)
+from app.services.agent_tool_providers.research import (
     build_autonomous_research_provider,
+)
+from app.services.agent_tool_providers.sandbox_skill import (
     build_autonomous_sandbox_skill_provider,
+)
+from app.services.agent_tool_providers.scheduling import (
     build_autonomous_scheduling_provider,
+)
+from app.services.agent_tool_providers.snapshot import (
     build_autonomous_snapshot_provider,
+)
+from app.services.agent_tool_providers.symbol_retrieval import (
     build_autonomous_symbol_retrieval_provider,
+)
+from app.services.agent_tool_providers.web_research import (
     build_autonomous_web_research_provider,
+)
+from app.services.agent_tool_providers.workflow import (
     build_autonomous_workflow_provider,
+)
+from app.services.agent_tool_providers.workspace_mutation import (
     build_autonomous_workspace_mutation_provider,
+)
+from app.services.agent_tool_providers.workspace_read import (
     build_autonomous_workspace_read_provider,
 )
 from app.services.agent_tools import AGENT_TOOLS

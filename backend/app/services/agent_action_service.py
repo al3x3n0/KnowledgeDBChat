@@ -8,7 +8,7 @@ from typing import Any, Dict
 from loguru import logger
 
 from app.services.agent_execution_journal_service import agent_execution_journal_service
-from app.services.agent_tool_dispatch import AgentToolExecutionContext
+from app.services.agent_tool_providers.base import AgentToolExecutionContext
 from app.services.agent_tool_validation import coerce_tool_params, validate_tool_params
 
 

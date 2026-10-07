@@ -1469,8 +1469,15 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   task importing the operator-queue composer from its endpoint: that composer
   and the job presenter it binds now live in
   `modules/autonomy/application/checkpoint_queue_builder.py`. With these gone
-  the cross-layer cycle is broken; the largest cycle left is 10 modules, all
-  inside `app/services`.
+  the cross-layer cycle is broken. **Import a name from the module that owns
+  it, not from a facade**: six modules took `AgentToolExecutionContext` from
+  `agent_tool_dispatch`, which imports every provider, and providers call
+  back into `agent_service` -- a 34-module cycle that pointing those imports
+  at `agent_tool_providers.base` reduced to 7. `test_no_import_cycle_grows`
+  caps the largest cycle at 7 (`LARGEST_CYCLE`, which may only shrink). Those
+  7 are mutual recursion between peers (a workflow runs tools; a custom tool
+  can run a workflow; chat runs workflows, whose tool nodes call
+  `AgentService`), which needs an interface to break, not a moved import.
 - **Work is queued through `services/job_dispatch`**: `enqueue(db,
   "app.tasks.<module>.<task>", *args)`, `enqueue_agent_job(db, job_id,
   user_id)`, and `send_now(...)` for a caller with no session to wait on.

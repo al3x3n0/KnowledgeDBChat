@@ -28,7 +28,7 @@ from loguru import logger
 from sqlalchemy import select
 
 from app.agent_core.plugin_specs import NAME_PREFIX
-from app.services.agent_tool_dispatch import AgentToolExecutionContext
+from app.services.agent_tool_providers.base import AgentToolExecutionContext
 
 
 class PluginToolProvider:

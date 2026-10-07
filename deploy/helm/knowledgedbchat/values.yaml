@@ -211,6 +211,24 @@ celery:
   tolerations: []
   affinity: {}
 
+celeryAgents:
+  # Autonomous agent jobs, on their own queue (AGENT_JOB_CELERY_QUEUE). They
+  # run for hours and mostly wait on a model; on the general pool they held
+  # every process while short tasks queued behind them. Disabling this makes
+  # the general worker consume the agents queue too, so jobs still run.
+  enabled: true
+  replicaCount: 1
+  concurrency: 4
+  resources:
+    requests:
+      cpu: 250m
+      memory: 2Gi
+    limits:
+      memory: 6Gi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
 celeryLatex:
   # Dedicated worker for LaTeX compilation. Off by default, like
   # LATEX_COMPILER_ENABLED in the app.

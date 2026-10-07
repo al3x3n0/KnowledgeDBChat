@@ -225,6 +225,16 @@ class Settings(BaseSettings):
     # worker is running, so transcription jobs wait rather than fail -- the
     # same contract the LaTeX queue has.
     TRANSCRIPTION_CELERY_QUEUE: str = "transcription"
+    # Autonomous agent jobs run on their own queue and worker (celery_agents).
+    # They may run for hours and spend most of it waiting on a model, while
+    # everything else on the default queue finishes in seconds to minutes; on
+    # one shared pool of four processes, four agent runs held every slot and
+    # uploads, summaries and workflows waited behind them -- including the
+    # ingestion an agent's own tool was waiting for. Nothing consumes this
+    # queue unless a worker names it with -Q, so every deployment that runs
+    # the general worker runs this one too (or lets the general worker take
+    # the queue, as the Helm chart does when celeryAgents is disabled).
+    AGENT_JOB_CELERY_QUEUE: str = "agents"
     TRANSCRIPTION_FILTER_INTRO_JUNK: bool = True
     TRANSCRIPTION_INTRO_MAX_SECONDS: float = 12.0
     TRANSCRIPTION_INTRO_NO_SPEECH_PROB: float = 0.30

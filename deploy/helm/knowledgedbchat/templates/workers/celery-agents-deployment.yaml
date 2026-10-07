@@ -1,0 +1,84 @@
+{{- if .Values.celeryAgents.enabled }}
+{{- /*
+Agent jobs on their own queue (AGENT_JOB_CELERY_QUEUE): hours long and mostly
+waiting on a model, they otherwise hold the processes short tasks need. Same
+image and environment as the general worker.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ printf "%s-celery-agents" (include "kdbc.fullname" .) }}
+  labels:
+    {{- include "kdbc.componentLabels" (dict "ctx" . "component" "celery-agents") | nindent 4 }}
+spec:
+  replicas: {{ .Values.celeryAgents.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "kdbc.componentSelectorLabels" (dict "ctx" . "component" "celery-agents") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kdbc.componentSelectorLabels" (dict "ctx" . "component" "celery-agents") | nindent 8 }}
+      annotations:
+        {{- include "kdbc.configChecksums" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "kdbc.serviceAccountName" . }}
+      {{- include "kdbc.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # Celery drains in-flight tasks on SIGTERM; give it room before SIGKILL.
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: celery-agents
+          image: "{{ .Values.image.backend.repository }}:{{ .Values.image.backend.tag }}"
+          imagePullPolicy: {{ .Values.image.backend.pullPolicy }}
+          command:
+            - celery
+            - -A
+            - app.core.celery
+            - worker
+            - --loglevel={{ lower .Values.config.logLevel }}
+            - --concurrency={{ .Values.celeryAgents.concurrency }}
+            - -Q
+            - {{ .Values.config.extra.AGENT_JOB_CELERY_QUEUE | default "agents" | quote }}
+            - --hostname=agents@%h
+          env:
+            {{- include "kdbc.connectionEnv" . | nindent 12 }}
+            {{- with .Values.global.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          envFrom:
+            {{- include "kdbc.appEnvFrom" . | nindent 12 }}
+          volumeMounts:
+            {{- include "kdbc.dataVolumeMounts" . | nindent 12 }}
+            - name: dshm
+              mountPath: /dev/shm
+          livenessProbe:
+            exec:
+              # Probe this pod's own worker only, not the whole cluster of workers.
+              command: ["sh", "-c", "celery -A app.core.celery inspect ping -d agents@$(hostname)"]
+            initialDelaySeconds: 90
+            periodSeconds: 60
+            timeoutSeconds: 30
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.celeryAgents.resources | nindent 12 }}
+      volumes:
+        {{- include "kdbc.dataVolume" . | nindent 8 }}
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+      {{- with .Values.celeryAgents.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.celeryAgents.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.celeryAgents.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

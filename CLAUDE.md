@@ -18,6 +18,7 @@ make start              # Start all services
 make stop               # Stop all services
 make logs-backend       # View backend logs
 make logs-celery        # View Celery worker logs
+make logs-celery-agents # View the agent-job worker's logs
 make test-backend       # Run backend tests
 make test-backend-coverage  # Backend tests with CI-style 48% coverage gate
 make test-frontend      # Run frontend tests
@@ -1612,7 +1613,7 @@ Security-sensitive features (code execution, LaTeX compilation, Docker custom to
 Main services in `docker-compose.yml`:
 - `postgres` (5432), `redis` (6379), `qdrant` (6333), `minio` (9000/9001)
 - `backend` (8000), `frontend` via `nginx` (3000)
-- `celery` worker + `celery_latex` (dedicated LaTeX compilation queue) + `celery_transcription` (dedicated Whisper queue; its image derives from the backend image, so `make build` builds the backend first — compose does not infer build order from a `FROM`)
+- `celery` worker (default queue) + `celery_agents` (agent jobs only: the `agents` queue, `AGENT_JOB_CELERY_QUEUE`. They run for hours and mostly wait on a model; on the shared four-process pool they held every slot while uploads, summaries and workflows -- and the ingestion an agent's own tool waited for -- queued behind them. Nothing else consumes `agents`, so `tests/test_agent_job_queue.py` checks every stack has a consumer, and that each overlay configuring `celery` gives `celery_agents` the same through a YAML anchor: `extends` copies the base file's service, not an overlay's changes to it) + `celery_latex` (dedicated LaTeX compilation queue) + `celery_transcription` (dedicated Whisper queue; its image derives from the backend image, so `make build` builds the backend first — compose does not infer build order from a `FROM`)
 - `kroki-mermaid` (8001) - Mermaid rendering, built from `mermaid-renderer/` (this repo's own: Alpine + Chromium + mermaid-cli, 1.08 GB against `yuzutech/kroki-mermaid`'s 1.54 GB, with mesa and libLLVM deleted because a headless browser never opens them). Speaks the Kroki companion protocol: POST the raw diagram to `/svg` or `/png`
 - `sandbox-docker` - private Docker-in-Docker daemon (privileged) that every sandboxed tool runs in; backend and celery reach it over TLS. Load images with `make sandbox-load`
 - `video-streamer` - Go microservice for video streaming (in `video-streamer/`)

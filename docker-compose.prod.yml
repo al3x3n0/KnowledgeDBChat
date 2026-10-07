@@ -160,6 +160,15 @@ services:
     restart: unless-stopped
     command: celery -A app.core.celery worker --loglevel=info --concurrency=4
 
+  # Agent jobs on their own queue and worker (AGENT_JOB_CELERY_QUEUE): hours
+  # long and mostly waiting on a model, they otherwise hold the processes the
+  # short tasks need. Nothing else consumes `agents`.
+  celery_agents:
+    extends:
+      service: celery
+    container_name: knowledge_db_celery_agents_prod
+    command: celery -A app.core.celery worker -Q agents --loglevel=info --concurrency=4 --hostname=agents@%h
+
   # Dedicated Celery worker for LaTeX compilation (TeX Live image, isolated queue)
   celery_latex:
     build:

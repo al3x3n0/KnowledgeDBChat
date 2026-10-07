@@ -482,7 +482,7 @@ async def close_bracket(executor: Any, job: Any, db: Any, state: Any) -> None:
     Never fatal. A failing control records that the window produced no
     evidence; the contract is what acts on that.
     """
-    from app.services.agent_tool_dispatch import AgentToolExecutionContext
+    from app.services.agent_tool_providers.base import AgentToolExecutionContext
 
     if not isinstance(state, dict):
         return

@@ -77,6 +77,12 @@ celery:
     minReplicas: 3
     maxReplicas: 10
 
+celeryAgents:
+  # Scaled by replicas, by hand: agent jobs wait on a model, so CPU says
+  # nothing about how many are queued. Watch the agents queue length instead.
+  replicaCount: 2
+  concurrency: 4
+
 celeryLatex:
   enabled: true
   replicaCount: 2

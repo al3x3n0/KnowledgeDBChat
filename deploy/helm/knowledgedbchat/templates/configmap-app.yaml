@@ -28,6 +28,13 @@ data:
   TRANSCRIPTION_SPEAKER_DIARIZATION: {{ .Values.config.transcriptionSpeakerDiarization | quote }}
   PRELOAD_WHISPER_MODEL: {{ .Values.config.preloadWhisperModel | quote }}
 
+  # One pool per API process; DB_EXPECTED_API_PROCESSES lets the API check the
+  # total against the server at startup (app/core/db_budget.py).
+  DB_POOL_SIZE: {{ .Values.backend.dbPool.size | quote }}
+  DB_MAX_OVERFLOW: {{ .Values.backend.dbPool.maxOverflow | quote }}
+  DB_EXPECTED_API_PROCESSES: {{ include "kdbc.apiProcesses" . | quote }}
+  {{- include "kdbc.checkConnectionBudget" . }}
+
   # Alembic is the only source of schema truth: the migration Job owns it, so
   # every long-running pod starts with migrations disabled.
   RUN_ALEMBIC_MIGRATIONS: "false"

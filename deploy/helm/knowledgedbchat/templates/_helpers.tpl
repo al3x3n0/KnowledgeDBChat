@@ -266,3 +266,38 @@ checksum/config: {{ include (print $.Template.BasePath "/configmap-app.yaml") . 
 checksum/secret: {{ include (print $.Template.BasePath "/secret-app.yaml") . | sha256sum }}
 {{- end }}
 {{- end -}}
+
+{{/*
+API processes sharing the database: gunicorn workers x replicas, counting the
+autoscaler's ceiling when it is on.
+*/}}
+{{- define "kdbc.apiProcesses" -}}
+{{- $replicas := .Values.backend.replicaCount -}}
+{{- if .Values.backend.autoscaling.enabled -}}
+{{- $replicas = .Values.backend.autoscaling.maxReplicas -}}
+{{- end -}}
+{{- mul (int $replicas) (int .Values.backend.workers) -}}
+{{- end -}}
+
+{{/*
+Refuse a configuration whose API pools cannot fit in the database's
+max_connections. A pool is per process, so the demand is
+(size + maxOverflow) x processes; 40 are left for Celery workers and tooling.
+Without this the failure arrives under load, as "too many clients already" in
+whichever pod asked last.
+*/}}
+{{- define "kdbc.checkConnectionBudget" -}}
+{{- $limit := .Values.postgres.maxConnections -}}
+{{- if not .Values.postgres.enabled -}}
+{{- $limit = .Values.postgres.external.maxConnections -}}
+{{- end -}}
+{{- if gt (int $limit) 0 -}}
+{{- $perProcess := add (int .Values.backend.dbPool.size) (int .Values.backend.dbPool.maxOverflow) -}}
+{{- $processes := include "kdbc.apiProcesses" . | int -}}
+{{- $needed := mul $perProcess $processes -}}
+{{- $available := sub (int $limit) 40 -}}
+{{- if gt (int $needed) (int $available) -}}
+{{- fail (printf "database connection budget exceeded: the API may open %d connections (%d per process x %d processes) but max_connections=%d leaves %d after 40 reserved for workers. Lower backend.dbPool, backend.workers or the replica ceiling, or raise postgres.maxConnections (or put PgBouncer in front and set postgres.external.maxConnections to its limit)." $needed $perProcess $processes (int $limit) $available) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

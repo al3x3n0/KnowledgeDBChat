@@ -48,6 +48,13 @@ config:
 backend:
   replicaCount: 3
   workers: 4
+  # Per process, and there are up to 12 replicas x 4 workers = 48 of them:
+  # 10 each is 480 connections at the autoscaler's ceiling. The default pool
+  # (30) would be 1,440. The chart checks this against
+  # postgres.external.maxConnections below.
+  dbPool:
+    size: 5
+    maxOverflow: 5
   autoscaling:
     enabled: true
     minReplicas: 3
@@ -124,6 +131,10 @@ postgres:
   external:
     host: kdbc-db.abc123.eu-west-1.rds.amazonaws.com
     port: 5432
+    # Your instance's max_connections (SHOW max_connections), or the limit of
+    # the PgBouncer / RDS Proxy in front of it. The chart refuses to render if
+    # the API's pools cannot fit; 0 would skip that check.
+    maxConnections: 600
     database: knowledge_db
     username: kdbc
 

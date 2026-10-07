@@ -5,6 +5,11 @@ services:
   postgres:
     image: postgres:15-alpine
     container_name: knowledge_db_postgres_prod
+    # Explicit, because the default of 100 is less than the API alone may ask
+    # for: each API process holds its own pool (DB_POOL_SIZE + DB_MAX_OVERFLOW)
+    # and Celery workers open theirs on top. backend/app/core/db_budget.py
+    # checks the sum against this at startup.
+    command: postgres -c max_connections=300
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-knowledge_db}
       POSTGRES_USER: ${POSTGRES_USER:-user}
@@ -55,6 +60,8 @@ services:
       dockerfile: Dockerfile
     container_name: knowledge_db_backend_prod
     environment:
+      # One pool per gunicorn worker: lets the startup check add them up.
+      - DB_EXPECTED_API_PROCESSES=${WORKERS:-4}
       - DATABASE_URL=postgresql://${POSTGRES_USER:-user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-knowledge_db}
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
       - CHROMA_PERSIST_DIRECTORY=/app/data/chroma_db

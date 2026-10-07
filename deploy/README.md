@@ -218,6 +218,12 @@ otherwise the objects are accepted and silently ignored.
 4. RWX `backend.persistence.storageClass`, or single-node pinning.
 5. `ingress.enabled: true` with TLS; set `config.minioProxyBaseUrl` to the public host.
 6. `backend.autoscaling` + `backend.podDisruptionBudget`, `celery.autoscaling`.
+   Autoscaling the backend multiplies its database connections: each API
+   process holds its own pool (`backend.dbPool`), so the chart refuses to
+   render unless `(size + maxOverflow) x workers x maxReplicas`, plus 40 for
+   workers, fits in `postgres.maxConnections` (or
+   `postgres.external.maxConnections`). Shrink the pool, raise the limit, or
+   front the database with PgBouncer / RDS Proxy and give its limit.
 7. `networkPolicy.enabled: true`.
 
 Start from `values-prod.example.yaml`.

@@ -77,6 +77,17 @@ async def lifespan(app: FastAPI):
         "Vector store", vector_store_service.initialize(background=True), timeout_s=2.0
     )
 
+    # Say so, with the numbers, if the pools configured for all API processes
+    # cannot fit in the server's max_connections. Never blocks startup.
+    from app.core.database import engine as _engine
+    from app.core.db_budget import warn_if_over_budget
+
+    await _start_init_task(
+        "Connection budget check",
+        warn_if_over_budget(_engine, settings),
+        timeout_s=5.0,
+    )
+
     # MinIO storage service (uploads/downloads)
     from app.services.storage_service import storage_service
 

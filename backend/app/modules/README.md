@@ -77,3 +77,15 @@ statistics are composed in `autonomy/api/job_queries.py`.
 Coding-swarm aggregate metrics are composed in
 `autonomy/api/swarm_analytics.py`; terminal outcome reporting remains a
 separate `autonomy/api/swarm_outcomes.py` boundary.
+
+## Workflows
+
+`workflows/application/workflow_store.py` holds every query and write the
+workflow routes made inline: one owned-workflow loader (instead of eight
+copies), one graph writer shared by create, update and template import, and
+the execution list/get/cancel. `api/endpoints/workflows.py` keeps its URLs and
+only translates results and the store's `WorkflowNotFound` /
+`ExecutionNotFound` / `ExecutionNotCancellable` into HTTP. A reload after a
+write passes `fresh=True` (`populate_existing`): sessions do not expire on
+commit, and a plain reload kept the collection it already had, so an update
+answered with the graph it had just replaced.

@@ -199,7 +199,7 @@ async def _async_transcode_to_mp4(task, document_id: str) -> Dict[str, Any]:
             )
 
             soft_limit, hard_limit = transcription_time_limits(
-                probe_duration_seconds(temp_dst)
+                await asyncio.to_thread(probe_duration_seconds, temp_dst)
             )
 
             # Dispatch transcription task with dynamic time limits

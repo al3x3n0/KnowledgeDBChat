@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.services.project_profile_service import build_project_profile
+from app.utils.datetimes import age
 
 
 class AgentScientificValidationService:
@@ -329,8 +330,7 @@ class AgentScientificValidationService:
             elif (
                 consecutive_failures >= max_consecutive_failures
                 and latest_failure_at is not None
-                and (datetime.utcnow() - latest_failure_at).total_seconds()
-                < cooldown_minutes * 60
+                and age(latest_failure_at).total_seconds() < cooldown_minutes * 60
             ):
                 decision["reason_code"] = "backoff_cooldown"
             else:

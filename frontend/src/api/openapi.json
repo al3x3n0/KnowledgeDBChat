@@ -19889,6 +19889,17 @@
           "total": {
             "title": "Total",
             "type": "integer"
+          },
+          "without_summary": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Without Summary"
           }
         },
         "required": [

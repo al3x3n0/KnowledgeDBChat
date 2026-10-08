@@ -18430,6 +18430,8 @@ export interface components {
             success_rate: number;
             /** Total */
             total: number;
+            /** Without Summary */
+            without_summary?: number | null;
         };
         /** DocumentationRequest */
         DocumentationRequest: {

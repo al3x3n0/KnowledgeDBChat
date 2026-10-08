@@ -7,7 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import String, and_, cast, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased, selectinload
+from sqlalchemy.orm import aliased, defer, selectinload
 
 from app.api.endpoints.auth import get_current_active_user
 from app.core.database import get_db
@@ -195,17 +195,32 @@ def build_job_query_api(
             or sort_mode.startswith("swarm_")
             or sort_mode == "created_asc"
         )
-        statement = statement.options(selectinload(AgentJob.agent_definition)).order_by(
-            AgentJob.created_at.desc()
-        )
+        offset = (page - 1) * page_size
+        # The database can page when it can also decide which rows belong:
+        # the caller's own jobs, newest first. This used to load every job the
+        # user had ever run, whole, to return twenty of them. Visibility of
+        # other people's jobs and the swarm sorts are decided from each row's
+        # JSON in Python, so those still read every candidate.
+        pages_in_sql = normalized_visibility == "mine" and not requires_swarm_projection
+        count_statement = statement.with_only_columns(func.count(AgentJob.id))
+        # A list row shows nothing from the execution log, and the log is the
+        # largest thing on the row (163 KB after 80 iterations, measured).
+        statement = statement.options(
+            selectinload(AgentJob.agent_definition),
+            defer(AgentJob.execution_log),
+        ).order_by(AgentJob.created_at.desc())
+        if pages_in_sql:
+            statement = statement.limit(page_size).offset(offset)
         result = await db.execute(statement)
         all_jobs = result.scalars().all()
         if normalized_visibility != "mine":
             all_jobs = [job for job in all_jobs if is_job_visible(job, current_user)]
 
-        if not requires_swarm_projection:
+        if pages_in_sql:
+            total = int((await db.execute(count_statement)).scalar() or 0)
+            jobs = all_jobs
+        elif not requires_swarm_projection:
             total = len(all_jobs)
-            offset = (page - 1) * page_size
             jobs = all_jobs[offset : offset + page_size]
         else:
             rows = []
@@ -268,7 +283,6 @@ def build_job_query_api(
                 )
 
             total = len(rows)
-            offset = (page - 1) * page_size
             jobs = [job for job, _summary in rows[offset : offset + page_size]]
 
         user_lookup = await load_collaboration_user_lookup(

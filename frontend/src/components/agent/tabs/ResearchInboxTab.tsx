@@ -61,6 +61,7 @@ import {
   formatInboxPolicyDrilldownLabel,
 } from '../drilldowns';
 import type { InboxHealthDrilldown, InboxPolicyDrilldown } from '../drilldowns';
+import { safeExternalUrl } from '../../../utils/safeUrl';
 
 export interface ResearchInboxTabProps {
   chainsData: AgentJobChainDefinitionListResponse | undefined;
@@ -1595,9 +1596,9 @@ export const ResearchInboxTab: React.FC<ResearchInboxTabProps> = ({
                   ) : null}
                   {item.url ? (
                     <a
-                      href={item.url}
+                      href={safeExternalUrl(item.url)}
                       target="_blank"
-                      rel="noreferrer"
+                      rel="noopener noreferrer"
                       className="text-sm text-primary-600 hover:text-primary-700 flex items-center gap-1 justify-center"
                     >
                       <Link2 className="w-4 h-4" />

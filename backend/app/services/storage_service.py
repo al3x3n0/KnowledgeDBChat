@@ -1126,7 +1126,11 @@ class MinIOStorageService:
                 logger.info(f"Using download+upload fallback for copy: {e}")
                 import tempfile
 
-                temp_path = tempfile.mktemp()
+                # mkstemp creates the file, owned by us and unreadable to
+                # others. mktemp only returned a name: between that and the
+                # download anyone could put a file, or a symlink, there.
+                handle, temp_path = tempfile.mkstemp(prefix="kdbc-copy-")
+                os.close(handle)
                 try:
                     # Download source
                     await asyncio.to_thread(

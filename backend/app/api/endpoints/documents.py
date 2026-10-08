@@ -35,6 +35,7 @@ from app.core.database import AsyncSessionLocal, get_db
 from app.core.exceptions import internal_error_detail
 from app.core.logging import log_error
 from app.core.rate_limit import UPLOAD_LIMIT, limiter
+from app.core.tokens import decode_access_token
 from app.models.document import Document as _Document
 from app.models.document import DocumentSource as _DocumentSource
 from app.models.user import User
@@ -413,47 +414,20 @@ async def get_current_user_optional(
     Get current user with optional authentication.
     Supports both Authorization header and token query parameter.
     """
-    # Try token from query parameter first (for video players)
-    if token:
-        try:
-            from jose import jwt
-            from sqlalchemy import select
+    # The token may arrive as a query parameter (media players cannot set a
+    # header) or in the Authorization header. Either way it is read by the
+    # one decoder every other entry point uses.
+    from sqlalchemy import select
 
-            from app.core.config import settings
-
-            payload = jwt.decode(
-                token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
-            )
-            user_id: str = payload.get("sub")
-            if user_id:
-                result = await db.execute(select(User).where(User.id == user_id))
-                user = result.scalar_one_or_none()
-                if user and user.is_active:
-                    return user
-        except Exception as e:
-            logger.debug(f"Token query param authentication failed: {e}")
-
-    # Try Authorization header
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        try:
-            token = auth_header.replace("Bearer ", "")
-            from jose import jwt
-            from sqlalchemy import select
-
-            from app.core.config import settings
-
-            payload = jwt.decode(
-                token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
-            )
-            user_id: str = payload.get("sub")
-            if user_id:
-                result = await db.execute(select(User).where(User.id == user_id))
-                user = result.scalar_one_or_none()
-                if user and user.is_active:
-                    return user
-        except Exception as e:
-            logger.debug(f"Authorization header authentication failed: {e}")
+    for candidate in (token, request.headers.get("Authorization")):
+        user_id = decode_access_token(candidate)
+        if not user_id:
+            continue
+        user = (
+            await db.execute(select(User).where(User.id == user_id))
+        ).scalar_one_or_none()
+        if user and user.is_active:
+            return user
 
     return None
 

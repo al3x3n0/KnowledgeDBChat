@@ -11,6 +11,7 @@ import toast from 'react-hot-toast';
 import { apiClient } from '../services/api';
 import { ArxivPaper, PaperExtractionJob, ResearchPaper } from '../types';
 import ProgressBar from '../components/common/ProgressBar';
+import { safeExternalUrl } from '../utils/safeUrl';
 
 const PAGE_SIZE = 10;
 
@@ -886,18 +887,18 @@ const PapersPage: React.FC = () => {
                   </button>
                   {paper.pdf_url && (
                     <a
-                      href={paper.pdf_url}
+                      href={safeExternalUrl(paper.pdf_url)}
                       target="_blank"
-                      rel="noreferrer"
+                      rel="noopener noreferrer"
                       className="inline-flex items-center gap-1 px-3 py-2 text-sm rounded-lg bg-primary-600 text-white hover:bg-primary-700"
                     >
                       PDF <ExternalLink className="w-4 h-4" />
                     </a>
                   )}
                   <a
-                    href={paper.entry_url}
+                    href={safeExternalUrl(paper.entry_url)}
                     target="_blank"
-                    rel="noreferrer"
+                    rel="noopener noreferrer"
                     className="inline-flex items-center gap-1 px-3 py-2 text-sm rounded-lg border border-gray-300 hover:bg-gray-50"
                   >
                     arXiv <ExternalLink className="w-4 h-4" />
@@ -985,9 +986,9 @@ const PapersPage: React.FC = () => {
                     )}
                     {selectedExtractedPaper.paper_url && (
                       <a
-                        href={selectedExtractedPaper.paper_url}
+                        href={safeExternalUrl(selectedExtractedPaper.paper_url)}
                         target="_blank"
-                        rel="noreferrer"
+                        rel="noopener noreferrer"
                         className="text-sm text-primary-700 hover:text-primary-800"
                       >
                         Open paper <ExternalLink className="w-4 h-4 inline" />

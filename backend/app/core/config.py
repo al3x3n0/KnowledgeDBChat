@@ -6,8 +6,15 @@ import os
 from typing import List, Optional
 
 from loguru import logger
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+#: The placeholder a development checkout runs with. Refused when DEBUG is off.
+DEFAULT_SECRET_KEY = "your-secret-key-change-in-production"
+
+#: Keys published in this repository: the default above, and the one in
+#: env.example and the development compose file. Refused when DEBUG is off.
+PLACEHOLDER_SECRET_KEYS = frozenset({DEFAULT_SECRET_KEY, "your-secret-key-here"})
 
 
 class Settings(BaseSettings):
@@ -177,7 +184,7 @@ class Settings(BaseSettings):
     QDRANT_COLLECTION_NAME: str = "knowledge_base"
 
     # Security
-    SECRET_KEY: str = "your-secret-key-change-in-production"
+    SECRET_KEY: str = DEFAULT_SECRET_KEY
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     # Ed25519 seed is base64/base64url-encoded raw 32-byte private key material.
@@ -705,12 +712,36 @@ class Settings(BaseSettings):
             raise ValueError("DATABASE_URL must be set")
         return v
 
-    @field_validator("SECRET_KEY", mode="before")
-    @classmethod
-    def validate_secret_key(cls, v):
-        if v == "your-secret-key-change-in-production":
+    @model_validator(mode="after")
+    def validate_secret_key(self):
+        """Refuse a signing key that anyone could know.
+
+        SECRET_KEY signs every access token and derives the key for the
+        encrypted secrets store. It only ever produced a warning, and only for
+        the placeholder: docker-compose.prod.yml passes ``SECRET_KEY=${SECRET_KEY}``,
+        so an unset variable arrived as an *empty* key without a word -- and a
+        token signed with a known key is an admin login for whoever signs it.
+        """
+        key = (self.SECRET_KEY or "").strip()
+        if not key:
+            raise ValueError(
+                "SECRET_KEY is empty. Set it to a long random value "
+                '(python -c "import secrets; print(secrets.token_urlsafe(48))").'
+            )
+        if key in PLACEHOLDER_SECRET_KEYS:
+            if not self.DEBUG:
+                raise ValueError(
+                    "SECRET_KEY is still a placeholder published in the source "
+                    "tree and DEBUG is off. Set SECRET_KEY to a long random value; anyone "
+                    "can sign an access token with the placeholder."
+                )
             logger.warning("Using default SECRET_KEY. Change this in production!")
-        return v
+        elif not self.DEBUG and len(key) < 32:
+            logger.warning(
+                f"SECRET_KEY is only {len(key)} characters; use at least 32 "
+                "random characters for HS256."
+            )
+        return self
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
 

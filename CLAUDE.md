@@ -1057,6 +1057,41 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   stream about one user's job; a stranger gets 4004, not "forbidden"). This
   covers *whether* a route knows its caller, not whether it checks the row
   belongs to them.
+- **An access token is issued and read in one place** (`core/tokens.py`:
+  `create_access_token`, `decode_access_token`). Seven places decoded the JWT
+  by hand — the HTTP dependency, the WebSocket helpers, the rate limiter's key
+  function, the refresh route, the optional-user document download — and they
+  agreed on the signature alone: none checked the token's `type`, so anything
+  signed with the key and carrying a `sub` was a login. The decoder returns
+  the subject or `None` and never raises; the caller decides what a missing
+  user means. `tests/test_one_token_decoder.py` refuses `jwt.decode` or
+  `jwt.encode` anywhere else. Two things found on the way: `POST
+  /auth/refresh` renewed a **deactivated** user's token (the active check
+  lived in the dependency, which that route does not use), and it raised its
+  own 401s inside a `try` ending in `except Exception`, so a bad token came
+  back as a 500.
+  **`SECRET_KEY` is validated, not warned about.** An empty key is refused
+  always — an unset variable in a compose file arrives as `""`, and a JWT
+  signed with the empty string is one anybody can mint. The placeholders this
+  repository publishes (the code default and the one in `env.example`) are
+  refused unless `DEBUG` is on. The Helm chart's own default
+  (`change-me-please-...`) is **not** refused: `make minikube-up` runs on it
+  with `DEBUG` off, and the chart's NOTES already warn. A deployment that was
+  running on either now fails at startup, which is the point.
+- **A URL from data is not a link until it is checked**
+  (`frontend/src/utils/safeUrl.ts`, `safeExternalUrl`). React escapes text
+  and does nothing about `href="javascript:..."`; paper URLs, tool-result
+  links and knowledge-graph entities of type `url` all reach an `<a>` from
+  ingested content. Only http(s) and same-origin paths pass (`//host` does
+  not). `safeUrl.test.ts` also reads every page: a `target="_blank"` link
+  must carry `noopener`, and no `href` may take a data field directly.
+  Mermaid is the same hazard by another route — the diagram source is model
+  output over ingested documents — and it ran with `securityLevel: 'loose'`
+  (click handlers and raw HTML labels) from an unpinned CDN URL. It is
+  `'strict'` now, loaded at an exact version with an SRI hash; bumping the
+  version means recomputing `MERMAID_INTEGRITY` — no test compares the two
+  (that needs the network), and a stale hash shows up as the browser refusing
+  the script, so every diagram falls back to its source text.
 - **A job's progress reaches a socket through one loop**
   (`utils/websocket_progress.forward_progress`). Five handlers each had a
   copy, and each got a different part wrong under conditions a manual test

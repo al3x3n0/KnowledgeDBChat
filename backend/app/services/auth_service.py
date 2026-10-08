@@ -5,14 +5,13 @@ Supports both JWT token authentication and API key authentication for external t
 """
 import asyncio
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
 import bcrypt
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
 from loguru import logger
 from passlib.context import CryptContext
 from sqlalchemy import select
@@ -20,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.tokens import create_access_token, decode_access_token
 from app.models.user import User
 from app.services.ldap_service import LdapError, LdapUnavailable, ldap_service
 
@@ -91,14 +91,7 @@ class AuthService:
 
     def create_access_token(self, user_id: UUID) -> str:
         """Create a JWT access token."""
-        expire = datetime.utcnow() + timedelta(
-            minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
-        )
-        to_encode = {"sub": str(user_id), "exp": expire, "type": "access"}
-        encoded_jwt = jwt.encode(
-            to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM
-        )
-        return encoded_jwt
+        return create_access_token(user_id)
 
     async def get_user_by_username(
         self, username: str, db: AsyncSession
@@ -389,16 +382,8 @@ class AuthService:
 
         # Try JWT token authentication
         if credentials:
-            try:
-                payload = jwt.decode(
-                    credentials.credentials,
-                    settings.SECRET_KEY,
-                    algorithms=[settings.ALGORITHM],
-                )
-                user_id: str = payload.get("sub")
-                if user_id is None:
-                    raise credentials_exception
-            except JWTError:
+            user_id = decode_access_token(credentials.credentials)
+            if user_id is None:
                 raise credentials_exception
 
             user = await self.get_user_by_id(user_id, db)

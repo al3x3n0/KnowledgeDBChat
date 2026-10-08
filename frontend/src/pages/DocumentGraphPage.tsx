@@ -9,6 +9,7 @@ import RelationshipEditModal from '../components/kg/RelationshipEditModal';
 import RelationshipCreateModal from '../components/kg/RelationshipCreateModal';
 import { useElementSize } from '../hooks/useElementSize';
 import { useAuth } from '../contexts/AuthContext';
+import { safeExternalUrl } from '../utils/safeUrl';
 
 const extractArxivId = (raw: string): string | null => {
   const v = String(raw || '').trim();
@@ -348,7 +349,7 @@ const DocumentGraphPage: React.FC = () => {
                   if (!isUrl) return <div className="text-lg font-medium text-gray-900">{name}</div>;
                   return (
                     <a
-                      href={name}
+                      href={safeExternalUrl(name)}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-lg font-medium text-primary-700 hover:text-primary-900 hover:underline break-all"

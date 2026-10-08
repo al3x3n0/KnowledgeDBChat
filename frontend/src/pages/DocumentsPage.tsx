@@ -4059,7 +4059,7 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
                       className="text-primary-700 hover:text-primary-800 break-all"
                       href={`https://arxiv.org/abs/${encodeURIComponent(arxivId)}`}
                       target="_blank"
-                      rel="noreferrer"
+                      rel="noopener noreferrer"
                     >
                       {arxivId}
                     </a>
@@ -4074,7 +4074,7 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
                       className="text-primary-700 hover:text-primary-800 break-all"
                       href={`https://doi.org/${encodeURIComponent(doi)}`}
                       target="_blank"
-                      rel="noreferrer"
+                      rel="noopener noreferrer"
                     >
                       {doi}
                     </a>

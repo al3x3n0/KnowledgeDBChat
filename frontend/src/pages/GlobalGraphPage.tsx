@@ -18,6 +18,7 @@ import apiClient from '../services/api';
 import ForceGraph, { FGNode, FGEdge, ForceGraphHandle } from '../components/kg/ForceGraph';
 import { useElementSize } from '../hooks/useElementSize';
 import { useAuth } from '../contexts/AuthContext';
+import { safeExternalUrl } from '../utils/safeUrl';
 
 interface GlobalGraphNode extends FGNode {
   mention_count?: number;
@@ -682,7 +683,7 @@ const GlobalGraphPage: React.FC = () => {
                   if (!isUrl) return <div className="text-lg font-medium text-gray-900">{name}</div>;
                   return (
                     <a
-                      href={name}
+                      href={safeExternalUrl(name)}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-lg font-medium text-primary-700 hover:text-primary-900 hover:underline break-all"

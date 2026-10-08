@@ -5,11 +5,10 @@ WebSocket authentication utilities.
 from typing import Optional
 
 from fastapi import WebSocket, WebSocketDisconnect, status
-from jose import JWTError, jwt
 from loguru import logger
 
-from app.core.config import settings
 from app.core.database import AsyncSessionLocal
+from app.core.tokens import decode_access_token
 from app.models.user import User
 from app.services.auth_service import AuthService
 
@@ -40,14 +39,9 @@ async def authenticate_websocket(
         return None
 
     try:
-        # Decode JWT token
-        payload = jwt.decode(
-            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
-        )
-        user_id: str = payload.get("sub")
-
+        user_id = decode_access_token(token)
         if user_id is None:
-            logger.warning("WebSocket token missing user ID")
+            logger.warning("WebSocket token is not a valid access token")
             return None
 
         # Get user from database
@@ -65,9 +59,6 @@ async def authenticate_websocket(
 
             return user
 
-    except JWTError as e:
-        logger.warning(f"WebSocket JWT validation failed: {e}")
-        return None
     except Exception as e:
         logger.error(f"WebSocket authentication error: {e}")
         return None

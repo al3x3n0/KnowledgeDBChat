@@ -21,6 +21,11 @@ declare global {
   }
 }
 
+export const MERMAID_SRC = 'https://cdn.jsdelivr.net/npm/mermaid@10.9.8/dist/mermaid.min.js';
+// sha384 of that file; its sha256 matches the one jsDelivr publishes for it.
+export const MERMAID_INTEGRITY =
+  'sha384-N3QqR/7q+xm3BGX+CBbNI8AUmRRqcsDzToy+0z1NLDI0QmTKW8zvwLvqulJgk3dP';
+
 // Load Mermaid from CDN
 const loadMermaid = (): Promise<void> => {
   return new Promise((resolve, reject) => {
@@ -30,13 +35,21 @@ const loadMermaid = (): Promise<void> => {
     }
 
     const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js';
+    // An exact version with its hash, not `mermaid@10`: a floating tag runs
+    // whatever the CDN serves for it next, in this page, with the session.
+    script.src = MERMAID_SRC;
+    script.integrity = MERMAID_INTEGRITY;
+    script.crossOrigin = 'anonymous';
     script.async = true;
     script.onload = () => {
       window.mermaid.initialize({
         startOnLoad: false,
         theme: 'default',
-        securityLevel: 'loose',
+        // 'strict', because the diagram source is written by a model from
+        // ingested documents and the SVG is injected as HTML below. 'loose'
+        // allows HTML in labels and JavaScript click handlers -- a document
+        // that steers the model would run script in this origin.
+        securityLevel: 'strict',
         flowchart: {
           useMaxWidth: true,
           htmlLabels: true,

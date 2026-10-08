@@ -15,9 +15,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import socket
 import subprocess
 import uuid
 from typing import Any, List, Optional, Sequence, Tuple
+
+from app.core.config import settings
+from app.services import shared_slots
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +238,21 @@ async def remove_container(name: str) -> bool:
         return False
 
 
+def sandbox_slots_key() -> str:
+    """The Redis key counting runs on the daemon this process talks to.
+
+    One count per daemon, because the daemon's CPUs are what is rationed. A
+    TCP address names a daemon every client shares (the compose stacks). A
+    unix socket, or nothing, means a daemon local to this host or pod -- the
+    chart's sidecar -- so the host name is part of the key and two pods do
+    not count against each other.
+    """
+    host = os.environ.get("DOCKER_HOST", "").strip()
+    if host.startswith("tcp://"):
+        return f"sandbox:slots:{host}"
+    return f"sandbox:slots:{socket.gethostname()}:{host or 'default'}"
+
+
 async def run_in_sandbox(
     script: str,
     workdir: str,
@@ -256,35 +276,50 @@ async def run_in_sandbox(
     abandons its container exactly as thoroughly.
     """
     name = new_container_name()
-    process = await asyncio.create_subprocess_exec(
-        *docker_command(
-            image=image,
-            workdir=workdir,
-            script=script,
-            timeout_seconds=timeout_seconds,
-            memory=memory,
-            cpus=cpus,
-            name=name,
-        ),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    # Waiting for a slot is not part of the run: the timeout below starts
+    # when the container does.
+    slot = await shared_slots.acquire(
+        sandbox_slots_key(),
+        int(settings.SANDBOX_MAX_CONCURRENT_RUNS),
+        ttl=float(timeout_seconds) + 120.0,
+        wait=float(settings.SANDBOX_SLOT_WAIT_SECONDS),
+        what="sandbox runs",
     )
     try:
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(), timeout=timeout_seconds
+        process = await asyncio.create_subprocess_exec(
+            *docker_command(
+                image=image,
+                workdir=workdir,
+                script=script,
+                timeout_seconds=timeout_seconds,
+                memory=memory,
+                cpus=cpus,
+                name=name,
+            ),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-    except (asyncio.TimeoutError, asyncio.CancelledError):
-        process.kill()
         try:
-            # Shielded, because the cancellation path is where this matters
-            # most and awaiting plainly inside a cancelled task can be
-            # interrupted before the removal is even sent. Shield runs it as
-            # its own task, so a second cancellation abandons the wait rather
-            # than the cleanup.
-            await asyncio.shield(remove_container(name))
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=timeout_seconds
+            )
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            process.kill()
+            try:
+                # Shielded, because the cancellation path is where this
+                # matters most and awaiting plainly inside a cancelled task
+                # can be interrupted before the removal is even sent. Shield
+                # runs it as its own task, so a second cancellation abandons
+                # the wait rather than the cleanup.
+                await asyncio.shield(remove_container(name))
+            except asyncio.CancelledError:
+                pass
+            raise
+    finally:
+        try:
+            await asyncio.shield(shared_slots.release(sandbox_slots_key(), slot))
         except asyncio.CancelledError:
-            pass
-        raise
+            pass  # the slot expires with its run's time limit
     return (
         process.returncode,
         (stdout or b"").decode("utf-8", "replace"),

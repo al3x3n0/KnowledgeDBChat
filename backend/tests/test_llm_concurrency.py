@@ -17,7 +17,7 @@ import time
 import pytest
 
 from app.core.config import settings
-from app.services import llm_concurrency
+from app.services import llm_concurrency, shared_slots
 from app.services.llm_concurrency import SLOTS_KEY, llm_slot
 
 pytestmark = pytest.mark.unit
@@ -56,8 +56,8 @@ def redis(monkeypatch):
     async def client():
         return fake
 
-    monkeypatch.setattr(llm_concurrency, "_redis", client)
-    monkeypatch.setattr(llm_concurrency, "_redis_down_until", 0.0)
+    monkeypatch.setattr(shared_slots, "_redis", client)
+    monkeypatch.setattr(shared_slots, "_redis_down_until", 0.0)
     monkeypatch.setattr(settings, "LLM_MAX_CONCURRENCY", 50)
     monkeypatch.setattr(settings, "LLM_GLOBAL_MAX_CONCURRENCY", 2)
     monkeypatch.setattr(settings, "LLM_GLOBAL_ACQUIRE_TIMEOUT_SECONDS", 5.0)
@@ -110,7 +110,7 @@ async def test_redis_being_down_lets_calls_through_and_stops_asking(redis):
     async with llm_slot():
         pass
     # It does not probe a dead Redis on every call.
-    assert llm_concurrency._redis_down_until > time.monotonic()
+    assert shared_slots._redis_down_until > time.monotonic()
     redis.fail = False
     async with llm_slot():
         assert redis.slots == {}, "still inside the back-off"
@@ -168,8 +168,8 @@ async def real_redis(monkeypatch):
     async def get():
         return client
 
-    monkeypatch.setattr(llm_concurrency, "_redis", get)
-    monkeypatch.setattr(llm_concurrency, "_redis_down_until", 0.0)
+    monkeypatch.setattr(shared_slots, "_redis", get)
+    monkeypatch.setattr(shared_slots, "_redis_down_until", 0.0)
     monkeypatch.setattr(settings, "LLM_MAX_CONCURRENCY", 50)
     monkeypatch.setattr(settings, "LLM_GLOBAL_MAX_CONCURRENCY", 3)
     monkeypatch.setattr(settings, "LLM_GLOBAL_ACQUIRE_TIMEOUT_SECONDS", 10.0)
@@ -182,7 +182,7 @@ async def real_redis(monkeypatch):
 async def test_live_the_script_caps_and_returns_every_slot(real_redis):
     assert await _peak(12) == 3
     assert await real_redis.zcard(SLOTS_KEY) == 0
-    assert llm_concurrency._redis_down_until == 0.0, "the script ran without error"
+    assert shared_slots._redis_down_until == 0.0, "the script ran without error"
 
 
 @live

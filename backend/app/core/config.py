@@ -417,6 +417,12 @@ class Settings(BaseSettings):
     UNSAFE_CODE_EXEC_MAX_STDERR_CHARS: int = 20000
     UNSAFE_CODE_EXEC_MAX_MEMORY_MB: int = 512
     # Execution backend: 'subprocess' (best-effort local) or 'docker' (recommended).
+    # Sandbox runs at once on one Docker daemon, counted in Redis across every
+    # process that uses it (agent_sandbox_runtime.run_in_sandbox). Each run
+    # may use 2 CPUs, and a run timed beside too many others measures the
+    # others. 0 turns it off. Soft: after the wait a run proceeds anyway.
+    SANDBOX_MAX_CONCURRENT_RUNS: int = 4
+    SANDBOX_SLOT_WAIT_SECONDS: float = 900.0
     UNSAFE_CODE_EXEC_BACKEND: str = "subprocess"
     # Docker backend settings (only used when UNSAFE_CODE_EXEC_BACKEND='docker')
     UNSAFE_CODE_EXEC_DOCKER_IMAGE: str = "python:3.11-slim"

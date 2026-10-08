@@ -3,11 +3,11 @@ Rate limiting configuration.
 """
 
 from fastapi import Request
-from jose import JWTError, jwt
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from app.core.config import settings
+from app.core.tokens import decode_access_token
 
 
 def get_user_identifier(request: Request) -> str:
@@ -19,17 +19,9 @@ def get_user_identifier(request: Request) -> str:
     if hasattr(request.state, "user") and request.state.user:
         return f"user:{request.state.user.id}"
 
-    auth_header = request.headers.get("authorization")
-    if auth_header and auth_header.lower().startswith("bearer "):
-        token = auth_header.split(" ", 1)[1].strip()
-        try:
-            payload = jwt.decode(
-                token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
-            )
-            if payload.get("type") == "access" and payload.get("sub"):
-                return f"user:{payload['sub']}"
-        except JWTError:
-            pass
+    user_id = decode_access_token(request.headers.get("authorization"))
+    if user_id:
+        return f"user:{user_id}"
 
     # Fall back to IP address
     return get_remote_address(request)

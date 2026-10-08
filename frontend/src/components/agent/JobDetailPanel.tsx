@@ -90,6 +90,7 @@ import {
   type AgentJobsTab,
   type UnsafeExecBadge,
 } from './jobConfig';
+import { safeExternalUrl } from '../../utils/safeUrl';
 
 export interface JobDetailPanelProps {
   job: AgentJob;
@@ -2739,7 +2740,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                         </span>
                         {artifact.edit_url && (
                           <a
-                            href={artifact.edit_url}
+                            href={safeExternalUrl(artifact.edit_url)}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-xs text-primary-600 hover:text-primary-800"

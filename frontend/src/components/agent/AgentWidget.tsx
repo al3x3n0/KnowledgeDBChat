@@ -46,6 +46,7 @@ import MermaidDiagram from '../common/MermaidDiagram';
 import ReactMarkdown from 'react-markdown';
 import toast from 'react-hot-toast';
 import { useAgentWebSocket, AgentMessage, AgentToolCall, StreamingState, ConnectionStatus } from './useAgentWebSocket';
+import { safeExternalUrl } from '../../utils/safeUrl';
 
 // ============================================================================
 // AgentToggleButton Component
@@ -300,9 +301,9 @@ const ToolOutputDisplay: React.FC<ToolOutputDisplayProps> = ({ output, toolName 
             <div className="flex items-center gap-2 text-[10px]">
               {paper.pdf_url && (
                 <a
-                  href={paper.pdf_url}
+                  href={safeExternalUrl(paper.pdf_url)}
                   target="_blank"
-                  rel="noreferrer"
+                  rel="noopener noreferrer"
                   className="text-primary-600 hover:text-primary-700 underline"
                 >
                   PDF
@@ -310,9 +311,9 @@ const ToolOutputDisplay: React.FC<ToolOutputDisplayProps> = ({ output, toolName 
               )}
               {paper.entry_url && (
                 <a
-                  href={paper.entry_url}
+                  href={safeExternalUrl(paper.entry_url)}
                   target="_blank"
-                  rel="noreferrer"
+                  rel="noopener noreferrer"
                   className="text-primary-600 hover:text-primary-700 underline"
                 >
                   arXiv
@@ -702,7 +703,7 @@ const ToolOutputDisplay: React.FC<ToolOutputDisplayProps> = ({ output, toolName 
 
         {output.download_available && (
           <a
-            href={output.download_url}
+            href={safeExternalUrl(output.download_url)}
             className="inline-flex items-center space-x-1 text-[10px] text-blue-600 hover:underline mt-1"
           >
             <Download className="w-3 h-3" />
@@ -1103,7 +1104,7 @@ const TemplateJobProgressComponent: React.FC<TemplateJobProgressProps> = ({ job 
 
           {job.status === 'completed' && job.downloadUrl && (
             <a
-              href={job.downloadUrl}
+              href={safeExternalUrl(job.downloadUrl)}
               className="inline-flex items-center space-x-1 text-sm text-blue-600 hover:underline mt-1"
             >
               <Download className="w-4 h-4" />

@@ -7,15 +7,14 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
 from loguru import logger
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.core.database import get_db
 from app.core.rate_limit import AUTH_LIMIT, limiter
+from app.core.tokens import decode_access_token
 from app.models.user import User
 from app.schemas.auth import TokenResponse, UserRegister, UserResponse
 from app.services.auth_service import AuthService
@@ -32,14 +31,7 @@ async def get_user_from_token(token: str) -> Optional[User]:
     chain (tokens arrive as a query param, not a header). Returns ``None`` when
     the token is missing/invalid or the user is inactive.
     """
-    raw = (token or "").strip()
-    if not raw:
-        return None
-    try:
-        payload = jwt.decode(raw, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-    except JWTError:
-        return None
-    user_id = payload.get("sub")
+    user_id = decode_access_token(token)
     if not user_id:
         return None
 
@@ -203,21 +195,17 @@ async def refresh_token(
 ):
     """Refresh access token."""
     try:
-        # Verify current token
-        payload = jwt.decode(
-            credentials.credentials,
-            settings.SECRET_KEY,
-            algorithms=[settings.ALGORITHM],
-        )
-        user_id = payload.get("sub")
-
+        user_id = decode_access_token(credentials.credentials)
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid token")
 
-        # Get user
         user = await auth_service.get_user_by_id(user_id, db)
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
+        # A deactivated user's token is not renewed. It used to be: the
+        # account check lived in the dependency that reads tokens, not here.
+        if not user.is_active:
+            raise HTTPException(status_code=403, detail="User account is disabled")
 
         # Create new token
         new_token = auth_service.create_access_token(user.id)
@@ -228,8 +216,10 @@ async def refresh_token(
             user=UserResponse.from_orm(user),
         )
 
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    except HTTPException:
+        # Ours, above. Without this the catch-all below turned each 401 into
+        # a 500 "Token refresh failed".
+        raise
     except SQLAlchemyTimeoutError:
         raise
     except SQLAlchemyError as e:

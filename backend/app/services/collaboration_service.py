@@ -10,7 +10,7 @@ from uuid import UUID
 from sqlalchemy import String, and_, cast, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.agent_job import AgentJob
+from app.models.agent_job import AgentJob, collaborator_pattern
 from app.models.autonomy_decision_event import AutonomyDecisionEvent
 from app.models.coding_backlog import CodingBacklogItem
 from app.models.user import User
@@ -184,18 +184,21 @@ async def list_collaboration_user_ids(
             except Exception:
                 continue
 
-    # Only the two columns the helpers below read, and not the caller's own
-    # jobs as such: this ran on every job-list request and loaded every job
-    # the caller had ever run, whole, to learn that they own them. A job of
-    # theirs names somebody else only through a swarm_collaboration block,
-    # which the first pattern already finds.
+    # Jobs that name somebody: the caller's own with a collaboration block,
+    # and anyone's that is assigned to or shared with the caller. Asked of
+    # `collaborator_index`, which the model keeps from that block. This used
+    # to cast every job's whole `results` to text and pattern-match it, and
+    # before that to load every job the caller had ever run.
     swarm_rows = (
         await db.execute(
             select(AgentJob.user_id, AgentJob.results).where(
+                AgentJob.collaborator_index.is_not(None),
                 or_(
-                    cast(AgentJob.results, String).ilike("%swarm_collaboration%"),
-                    cast(AgentJob.results, String).ilike(f"%{user_id_str}%"),
-                )
+                    AgentJob.user_id == current_user.id,
+                    AgentJob.collaborator_index.like(
+                        collaborator_pattern(current_user.id)
+                    ),
+                ),
             )
         )
     ).all()

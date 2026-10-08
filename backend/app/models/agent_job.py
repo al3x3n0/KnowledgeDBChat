@@ -16,9 +16,12 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
+    event,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -73,6 +76,17 @@ class AgentJob(Base):
     """
 
     __tablename__ = "agent_jobs"
+    __table_args__ = (
+        # Small because sharing is rare: it holds only the jobs that have a
+        # collaboration block. On user_id, not on the index text itself, which
+        # can outgrow what a btree entry may hold (200 ids).
+        Index(
+            "ix_agent_jobs_has_collaborators",
+            "user_id",
+            postgresql_where=text("collaborator_index IS NOT NULL"),
+            sqlite_where=text("collaborator_index IS NOT NULL"),
+        ),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
@@ -136,6 +150,12 @@ class AgentJob(Base):
     results = Column(
         NestedMutableDict.as_mutable(JSON), nullable=True
     )  # Structured results
+    # Who a swarm job is assigned to or shared with, as "|id|id|", written by
+    # the mapper events below from results["swarm_collaboration"] and never by
+    # hand. NULL when the job has no such block. Finding the jobs shared with
+    # a user used to mean casting every job's whole `results` to text and
+    # pattern-matching it, on every request for the job list.
+    collaborator_index = Column(Text, nullable=True)
     # Example results for research job:
     # {
     #   "papers_found": 45,
@@ -420,6 +440,45 @@ class AgentJob(Base):
             hierarchy.append(str(self.parent_job_id))
         hierarchy.append(str(self.id))
         return hierarchy
+
+
+def collaborator_index_for(results: Any) -> Optional[str]:
+    """The `collaborator_index` value for a job's results, or None.
+
+    Holds the people `swarm_collaboration` lets see the job besides its owner:
+    whoever it is assigned to and everyone it is shared with. A block naming
+    nobody still yields "|", so "has a collaboration block" is `IS NOT NULL`.
+    """
+    block = results.get("swarm_collaboration") if isinstance(results, dict) else None
+    if not isinstance(block, dict):
+        return None
+    shared = block.get("shared_with_user_ids")
+    names = [block.get("assigned_user_id")]
+    names.extend(shared[:200] if isinstance(shared, list) else [])
+    seen: List[str] = []
+    for raw in names:
+        name = str(raw or "").strip().lower()
+        if name and "|" not in name and name not in seen:
+            seen.append(name)
+    return "|" + "".join(f"{name}|" for name in seen)
+
+
+def collaborator_pattern(user_id: Any) -> str:
+    """The LIKE pattern matching a `collaborator_index` that names this user."""
+    return f"%|{str(user_id).strip().lower()}|%"
+
+
+@event.listens_for(AgentJob, "before_insert")
+@event.listens_for(AgentJob, "before_update")
+def _keep_collaborator_index(_mapper, _connection, job: "AgentJob") -> None:
+    # In the mapper, not in the functions that edit sharing: results is also
+    # replaced whole by the executor and the finaliser, and a writer that
+    # forgot would leave a job shared in its JSON and invisible to the query.
+    if "results" not in job.__dict__:
+        return  # not loaded, so not changed
+    value = collaborator_index_for(job.results)
+    if job.__dict__.get("collaborator_index", object()) != value:
+        job.collaborator_index = value
 
 
 class AgentJobCheckpoint(Base):

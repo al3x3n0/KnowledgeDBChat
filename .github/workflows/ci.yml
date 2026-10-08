@@ -186,6 +186,16 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      # For the tests that are about Redis itself (a Lua script cannot be
+      # checked against a fake): they skip without TEST_REDIS_URL.
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -202,6 +212,7 @@ jobs:
         working-directory: backend
         env:
           TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/pytest
+          TEST_REDIS_URL: redis://localhost:6379/15
         run: pytest --no-cov -p no:cacheprovider $(grep -v '^#' tests/postgres_slice.txt)
 
   schema-truth:

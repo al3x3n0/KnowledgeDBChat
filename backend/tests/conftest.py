@@ -60,6 +60,8 @@ os.environ.setdefault("MINIO_READ_TIMEOUT_SECONDS", "5")
 os.environ.setdefault("CELERY_BROKER_URL", "memory://")
 # Rate limits are counted in Redis in a deployment; tests have none.
 os.environ.setdefault("RATE_LIMIT_STORAGE_URL", "memory://")
+# No Redis in tests: the shared model-call cap would probe it on each call.
+os.environ.setdefault("LLM_GLOBAL_MAX_CONCURRENCY", "0")
 os.environ.setdefault("CELERY_RESULT_BACKEND", "cache+memory://")
 
 from app.core.database import Base, get_db  # noqa: E402

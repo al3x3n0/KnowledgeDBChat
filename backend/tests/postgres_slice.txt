@@ -14,3 +14,4 @@ tests/test_job_dispatch.py
 tests/test_blocked_to_backlog.py
 tests/test_agent_chain_dispatch.py
 tests/test_naive_datetimes_are_utc.py
+tests/test_llm_concurrency.py

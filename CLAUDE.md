@@ -1680,6 +1680,23 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   `backend/.env` from the working directory, so the suite had been talking to
   the dev stack's MinIO.
 
+- **Model calls are capped per process and across the deployment**
+  (`services/llm_concurrency.llm_slot`). `LLM_MAX_CONCURRENCY` (4) was one
+  module-level semaphore, so the real ceiling was the setting times the number
+  of processes — 64 on the chart's defaults — and rose with every replica.
+  `LLM_GLOBAL_MAX_CONCURRENCY` (16; 0 turns it off) is counted in a Redis
+  sorted set shared by every API and worker process. It is **soft** by
+  decision: Redis unreachable disables it for 30 s rather than failing calls,
+  a caller that has waited `LLM_GLOBAL_ACQUIRE_TIMEOUT_SECONDS` proceeds, and
+  a slot expires after `LLM_GLOBAL_SLOT_TTL_SECONDS` so a dead process does
+  not hold one for ever. Overshooting a quota costs a 429 the caller already
+  handles; a limiter that can stop every model call costs the platform. The
+  local semaphore is also kept **per event loop** now: Celery runs each task
+  in a fresh loop, and the shared one raised "bound to a different event
+  loop" on its first contended wait. The counting is a Lua script, which a
+  fake cannot check, so three tests run against a real Redis in the Postgres
+  CI job (`TEST_REDIS_URL`) and skip without one.
+
 ### Feature Flags (`core/feature_flags.py`)
 - Two-tier resolution: Redis cache → Settings fallback
 - Boolean flags (e.g., `knowledge_graph_enabled`) and string config flags (e.g., `llm_default_model`)

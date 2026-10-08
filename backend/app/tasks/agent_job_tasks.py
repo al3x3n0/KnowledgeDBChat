@@ -9,6 +9,7 @@ Handles background execution of autonomous agent jobs, including:
 
 import asyncio
 import json
+import random
 import time
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Dict, Optional
@@ -23,6 +24,7 @@ from sqlalchemy.orm import selectinload
 from app.core.celery import celery_app
 from app.core.database import create_celery_session
 from app.models.agent_job import AgentJob, AgentJobStatus
+from app.services import agent_job_user_cap
 from app.services.agent_execution_lease_service import (
     ExecutionLeaseLostError,
     agent_execution_lease_service,
@@ -284,6 +286,75 @@ async def _publish_job_progress(
     await job_support.publish_message(f"agent_job:{job_id}:progress", message)
 
 
+#: What the job task answers when it left the job pending for its owner's cap.
+USER_CAP_DEFERRED = "deferred_user_cap"
+
+
+async def _hold_for_user_cap(db: Any, job: AgentJob) -> Optional[dict]:
+    """Leave the job pending when its owner already has the cap running.
+
+    Returns what the task should answer, or None when the job may be claimed.
+    The job is not failed, logged to or retried against the task's retry
+    budget: it has not started, so nothing has gone wrong. Its scheduler state
+    says why it is waiting, and the stalled-job sweep reads that so it does
+    not count a job waiting its turn as one no worker ever picked up.
+    """
+    cap = agent_job_user_cap.limit()
+    if cap <= 0:
+        return None
+    # Only a job this delivery could actually claim. One that has ended, or
+    # that a worker already holds, answers lease_conflict below and is done
+    # with; holding it instead would redeliver it for ever.
+    if job.status not in (
+        AgentJobStatus.PENDING.value,
+        AgentJobStatus.RUNNING.value,
+    ):
+        return None
+    now = datetime.utcnow()
+    if not is_orphaned(job, now):
+        return None
+    running = await agent_job_user_cap.running_for_user(
+        db, job.user_id, excluding=job.id, now=now
+    )
+    if running < cap:
+        return None
+
+    retry_in = agent_job_user_cap.retry_seconds()
+    state = _scheduler_state(job)
+    state.update(
+        agent_job_user_cap.waiting_state(
+            now=now, running=running, cap=cap, retry_in=retry_in
+        )
+    )
+    _write_scheduler_state(job, state)
+    # No worker holds it, and a stale id would hide it from the sweep that
+    # recovers a redelivery the broker lost. Nor is it running: left that way
+    # the sweep would take its silence for a dead worker and, after three
+    # such "recoveries", fail a job that only ever waited.
+    job.status = AgentJobStatus.PENDING.value
+    job.celery_task_id = None
+    await db.commit()
+    logger.info(
+        f"Agent job {job.id} left pending: its owner has {running} running "
+        f"(cap {cap}); trying again in {retry_in}s"
+    )
+    return {
+        "status": USER_CAP_DEFERRED,
+        "job_id": str(job.id),
+        "retry_in_seconds": retry_in,
+    }
+
+
+def _clear_user_cap_wait(job: AgentJob) -> None:
+    state = _scheduler_state(job)
+    if state.get("queue_reason") != agent_job_user_cap.QUEUE_REASON:
+        return
+    for key in ("deferred_at", "deferred_until", "user_running_jobs", "user_job_cap"):
+        state.pop(key, None)
+    state["queue_reason"] = None
+    _write_scheduler_state(job, state)
+
+
 async def _execute_agent_job_async(
     job_id: str,
     user_id: str,
@@ -311,6 +382,10 @@ async def _execute_agent_job_async(
         if job.status == AgentJobStatus.CANCELLED.value:
             logger.info(f"Agent job {job_id} was cancelled")
             return
+
+        held = await _hold_for_user_cap(db, job)
+        if held is not None:
+            return held
 
         owner_id = str(
             lease_owner_id
@@ -341,6 +416,7 @@ async def _execute_agent_job_async(
 
         # Store celery task ID
         job.celery_task_id = owner_id
+        _clear_user_cap_wait(job)
         await db.commit()
 
         heartbeat_stop = asyncio.Event()
@@ -571,6 +647,26 @@ def is_terminal_task_error(exc: BaseException) -> bool:
     return isinstance(exc, TERMINAL_TASK_ERRORS)
 
 
+def _redeliver_after_user_cap(job_id: str, user_id: str, outcome: dict) -> None:
+    """Send the job back to its queue to be tried again later.
+
+    A new message, not `self.retry`: a retry counts against max_retries, and a
+    job waiting its turn has not failed once. If the broker refuses, the job
+    stays pending with its wait recorded and the stalled-job sweep queues it
+    once that wait has lapsed.
+    """
+    delay = max(1, int(outcome.get("retry_in_seconds") or 60))
+    # Spread out, or every job held in one burst comes back in one burst.
+    delay += random.randint(0, max(1, delay // 4))
+    try:
+        execute_agent_job_task.apply_async(args=[job_id, user_id], countdown=delay)
+    except Exception as exc:
+        logger.warning(
+            f"Agent job {job_id} is waiting on its owner's job cap and could "
+            f"not be queued again ({exc}); the stalled-job sweep will do it"
+        )
+
+
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=120)
 def execute_agent_job_task(self, job_id: str, user_id: str):
     """
@@ -599,7 +695,9 @@ def execute_agent_job_task(self, job_id: str, user_id: str):
         lease_owner_id=task_owner_id,
     )
     try:
-        asyncio.run(execution_coro)
+        outcome = asyncio.run(execution_coro)
+        if isinstance(outcome, dict) and outcome.get("status") == USER_CAP_DEFERRED:
+            _redeliver_after_user_cap(job_id, user_id, outcome)
 
     except Exception as e:
         execution_coro.close()
@@ -1070,6 +1168,10 @@ def check_stalled_agent_jobs(timeout_minutes: int = 30, undispatched_minutes: in
             for job in undispatched_result.scalars().all():
                 # A live lease means a worker has it after all; leave it alone.
                 if not is_orphaned(job, now):
+                    continue
+                # Waiting its turn behind its owner's other jobs, with a
+                # redelivery still due: not a job nobody picked up.
+                if agent_job_user_cap.is_waiting(_scheduler_state(job), now):
                     continue
 
                 attempts = count_undispatched_requeues(job)

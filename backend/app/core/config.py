@@ -264,6 +264,15 @@ class Settings(BaseSettings):
     # the general worker runs this one too (or lets the general worker take
     # the queue, as the Helm chart does when celeryAgents is disabled).
     AGENT_JOB_CELERY_QUEUE: str = "agents"
+    # How many agent jobs one user may have running at once. A running job
+    # holds a worker process for hours, so without this one user's campaign or
+    # swarm can hold the whole agents queue. Applied when a worker claims a
+    # job, never at creation: further jobs stay pending and are tried again
+    # every AGENT_JOBS_USER_CAP_RETRY_SECONDS. 0 turns it off. The default is
+    # the chart's agents-worker concurrency, so it changes nothing on one
+    # replica and starts to matter when there are more.
+    AGENT_JOBS_MAX_RUNNING_PER_USER: int = 4
+    AGENT_JOBS_USER_CAP_RETRY_SECONDS: int = 60
     TRANSCRIPTION_FILTER_INTRO_JUNK: bool = True
     TRANSCRIPTION_INTRO_MAX_SECONDS: float = 12.0
     TRANSCRIPTION_INTRO_NO_SPEECH_PROB: float = 0.30

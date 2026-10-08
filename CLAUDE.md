@@ -1479,7 +1479,38 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   remaining eight are marked `NOT READ` in `config.py` and listed in
   `tests/test_settings_are_read.py`, a list that may only shrink.
 - Admin users have broader access; non-admins cannot access other users' resources
-- Optional LDAP/AD auth with group-based role mapping (`LDAP_*` settings)
+- **LDAP / Active Directory sign-in** (`services/ldap_service.py`, the login
+  flow in `auth_service.authenticate_user`, Admin → Directory (LDAP)). It
+  shipped with no tests, and each of these was wrong:
+  - **The server's certificate is verified.** `ldap3` validates nothing unless
+    given a `Tls` object that says to; it was given none, so `ldaps://`
+    accepted any certificate with `LDAP_INSECURE_SKIP_TLS_VERIFY` at false.
+    `LDAP_CA_CERT_FILE` names an internal CA. Plain `ldap://` without StartTLS
+    is refused unless `LDAP_ALLOW_PLAINTEXT`.
+  - **The username is escaped** into the filter and the DN template (it was
+    `str.format`), and a name matching two entries is not a login.
+  - **"Wrong password" is None; "could not ask" raises `LdapUnavailable`.**
+    They were both None, so the stored-password fallback meant for an outage
+    ran after every rejection: an account disabled in the directory kept
+    working. The fallback now needs an outage *and*
+    `LDAP_LOCAL_FALLBACK_WHEN_UNAVAILABLE`.
+  - **A deactivated user stays deactivated.** An LDAP login used to set
+    `is_active` back to true.
+  - **Group DNs are separated by `;`.** `LDAP_ADMIN_GROUP_DNS` was split on
+    commas, which cut every DN into its RDNs: role mapping could never match.
+    DNs are compared normalised (`normalize_dn`), groups can be found by
+    member search (`LDAP_GROUP_SEARCH_BASE`) where there is no `memberOf`, and
+    with no mapping configured `map_role` returns None and the role is left
+    alone (it was overwritten with "user", demoting local admins).
+  - **A shared username does not take over a local account**: linked only
+    when the emails match, by import, or with
+    `LDAP_LINK_LOCAL_USERS_BY_USERNAME`.
+  - It is synchronous I/O with connect and receive timeouts; the event loop
+    uses the `*_async` wrappers.
+  `ldap_service.diagnose()` (`POST /admin/ldap/test`) walks the setup the way
+  a login would and reports the failing step, without any user's password.
+  `tests/test_ldap_integration.py` runs against ldap3's in-memory server, so
+  binds, searches and filters are real.
 - MCP API keys are tied to users; tool policies evaluated per user context
 
 ### Service Layer Pattern

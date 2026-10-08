@@ -63,6 +63,8 @@ from app.schemas.ldap import (
     LdapImportResponse,
     LdapImportUserRow,
     LdapStatusResponse,
+    LdapTestRequest,
+    LdapTestResponse,
 )
 from app.services import agent_sandbox_runtime
 from app.services.auth_service import require_admin
@@ -178,7 +180,33 @@ async def ldap_status(current_user: User = Depends(require_admin)):
         insecure_skip_tls_verify=bool(
             getattr(settings, "LDAP_INSECURE_SKIP_TLS_VERIFY", False)
         ),
+        transport=ldap_service.transport(),
+        verifies_certificates=ldap_service.verifies_certificates(),
+        has_service_account=bool(getattr(settings, "LDAP_BIND_DN", None)),
+        role_mapping_configured=ldap_service.role_mapping_configured(),
+        group_search_configured=bool(getattr(settings, "LDAP_GROUP_SEARCH_BASE", None)),
+        create_user_on_login=bool(getattr(settings, "LDAP_CREATE_USER_ON_LOGIN", True)),
+        local_fallback_when_unavailable=bool(
+            getattr(settings, "LDAP_LOCAL_FALLBACK_WHEN_UNAVAILABLE", False)
+        ),
+        problems=ldap_service.problems(),
     )
+
+
+@router.post("/ldap/test", response_model=LdapTestResponse)
+async def ldap_test(
+    payload: LdapTestRequest,
+    current_user: User = Depends(require_admin),
+):
+    """
+    Admin: walk the LDAP configuration the way a login would and say where it
+    stops -- settings, transport, the service account, and optionally what the
+    directory holds for one login name. Takes no password and changes nothing.
+    """
+    from app.services.ldap_service import ldap_service
+
+    report = await ldap_service.diagnose_async((payload.username or "").strip() or None)
+    return LdapTestResponse(**report)
 
 
 @router.post("/ldap/import", response_model=LdapImportResponse)
@@ -195,10 +223,13 @@ async def ldap_import_users(
     from sqlalchemy import select
 
     from app.services.auth_service import auth_service
-    from app.services.ldap_service import ldap_service
+    from app.services.ldap_service import LdapError, LdapUnavailable, ldap_service
 
     if not ldap_service.enabled or not ldap_service.is_configured():
         raise HTTPException(status_code=400, detail="LDAP is not enabled/configured")
+    problems = ldap_service.problems()
+    if problems:
+        raise HTTPException(status_code=400, detail=" ".join(problems))
 
     search_filter = (
         payload.search_filter or getattr(settings, "LDAP_IMPORT_FILTER", "") or ""
@@ -210,7 +241,16 @@ async def ldap_import_users(
         )
 
     limit = int(payload.limit)
-    ldap_users = ldap_service.search_users(search_filter=search_filter, limit=limit)
+    try:
+        ldap_users = await ldap_service.search_users_async(
+            search_filter=search_filter, limit=limit
+        )
+    except LdapUnavailable as exc:
+        raise HTTPException(
+            status_code=502, detail=f"The directory could not be searched: {exc}"
+        )
+    except LdapError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     created = updated = skipped = errors = 0
     rows: list[LdapImportUserRow] = []
@@ -250,6 +290,7 @@ async def ldap_import_users(
                     db,
                     u,
                     existing=None,
+                    default_role=payload.default_role,
                 )
                 # If role should be overridden (e.g. admin) and differs from mapping, apply.
                 if payload.overwrite_role and payload.default_role:
@@ -277,7 +318,16 @@ async def ldap_import_users(
                         email=u.email or existing.email,
                         full_name=u.full_name or existing.full_name,
                         dn=u.dn,
-                        role=(payload.default_role if payload.overwrite_role else role),
+                        # As the real run would leave it: the mapped role, or
+                        # the one the account already has when nothing maps.
+                        role=(
+                            payload.default_role
+                            if payload.overwrite_role
+                            else (
+                                ldap_service.map_role(getattr(u, "groups", None))
+                                or existing.role
+                            )
+                        ),
                         action="updated",
                     )
                 )

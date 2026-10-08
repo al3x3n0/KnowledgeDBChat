@@ -40,6 +40,11 @@ BLOCKING_MODULE_CALLS = {
 #: This codebase's own synchronous helpers that block: each shells out or
 #: burns CPU for long enough to matter.
 BLOCKING_HELPERS = {
+    # ldap3 is synchronous: a bind and a search per call. The service offers
+    # *_async wrappers for the event loop.
+    "search_users",
+    "find_user",
+    "diagnose",
     "probe_duration_seconds",  # ffprobe, up to 30s
     "is_docker_available",  # docker info, up to 10s
     "_pull_image_sync",  # docker pull, up to 10 minutes

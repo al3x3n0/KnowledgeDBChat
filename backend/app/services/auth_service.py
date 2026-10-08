@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.user import User
-from app.services.ldap_service import ldap_service
+from app.services.ldap_service import LdapError, LdapUnavailable, ldap_service
 
 
 class AuthService:
@@ -162,101 +162,144 @@ class AuthService:
     async def authenticate_user(
         self, username: str, password: str, db: AsyncSession
     ) -> Optional[User]:
-        """Authenticate a user with username and password.
+        """The user these credentials belong to, or None.
 
-        If LDAP is enabled, we support LDAP login and optional user auto-provisioning.
+        Local accounts are checked against the password stored here. With LDAP
+        enabled, LDAP-managed accounts and names unknown here are checked
+        against the directory. The rules, each of which the first version got
+        wrong:
+
+        * A deactivated account does not sign in, whatever the directory
+          says. (An LDAP login used to set ``is_active`` back to true.)
+        * When the directory answers "no", that is the answer. The stored
+          password is tried only when the directory could not be *reached*,
+          and only if ``LDAP_LOCAL_FALLBACK_WHEN_UNAVAILABLE`` allows it --
+          it used to be tried after every refusal, so an account disabled in
+          the directory kept working with its old local password.
+        * A directory login does not take over a local account that merely
+          shares its username; see ``_may_link``.
         """
         user = await self.get_user_by_username(username, db)
-
-        # If the user exists and is LDAP-managed, prefer LDAP bind.
-        # If LDAP is unreachable, allow local-password fallback so LDAP remains optional.
-        if user and getattr(user, "auth_provider", "local") == "ldap":
-            try:
-                ldap_user = (
-                    ldap_service.authenticate_and_fetch(username, password)
-                    if ldap_service.enabled
-                    else None
-                )
-            except Exception as e:
-                logger.warning(
-                    f"LDAP authentication backend unavailable for user {username}: {e}"
-                )
-                ldap_user = None
-
-            if ldap_user:
-                return await self._upsert_user_from_ldap(db, ldap_user, existing=user)
-
-            # Optional fallback: keep local login working when LDAP is down/misconfigured.
-            if user.is_active and await asyncio.to_thread(
-                self.verify_password, password, user.hashed_password
-            ):
-                logger.warning(f"LDAP user {username} authenticated via local fallback")
-                return user
-
+        if user is not None and not user.is_active:
+            logger.info(f"Login refused for deactivated user {username}")
             return None
 
-        # Local auth (default)
-        if (
-            user
-            and user.is_active
-            and await asyncio.to_thread(
+        ldap_managed = (
+            user is not None and getattr(user, "auth_provider", "local") == "ldap"
+        )
+
+        if user is not None and not ldap_managed:
+            if await asyncio.to_thread(
                 self.verify_password, password, user.hashed_password
-            )
-        ):
-            return user
+            ):
+                return user
 
-        # LDAP fallback: either user doesn't exist, or local password failed
-        if ldap_service.enabled and ldap_service.is_configured():
-            try:
-                ldap_user = ldap_service.authenticate_and_fetch(username, password)
-            except Exception as e:
+        if not ldap_service.is_configured():
+            return None
+
+        try:
+            ldap_user = await ldap_service.authenticate_async(username, password)
+        except LdapUnavailable as exc:
+            logger.warning(f"LDAP could not be asked about {username}: {exc}")
+            if (
+                ldap_managed
+                and getattr(settings, "LDAP_LOCAL_FALLBACK_WHEN_UNAVAILABLE", False)
+                and await asyncio.to_thread(
+                    self.verify_password, password, user.hashed_password
+                )
+            ):
                 logger.warning(
-                    f"LDAP fallback authentication unavailable for user {username}: {e}"
+                    f"LDAP user {username} signed in with the stored password "
+                    "while the directory was unreachable"
                 )
-                ldap_user = None
-            if not ldap_user:
+                return user
+            return None
+        except LdapError as exc:
+            logger.error(f"LDAP is misconfigured; {username} cannot sign in: {exc}")
+            return None
+
+        if ldap_user is None:
+            return None
+
+        existing = user
+        if existing is None:
+            existing = await self.get_user_by_username(ldap_user.username, db)
+        if existing is None and ldap_user.email:
+            existing = await self.get_user_by_email(ldap_user.email, db)
+
+        if existing is not None:
+            if not existing.is_active:
+                logger.info(
+                    f"LDAP login for {username} matches a deactivated account; refused"
+                )
                 return None
-
-            if not getattr(settings, "LDAP_CREATE_USER_ON_LOGIN", True):
-                # Only allow login if the user already exists locally.
-                existing = user
-                if not existing:
-                    existing = await self.get_user_by_username(ldap_user.username, db)
-                if not existing and ldap_user.email:
-                    existing = await self.get_user_by_email(ldap_user.email, db)
-                if not existing:
-                    return None
-                return await self._upsert_user_from_ldap(
-                    db, ldap_user, existing=existing
+            if not self._may_link(existing, ldap_user):
+                logger.warning(
+                    f"LDAP login for {username} matches the local account "
+                    f"'{existing.username}' but their emails differ; not linked. "
+                    "Import the user as an admin, or set "
+                    "LDAP_LINK_LOCAL_USERS_BY_USERNAME."
                 )
+                return None
+        elif not getattr(settings, "LDAP_CREATE_USER_ON_LOGIN", True):
+            return None
 
-            return await self._upsert_user_from_ldap(db, ldap_user, existing=user)
+        try:
+            return await self._upsert_user_from_ldap(db, ldap_user, existing=existing)
+        except ValueError as exc:
+            logger.warning(f"LDAP user {username} could not be provisioned: {exc}")
+            return None
 
-        return None
+    @staticmethod
+    def _may_link(existing: User, ldap_user) -> bool:
+        """Whether a directory login may become this existing account.
+
+        An account already LDAP-managed is the same person by construction.
+        A local one is linked when the directory's email is its email: a
+        shared username alone would let whoever is called "admin" in the
+        directory take over the local "admin".
+        """
+        if getattr(existing, "auth_provider", "local") == "ldap":
+            return True
+        if getattr(settings, "LDAP_LINK_LOCAL_USERS_BY_USERNAME", False):
+            return True
+        ours = (existing.email or "").strip().lower()
+        theirs = (getattr(ldap_user, "email", None) or "").strip().lower()
+        return bool(ours) and ours == theirs
 
     async def _upsert_user_from_ldap(
-        self, db: AsyncSession, ldap_user, existing: Optional[User] = None
+        self,
+        db: AsyncSession,
+        ldap_user,
+        existing: Optional[User] = None,
+        *,
+        default_role: str = "user",
     ) -> User:
-        """
-        Create or update a local user record from LDAP attributes.
+        """Create or update the local record for a directory user.
+
+        Never reactivates: ``is_active`` belongs to this application's admins.
+        The role follows the group mapping when one is configured and is left
+        alone when none is -- it used to be overwritten with "user" either
+        way, demoting a local admin who signed in through LDAP.
         """
         from datetime import datetime
 
         sync = bool(getattr(settings, "LDAP_SYNC_ON_LOGIN", True))
-        role = ldap_service.map_role(getattr(ldap_user, "groups", None))
+        groups = list(getattr(ldap_user, "groups", None) or [])
+        mapped_role = ldap_service.map_role(groups)
 
         user = existing
-        if user is None:
-            # Try to avoid duplicates by matching email.
-            if getattr(ldap_user, "email", None):
-                user = await self.get_user_by_email(ldap_user.email, db)
+        if user is None and getattr(ldap_user, "email", None):
+            # Avoid a duplicate for someone already known by their email.
+            user = await self.get_user_by_email(ldap_user.email, db)
 
         if user is None:
-            # Create a local user with a random password hash (never used for LDAP auth).
             import secrets
 
-            username = (ldap_user.username or "").strip() or "ldap_user"
+            username = (ldap_user.username or "").strip()
             email = (ldap_user.email or "").strip()
+            if not username:
+                raise ValueError("LDAP entry has no username attribute")
             if not email:
                 raise ValueError(
                     "LDAP user has no email and LDAP_DEFAULT_EMAIL_DOMAIN is not set"
@@ -266,38 +309,44 @@ class AuthService:
                 username=username,
                 email=email,
                 full_name=getattr(ldap_user, "full_name", None),
+                # Never used: an LDAP-managed account is checked against the
+                # directory. Random so that it cannot be guessed either.
                 hashed_password=await asyncio.to_thread(
                     self.hash_password, secrets.token_urlsafe(32)
                 ),
                 is_active=True,
                 is_verified=True,
-                role=role,
+                role=mapped_role or default_role,
                 auth_provider="ldap",
                 auth_subject=getattr(ldap_user, "dn", None),
-                auth_metadata={
-                    "groups": list(getattr(ldap_user, "groups", []) or []),
-                },
+                auth_metadata={"groups": groups},
             )
             db.add(user)
             await db.commit()
             await db.refresh(user)
             return user
 
-        # Update existing record if desired.
         if sync:
-            if getattr(ldap_user, "email", None):
-                user.email = ldap_user.email
+            new_email = (getattr(ldap_user, "email", None) or "").strip()
+            if new_email and new_email.lower() != (user.email or "").lower():
+                # Emails are unique: taking one another account holds would
+                # fail the whole login at commit.
+                holder = await self.get_user_by_email(new_email, db)
+                if holder is None or holder.id == user.id:
+                    user.email = new_email
+                else:
+                    logger.warning(
+                        f"LDAP email {new_email} for {user.username} belongs to "
+                        f"another account ({holder.username}); kept the old one"
+                    )
             if getattr(ldap_user, "full_name", None):
                 user.full_name = ldap_user.full_name
 
-        # Always mark LDAP provider + subject when login succeeds.
         user.auth_provider = "ldap"
         user.auth_subject = getattr(ldap_user, "dn", None)
-        user.auth_metadata = {
-            "groups": list(getattr(ldap_user, "groups", []) or []),
-        }
-        user.role = role
-        user.is_active = True
+        user.auth_metadata = {"groups": groups}
+        if mapped_role is not None:
+            user.role = mapped_role
         user.is_verified = True
         user.updated_at = datetime.utcnow()
 

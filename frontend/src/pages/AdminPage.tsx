@@ -36,6 +36,7 @@ import AlertModal from '../components/common/AlertModal';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import toast from 'react-hot-toast';
 import ConfirmationModal from '../components/common/ConfirmationModal';
+import LdapPanel from '../components/admin/LdapPanel';
 
 const AdminPage: React.FC = () => {
   const location = useLocation();
@@ -59,6 +60,7 @@ const AdminPage: React.FC = () => {
     { id: 'agents', name: 'Agents', icon: Bot },
     { id: 'ai-hub', name: 'AI Hub', icon: Cpu },
     { id: 'tool-approvals', name: 'Tool Approvals', icon: CheckCircle },
+    { id: 'directory', name: 'Directory (LDAP)', icon: Users },
   ];
 
   useEffect(() => {
@@ -171,6 +173,7 @@ const AdminPage: React.FC = () => {
           {activeTab === 'agents' && <AgentsTab />}
           {activeTab === 'ai-hub' && <AIHubAdminTab />}
           {activeTab === 'tool-approvals' && <ToolApprovalsTab />}
+          {activeTab === 'directory' && <LdapPanel />}
         </div>
       </div>
     </div>

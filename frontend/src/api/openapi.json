@@ -28227,8 +28227,23 @@
             "title": "Configured",
             "type": "boolean"
           },
+          "create_user_on_login": {
+            "default": true,
+            "title": "Create User On Login",
+            "type": "boolean"
+          },
           "enabled": {
             "title": "Enabled",
+            "type": "boolean"
+          },
+          "group_search_configured": {
+            "default": false,
+            "title": "Group Search Configured",
+            "type": "boolean"
+          },
+          "has_service_account": {
+            "default": false,
+            "title": "Has Service Account",
             "type": "boolean"
           },
           "insecure_skip_tls_verify": {
@@ -28236,10 +28251,33 @@
             "title": "Insecure Skip Tls Verify",
             "type": "boolean"
           },
+          "local_fallback_when_unavailable": {
+            "default": false,
+            "title": "Local Fallback When Unavailable",
+            "type": "boolean"
+          },
+          "problems": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Problems",
+            "type": "array"
+          },
+          "role_mapping_configured": {
+            "default": false,
+            "title": "Role Mapping Configured",
+            "type": "boolean"
+          },
           "start_tls": {
             "default": false,
             "title": "Start Tls",
             "type": "boolean"
+          },
+          "transport": {
+            "default": "plaintext",
+            "title": "Transport",
+            "type": "string"
           },
           "uri": {
             "anyOf": [
@@ -28251,6 +28289,11 @@
               }
             ],
             "title": "Uri"
+          },
+          "verifies_certificates": {
+            "default": false,
+            "title": "Verifies Certificates",
+            "type": "boolean"
           }
         },
         "required": [
@@ -28258,6 +28301,138 @@
           "configured"
         ],
         "title": "LdapStatusResponse",
+        "type": "object"
+      },
+      "LdapTestRequest": {
+        "properties": {
+          "username": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A login name to look up in the directory (no password).",
+            "title": "Username"
+          }
+        },
+        "title": "LdapTestRequest",
+        "type": "object"
+      },
+      "LdapTestResponse": {
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "steps": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/LdapTestStep"
+            },
+            "title": "Steps",
+            "type": "array"
+          },
+          "user": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LdapTestUser"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "LdapTestResponse",
+        "type": "object"
+      },
+      "LdapTestStep": {
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "step": {
+            "title": "Step",
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "ok",
+          "message"
+        ],
+        "title": "LdapTestStep",
+        "type": "object"
+      },
+      "LdapTestUser": {
+        "properties": {
+          "dn": {
+            "title": "Dn",
+            "type": "string"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "full_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full Name"
+          },
+          "groups": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Groups",
+            "type": "array"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "dn"
+        ],
+        "title": "LdapTestUser",
         "type": "object"
       },
       "MCPKeyConfigResponse": {
@@ -47862,6 +48037,71 @@
           }
         ],
         "summary": "Ldap Status",
+        "tags": [
+          "administration"
+        ]
+      }
+    },
+    "/api/v1/admin/ldap/test": {
+      "post": {
+        "description": "Admin: walk the LDAP configuration the way a login would and say where it\nstops -- settings, transport, the service account, and optionally what the\ndirectory holds for one login name. Takes no password and changes nothing.",
+        "operationId": "ldap_test_api_v1_admin_ldap_test_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LdapTestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LdapTestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Ldap Test",
         "tags": [
           "administration"
         ]

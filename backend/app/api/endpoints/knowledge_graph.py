@@ -1,7 +1,6 @@
 """
 Knowledge graph API endpoints.
 """
-
 import json
 from typing import List, Optional
 from uuid import UUID
@@ -13,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.exceptions import internal_error_detail
 from app.models.document import Document, DocumentChunk
 from app.models.knowledge_graph import Entity
 from app.schemas.knowledge_graph import (
@@ -64,7 +64,9 @@ async def document_graph(document_id: str, db: AsyncSession = Depends(get_db)):
         svc = KnowledgeGraphService()
         return await svc.graph_for_document(db, document_id)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get graph: {e}")
+        raise HTTPException(
+            status_code=500, detail=internal_error_detail(e, "Failed to get graph")
+        )
 
 
 @router.get("/global/graph", response_model=KGGlobalGraph)
@@ -111,7 +113,10 @@ async def global_graph(
             search=search,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get global graph: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=internal_error_detail(e, "Failed to get global graph"),
+        )
 
 
 @router.get("/types", response_model=KGTypes)
@@ -227,7 +232,9 @@ async def get_audit_logs(
             offset=offset,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get audit logs: {e}")
+        raise HTTPException(
+            status_code=500, detail=internal_error_detail(e, "Failed to get audit logs")
+        )
 
 
 @router.get("/entities")
@@ -281,7 +288,9 @@ async def rebuild_document_graph(document_id: str, db: AsyncSession = Depends(ge
         result = await svc.rebuild_for_document(db, document_id)
         return {"message": "rebuild_complete", **result}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to rebuild: {e}")
+        raise HTTPException(
+            status_code=500, detail=internal_error_detail(e, "Failed to rebuild")
+        )
 
 
 @router.get("/chunk/{chunk_id}", response_model=KGChunk)
@@ -320,7 +329,9 @@ async def get_chunk(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch chunk: {e}")
+        raise HTTPException(
+            status_code=500, detail=internal_error_detail(e, "Failed to fetch chunk")
+        )
 
 
 @router.get("/entity/{entity_id}/mentions")
@@ -336,7 +347,9 @@ async def entity_mentions(
         total = await svc.mentions_count_for_entity(db, entity_id)
         return {"items": items, "total": total, "limit": limit, "offset": offset}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get mentions: {e}")
+        raise HTTPException(
+            status_code=500, detail=internal_error_detail(e, "Failed to get mentions")
+        )
 
 
 class MergeEntitiesRequest(BaseModel):
@@ -372,7 +385,9 @@ async def merge_entities(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to merge entities: {e}")
+        raise HTTPException(
+            status_code=500, detail=internal_error_detail(e, "Failed to merge entities")
+        )
 
 
 @router.get("/entity/{entity_id}", response_model=KGEntityDetail)
@@ -391,7 +406,9 @@ async def get_entity(entity_id: str, db: AsyncSession = Depends(get_db)):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get entity: {e}")
+        raise HTTPException(
+            status_code=500, detail=internal_error_detail(e, "Failed to get entity")
+        )
 
 
 @router.patch("/entity/{entity_id}", response_model=KGEntityDetail)
@@ -449,7 +466,9 @@ async def update_entity(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to update entity: {e}")
+        raise HTTPException(
+            status_code=500, detail=internal_error_detail(e, "Failed to update entity")
+        )
 
 
 @router.post("/entity/{entity_id}/infer-type", response_model=KGInferEntityTypeResponse)
@@ -544,7 +563,10 @@ async def infer_entity_type(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to infer entity type: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=internal_error_detail(e, "Failed to infer entity type"),
+        )
 
 
 @router.delete("/entity/{entity_id}")
@@ -583,7 +605,9 @@ async def delete_entity(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to delete entity: {e}")
+        raise HTTPException(
+            status_code=500, detail=internal_error_detail(e, "Failed to delete entity")
+        )
 
 
 # =============================================================================
@@ -659,7 +683,8 @@ async def create_relationship(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(
-            status_code=500, detail=f"Failed to create relationship: {e}"
+            status_code=500,
+            detail=internal_error_detail(e, "Failed to create relationship"),
         )
 
 
@@ -718,7 +743,8 @@ async def update_relationship(
         raise
     except Exception as e:
         raise HTTPException(
-            status_code=500, detail=f"Failed to update relationship: {e}"
+            status_code=500,
+            detail=internal_error_detail(e, "Failed to update relationship"),
         )
 
 
@@ -775,5 +801,6 @@ async def delete_relationship(
         raise
     except Exception as e:
         raise HTTPException(
-            status_code=500, detail=f"Failed to delete relationship: {e}"
+            status_code=500,
+            detail=internal_error_detail(e, "Failed to delete relationship"),
         )

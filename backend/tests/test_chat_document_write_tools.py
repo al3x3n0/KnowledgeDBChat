@@ -384,7 +384,9 @@ async def test_confirmed_delete_removes_row_chunks_vectors_and_file(
     assert await _chunk_count(db_session, other_id) == 2
     assert edges.vector_deleted == [doc_id]
     assert edges.files_deleted == ["docs/doomed.pdf"]
-    assert f"document:{doc_id}" in edges.cache_deleted
+    # There is no document cache to invalidate any more: it was written on
+    # upload and never read, so the delete no longer touches Redis for it.
+    assert edges.cache_deleted == []
     # The source the document lived in is not collateral.
     assert (await db_session.get(DocumentSource, source.id)) is not None
 

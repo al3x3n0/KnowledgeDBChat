@@ -17,7 +17,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload, selectinload
 
-from app.core.cache import cache_service
 from app.core.config import settings
 from app.models.document import Document, DocumentChunk, DocumentSource
 from app.models.persona import DocumentPersonaDetection
@@ -459,10 +458,6 @@ class DocumentService:
                 except Exception as e:
                     logger.warning(f"Failed to delete temp file {temp_file_path}: {e}")
 
-            # Cache the newly created document
-            cache_key = f"document:{document.id}"
-            await cache_service.set(cache_key, document, ttl=3600)
-
             logger.info(f"Uploaded document: {document.id}")
             self._publish_document_event(
                 "document.uploaded",
@@ -714,11 +709,6 @@ class DocumentService:
             document.processing_error = None
             await db.commit()
 
-            # Invalidate and refresh cache with updated document
-            cache_key = f"document:{document.id}"
-            await cache_service.delete(cache_key)
-            await cache_service.set(cache_key, document, ttl=3600)
-
             logger.info(
                 f"Processed document {document.id} with {len(document_chunks)} chunks"
             )
@@ -788,23 +778,11 @@ class DocumentService:
         Returns:
             True if deletion was successful, False otherwise
         """
-        # Try to get document directly from database (bypass cache)
-        # This ensures we get the latest state even if cache is stale
         result = await db.execute(select(Document).where(Document.id == document_id))
         document = result.scalar_one_or_none()
 
         if not document:
-            # Also try cache in case it exists there but not in DB (shouldn't happen, but for debugging)
-            cache_key = f"document:{document_id}"
-            cached_doc = await cache_service.get(cache_key)
-            if cached_doc:
-                logger.warning(
-                    f"Document {document_id} found in cache but not in database - possible race condition"
-                )
-            else:
-                logger.warning(
-                    f"Document {document_id} not found in database or cache for deletion"
-                )
+            logger.warning(f"Document {document_id} not found for deletion")
             return False
 
         try:
@@ -924,18 +902,6 @@ class DocumentService:
             await db.commit()
             logger.info(f"Successfully deleted document {document_id} from database")
 
-            # Step 5: Invalidate cache
-            try:
-                cache_key = f"document:{document_id}"
-                await cache_service.delete(cache_key)
-                # Also invalidate documents list cache
-                await cache_service.delete_pattern("documents:*")
-                logger.info(f"Invalidated cache for document {document_id}")
-            except Exception as e:
-                logger.warning(
-                    f"Failed to invalidate cache for document {document_id}: {e}"
-                )
-
             logger.info(
                 f"Successfully deleted document {document_id}: {document.title}"
             )
@@ -991,10 +957,6 @@ class DocumentService:
 
             # Reprocess document
             await self._process_document_async(document, db, user_id=user_id)
-
-            # Invalidate cache (already done in _process_document_async, but ensure it's cleared)
-            cache_key = f"document:{document_id}"
-            await cache_service.delete(cache_key)
 
             # Processing records its own failure on the row and does not
             # raise, so "it returned" is not "it worked".
@@ -1217,8 +1179,6 @@ class DocumentService:
         )
         document.summary_generated_at = _dt.utcnow()
         await db.commit()
-        # Invalidate cache so next fetch includes summary
-        await cache_service.delete(f"document:{document_id}")
         return summary
 
     # Document Source methods

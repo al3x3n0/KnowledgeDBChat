@@ -3,7 +3,6 @@ API Key management endpoints.
 
 Allows users to create, list, and revoke API keys for external tool access.
 """
-
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -11,6 +10,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.exceptions import internal_error_detail
 from app.models.user import User
 from app.schemas.api_key import (
     APIKeyCreate,
@@ -77,7 +77,7 @@ async def create_api_key(
         logger.error(f"Error creating API key: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create API key: {str(e)}",
+            detail=internal_error_detail(e, "Failed to create API key"),
         )
 
 

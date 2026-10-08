@@ -28,6 +28,11 @@ os.environ.setdefault(
     "LOG_FILE", str(Path(tempfile.gettempdir()) / "kdbchat-tests" / "test.log")
 )
 
+# Tests read the exception text out of 500 responses. A deployment hides it
+# (EXPOSE_ERROR_DETAILS defaults to off); tests/test_error_details_are_hidden.py
+# covers that mode.
+os.environ.setdefault("EXPOSE_ERROR_DETAILS", "true")
+
 # Celery's broker, before app.core.celery reads settings to build the app.
 #
 # The suite needs no Redis -- it runs on in-memory SQLite and stubs the heavy

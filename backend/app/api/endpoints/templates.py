@@ -1,7 +1,6 @@
 """
 Template filling API endpoints.
 """
-
 from typing import Optional
 from uuid import UUID, uuid4
 
@@ -21,6 +20,7 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.exceptions import internal_error_detail
 from app.models.template import TemplateJob
 from app.models.user import User
 from app.schemas.template import TemplateJobListResponse, TemplateJobResponse
@@ -145,7 +145,9 @@ async def create_template_fill_job(
         raise
     except Exception as e:
         logger.error(f"Failed to create template fill job: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create job: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=internal_error_detail(e, "Failed to create job")
+        )
 
 
 @router.get("/{job_id}", response_model=TemplateJobResponse)
@@ -364,7 +366,9 @@ async def delete_template_job(
 
     except Exception as e:
         logger.error(f"Failed to delete template job: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to delete job: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=internal_error_detail(e, "Failed to delete job")
+        )
 
 
 @router.websocket("/{job_id}/progress")

@@ -196,6 +196,13 @@ class Settings(BaseSettings):
 
     # Application
     DEBUG: bool = True
+    # Whether a 500 response carries the exception's own text. Off by default:
+    # that text is a SQL statement, a file path or an upstream's reply as
+    # often as not, and it was being returned to whoever made the request.
+    # With it off the client gets a short reference and the exception is
+    # logged under it (core/exceptions.internal_error_detail). The development
+    # stack turns it on.
+    EXPOSE_ERROR_DETAILS: bool = False
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     WORKERS: int = 1

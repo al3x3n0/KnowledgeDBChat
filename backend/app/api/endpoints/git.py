@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.celery import celery_app
 from app.core.database import get_db
+from app.core.exceptions import internal_error_detail
 from app.models.document import DocumentSource, GitBranchDiff
 from app.models.user import User
 from app.schemas.git import GitBranchResponse, GitCompareJobResponse, GitCompareRequest
@@ -286,7 +287,7 @@ async def generate_architecture_diagram(
 
     except Exception as e:
         logger.error(f"Error generating architecture diagram: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.post("/sources/{source_id}/architecture/png")
@@ -353,7 +354,7 @@ async def generate_architecture_diagram_png(
         raise
     except Exception as e:
         logger.error(f"Error generating architecture PNG: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.post("/sources/{source_id}/architecture/svg")
@@ -419,7 +420,7 @@ async def generate_architecture_diagram_svg(
         raise
     except Exception as e:
         logger.error(f"Error generating architecture SVG: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.post("/sources/{source_id}/analyze")
@@ -469,4 +470,4 @@ async def analyze_repository_structure(
 
     except Exception as e:
         logger.error(f"Error analyzing repository: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))

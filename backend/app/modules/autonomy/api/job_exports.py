@@ -1,5 +1,4 @@
 """HTTP boundary for exporting autonomous-job results."""
-
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict
 from uuid import UUID
@@ -12,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.endpoints.auth import get_current_active_user
 from app.core.database import get_db
+from app.core.exceptions import internal_error_detail
 from app.models.agent_job import AgentJob
 from app.models.user import User
 from app.services.llm_service import load_user_llm_settings
@@ -166,7 +166,7 @@ def build_job_export_api(
             logger.error(f"Failed to export job {job_id}: {error}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Export failed: {str(error)}",
+                detail=internal_error_detail(error, "Export failed"),
             )
 
         filename = f"{_safe_job_name(job.name)}_report.{format}"

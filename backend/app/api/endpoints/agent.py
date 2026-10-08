@@ -4,7 +4,6 @@ Agent chat API endpoints.
 Provides agentic chat functionality with tool calling for document operations.
 Supports both REST and WebSocket interfaces.
 """
-
 import asyncio
 import json
 from datetime import datetime
@@ -25,6 +24,7 @@ from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import AsyncSessionLocal, get_db
+from app.core.exceptions import internal_error_detail
 from app.models.memory import AgentConversation, AgentToolExecution, UserPreferences
 from app.models.user import User
 from app.schemas.agent import (
@@ -109,7 +109,8 @@ async def agent_chat(
     except Exception as e:
         logger.error(f"Error in agent chat endpoint: {e}")
         raise HTTPException(
-            status_code=500, detail=f"Failed to process message: {str(e)}"
+            status_code=500,
+            detail=internal_error_detail(e, "Failed to process message"),
         )
 
 
@@ -204,7 +205,8 @@ async def confirm_document_deletion(
     except Exception as e:
         logger.error(f"Error confirming document deletion: {e}")
         raise HTTPException(
-            status_code=500, detail=f"Failed to delete document: {str(e)}"
+            status_code=500,
+            detail=internal_error_detail(e, "Failed to delete document"),
         )
 
 
@@ -267,7 +269,7 @@ async def list_agent_conversations(
 
     except Exception as e:
         logger.error(f"Error listing agent conversations: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.post("/conversations", response_model=AgentConversationResponse)
@@ -311,7 +313,7 @@ async def create_agent_conversation(
 
     except Exception as e:
         logger.error(f"Error creating agent conversation: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.get("/conversations/active", response_model=Optional[AgentConversationResponse])
@@ -368,7 +370,7 @@ async def get_active_conversation(
 
     except Exception as e:
         logger.error(f"Error getting active conversation: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.get(
@@ -410,7 +412,7 @@ async def get_agent_conversation(
         raise
     except Exception as e:
         logger.error(f"Error getting agent conversation: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.put(
@@ -472,7 +474,7 @@ async def update_agent_conversation(
         raise
     except Exception as e:
         logger.error(f"Error updating agent conversation: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.post("/conversations/{conversation_id}/messages")
@@ -551,7 +553,7 @@ async def append_message_to_conversation(
         raise
     except Exception as e:
         logger.error(f"Error appending message to conversation: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.delete("/conversations/{conversation_id}")
@@ -587,7 +589,7 @@ async def delete_agent_conversation(
         raise
     except Exception as e:
         logger.error(f"Error deleting agent conversation: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.post("/conversations/{conversation_id}/archive")
@@ -620,7 +622,7 @@ async def archive_agent_conversation(
         raise
     except Exception as e:
         logger.error(f"Error archiving agent conversation: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.post("/conversations/new")
@@ -674,7 +676,7 @@ async def start_new_conversation(
 
     except Exception as e:
         logger.error(f"Error starting new conversation: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 # ============================================================================
@@ -747,7 +749,7 @@ async def list_agents(
 
     except Exception as e:
         logger.error(f"Error listing agents: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.get("/agents/{agent_id}")
@@ -794,7 +796,7 @@ async def get_agent(
         raise
     except Exception as e:
         logger.error(f"Error getting agent: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 from app.schemas.agent import (
@@ -1142,7 +1144,7 @@ async def create_agent(
     except Exception as e:
         logger.error(f"Error creating agent: {e}")
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.put("/agents/{agent_id}", response_model=AgentDefinitionResponse)
@@ -1254,7 +1256,7 @@ async def update_agent(
     except Exception as e:
         logger.error(f"Error updating agent: {e}")
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.delete("/agents/{agent_id}")
@@ -1296,7 +1298,7 @@ async def delete_agent(
     except Exception as e:
         logger.error(f"Error deleting agent: {e}")
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.post("/agents/{agent_id}/duplicate", response_model=AgentDefinitionResponse)
@@ -1376,7 +1378,7 @@ async def duplicate_agent(
     except Exception as e:
         logger.error(f"Error duplicating agent: {e}")
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.get("/capabilities", response_model=CapabilitiesListResponse)
@@ -1495,7 +1497,7 @@ async def get_conversation_agents(
         raise
     except Exception as e:
         logger.error(f"Error getting conversation agents: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.get("/conversations/{conversation_id}/memories")
@@ -1564,7 +1566,7 @@ async def get_conversation_memories(
         raise
     except Exception as e:
         logger.error(f"Error getting conversation memories: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 @router.post("/conversations/{conversation_id}/inject-memory")
@@ -1625,7 +1627,7 @@ async def manually_inject_memory(
         raise
     except Exception as e:
         logger.error(f"Error injecting memory: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=internal_error_detail(e))
 
 
 # ============================================================================

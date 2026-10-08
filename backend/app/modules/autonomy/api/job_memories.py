@@ -1,5 +1,4 @@
 """HTTP boundary for autonomous-job memories and task-memory graphs."""
-
 from typing import Optional
 from uuid import UUID
 
@@ -10,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.endpoints.auth import get_current_active_user
 from app.core.database import get_db
+from app.core.exceptions import internal_error_detail
 from app.models.memory import ConversationMemory
 from app.models.user import User
 from app.modules.autonomy.api.owned_job import get_owned_job as _get_owned_job
@@ -82,7 +82,7 @@ async def extract_job_memories(
         logger.error(f"Failed to extract memories from job {job_id}: {error}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Memory extraction failed: {str(error)}",
+            detail=internal_error_detail(error, "Memory extraction failed"),
         ) from error
 
     logger.info(f"Manually extracted {len(memories)} memories from job {job_id}")
@@ -148,7 +148,7 @@ async def create_job_memory(
         logger.error(f"Failed to create memory for job {job_id}: {error}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Memory creation failed: {str(error)}",
+            detail=internal_error_detail(error, "Memory creation failed"),
         ) from error
 
     return memory_presenters.build_job_memory_response(

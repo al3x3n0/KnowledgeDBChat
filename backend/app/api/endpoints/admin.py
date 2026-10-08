@@ -1,7 +1,6 @@
 """
 Admin API endpoints for system management.
 """
-
 import json
 import re
 from datetime import datetime, timedelta, timezone
@@ -27,6 +26,7 @@ from app.core.cache import cache_service
 from app.core.celery import celery_app
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.exceptions import internal_error_detail
 from app.core.feature_flags import get_flags as get_feature_flags
 from app.core.feature_flags import get_str as get_feature_str
 from app.core.feature_flags import set_flag as set_feature_flag
@@ -459,7 +459,10 @@ async def download_whisper_model(
         }
     except Exception as e:
         raise HTTPException(
-            status_code=500, detail=f"Failed to download/initialize Whisper model: {e}"
+            status_code=500,
+            detail=internal_error_detail(
+                e, "Failed to download/initialize Whisper model"
+            ),
         )
 
 

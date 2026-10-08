@@ -175,6 +175,20 @@ class Edges:
         monkeypatch.setattr(job_support, "publish_message", publish_message)
         monkeypatch.setattr(job_support, "flag_is_set", flag_is_set)
         monkeypatch.setattr(job_support, "delete_keys", delete_keys)
+
+        # The scheduled scan records its task id and full-resync flag through
+        # the ingestion-state helpers, as plain strings -- which is what the
+        # cancel endpoint and the ingestion task read back. Stored here as
+        # Redis would hold them, so a writer and a reader that disagree about
+        # the format are not hidden by a fake that keeps Python objects.
+        async def set_task_mapping(source_id, task_id, ttl=3600):
+            edges.cache[f"ingestion:task:{source_id}"] = str(task_id)
+
+        async def set_force_full(source_id, ttl=600):
+            edges.cache[f"ingestion:force_full:{source_id}"] = "1"
+
+        monkeypatch.setattr(sync_tasks, "set_ingestion_task_mapping", set_task_mapping)
+        monkeypatch.setattr(sync_tasks, "set_force_full_flag", set_force_full)
         monkeypatch.setattr(cache_service, "set", cache_set)
         monkeypatch.setattr(cache_service, "get", cache_get)
         monkeypatch.setattr(cache_service, "delete", cache_delete)

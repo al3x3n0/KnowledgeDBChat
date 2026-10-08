@@ -1,8 +1,22 @@
 """
 Caching utilities using Redis.
+
+Values are stored as JSON. They used to be pickled, and reading a pickle runs
+whatever it describes: anything able to write to Redis could execute code in
+every API and worker process. Nothing cached needs more than JSON -- feature
+flags, small payload dicts, ids -- now that the document cache is gone (it
+pickled whole ORM rows, content included, and nothing ever read them back).
+
+Values written by the old code are still read, through an unpickler that
+refuses every class and function, so it can only build plain data. That
+matters for feature flags, which have no expiry: without it every flag set at
+runtime would silently fall back to its default on the deploy that changed
+the format.
 """
 
 import asyncio
+import io
+import json
 import pickle
 from functools import wraps
 from typing import Any, Callable, Dict, Optional, TypeVar
@@ -69,6 +83,28 @@ async def close_redis_client():
         await client.close()
 
 
+class _PlainDataUnpickler(pickle.Unpickler):
+    """Reads a pickle of plain data and nothing else.
+
+    Every way a pickle runs code goes through ``find_class`` (to fetch the
+    class or function to call). Refusing it leaves the opcodes that build
+    None, booleans, numbers, strings, bytes, lists, tuples, dicts and sets.
+    """
+
+    def find_class(self, module: str, name: str):
+        raise pickle.UnpicklingError(f"refusing to load {module}.{name}")
+
+
+def _decode(data: Any) -> Any:
+    """A cached value: JSON, or plain data pickled by an earlier version."""
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    try:
+        return json.loads(data)
+    except (ValueError, UnicodeDecodeError):
+        return _PlainDataUnpickler(io.BytesIO(data)).load()
+
+
 class CacheService:
     """Service for caching data in Redis."""
 
@@ -98,7 +134,7 @@ class CacheService:
             data = await client.get(key)
             if data is None:
                 return None
-            return pickle.loads(data)
+            return _decode(data)
         except Exception as e:
             logger.warning(f"Cache get error for key {key}: {e}")
             return None
@@ -117,7 +153,9 @@ class CacheService:
         """
         try:
             client = await self._get_client()
-            data = pickle.dumps(value)
+            # Strict: a value JSON cannot represent is a caller's mistake to
+            # see, not something to coerce into a string and read back wrong.
+            data = json.dumps(value)
             if ttl:
                 await client.setex(key, ttl, data)
             else:

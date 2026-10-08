@@ -1569,6 +1569,19 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   test_silent_exception_swallows.py`, 227 and only shrinking). Not a demand
   to rewrite them: a new best-effort step catches what it expects or logs
   what it ignores.
+- **Object storage does not run on the event loop, and it has a time limit.**
+  The MinIO SDK is synchronous and `storage_service` called it straight from
+  its `async` methods -- 23 calls -- on the SDK's default client, which waits
+  five minutes for each of five attempts. A MinIO that accepted the connection
+  and said nothing (a hung container) therefore froze the whole API process;
+  it is how a test hung for over ten minutes on a developer machine. Each call
+  goes through `asyncio.to_thread`, the client has `MINIO_CONNECT_TIMEOUT_SECONDS`
+  (5), `MINIO_READ_TIMEOUT_SECONDS` (60) and `MINIO_MAX_RETRIES` (2), and the
+  blocking-call guard knows the SDK's method names. Checked against exactly
+  that half-dead port: the upload failed in 3.1 s with the loop still running.
+  Tests pin `MINIO_ENDPOINT` to an address that refuses at once: settings read
+  `backend/.env` from the working directory, so the suite had been talking to
+  the dev stack's MinIO.
 
 ### Feature Flags (`core/feature_flags.py`)
 - Two-tier resolution: Redis cache → Settings fallback

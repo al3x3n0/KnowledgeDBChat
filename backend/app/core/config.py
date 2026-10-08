@@ -487,6 +487,14 @@ class Settings(BaseSettings):
     MINIO_SECRET_KEY: str = "minioadmin"
     MINIO_BUCKET_NAME: str = "documents"
     MINIO_USE_SSL: bool = False
+    # How long one MinIO request may wait. The SDK's own default is five
+    # minutes per attempt with five retries, so a MinIO that accepted the
+    # connection and then said nothing held its caller for most of half an
+    # hour. Uploads of large files are multipart, so the read limit bounds a
+    # part, not a file.
+    MINIO_CONNECT_TIMEOUT_SECONDS: float = 5.0
+    MINIO_READ_TIMEOUT_SECONDS: float = 60.0
+    MINIO_MAX_RETRIES: int = 2
     MINIO_PRESIGNED_URL_EXPIRY: int = 3600  # 1 hour in seconds
     MINIO_PROXY_BASE_URL: Optional[
         str

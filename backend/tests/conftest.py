@@ -32,6 +32,16 @@ os.environ.setdefault(
 # (EXPOSE_ERROR_DETAILS defaults to off); tests/test_error_details_are_hidden.py
 # covers that mode.
 os.environ.setdefault("EXPOSE_ERROR_DETAILS", "true")
+# Object storage: an address that refuses at once. Settings read backend/.env
+# from the working directory, so on a developer's machine the suite talked to
+# the dev stack's MinIO -- and when that was half-alive (a hung Docker Desktop:
+# the port accepts, nothing answers) a test that uploads waited on it for ever.
+# CI has no MinIO and gets "connection refused"; this makes every machine CI.
+# Tests that need storage install a fake.
+os.environ.setdefault("MINIO_ENDPOINT", "127.0.0.1:1")
+os.environ.setdefault("MINIO_MAX_RETRIES", "0")
+os.environ.setdefault("MINIO_CONNECT_TIMEOUT_SECONDS", "2")
+os.environ.setdefault("MINIO_READ_TIMEOUT_SECONDS", "5")
 
 # Celery's broker, before app.core.celery reads settings to build the app.
 #

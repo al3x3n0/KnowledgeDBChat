@@ -1,7 +1,7 @@
 """
 Storage service for managing file uploads and downloads using MinIO.
 """
-
+import asyncio
 import os
 import re
 import uuid
@@ -11,11 +11,38 @@ from typing import Optional
 from urllib.parse import urlparse
 from uuid import UUID
 
+import certifi
+import urllib3
 from loguru import logger
 from minio import Minio
 from minio.error import S3Error
 
 from app.core.config import settings
+
+
+def _http_client() -> urllib3.PoolManager:
+    """The HTTP pool MinIO requests go through, with limits that are ours.
+
+    Left to itself the SDK waits five minutes for each of five attempts. A
+    MinIO that accepts the connection and never answers -- a hung container,
+    a half-dead proxy -- then holds every caller for the duration, and held
+    the whole API when these calls still ran on the event loop. Certificate
+    verification is as the SDK configures it.
+    """
+    return urllib3.PoolManager(
+        timeout=urllib3.Timeout(
+            connect=settings.MINIO_CONNECT_TIMEOUT_SECONDS,
+            read=settings.MINIO_READ_TIMEOUT_SECONDS,
+        ),
+        maxsize=10,
+        cert_reqs="CERT_REQUIRED",
+        ca_certs=os.environ.get("SSL_CERT_FILE") or certifi.where(),
+        retries=urllib3.Retry(
+            total=settings.MINIO_MAX_RETRIES,
+            backoff_factor=0.2,
+            status_forcelist=[500, 502, 503, 504],
+        ),
+    )
 
 
 class MinIOStorageService:
@@ -35,6 +62,7 @@ class MinIOStorageService:
                     access_key=settings.MINIO_ACCESS_KEY,
                     secret_key=settings.MINIO_SECRET_KEY,
                     secure=settings.MINIO_USE_SSL,
+                    http_client=_http_client(),
                 )
             except Exception as e:
                 logger.error(f"Failed to create MinIO client: {e}")
@@ -51,8 +79,10 @@ class MinIOStorageService:
             client = self._get_client()
 
             # Check if bucket exists, create if not
-            if not client.bucket_exists(settings.MINIO_BUCKET_NAME):
-                client.make_bucket(settings.MINIO_BUCKET_NAME)
+            if not await asyncio.to_thread(
+                client.bucket_exists, settings.MINIO_BUCKET_NAME
+            ):
+                await asyncio.to_thread(client.make_bucket, settings.MINIO_BUCKET_NAME)
                 logger.info(f"Created MinIO bucket: {settings.MINIO_BUCKET_NAME}")
             else:
                 logger.info(
@@ -189,7 +219,8 @@ class MinIOStorageService:
             object_path = self._get_object_path(document_id, filename)
 
             # Upload file
-            client.put_object(
+            await asyncio.to_thread(
+                client.put_object,
                 bucket_name=settings.MINIO_BUCKET_NAME,
                 object_name=object_path,
                 data=BytesIO(content),
@@ -225,7 +256,8 @@ class MinIOStorageService:
             file_size = os.path.getsize(file_path)
 
             with open(file_path, "rb") as file_handle:
-                client.put_object(
+                await asyncio.to_thread(
+                    client.put_object,
                     bucket_name=settings.MINIO_BUCKET_NAME,
                     object_name=object_path,
                     data=file_handle,
@@ -263,7 +295,8 @@ class MinIOStorageService:
             await self.initialize()
             client = self._get_client()
 
-            client.put_object(
+            await asyncio.to_thread(
+                client.put_object,
                 bucket_name=settings.MINIO_BUCKET_NAME,
                 object_name=object_path,
                 data=BytesIO(content),
@@ -359,7 +392,8 @@ class MinIOStorageService:
 
             # Generate presigned URL with internal MinIO endpoint
             # The signature is calculated based on the exact path, so we must preserve it
-            url = client.presigned_get_object(
+            url = await asyncio.to_thread(
+                client.presigned_get_object,
                 bucket_name=settings.MINIO_BUCKET_NAME,
                 object_name=sanitized_path,
                 expires=expiry_timedelta,
@@ -434,8 +468,10 @@ class MinIOStorageService:
                 f"Deleting file from MinIO: {sanitized_path} (original: {object_path})"
             )
 
-            client.remove_object(
-                bucket_name=settings.MINIO_BUCKET_NAME, object_name=sanitized_path
+            await asyncio.to_thread(
+                client.remove_object,
+                bucket_name=settings.MINIO_BUCKET_NAME,
+                object_name=sanitized_path,
             )
 
             logger.info(f"Successfully deleted file from MinIO: {sanitized_path}")
@@ -482,7 +518,8 @@ class MinIOStorageService:
             local_file = Path(local_path)
             local_file.parent.mkdir(parents=True, exist_ok=True)
 
-            client.fget_object(
+            await asyncio.to_thread(
+                client.fget_object,
                 bucket_name=settings.MINIO_BUCKET_NAME,
                 object_name=sanitized_path,
                 file_path=str(local_file),
@@ -526,14 +563,20 @@ class MinIOStorageService:
             if sanitized_path.startswith("documents/"):
                 sanitized_path = sanitized_path[10:]
 
-            response = client.get_object(
-                bucket_name=settings.MINIO_BUCKET_NAME, object_name=sanitized_path
-            )
-            try:
-                content = response.read()
-            finally:
-                response.close()
-                response.release_conn()
+            # The request and the read of its body, both in the thread: the
+            # body is streamed from the socket as it is read.
+            def _read() -> bytes:
+                response = client.get_object(
+                    bucket_name=settings.MINIO_BUCKET_NAME,
+                    object_name=sanitized_path,
+                )
+                try:
+                    return response.read()
+                finally:
+                    response.close()
+                    response.release_conn()
+
+            content = await asyncio.to_thread(_read)
 
             logger.debug(
                 f"Retrieved file content from MinIO: {sanitized_path} ({len(content)} bytes)"
@@ -566,8 +609,10 @@ class MinIOStorageService:
 
             # Try the path as-is first (in case it includes 'documents/' prefix from old uploads)
             try:
-                client.stat_object(
-                    bucket_name=settings.MINIO_BUCKET_NAME, object_name=object_path
+                await asyncio.to_thread(
+                    client.stat_object,
+                    bucket_name=settings.MINIO_BUCKET_NAME,
+                    object_name=object_path,
                 )
                 return True
             except S3Error as e:
@@ -578,7 +623,8 @@ class MinIOStorageService:
             if object_path.startswith("documents/"):
                 path_without_prefix = object_path[10:]  # Remove 'documents/' prefix
                 try:
-                    client.stat_object(
+                    await asyncio.to_thread(
+                        client.stat_object,
                         bucket_name=settings.MINIO_BUCKET_NAME,
                         object_name=path_without_prefix,
                     )
@@ -591,7 +637,8 @@ class MinIOStorageService:
             try:
                 sanitized_path = self._sanitize_object_path(object_path)
                 if sanitized_path != object_path:
-                    client.stat_object(
+                    await asyncio.to_thread(
+                        client.stat_object,
                         bucket_name=settings.MINIO_BUCKET_NAME,
                         object_name=sanitized_path,
                     )
@@ -733,14 +780,17 @@ class MinIOStorageService:
 
             # Try the path as-is first (in case it includes 'documents/' prefix from old uploads)
             try:
-                stat = client.stat_object(
-                    bucket_name=settings.MINIO_BUCKET_NAME, object_name=object_path
+                stat = await asyncio.to_thread(
+                    client.stat_object,
+                    bucket_name=settings.MINIO_BUCKET_NAME,
+                    object_name=object_path,
                 )
             except S3Error as e:
                 if e.code == "NoSuchKey" and object_path.startswith("documents/"):
                     # Try without 'documents/' prefix
                     path_without_prefix = object_path[10:]  # Remove 'documents/' prefix
-                    stat = client.stat_object(
+                    stat = await asyncio.to_thread(
+                        client.stat_object,
                         bucket_name=settings.MINIO_BUCKET_NAME,
                         object_name=path_without_prefix,
                     )
@@ -815,7 +865,8 @@ class MinIOStorageService:
                     )
                 elif hasattr(client, "_create_multipart_upload"):
                     # Fallback to internal API (may vary by MinIO version)
-                    result = client._create_multipart_upload(
+                    result = await asyncio.to_thread(
+                        client._create_multipart_upload,
                         bucket_name=settings.MINIO_BUCKET_NAME,
                         object_name=sanitized_path,
                         metadata={
@@ -890,7 +941,8 @@ class MinIOStorageService:
             # Upload part using MinIO's S3-compatible multipart upload
             from io import BytesIO
 
-            result = client._upload_part(
+            result = await asyncio.to_thread(
+                client._upload_part,
                 bucket_name=settings.MINIO_BUCKET_NAME,
                 object_name=sanitized_path,
                 upload_id=upload_id,
@@ -945,7 +997,8 @@ class MinIOStorageService:
             minio_parts = [Part(part_num, etag) for part_num, etag in parts]
 
             # Complete multipart upload
-            client._complete_multipart_upload(
+            await asyncio.to_thread(
+                client._complete_multipart_upload,
                 bucket_name=settings.MINIO_BUCKET_NAME,
                 object_name=sanitized_path,
                 upload_id=upload_id,
@@ -983,7 +1036,8 @@ class MinIOStorageService:
                 sanitized_path = sanitized_path[10:]
 
             # Abort multipart upload
-            client._abort_multipart_upload(
+            await asyncio.to_thread(
+                client._abort_multipart_upload,
                 bucket_name=settings.MINIO_BUCKET_NAME,
                 object_name=sanitized_path,
                 upload_id=upload_id,
@@ -1029,7 +1083,8 @@ class MinIOStorageService:
             # Get source file metadata if content_type not provided
             if not content_type:
                 try:
-                    stat = client.stat_object(
+                    stat = await asyncio.to_thread(
+                        client.stat_object,
                         bucket_name=settings.MINIO_BUCKET_NAME,
                         object_name=sanitized_source,
                     )
@@ -1051,7 +1106,8 @@ class MinIOStorageService:
 
                 # Copy object (some MinIO versions may not support metadata parameter)
                 try:
-                    client.copy_object(
+                    await asyncio.to_thread(
+                        client.copy_object,
                         bucket_name=settings.MINIO_BUCKET_NAME,
                         object_name=sanitized_dest,
                         source=copy_source,
@@ -1059,7 +1115,8 @@ class MinIOStorageService:
                     )
                 except (TypeError, AttributeError):
                     # Try without metadata parameter
-                    client.copy_object(
+                    await asyncio.to_thread(
+                        client.copy_object,
                         bucket_name=settings.MINIO_BUCKET_NAME,
                         object_name=sanitized_dest,
                         source=copy_source,
@@ -1072,13 +1129,15 @@ class MinIOStorageService:
                 temp_path = tempfile.mktemp()
                 try:
                     # Download source
-                    client.fget_object(
+                    await asyncio.to_thread(
+                        client.fget_object,
                         bucket_name=settings.MINIO_BUCKET_NAME,
                         object_name=sanitized_source,
                         file_path=temp_path,
                     )
                     # Upload to destination
-                    client.fput_object(
+                    await asyncio.to_thread(
+                        client.fput_object,
                         bucket_name=settings.MINIO_BUCKET_NAME,
                         object_name=sanitized_dest,
                         file_path=temp_path,

@@ -184,21 +184,21 @@ async def list_collaboration_user_ids(
             except Exception:
                 continue
 
-    swarm_rows = list(
-        (
-            await db.execute(
-                select(AgentJob).where(
-                    or_(
-                        AgentJob.user_id == current_user.id,
-                        cast(AgentJob.results, String).ilike("%swarm_collaboration%"),
-                        cast(AgentJob.results, String).ilike(f"%{user_id_str}%"),
-                    )
+    # Only the two columns the helpers below read, and not the caller's own
+    # jobs as such: this ran on every job-list request and loaded every job
+    # the caller had ever run, whole, to learn that they own them. A job of
+    # theirs names somebody else only through a swarm_collaboration block,
+    # which the first pattern already finds.
+    swarm_rows = (
+        await db.execute(
+            select(AgentJob.user_id, AgentJob.results).where(
+                or_(
+                    cast(AgentJob.results, String).ilike("%swarm_collaboration%"),
+                    cast(AgentJob.results, String).ilike(f"%{user_id_str}%"),
                 )
             )
         )
-        .scalars()
-        .all()
-    )
+    ).all()
     for job in swarm_rows:
         if not _is_swarm_job_visible_to_user(
             job, current_user.id, is_admin=current_user.is_admin()

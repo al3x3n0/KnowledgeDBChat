@@ -36,14 +36,13 @@ from tenacity import (
 from app.core.config import settings
 from app.models.llm_usage import LLMUsageEvent
 from app.services import llm_truncation
+from app.services.llm_concurrency import llm_slot
 from app.services.llm_routing import (
     coerce_routing_config,
     compute_attempt_tiers,
     resolve_tier_overrides,
 )
 from app.utils.exceptions import LLMServiceError
-
-_LLM_SEMAPHORE = asyncio.Semaphore(settings.LLM_MAX_CONCURRENCY)
 
 #: The last completion's reasoning, per asyncio task.
 #:
@@ -810,8 +809,7 @@ class LLMService:
             completion = None
             error_text: Optional[str] = None
             try:
-                await _LLM_SEMAPHORE.acquire()
-                try:
+                async with llm_slot():
                     llm_provider = build_provider(
                         effective_provider,
                         api_url=effective_api_url,
@@ -827,8 +825,6 @@ class LLMService:
                         max_tokens=effective_max_tokens,
                         timeout_seconds=timeout_seconds,
                     )
-                finally:
-                    _LLM_SEMAPHORE.release()
                 return completion
             except LLMServiceError as e:
                 error_text = str(e)
@@ -992,8 +988,7 @@ class LLMService:
         error_text: Optional[str] = None
 
         try:
-            await _LLM_SEMAPHORE.acquire()
-            try:
+            async with llm_slot():
                 # Apply user settings if provided (they take priority)
                 effective_provider = self.provider
                 effective_api_url = None
@@ -1278,8 +1273,6 @@ class LLMService:
                         total_tokens = prompt_tokens + completion_tokens
                     extra = meta
                 return result
-            finally:
-                _LLM_SEMAPHORE.release()
 
         except Exception as e:
             error_text = str(e)

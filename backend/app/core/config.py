@@ -360,7 +360,14 @@ class Settings(BaseSettings):
     TOP_P: float = 0.9
 
     # Backpressure (global concurrency caps)
+    # LLM_MAX_CONCURRENCY is per process. The global cap is shared by every
+    # API and worker process through Redis (services/llm_concurrency.py);
+    # 0 turns it off. It is soft: Redis being down, or a wait longer than the
+    # acquire timeout, lets the call through rather than failing it.
     LLM_MAX_CONCURRENCY: int = 4
+    LLM_GLOBAL_MAX_CONCURRENCY: int = 16
+    LLM_GLOBAL_ACQUIRE_TIMEOUT_SECONDS: float = 60.0
+    LLM_GLOBAL_SLOT_TTL_SECONDS: float = 900.0
 
     # Document Processing
     CHUNK_SIZE: int = 1000

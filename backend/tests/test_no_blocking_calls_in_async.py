@@ -49,6 +49,21 @@ BLOCKING_HELPERS = {
     "hash_password",  # bcrypt
     "verify_password",  # bcrypt
     "get_password_hash",  # bcrypt
+    # The MinIO SDK is synchronous: every one of these is a network request.
+    "put_object",
+    "fput_object",
+    "get_object",
+    "fget_object",
+    "remove_object",
+    "stat_object",
+    "copy_object",
+    "bucket_exists",
+    "make_bucket",
+    "presigned_get_object",
+    "_create_multipart_upload",
+    "_upload_part",
+    "_complete_multipart_upload",
+    "_abort_multipart_upload",
 }
 
 

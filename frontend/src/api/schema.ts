@@ -313,6 +313,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/ldap/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ldap Test
+         * @description Admin: walk the LDAP configuration the way a login would and say where it
+         *     stops -- settings, transport, the service account, and optionally what the
+         *     directory holds for one login name. Takes no password and changes nothing.
+         */
+        post: operations["ldap_test_api_v1_admin_ldap_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/llm/models": {
         parameters: {
             query?: never;
@@ -21608,20 +21630,106 @@ export interface components {
             base_dn?: string | null;
             /** Configured */
             configured: boolean;
+            /**
+             * Create User On Login
+             * @default true
+             */
+            create_user_on_login: boolean;
             /** Enabled */
             enabled: boolean;
+            /**
+             * Group Search Configured
+             * @default false
+             */
+            group_search_configured: boolean;
+            /**
+             * Has Service Account
+             * @default false
+             */
+            has_service_account: boolean;
             /**
              * Insecure Skip Tls Verify
              * @default false
              */
             insecure_skip_tls_verify: boolean;
             /**
+             * Local Fallback When Unavailable
+             * @default false
+             */
+            local_fallback_when_unavailable: boolean;
+            /**
+             * Problems
+             * @default []
+             */
+            problems: string[];
+            /**
+             * Role Mapping Configured
+             * @default false
+             */
+            role_mapping_configured: boolean;
+            /**
              * Start Tls
              * @default false
              */
             start_tls: boolean;
+            /**
+             * Transport
+             * @default plaintext
+             */
+            transport: string;
             /** Uri */
             uri?: string | null;
+            /**
+             * Verifies Certificates
+             * @default false
+             */
+            verifies_certificates: boolean;
+        };
+        /** LdapTestRequest */
+        LdapTestRequest: {
+            /**
+             * Username
+             * @description A login name to look up in the directory (no password).
+             */
+            username?: string | null;
+        };
+        /** LdapTestResponse */
+        LdapTestResponse: {
+            /** Ok */
+            ok: boolean;
+            /**
+             * Steps
+             * @default []
+             */
+            steps: components["schemas"]["LdapTestStep"][];
+            user?: components["schemas"]["LdapTestUser"] | null;
+        };
+        /** LdapTestStep */
+        LdapTestStep: {
+            /** Message */
+            message: string;
+            /** Ok */
+            ok: boolean;
+            /** Step */
+            step: string;
+        };
+        /** LdapTestUser */
+        LdapTestUser: {
+            /** Dn */
+            dn: string;
+            /** Email */
+            email?: string | null;
+            /** Full Name */
+            full_name?: string | null;
+            /**
+             * Groups
+             * @default []
+             */
+            groups: string[];
+            /** Role */
+            role?: string | null;
+            /** Username */
+            username: string;
         };
         /**
          * MCPKeyConfigResponse
@@ -29569,6 +29677,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LdapStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ldap_test_api_v1_admin_ldap_test_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LdapTestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LdapTestResponse"];
                 };
             };
             /** @description Validation Error */

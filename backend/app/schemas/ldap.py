@@ -12,6 +12,46 @@ class LdapStatusResponse(BaseModel):
     base_dn: Optional[str] = None
     start_tls: bool = False
     insecure_skip_tls_verify: bool = False
+    #: "ldaps", "starttls" or "plaintext".
+    transport: str = "plaintext"
+    verifies_certificates: bool = False
+    has_service_account: bool = False
+    role_mapping_configured: bool = False
+    group_search_configured: bool = False
+    create_user_on_login: bool = True
+    local_fallback_when_unavailable: bool = False
+    #: Why the settings cannot work, in words; empty when they can.
+    problems: list[str] = []
+
+
+class LdapTestRequest(BaseModel):
+    username: Optional[str] = Field(
+        None,
+        max_length=255,
+        description="A login name to look up in the directory (no password).",
+    )
+
+
+class LdapTestStep(BaseModel):
+    step: str
+    ok: bool
+    message: str
+
+
+class LdapTestUser(BaseModel):
+    username: str
+    dn: str
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+    groups: list[str] = []
+    #: The role the group mapping would give; None when no mapping is set.
+    role: Optional[str] = None
+
+
+class LdapTestResponse(BaseModel):
+    ok: bool
+    steps: list[LdapTestStep] = []
+    user: Optional[LdapTestUser] = None
 
 
 class LdapImportRequest(BaseModel):

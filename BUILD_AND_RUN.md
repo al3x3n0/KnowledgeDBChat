@@ -85,10 +85,32 @@ This guide provides step-by-step instructions for building and running the Knowl
 If you want to use existing Active Directory users:
 
 1. Configure LDAP settings in `backend/.env` (copy from `backend/env.example`).
-2. Restart `backend` + `celery`.
-3. (Optional) Import users into the local DB via admin API:
-   - `GET /api/v1/admin/ldap/status`
-   - `POST /api/v1/admin/ldap/import`
+   Use `ldaps://`, or `ldap://` with `LDAP_START_TLS=true`: an unencrypted
+   connection is refused unless `LDAP_ALLOW_PLAINTEXT=true`, and the server's
+   certificate is verified (`LDAP_CA_CERT_FILE` for an internal CA).
+2. Restart `backend`.
+3. Open **Admin → Directory (LDAP)**. It shows what is configured and anything
+   that cannot work, and **Run test** walks the setup step by step -- settings,
+   transport, the service account, and (with a login name) what the directory
+   holds for that person and the role they would get. No password is needed.
+4. (Optional) Import users from the same screen: preview, then apply.
+
+The same three operations are admin API routes: `GET /api/v1/admin/ldap/status`,
+`POST /api/v1/admin/ldap/test`, `POST /api/v1/admin/ldap/import`.
+
+How sign-in behaves with LDAP on:
+
+- Local accounts sign in as before. LDAP-managed accounts and unknown names
+  are checked against the directory.
+- A user deactivated in this application stays deactivated, whatever the
+  directory says.
+- When the directory rejects a password, that is final. A stored local
+  password is only ever a fallback for when the directory is *unreachable*,
+  and only with `LDAP_LOCAL_FALLBACK_WHEN_UNAVAILABLE=true`.
+- Roles follow `LDAP_ADMIN_GROUP_DNS` / `LDAP_VIEWER_GROUP_DNS` (several DNs
+  separated by `;`). With neither set, the directory never changes a role.
+- A directory login is linked to an existing local account only when their
+  emails match (or `LDAP_LINK_LOCAL_USERS_BY_USERNAME=true`, or by import).
 
 For convenience, you can run the interactive bootstrap script:
 

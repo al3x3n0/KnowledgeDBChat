@@ -4,7 +4,11 @@ set -euo pipefail
 # Bootstrap Active Directory LDAP integration:
 # - writes LDAP_* values into backend/.env
 # - restarts backend + celery
-# - runs /admin/ldap/status and /admin/ldap/import (dry-run by default)
+# - runs /admin/ldap/status, /admin/ldap/test and /admin/ldap/import
+#   (dry-run by default)
+#
+# The connection must be encrypted: give an ldaps:// URI, or ldap:// with
+# LDAP_START_TLS=true. Several group DNs are separated by ";".
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="$ROOT_DIR/backend/.env"
@@ -76,7 +80,7 @@ ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 IMPORT_LIMIT="${IMPORT_LIMIT:-200}"
 DRY_RUN="${DRY_RUN:-true}"
 
-prompt LDAP_URI "AD LDAP URI (e.g. ldap://dc01.corp.example.com:389)"
+prompt LDAP_URI "AD LDAP URI (e.g. ldaps://dc01.corp.example.com:636)"
 prompt LDAP_BASE_DN "AD Base DN (e.g. DC=corp,DC=example,DC=com)"
 prompt LDAP_BIND_DN "Bind DN (service account DN)"
 prompt LDAP_BIND_PASSWORD "Bind password" 1
@@ -86,7 +90,9 @@ echo "Updating $ENV_FILE ..."
 upsert_env LDAP_ENABLED "true"
 upsert_env LDAP_URI "$LDAP_URI"
 upsert_env LDAP_START_TLS "${LDAP_START_TLS:-false}"
+upsert_env LDAP_ALLOW_PLAINTEXT "${LDAP_ALLOW_PLAINTEXT:-false}"
 upsert_env LDAP_INSECURE_SKIP_TLS_VERIFY "${LDAP_INSECURE_SKIP_TLS_VERIFY:-false}"
+upsert_env LDAP_CA_CERT_FILE "${LDAP_CA_CERT_FILE:-}"
 upsert_env LDAP_CONNECT_TIMEOUT_SECONDS "${LDAP_CONNECT_TIMEOUT_SECONDS:-8}"
 
 upsert_env LDAP_BIND_DN "$LDAP_BIND_DN"
@@ -110,12 +116,25 @@ upsert_env LDAP_CREATE_USER_ON_LOGIN "${LDAP_CREATE_USER_ON_LOGIN:-true}"
 
 echo "Restarting services..."
 cd "$ROOT_DIR"
-docker compose restart backend celery
+docker compose restart backend
 
 echo "Checking LDAP status..."
-API="http://localhost:8000/api/v1"
+API="${KDBC_API_URL:-http://localhost:28000}/api/v1"
 TOKEN="$(curl -s -X POST "$API/auth/login" -H "Content-Type: application/json" -d "{\"username\":\"$ADMIN_USERNAME\",\"password\":\"$ADMIN_PASSWORD\"}" | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')"
 curl -s "$API/admin/ldap/status" -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+
+echo "Testing the connection..."
+# TEST_USERNAME (optional): a login name to look up, without a password.
+TEST_BODY="$(TEST_USERNAME="${TEST_USERNAME:-}" python3 -c 'import json,os; print(json.dumps({"username": os.environ["TEST_USERNAME"] or None}))')"
+TEST="$(curl -s -X POST "$API/admin/ldap/test" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "$TEST_BODY")"
+echo "$TEST" | python3 -m json.tool
+if ! echo "$TEST" | python3 -c 'import sys,json; sys.exit(0 if json.load(sys.stdin).get("ok") else 1)'; then
+  echo "The LDAP test failed at the step shown above; not importing."
+  exit 1
+fi
 
 echo "Running LDAP import (dry_run=$DRY_RUN, limit=$IMPORT_LIMIT)..."
 curl -s -X POST "$API/admin/ldap/import" \

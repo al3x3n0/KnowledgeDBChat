@@ -2,6 +2,7 @@
  * API client for Knowledge Database backend
  */
 
+import type { components } from '../api/schema';
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import toast from 'react-hot-toast';
 import {
@@ -1698,6 +1699,27 @@ class ApiClient {
 
   async listCollaborationUsers(search: string = '', page: number = 1, page_size: number = 50): Promise<{ items: Array<User>; total: number; page: number; page_size: number }>{
     const response = await this.client.get('/api/v1/users/collaboration', { params: { search, page, page_size } });
+    return response.data;
+  }
+
+  // Directory (LDAP) integration (admin). Types come from the generated
+  // schema: these responses are not mirrored by hand in types/index.ts.
+  async getLdapStatus(): Promise<components['schemas']['LdapStatusResponse']> {
+    const response = await this.client.get('/api/v1/admin/ldap/status');
+    return response.data;
+  }
+
+  async testLdap(username?: string): Promise<components['schemas']['LdapTestResponse']> {
+    const response = await this.client.post('/api/v1/admin/ldap/test', {
+      username: username || null,
+    });
+    return response.data;
+  }
+
+  async importLdapUsers(
+    request: components['schemas']['LdapImportRequest']
+  ): Promise<components['schemas']['LdapImportResponse']> {
+    const response = await this.client.post('/api/v1/admin/ldap/import', request);
     return response.data;
   }
 

@@ -273,3 +273,12 @@ CI runs it on an ephemeral kind cluster in the `helm-smoke` job.
 | 502 from `/api/` | Backend not ready yet; the gateway re-resolves DNS every 10s and recovers on its own |
 | Downloads 404 but the API is fine | `config.minioProxyBaseUrl` does not match how the browser reaches the gateway |
 | LLM calls fail | `config.llmProvider: ollama` with `ollama.enabled: false` and no `ollama.external.url` |
+
+## Directory sign-in (LDAP / Active Directory)
+
+Optional. Put the `LDAP_*` settings under `config.extra` and
+`LDAP_BIND_PASSWORD` in the Secret; `values-prod.example.yaml` has a commented
+block. The connection must be `ldaps://` or StartTLS, and the server's
+certificate is verified, so an internal CA needs `LDAP_CA_CERT_FILE` (mount the
+bundle into the backend pod). Once deployed, check it from
+Admin → Directory (LDAP) → Run test, which reports the step that fails.

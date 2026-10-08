@@ -268,8 +268,19 @@ class Settings(BaseSettings):
         str
     ] = None  # e.g. "ldap://ldap.example.com:389" or "ldaps://ldap.example.com:636"
     LDAP_START_TLS: bool = False
+    # The server's certificate is verified unless this is set. (It used to be
+    # verified never: ldap3 checks nothing unless told to, and was not told.)
     LDAP_INSECURE_SKIP_TLS_VERIFY: bool = False
+    # A CA bundle for a directory whose certificate the system store does not
+    # know -- the usual case for an internal CA. Unset means the system store.
+    LDAP_CA_CERT_FILE: Optional[str] = None
+    # Plain ldap:// without StartTLS sends every password in the clear, so it
+    # is refused unless this says otherwise.
+    LDAP_ALLOW_PLAINTEXT: bool = False
     LDAP_CONNECT_TIMEOUT_SECONDS: int = 8
+    # How long to wait for an answer once connected. There was no limit, so a
+    # directory that accepted the connection and stalled held the login.
+    LDAP_RECEIVE_TIMEOUT_SECONDS: int = 10
 
     # Service account used to search for user DN (recommended). If not set, DN template is used.
     LDAP_BIND_DN: Optional[str] = None
@@ -305,6 +316,23 @@ class Settings(BaseSettings):
     LDAP_VIEWER_GROUP_DNS: Optional[str] = None
     LDAP_SYNC_ON_LOGIN: bool = True
     LDAP_CREATE_USER_ON_LOGIN: bool = True
+    # Groups found by searching for the user as a member, for directories
+    # where the user entry carries no memberOf (OpenLDAP without the overlay).
+    # Off unless a base is given. For Active Directory's nested groups use
+    # "(member:1.2.840.113556.1.4.1941:={user_dn})".
+    LDAP_GROUP_SEARCH_BASE: Optional[str] = None
+    LDAP_GROUP_SEARCH_FILTER: str = (
+        "(|(member={user_dn})(uniqueMember={user_dn})(memberUid={username}))"
+    )
+    # May an LDAP-managed user sign in with the password stored here when the
+    # directory cannot be reached? Off: that password is whatever the account
+    # had before it became LDAP-managed, and nobody in the directory can
+    # revoke it. It is never tried when the directory answered "no".
+    LDAP_LOCAL_FALLBACK_WHEN_UNAVAILABLE: bool = False
+    # May a directory login take over a local account that merely has the
+    # same username? Off: the accounts are linked only when their emails
+    # match (or by an admin's import).
+    LDAP_LINK_LOCAL_USERS_BY_USERNAME: bool = False
 
     # File Upload Limits
     MAX_FILE_SIZE: int = 500 * 1024 * 1024  # 500MB default (videos can be large)

@@ -29,6 +29,7 @@ secrets:
   # Must contain: SECRET_KEY, POSTGRES_PASSWORD, REDIS_PASSWORD,
   # MINIO_ACCESS_KEY, MINIO_SECRET_KEY, plus any provider API keys
   # (OPENAI_API_KEY, ANTHROPIC_API_KEY, ...) and SECRETS_ENCRYPTION_KEY.
+  # With LDAP below, also LDAP_BIND_PASSWORD (the service account's).
   existingSecret: knowledgedbchat-secrets
   # Set this to a non-empty placeholder when the managed Secret enables Redis
   # auth: the chart uses it only to decide whether to build a redis:// URL with
@@ -42,6 +43,20 @@ config:
   extra:
     RAG_HYBRID_SEARCH_ENABLED: "true"
     RAG_RERANKING_ENABLED: "true"
+    # Directory sign-in (optional). Every LDAP_* setting goes here except the
+    # service account's password, which belongs in the Secret. Check it from
+    # Admin -> Directory (LDAP) -> Run test once it is deployed.
+    # LDAP_ENABLED: "true"
+    # LDAP_URI: "ldaps://dc01.corp.example.com:636"
+    # LDAP_BASE_DN: "DC=corp,DC=example,DC=com"
+    # LDAP_BIND_DN: "CN=svc-kdbc,OU=Service Accounts,DC=corp,DC=example,DC=com"
+    # LDAP_USER_SEARCH_FILTER: "(&(objectClass=user)(sAMAccountName={username}))"
+    # LDAP_USERNAME_ATTRIBUTE: "sAMAccountName"
+    # Several group DNs are separated by ";" (a DN contains commas).
+    # LDAP_ADMIN_GROUP_DNS: "CN=KB Admins,OU=Groups,DC=corp,DC=example,DC=com"
+    # An internal CA: mount its bundle and name it, rather than skipping
+    # verification with LDAP_INSECURE_SKIP_TLS_VERIFY.
+    # LDAP_CA_CERT_FILE: "/etc/ssl/corp/ca.pem"
     AGENT_REQUIRE_TOOL_APPROVAL: "true"
     LATEX_COMPILER_ENABLED: "true"
 

@@ -210,6 +210,42 @@ echo "$(minikube ip) kdbc.local" | sudo tee -a /etc/hosts
 Needs a CNI that enforces policy — on minikube start with `--cni=calico`,
 otherwise the objects are accepted and silently ignored.
 
+## Sandboxed tools
+
+Compiler, gem5, BOLT, sandbox-skill and scientific-validation tools, and MCP
+`docker_execute`, run `docker run` against a private daemon. It is **off by
+default** in both production shapes, because the daemon is a privileged
+container; with it off those tools report that they could not run.
+
+**Compose:** add the overlay.
+
+```bash
+docker compose -f docker-compose.prod.yml -f docker-compose.sandbox.yml up -d --build
+make sandbox-images
+make sandbox-load DC="docker compose -f docker-compose.prod.yml -f docker-compose.sandbox.yml"
+```
+
+**Helm:** `sandbox.enabled=true` adds the daemon as a sidecar to the backend,
+`celery` and `celery-agents` pods (`sandbox.components` narrows that). Each pod
+talks to its own daemon over a unix socket in an `emptyDir`; nothing is exposed
+on the network. It needs:
+
+- a backend image built with `--build-arg WITH_DOCKER_CLI=true`;
+- the sandbox images pushed to a registry the cluster can reach, and named in
+  `config.extra.SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES` (they are not
+  published; `sandbox.registryAuthSecret` names a `dockerconfigjson` Secret
+  for a private registry);
+- `config.extra.UNSAFE_CODE_EXEC_BACKEND: "docker"`;
+- a namespace whose Pod Security level admits privileged pods, and, with
+  `networkPolicy.enabled`, egress from those pods to the registry.
+
+Limits worth knowing: the image store and the work directory are per pod. A
+restarted pod pulls its images again, and a pipeline stage that runs on a
+different pod from its parent starts without the parent's files (it is told
+so). With one `celery-agents` replica neither arises. The chart is rendered
+and schema-validated with the sidecar on in CI; it has not been run on a
+cluster.
+
 ## Production checklist
 
 1. Push images to a registry; set `image.*.repository`/`tag` and `global.imagePullSecrets`.

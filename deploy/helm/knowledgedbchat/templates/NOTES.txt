@@ -31,6 +31,18 @@ Migration status (Alembic is the only source of schema truth):
 #  or point secrets.existingSecret at a Secret you manage.                     #
 ################################################################################
 {{- end }}
+{{- if .Values.sandbox.enabled }}
+
+NOTE: sandbox.enabled adds a PRIVILEGED Docker daemon sidecar to:
+  {{ join ", " .Values.sandbox.components }}
+It needs a backend image built with WITH_DOCKER_CLI=true, the sandbox images
+in a registry this cluster can pull from, and
+config.extra.UNSAFE_CODE_EXEC_BACKEND=docker. See deploy/README.md.
+{{- else }}
+
+NOTE: sandbox.enabled=false, so sandboxed agent tools (compiler, gem5, BOLT,
+sandbox skills, scientific validation) will report that they could not run.
+{{- end }}
 {{- if not .Values.ollama.enabled }}
 {{- if and (eq .Values.config.llmProvider "ollama") (not .Values.ollama.external.url) }}
 

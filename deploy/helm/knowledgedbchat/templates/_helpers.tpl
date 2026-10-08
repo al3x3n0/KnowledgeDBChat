@@ -301,3 +301,107 @@ whichever pod asked last.
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Sandbox daemon (values: sandbox.*).
+
+Sandboxed agent tools shell out to the `docker` CLI. In compose they reach one
+shared daemon over TLS; a pod cannot do that, because `-v <dir>:/work` is
+resolved on the daemon's filesystem and a volume shared between pods needs
+ReadWriteMany storage most clusters lack. So each pod that runs sandbox tools
+carries its own daemon as a sidecar: the socket and the work directory are
+emptyDirs both containers mount at the same path, and nothing crosses the
+network. The sidecar is privileged, which is why this is off by default.
+
+All four take (dict "ctx" . "component" "<values key>").
+*/}}
+{{- define "kdbc.sandbox.on" -}}
+{{- if and .ctx.Values.sandbox.enabled (has .component .ctx.Values.sandbox.components) -}}true{{- end -}}
+{{- end }}
+
+{{- define "kdbc.sandbox.env" -}}
+{{- if include "kdbc.sandbox.on" . }}
+- name: DOCKER_HOST
+  value: unix:///run/sandbox/docker.sock
+- name: TMPDIR
+  value: /sandbox-work
+{{- if .ctx.Values.sandbox.registryAuthSecret }}
+- name: DOCKER_CONFIG
+  value: /sandbox-registry-auth
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "kdbc.sandbox.volumeMounts" -}}
+{{- if include "kdbc.sandbox.on" . }}
+- name: sandbox-run
+  mountPath: /run/sandbox
+- name: sandbox-work
+  mountPath: /sandbox-work
+{{- if .ctx.Values.sandbox.registryAuthSecret }}
+- name: sandbox-registry-auth
+  mountPath: /sandbox-registry-auth
+  readOnly: true
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "kdbc.sandbox.container" -}}
+{{- if include "kdbc.sandbox.on" . }}
+- name: sandbox-docker
+  image: "{{ .ctx.Values.sandbox.image.repository }}:{{ .ctx.Values.sandbox.image.tag }}"
+  imagePullPolicy: {{ .ctx.Values.sandbox.image.pullPolicy }}
+  # A unix socket in a directory only this pod mounts: no TCP listener, so
+  # no TLS to manage. The entrypoint's own TLS setup is switched off.
+  args:
+    - --host=unix:///run/sandbox/docker.sock
+  env:
+    - name: DOCKER_TLS_CERTDIR
+      value: ""
+  securityContext:
+    privileged: true
+  volumeMounts:
+    - name: sandbox-run
+      mountPath: /run/sandbox
+    # The same path as in the app container: the daemon resolves `-v` here.
+    # Not under /tmp, which the dind entrypoint covers with a tmpfs.
+    - name: sandbox-work
+      mountPath: /sandbox-work
+    - name: sandbox-images
+      mountPath: /var/lib/docker
+  # Liveness, not readiness: a daemon that is down must not take the pod out
+  # of service -- the tools that need it say so, and everything else works.
+  livenessProbe:
+    exec:
+      command: ["docker", "--host=unix:///run/sandbox/docker.sock", "info"]
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 4
+  resources:
+    {{- toYaml .ctx.Values.sandbox.resources | nindent 4 }}
+{{- end }}
+{{- end }}
+
+{{- define "kdbc.sandbox.volumes" -}}
+{{- if include "kdbc.sandbox.on" . }}
+- name: sandbox-run
+  emptyDir: {}
+- name: sandbox-work
+  emptyDir:
+    sizeLimit: {{ .ctx.Values.sandbox.workSizeLimit }}
+# The daemon's image store. An emptyDir, so a restarted pod pulls its images
+# again; they must come from a registry the cluster can reach.
+- name: sandbox-images
+  emptyDir:
+    sizeLimit: {{ .ctx.Values.sandbox.imageStoreSizeLimit }}
+{{- if .ctx.Values.sandbox.registryAuthSecret }}
+- name: sandbox-registry-auth
+  secret:
+    secretName: {{ .ctx.Values.sandbox.registryAuthSecret }}
+    items:
+      - key: .dockerconfigjson
+        path: config.json
+{{- end }}
+{{- end }}
+{{- end }}

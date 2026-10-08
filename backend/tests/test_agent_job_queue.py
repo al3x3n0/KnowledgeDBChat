@@ -58,7 +58,11 @@ def test_every_stack_consumes_the_agents_queue(compose):
 
 @pytest.mark.parametrize(
     "overlay",
-    ["docker-compose.docker-tools.yml", "docker-compose.override.example.yml"],
+    [
+        "docker-compose.docker-tools.yml",
+        "docker-compose.override.example.yml",
+        "docker-compose.sandbox.yml",
+    ],
 )
 def test_an_overlay_gives_the_agents_worker_what_it_gives_the_general_one(overlay):
     # `extends` copies the base file's `celery`, not an overlay's changes to

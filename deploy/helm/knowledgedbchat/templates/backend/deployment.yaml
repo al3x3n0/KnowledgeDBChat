@@ -50,6 +50,7 @@ spec:
               containerPort: 8000
           env:
             {{- include "kdbc.connectionEnv" . | nindent 12 }}
+            {{- include "kdbc.sandbox.env" (dict "ctx" . "component" "backend") | nindent 12 }}
             - name: WORKERS
               value: {{ .Values.backend.workers | quote }}
             {{- with .Values.global.extraEnv }}
@@ -59,6 +60,7 @@ spec:
             {{- include "kdbc.appEnvFrom" . | nindent 12 }}
           volumeMounts:
             {{- include "kdbc.dataVolumeMounts" . | nindent 12 }}
+            {{- include "kdbc.sandbox.volumeMounts" (dict "ctx" . "component" "backend") | nindent 12 }}
           startupProbe:
             httpGet:
               path: /health
@@ -83,8 +85,10 @@ spec:
             failureThreshold: {{ .Values.backend.livenessProbe.failureThreshold }}
           resources:
             {{- toYaml .Values.backend.resources | nindent 12 }}
+        {{- include "kdbc.sandbox.container" (dict "ctx" . "component" "backend") | nindent 8 }}
       volumes:
         {{- include "kdbc.dataVolume" . | nindent 8 }}
+        {{- include "kdbc.sandbox.volumes" (dict "ctx" . "component" "backend") | nindent 8 }}
       {{- with .Values.backend.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

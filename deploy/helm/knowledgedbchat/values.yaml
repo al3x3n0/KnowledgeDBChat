@@ -29,6 +29,43 @@ podSecurityContext:
   fsGroup: 1000
 
 # -----------------------------------------------------------------------------
+# Sandbox daemon
+# -----------------------------------------------------------------------------
+# Sandboxed agent tools (compiler, gem5, BOLT, sandbox skills, scientific
+# validation, MCP docker_execute) run `docker run` against a private daemon.
+# Enabling this adds that daemon as a PRIVILEGED sidecar to each listed
+# workload; with it off those tools report that they could not run. Needs:
+#   - a backend image built with --build-arg WITH_DOCKER_CLI=true;
+#   - the sandbox images (ghcr.io/al3x3n0/kdbc-*, see `make sandbox-images`)
+#     in a registry the cluster can pull from. They are not published; push
+#     them to your own and list those names in
+#     config.extra.SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES;
+#   - config.extra.UNSAFE_CODE_EXEC_BACKEND: "docker".
+# Each pod has its own daemon and work directory. A pipeline stage that lands
+# on another pod than its parent starts without the parent's files (it is told
+# so), and each restarted pod pulls its images again.
+sandbox:
+  enabled: false
+  # Values keys of the workloads that get a daemon.
+  components: [backend, celery, celeryAgents]
+  image:
+    repository: docker
+    tag: 27-dind
+    pullPolicy: IfNotPresent
+  # Name of a kubernetes.io/dockerconfigjson Secret for a private registry.
+  # Mounted into the app container, since the CLI is what sends credentials.
+  registryAuthSecret: ""
+  workSizeLimit: 10Gi
+  imageStoreSizeLimit: 30Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+
+# -----------------------------------------------------------------------------
 # Images
 # -----------------------------------------------------------------------------
 # Backend, celeryLatex, frontend and videoStreamer are built from this repo and

@@ -246,8 +246,14 @@ database that already has a revision recorded.
   one: `AgentJob.execution_log`, which only `GET /agent-jobs/{id}` returns, so
   `JobDetailPanel` -- usually handed a job from the list -- showed no launch
   log. That field now lives on `AgentJobDetail`, `getAgentJob` returns it, and
-  the panel fetches the detail when it was given a list row. Extend the checks
-  area by area; prefer aliasing a type to `components['schemas'][...]` where
+  the panel fetches the detail when it was given a list row.
+  `__typechecks__/byName.ts` extends it to every type whose name matches a
+  schema (290 more). That run found the same shape from the other side: the
+  admin dashboard reads `documents.without_summary`, the stats task computes
+  it, and `DocumentStatsResponse` did not declare it, so **the response model
+  dropped the field** and the line never rendered. A backend test now reads
+  the task for the keys it writes and requires the schema to name each.
+  Extend the checks area by area; prefer aliasing a type to `components['schemas'][...]` where
   the two already agree.
 - Tailwind uses an inverted terminal/dark palette (gray-50 = dark, gray-900 = light) — check `tailwind.config.js` before assuming standard shades
 

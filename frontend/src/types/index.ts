@@ -148,7 +148,10 @@ export interface SandboxSkillListResponse {
   image_build_enabled: boolean;
 }
 
-export interface SandboxSkillDryRunResponse extends SandboxSkillDryRun {
+// `judged_by` and `at` are on the run a skill stores (`last_dry_run`), not on
+// the response to running one.
+export interface SandboxSkillDryRunResponse
+  extends Omit<SandboxSkillDryRun, 'judged_by' | 'at'> {
   skill: SandboxSkill;
 }
 
@@ -472,7 +475,6 @@ export interface Document {
   source_identifier: string;
   author?: string;
   tags?: string[];
-  metadata?: any;
   extra_metadata?: {
     is_transcribing?: boolean;
     is_transcribed?: boolean;
@@ -781,7 +783,6 @@ export interface DocumentChunk {
   start_pos?: number;
   end_pos?: number;
   embedding_id?: string;
-  metadata?: any;
   created_at: string;
 }
 
@@ -991,7 +992,7 @@ export interface DocumentStats {
   failed: number;
   pending: number;
   success_rate: number;
-  without_summary?: number;
+  without_summary?: number | null;
 }
 export interface LLMRoutingExperimentListItem {
   agent_id: string;
@@ -1560,7 +1561,13 @@ export interface APIKeyCreate {
   rate_limit_per_day?: number;
 }
 
-export interface APIKeyCreateResponse extends APIKey {
+// What creation returns is not a whole APIKey: the usage and revocation
+// fields exist only on a key read back from the list.
+export interface APIKeyCreateResponse
+  extends Omit<
+    APIKey,
+    'is_active' | 'last_used_at' | 'last_used_ip' | 'usage_count' | 'revoked_at'
+  > {
   api_key: string; // The actual key - only shown once!
   message: string;
 }
@@ -4999,7 +5006,6 @@ export interface SynthesisJob {
   /** Autonomous runs whose findings were used as source material. */
   agent_job_ids?: string[];
   research_note_id?: string;
-  source_id?: string;
   search_query?: string;
   topic?: string;
   options?: Record<string, any>;

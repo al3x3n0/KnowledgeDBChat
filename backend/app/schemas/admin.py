@@ -31,6 +31,9 @@ class DocumentStatsResponse(BaseModel):
     failed: int
     pending: int
     success_rate: float
+    #: Counted by the stats task. Without the field here the response model
+    #: dropped it, and the dashboard line that shows it never rendered.
+    without_summary: Optional[int] = None
 
 
 class ChatStatsResponse(BaseModel):

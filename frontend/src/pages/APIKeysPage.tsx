@@ -252,7 +252,7 @@ const APIKeyCard: React.FC<{
 // Create API Key Modal
 const CreateAPIKeyModal: React.FC<{
   onClose: () => void;
-  onCreated: (key: APIKey, secret: string) => void;
+  onCreated: (key: APIKeyCreateResponse, secret: string) => void;
   newKeySecret: string | null;
 }> = ({ onClose, onCreated, newKeySecret }) => {
   const [name, setName] = useState('');

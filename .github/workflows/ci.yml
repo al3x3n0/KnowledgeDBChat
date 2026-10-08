@@ -276,25 +276,44 @@ jobs:
       # Rendering alone catches template errors; kubeconform catches manifests
       # that render cleanly but the API server would reject.
       - name: Validate rendered manifests (minikube profile)
+        # shell: bash turns on pipefail. Without it a render that failed fed
+        # kubeconform nothing, and nothing validates.
+        shell: bash
         run: |
           helm template kdbc deploy/helm/knowledgedbchat \
             -f deploy/helm/knowledgedbchat/values-minikube.yaml \
             | kubeconform -strict -summary -kubernetes-version 1.31.0
       - name: Validate rendered manifests (all optional components on)
+        shell: bash
+        # Autoscaling raises the API process ceiling to 6 x 4, so the pool is
+        # sized to fit the connection budget the chart now enforces.
         run: |
           helm template kdbc deploy/helm/knowledgedbchat \
             --set ollama.enabled=true --set celeryLatex.enabled=true \
             --set celeryTranscription.enabled=true \
             --set networkPolicy.enabled=true --set ingress.enabled=true \
             --set backend.autoscaling.enabled=true --set celery.autoscaling.enabled=true \
+            --set backend.dbPool.size=5 --set backend.dbPool.maxOverflow=5 \
             --set backend.podDisruptionBudget.enabled=true --set secrets.redisPassword=test \
             | kubeconform -strict -summary -kubernetes-version 1.31.0
       - name: Validate rendered manifests (external data services)
+        shell: bash
         run: |
           helm template kdbc deploy/helm/knowledgedbchat \
             -f deploy/helm/knowledgedbchat/values-prod.example.yaml \
             | kubeconform -strict -summary -kubernetes-version 1.31.0
+      - name: The chart refuses a connection budget that cannot fit
+        shell: bash
+        # The control for the check above: autoscaling at the default pool
+        # asks for 720 connections of 300 and must not render.
+        run: |
+          if helm template kdbc deploy/helm/knowledgedbchat \
+               --set backend.autoscaling.enabled=true >/dev/null 2>err.txt; then
+            echo "expected the render to be refused"; exit 1
+          fi
+          grep -q "database connection budget exceeded" err.txt
       - name: Check the gateway nginx config parses
+        shell: bash
         run: |
           helm template kdbc deploy/helm/knowledgedbchat --set gateway.resolver=10.96.0.10 \
             | python3 -c "

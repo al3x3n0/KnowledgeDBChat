@@ -35,8 +35,20 @@ def get_user_identifier(request: Request) -> str:
     return get_remote_address(request)
 
 
-# Create limiter instance
-limiter = Limiter(key_func=get_user_identifier)
+def rate_limit_storage_uri() -> str:
+    """Where limits are counted: RATE_LIMIT_STORAGE_URL, else Redis."""
+    return settings.RATE_LIMIT_STORAGE_URL or settings.REDIS_URL
+
+
+# Counted in Redis, so the limit is one number across every worker and replica
+# rather than one per process. If Redis cannot be reached the limiter falls
+# back to in-process counting and keeps serving: a limit that is briefly too
+# generous is better than an API that answers 500 because its cache is down.
+limiter = Limiter(
+    key_func=get_user_identifier,
+    storage_uri=rate_limit_storage_uri(),
+    in_memory_fallback_enabled=True,
+)
 
 
 # Rate limit configurations

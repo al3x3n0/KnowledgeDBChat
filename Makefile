@@ -244,14 +244,20 @@ helm-template: ## Render the chart for every values profile
 
 helm-validate: helm-lint ## Render the chart and validate it against the Kubernetes API schemas
 	@command -v kubeconform >/dev/null 2>&1 || { echo "kubeconform not installed (brew install kubeconform)"; exit 1; }
-	@helm template $(K8S_RELEASE) $(CHART) -f $(CHART)/values-minikube.yaml | kubeconform -strict -summary -kubernetes-version 1.31.0
-	@helm template $(K8S_RELEASE) $(CHART) \
+	@# pipefail: a render that fails must fail this target. Without it
+	@# kubeconform validated empty input and reported success.
+	@bash -o pipefail -c 'helm template $(K8S_RELEASE) $(CHART) -f $(CHART)/values-minikube.yaml | kubeconform -strict -summary -kubernetes-version 1.31.0'
+	@# Autoscaling raises the API process ceiling to 6 replicas x 4 workers,
+	@# so this render sizes the pool to fit the connection budget.
+	@bash -o pipefail -c 'helm template $(K8S_RELEASE) $(CHART) \
 		--set ollama.enabled=true --set celeryLatex.enabled=true \
 		--set celeryTranscription.enabled=true \
 		--set networkPolicy.enabled=true --set ingress.enabled=true \
 		--set backend.autoscaling.enabled=true --set celery.autoscaling.enabled=true \
+		--set backend.dbPool.size=5 --set backend.dbPool.maxOverflow=5 \
 		--set backend.podDisruptionBudget.enabled=true --set secrets.redisPassword=test \
-		| kubeconform -strict -summary -kubernetes-version 1.31.0
+		| kubeconform -strict -summary -kubernetes-version 1.31.0'
+	@bash -o pipefail -c 'helm template $(K8S_RELEASE) $(CHART) -f $(CHART)/values-prod.example.yaml | kubeconform -strict -summary -kubernetes-version 1.31.0'
 
 minikube-up: ## Start minikube, build images into it, and install the chart
 	./deploy/minikube/bootstrap.sh

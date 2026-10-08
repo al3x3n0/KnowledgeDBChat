@@ -43,6 +43,8 @@ os.environ.setdefault(
 # that need to SEE the dispatch still monkeypatch .delay themselves, and that
 # keeps working.
 os.environ.setdefault("CELERY_BROKER_URL", "memory://")
+# Rate limits are counted in Redis in a deployment; tests have none.
+os.environ.setdefault("RATE_LIMIT_STORAGE_URL", "memory://")
 os.environ.setdefault("CELERY_RESULT_BACKEND", "cache+memory://")
 
 from app.core.database import Base, get_db  # noqa: E402

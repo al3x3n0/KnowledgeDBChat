@@ -1012,6 +1012,24 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
 - **Semaphore-based concurrency limiting** prevents pool exhaustion; returns HTTP 503 with Retry-After when saturated
 - Celery tasks create **fresh async engines per invocation** (workers fork, old event loops are incompatible); Celery-specific pool settings (`CELERY_DB_USE_NULLPOOL`, etc.)
 - Config: `DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `DB_SESSION_CONCURRENCY_LIMIT` in `core/config.py`
+- **A pool is per process, and the budget is checked** (`core/db_budget.py`).
+  The API may open `(DB_POOL_SIZE + DB_MAX_OVERFLOW) x replicas x workers`
+  connections, and nothing added that up: at the old 20 + 40 the chart's
+  default 2 x 4 processes could ask for 480 of Postgres's default 100.
+  Defaults are now 10 + 20, every deployment sets `max_connections=300`
+  explicitly, the API compares its budget with the server's real limit at
+  startup (`DB_EXPECTED_API_PROCESSES`; a warning, never a failed start), and
+  the Helm chart **refuses to render** a configuration that cannot fit
+  (`backend.dbPool`, `postgres.maxConnections`, or
+  `postgres.external.maxConnections` for a database it does not run; 40
+  connections are left for Celery and tooling). Turning on backend
+  autoscaling therefore needs a smaller pool or a larger limit, which is the
+  point.
+- **Rate limits are counted in Redis** (`RATE_LIMIT_STORAGE_URL`, unset means
+  `REDIS_URL`). The limiter's default was process memory, so each of N API
+  processes allowed the full limit -- a `5/minute` login limit was `5 x N`
+  and reset on restart. With Redis unreachable it falls back to in-process
+  counting rather than failing requests. Tests use `memory://`.
 
 ### Multi-Tenancy / User Scoping
 - All resources filtered by `user_id` foreign key in database queries

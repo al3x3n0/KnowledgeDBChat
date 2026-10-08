@@ -38,6 +38,9 @@ spec:
         - name: postgres
           image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
           imagePullPolicy: {{ .Values.postgres.image.pullPolicy }}
+          args:
+            - "-c"
+            - "max_connections={{ .Values.postgres.maxConnections }}"
           ports:
             - name: postgres
               containerPort: 5432

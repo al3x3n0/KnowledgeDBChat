@@ -142,6 +142,14 @@ backend:
   enabled: true
   replicaCount: 2
   workers: 4
+  # SQLAlchemy pool PER PROCESS (per gunicorn worker, per replica). The API can
+  # open (size + maxOverflow) x workers x replicas connections -- maxReplicas
+  # when autoscaling is on -- and the chart refuses to render if that, plus 40
+  # reserved for Celery and tooling, exceeds postgres.maxConnections. Set the
+  # pool here rather than through config.extra, so the check sees it.
+  dbPool:
+    size: 10
+    maxOverflow: 20
   # Overrides the gunicorn command entirely when set.
   command: []
   service:
@@ -377,6 +385,9 @@ postgres:
   auth:
     database: knowledge_db
     username: user
+  # The in-chart server's max_connections. Postgres's own default is 100,
+  # which is less than the default API deployment alone may ask for.
+  maxConnections: 300
   service:
     port: 5432
   persistence:
@@ -394,6 +405,9 @@ postgres:
   external:
     host: ""
     port: 5432
+    # The external server's max_connections, if you know it: the connection
+    # budget is then checked against it. 0 skips the check.
+    maxConnections: 0
     database: knowledge_db
     username: user
 

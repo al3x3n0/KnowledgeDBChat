@@ -17,9 +17,17 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql://user:password@localhost:25432/knowledge_db"
     REDIS_URL: str = "redis://localhost:26379/0"
 
-    # Database pool tuning (async engine)
-    DB_POOL_SIZE: int = 20
-    DB_MAX_OVERFLOW: int = 40
+    # Database pool tuning (async engine). PER PROCESS: every gunicorn worker
+    # of every API replica has its own pool, so the connections the API may
+    # open are (DB_POOL_SIZE + DB_MAX_OVERFLOW) x processes. At the old 20 + 40
+    # the chart's default of 2 replicas x 4 workers could ask Postgres for 480
+    # against its default max_connections of 100. See core/db_budget.py, which
+    # checks the sum against the server at startup.
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 20
+    # How many API processes share the database (replicas x workers). Only
+    # used to check the connection budget; the deployments set it.
+    DB_EXPECTED_API_PROCESSES: int = 1
     DB_POOL_TIMEOUT_SECONDS: int = 10
     DB_POOL_RECYCLE_SECONDS: int = 300
     # Backpressure: limit concurrent DB sessions per API instance
@@ -27,6 +35,13 @@ class Settings(BaseSettings):
         int
     ] = None  # default: pool_size + max_overflow
     DB_SESSION_ACQUIRE_TIMEOUT_SECONDS: int = 2
+
+    # Where request rate limits are counted. Unset means REDIS_URL, so every
+    # API process counts against the same numbers. With the limiter's default
+    # of in-process memory each of N processes kept its own count -- a
+    # "5/minute" login limit was really 5 x N, and reset on every restart.
+    # "memory://" restores the per-process behaviour (tests use it).
+    RATE_LIMIT_STORAGE_URL: Optional[str] = None
 
     # Celery task DB pool tuning (fresh engine per task invocation)
     CELERY_DB_USE_NULLPOOL: bool = True

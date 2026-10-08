@@ -252,7 +252,7 @@ helm-validate: helm-lint ## Render the chart and validate it against the Kuberne
 	@bash -o pipefail -c 'helm template $(K8S_RELEASE) $(CHART) \
 		--set ollama.enabled=true --set celeryLatex.enabled=true \
 		--set celeryTranscription.enabled=true \
-		--set networkPolicy.enabled=true --set ingress.enabled=true \
+		--set networkPolicy.enabled=true --set ingress.enabled=true --set sandbox.enabled=true \
 		--set backend.autoscaling.enabled=true --set celery.autoscaling.enabled=true \
 		--set backend.dbPool.size=5 --set backend.dbPool.maxOverflow=5 \
 		--set backend.podDisruptionBudget.enabled=true --set secrets.redisPassword=test \

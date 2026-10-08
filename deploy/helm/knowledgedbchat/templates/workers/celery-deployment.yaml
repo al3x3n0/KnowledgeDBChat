@@ -47,6 +47,7 @@ spec:
             {{- end }}
           env:
             {{- include "kdbc.connectionEnv" . | nindent 12 }}
+            {{- include "kdbc.sandbox.env" (dict "ctx" . "component" "celery") | nindent 12 }}
             {{- with .Values.global.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -54,6 +55,7 @@ spec:
             {{- include "kdbc.appEnvFrom" . | nindent 12 }}
           volumeMounts:
             {{- include "kdbc.dataVolumeMounts" . | nindent 12 }}
+            {{- include "kdbc.sandbox.volumeMounts" (dict "ctx" . "component" "celery") | nindent 12 }}
             - name: dshm
               mountPath: /dev/shm
           livenessProbe:
@@ -66,8 +68,10 @@ spec:
             failureThreshold: 3
           resources:
             {{- toYaml .Values.celery.resources | nindent 12 }}
+        {{- include "kdbc.sandbox.container" (dict "ctx" . "component" "celery") | nindent 8 }}
       volumes:
         {{- include "kdbc.dataVolume" . | nindent 8 }}
+        {{- include "kdbc.sandbox.volumes" (dict "ctx" . "component" "celery") | nindent 8 }}
         - name: dshm
           emptyDir:
             medium: Memory

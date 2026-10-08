@@ -75,6 +75,21 @@ follow, each found by running it:
   mounts a tmpfs over its `/tmp`, which hid a volume there and gave every
   sandbox an empty, unwritable `/work`.
 
+**Production has the daemon as an opt-in, in both shapes.** The prod compose
+file and the chart had none, so every sandbox tool answered "could not run"
+there. `docker-compose.sandbox.yml` overlays `docker-compose.prod.yml` with the
+dev stack's wiring. The chart's `sandbox.enabled` adds the daemon as a
+**sidecar** to the backend, `celery` and `celery-agents` pods, reached over a
+unix socket in an `emptyDir`: a daemon shared between pods would need the work
+directory on ReadWriteMany storage, since `-v` resolves on the daemon's
+filesystem. So the image store and work directory are per pod — a restarted
+pod pulls again, and a stage on another pod than its parent inherits no files.
+Off by default because the container is privileged. The sidecar has a
+liveness probe and no readiness probe: a dead daemon must not take the API
+out of service. `tests/test_sandbox_daemon_in_every_deployment.py` checks the
+shared paths; the sidecar is rendered and schema-validated, **not run on a
+cluster**.
+
 `docker-compose.docker-tools.yml` is now the opt-in alternative: it points the
 same CLI at the host socket (clearing `DOCKER_HOST`), binds a host temp path
 at the same location inside and out, and enables `CUSTOM_TOOL_DOCKER_ENABLED`.

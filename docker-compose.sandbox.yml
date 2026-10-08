@@ -1,0 +1,83 @@
+# Optional, for docker-compose.prod.yml: the private Docker daemon that
+# sandboxed agent tools run in (compiler, gem5, BOLT, sandbox skills,
+# scientific validation, MCP docker_execute). Without it the production stack
+# has no daemon and no Docker CLI, and each of those tools reports that it
+# could not run.
+#
+#   docker compose -f docker-compose.prod.yml -f docker-compose.sandbox.yml up -d --build
+#
+# It is an overlay rather than part of the production file because the daemon
+# is a PRIVILEGED container: a deployment opts into that. The wiring is the
+# development stack's (see `sandbox-docker` in docker-compose.yml): TLS client
+# certs from the daemon's own volume, and a work volume mounted at the same
+# path in the daemon and in each client, because `-v <dir>:/work` is resolved
+# on the daemon's filesystem. Not under /tmp -- the dind entrypoint mounts a
+# tmpfs there.
+#
+# The daemon's image store is its own and the sandbox images are not
+# published. Build them (`make sandbox-images`) and copy them in with
+#   make sandbox-load DC="docker compose -f docker-compose.prod.yml -f docker-compose.sandbox.yml"
+# Set UNSAFE_CODE_EXEC_BACKEND=docker in backend/.env for the tools that
+# choose their backend from it.
+services:
+  sandbox-docker:
+    image: docker:27-dind
+    container_name: knowledge_db_sandbox_docker_prod
+    hostname: sandbox-docker  # in the server certificate's names
+    privileged: true
+    environment:
+      - DOCKER_TLS_CERTDIR=/certs
+    volumes:
+      - sandbox_docker_certs:/certs
+      - sandbox_docker_data:/var/lib/docker
+      - sandbox_work:/sandbox-work
+    networks:
+      - knowledge_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  backend:
+    build:
+      args:
+        WITH_DOCKER_CLI: "true"
+    environment:
+      - DOCKER_HOST=tcp://sandbox-docker:2376
+      - DOCKER_TLS_VERIFY=1
+      - DOCKER_CERT_PATH=/certs/client
+      - TMPDIR=/sandbox-work
+    volumes:
+      - sandbox_docker_certs:/certs:ro
+      - sandbox_work:/sandbox-work
+    depends_on:
+      sandbox-docker:
+        condition: service_healthy
+
+  celery: &celery_worker
+    build:
+      args:
+        WITH_DOCKER_CLI: "true"
+    environment:
+      - DOCKER_HOST=tcp://sandbox-docker:2376
+      - DOCKER_TLS_VERIFY=1
+      - DOCKER_CERT_PATH=/certs/client
+      - TMPDIR=/sandbox-work
+    volumes:
+      - sandbox_docker_certs:/certs:ro
+      - sandbox_work:/sandbox-work
+    depends_on:
+      sandbox-docker:
+        condition: service_healthy
+
+  # The agent-job worker takes exactly what the general worker does here:
+  # `extends` copies the base file's service, not an overlay's changes to it.
+  celery_agents: *celery_worker
+
+volumes:
+  sandbox_docker_certs:
+  sandbox_docker_data:
+  sandbox_work:

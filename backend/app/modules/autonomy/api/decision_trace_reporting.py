@@ -27,6 +27,7 @@ from app.schemas.agent_job import (
     AgentDecisionTraceResponse,
 )
 from app.services.autonomy_event_service import event_to_trace_payload
+from app.utils.datetimes import is_past
 
 DecisionTraceQuery = Callable[..., Awaitable[AgentDecisionTraceResponse]]
 VisibleUserIdsLoader = Callable[..., Awaitable[set[UUID]]]
@@ -125,7 +126,7 @@ def _build_trace_response(
         for item in items
         if item.due_at
         and str(item.triage_status or "").strip().lower() != "resolved"
-        and item.due_at <= datetime.utcnow()
+        and is_past(item.due_at)
     )
     return AgentDecisionTraceResponse(
         items=items,

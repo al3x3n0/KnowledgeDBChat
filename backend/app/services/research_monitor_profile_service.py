@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import re
+import time
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -2961,7 +2962,7 @@ class ResearchMonitorProfileService:
             jobs_by_id = {job.id: job for job in jobs_res.scalars().all()}
         notification_counts_by_job: dict[str, int] = {}
         if job_ids:
-            window_start = datetime.utcnow().timestamp() - 86400
+            window_start = time.time() - 86400
             notif_stmt = select(Notification).where(
                 Notification.user_id == user_id,
                 Notification.notification_type.in_(

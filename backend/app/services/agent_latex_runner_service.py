@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -573,8 +574,8 @@ class AgentLatexRunnerService:
                     40, "waiting", f"Waiting up to {wait_seconds}s for compile result"
                 )
                 await db.commit()
-                deadline = _dt.utcnow().timestamp() + float(wait_seconds)
-                while _dt.utcnow().timestamp() < deadline:
+                deadline = time.monotonic() + float(wait_seconds)
+                while time.monotonic() < deadline:
                     try:
                         await db.refresh(compile_job)
                     except Exception:

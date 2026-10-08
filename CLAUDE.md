@@ -1481,6 +1481,16 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   overdue queue alert got no alert after it, and the admin next-run times came
   back None. Those comparisons now run in aware UTC. A test reproducing this
   has to feed rows as Postgres returns them, since SQLite returns naive values.
+  `tests/test_naive_now_meets_aware_columns.py` now refuses the shape from
+  source: it reads the models for `DateTime(timezone=True)` columns and fails
+  on a `utcnow()` (or a local derived from one) compared with or subtracted
+  from such a value, leaving SQL expressions alone. Its first run found the
+  decision-trace overdue count and the validation backoff cooldown. **The
+  other ~700 `utcnow()` calls are not swapped wholesale**: an aware value
+  written to one of the ~22 naive columns fails under asyncpg, and
+  `isoformat()` output stored in JSON would change shape. Use
+  `utils.datetimes` (`utc_now`, `is_past`, `age`, `as_aware_utc`) where a
+  stored value is involved.
   Also:
   - The LLM health check pinged Ollama for every provider except DeepSeek, so
     OpenAI and Anthropic deployments read "degraded".

@@ -17,6 +17,11 @@ from uuid import uuid4
 
 from loguru import logger
 
+#: A subprocess with no limit of its own is one a hung binary holds for ever,
+#: along with the thread that is waiting for it.
+PROBE_TIMEOUT_SECONDS = 10
+RENDER_TIMEOUT_SECONDS = 120
+
 
 class DiagramService:
     """Service for generating diagrams in multiple formats."""
@@ -106,9 +111,18 @@ class DiagramService:
     def _check_command(self, cmd: str) -> bool:
         """Check if a command is available."""
         try:
-            subprocess.run([cmd, "--version"], capture_output=True, check=True)
+            subprocess.run(
+                [cmd, "--version"],
+                capture_output=True,
+                check=True,
+                timeout=PROBE_TIMEOUT_SECONDS,
+            )
             return True
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except (
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+            FileNotFoundError,
+        ):
             return False
 
     # =========================================================================
@@ -504,7 +518,9 @@ class DiagramService:
                 "-b",
                 background,
             ]
-            subprocess.run(cmd, capture_output=True, check=True)
+            subprocess.run(
+                cmd, capture_output=True, check=True, timeout=RENDER_TIMEOUT_SECONDS
+            )
 
             with open(output_file, "rb") as f:
                 image_data = base64.b64encode(f.read()).decode("utf-8")
@@ -634,7 +650,9 @@ class DiagramService:
 
         try:
             cmd = [layout, f"-T{output_format}", "-o", output_file, input_file]
-            subprocess.run(cmd, capture_output=True, check=True)
+            subprocess.run(
+                cmd, capture_output=True, check=True, timeout=RENDER_TIMEOUT_SECONDS
+            )
 
             with open(output_file, "rb") as f:
                 image_data = base64.b64encode(f.read()).decode("utf-8")

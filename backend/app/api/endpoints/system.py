@@ -195,10 +195,14 @@ async def get_unsafe_exec_status(current_user: User = Depends(get_current_user))
 
     async def _run(cmd: list[str], timeout: float = 1.5) -> tuple[int, str, str]:
         def _do():
-            p = subprocess.run(cmd, capture_output=True, text=True)
+            # The limit belongs to the child, not to the wait. wait_for alone
+            # stops waiting and leaves the thread blocked on a process nobody
+            # will kill: with the daemon hung, every call to this route kept
+            # one of the default executor's threads for ever.
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
             return p.returncode, p.stdout or "", p.stderr or ""
 
-        return await asyncio.wait_for(asyncio.to_thread(_do), timeout=timeout)
+        return await asyncio.to_thread(_do)
 
     try:
         code, _out, _err = await _run(["docker", "version"], timeout=1.5)

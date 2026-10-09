@@ -387,7 +387,9 @@ class DockerToolExecutor:
         try:
             # Check if image exists locally
             check_cmd = ["docker", "image", "inspect", image]
-            check_result = subprocess.run(check_cmd, capture_output=True, text=True)
+            check_result = subprocess.run(
+                check_cmd, capture_output=True, text=True, timeout=30
+            )
 
             if check_result.returncode == 0:
                 logger.debug(f"Image {image} already present locally")

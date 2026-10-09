@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
+from app.core.database import async_session_factory
 from app.models.agent_definition import AgentConversationContext, AgentDefinition
 from app.models.document import Document, DocumentSource
 from app.models.memory import UserPreferences
@@ -62,6 +63,7 @@ from app.services.document_service import DocumentService
 from app.services.llm_service import LLMService, UserLLMSettings, load_user_llm_settings
 from app.services.memory_service import MemoryService
 from app.services.vector_store import VectorStore, vector_store_service
+from app.utils.background import spawn
 from app.utils.per_loop import PerLoop
 
 #: Receives progress events during a chat turn: planning, each tool starting
@@ -607,15 +609,15 @@ class AgentService:
                     {"role": "assistant", "content": response_content}
                 )
 
-                # Fire and forget - don't block response
-                asyncio.create_task(
+                # Not awaited, so the reply is not held up by it.
+                spawn(
                     self._extract_memories_background(
                         user_id=user_id,
                         conversation_id=conversation_id,
                         messages=messages_for_extraction,
                         preferences=preferences,
-                        db=db,
-                    )
+                    ),
+                    name=f"chat-memory-extraction:{conversation_id}",
                 )
 
             return AgentChatResponse(
@@ -644,17 +646,22 @@ class AgentService:
         conversation_id: UUID,
         messages: List[Dict[str, Any]],
         preferences: UserPreferences,
-        db: AsyncSession,
     ) -> None:
-        """Extract memories from conversation in background."""
+        """Extract memories from conversation in background.
+
+        On a session of its own. It was handed the request's, and it outlives
+        the request: the session it was using was closed under it when the
+        reply was sent, and whatever it then opened was never closed at all.
+        """
         try:
-            await self.memory_integration.extract_and_store_memories(
-                user_id=user_id,
-                conversation_id=conversation_id,
-                messages=messages,
-                preferences=preferences,
-                db=db,
-            )
+            async with async_session_factory() as db:
+                await self.memory_integration.extract_and_store_memories(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    messages=messages,
+                    preferences=preferences,
+                    db=db,
+                )
         except Exception as e:
             logger.error(f"Background memory extraction failed: {e}")
 
@@ -1851,29 +1858,45 @@ Your response:"""
         except (ValueError, TypeError, AttributeError):
             return {"error": f"Invalid document ID: {document_id}"}
 
-        document = await self.document_service.get_document(doc_uuid, db)
+        # The columns it reports, and nothing else. It loaded the whole
+        # document through `get_document`, which also fetches every chunk, the
+        # source and the persona detections -- five queries to print eleven
+        # fields -- and in autonomous runs it has failed with a lazy load on
+        # that entity (18 recorded runs; the trigger was not found by
+        # reproduction). A row of plain values has nothing left to load.
+        row = (
+            await db.execute(
+                select(
+                    Document.id,
+                    Document.title,
+                    func.substr(Document.content, 1, 500).label("content_preview"),
+                    Document.file_type,
+                    Document.file_size,
+                    Document.author,
+                    Document.tags,
+                    Document.summary,
+                    Document.is_processed,
+                    Document.created_at,
+                    Document.updated_at,
+                ).where(Document.id == doc_uuid)
+            )
+        ).first()
 
-        if not document:
+        if row is None:
             return {"error": f"Document not found: {document_id}"}
 
         return {
-            "id": str(document.id),
-            "title": document.title,
-            "content_preview": (document.content or "")[:500]
-            if document.content
-            else None,
-            "file_type": document.file_type,
-            "file_size": document.file_size,
-            "author": document.author,
-            "tags": document.tags or [],
-            "summary": document.summary,
-            "is_processed": document.is_processed,
-            "created_at": document.created_at.isoformat()
-            if document.created_at
-            else None,
-            "updated_at": document.updated_at.isoformat()
-            if document.updated_at
-            else None,
+            "id": str(row.id),
+            "title": row.title,
+            "content_preview": row.content_preview or None,
+            "file_type": row.file_type,
+            "file_size": row.file_size,
+            "author": row.author,
+            "tags": row.tags or [],
+            "summary": row.summary,
+            "is_processed": row.is_processed,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
 
     async def _tool_web_scrape(

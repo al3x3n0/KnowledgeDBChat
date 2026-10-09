@@ -140,5 +140,7 @@ def _download_to_file(*, url: str, dest: Path) -> None:
             "yes",
         }:
             cmd.insert(1, "-k")
-        subprocess.run(cmd, check=True)
+        # Hours, not for ever: the weights are gigabytes on a slow link, and
+        # a transfer that has stalled completely should end.
+        subprocess.run(cmd, check=True, timeout=4 * 60 * 60)
         tmp.replace(dest)

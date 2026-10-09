@@ -15,6 +15,7 @@ from app.core.database import create_celery_session
 from app.models.export_job import ExportJob
 from app.services.export_service import export_service
 from app.tasks import job_support
+from app.utils.background import spawn
 
 
 async def _publish_progress(
@@ -51,8 +52,9 @@ async def _process_export_async(job_id: str):
             # Progress callback that publishes to Redis
             def progress_callback(progress: int, stage: str):
                 # Publish progress synchronously (within async context)
-                asyncio.create_task(
-                    _publish_progress(job_id, progress, stage, "processing")
+                spawn(
+                    _publish_progress(job_id, progress, stage, "processing"),
+                    name=f"export-progress:{job_id}",
                 )
                 # Update job in database
                 job.progress = progress

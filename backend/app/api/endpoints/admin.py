@@ -78,6 +78,7 @@ from app.tasks.monitoring_tasks import (
     health_check,
 )
 from app.tasks.sync_tasks import ingest_from_source, sync_all_sources
+from app.utils.background import spawn
 from app.utils.ingestion_state import (
     get_ingestion_task_mapping,
     set_force_full_flag,
@@ -687,7 +688,9 @@ async def start_whisper_download(
                 },
             )
 
-    asyncio.create_task(_worker())
+    # Kept until it ends: a download the loop alone refers to can be collected
+    # half way through, and its status would say "downloading" for ever.
+    spawn(_worker(), name=f"whisper-download:{task_id}")
     return {"task_id": task_id, "status": "queued"}
 
 
@@ -1207,10 +1210,14 @@ async def get_unsafe_exec_status(current_user: User = Depends(require_admin)):
 
     async def _run(cmd: list[str], timeout: float = 2.0) -> tuple[int, str, str]:
         def _do():
-            p = subprocess.run(cmd, capture_output=True, text=True)
+            # The limit belongs to the child, not to the wait. wait_for alone
+            # stops waiting and leaves the thread blocked on a process nobody
+            # will kill: with the daemon hung, every call to this route kept
+            # one of the default executor's threads for ever.
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
             return p.returncode, p.stdout or "", p.stderr or ""
 
-        return await asyncio.wait_for(asyncio.to_thread(_do), timeout=timeout)
+        return await asyncio.to_thread(_do)
 
     try:
         code, out, err = await _run(
@@ -1343,13 +1350,18 @@ async def pull_unsafe_exec_docker_image(
             raise HTTPException(status_code=400, detail="Docker image cannot be empty")
 
         def _pull():
+            # Its own limit, so the pull is killed and not left running in
+            # a thread nobody is waiting on.
             return subprocess.run(
-                ["docker", "pull", image], capture_output=True, text=True
+                ["docker", "pull", image],
+                capture_output=True,
+                text=True,
+                timeout=180.0,
             )
 
         try:
-            proc = await asyncio.wait_for(asyncio.to_thread(_pull), timeout=180.0)
-        except asyncio.TimeoutError:
+            proc = await asyncio.to_thread(_pull)
+        except subprocess.TimeoutExpired:
             return {
                 "image": image,
                 "status": "timeout",
@@ -1436,12 +1448,12 @@ async def check_unsafe_exec_docker_sandbox(
             )
 
             def _run():
-                return subprocess.run(cmd, capture_output=True, text=True)
+                return subprocess.run(cmd, capture_output=True, text=True, timeout=20.0)
 
             try:
-                proc = await asyncio.wait_for(asyncio.to_thread(_run), timeout=20.0)
-            except asyncio.TimeoutError:
-                # The thread is abandoned, and with it the only handle on the
+                proc = await asyncio.to_thread(_run)
+            except subprocess.TimeoutExpired:
+                # The client was killed, and with it the only handle on the
                 # container -- except the name.
                 await agent_sandbox_runtime.remove_container(container_name)
                 return {
@@ -1686,7 +1698,7 @@ async def start_ollama_pull(payload: dict, current_user: User = Depends(require_
                 },
             )
 
-    asyncio.create_task(_worker())
+    spawn(_worker(), name=f"ollama-pull:{task_id}")
     return {"task_id": task_id, "status": "queued"}
 
 

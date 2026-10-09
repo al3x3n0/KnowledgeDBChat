@@ -89,3 +89,8 @@ only translates results and the store's `WorkflowNotFound` /
 write passes `fresh=True` (`populate_existing`): sessions do not expire on
 commit, and a plain reload kept the collection it already had, so an update
 answered with the graph it had just replaced.
+
+`modules/coding_backlog/application/backlog_store.py` owns which backlog items
+a person may see and the list query, which pages a person's own items in the
+database. `api/endpoints/coding_backlog.py` still holds the action handler and
+the slice state machine; they move once they have characterisation tests.

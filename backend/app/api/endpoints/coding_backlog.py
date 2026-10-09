@@ -6,7 +6,6 @@ from typing import Any, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -16,6 +15,7 @@ from app.models.coding_backlog import CodingBacklogItem
 from app.models.document import DocumentSource
 from app.models.patch_pr import PatchPR
 from app.models.user import User
+from app.modules.coding_backlog.application import backlog_store
 from app.schemas.coding_backlog import (
     CodingBacklogItemActionRequest,
     CodingBacklogItemCreate,
@@ -135,25 +135,16 @@ def _normalize_collaboration(
     }
 
 
-def _is_backlog_visible_to_user(item: CodingBacklogItem, user_id: UUID) -> bool:
-    if str(item.user_id) == str(user_id):
-        return True
-    if str(getattr(item, "assigned_user_id", "") or "").strip() == str(user_id):
-        return True
-    if _normalize_visibility(getattr(item, "visibility", "private")) != "shared":
-        return False
-    return str(user_id) in _normalize_uuid_list(
-        getattr(item, "shared_with_user_ids", None), 200
-    )
+_is_backlog_visible_to_user = backlog_store.is_visible_to
 
 
 async def _get_visible_backlog_item_or_404(
     db: AsyncSession, item_id: UUID, user_id: UUID
 ) -> CodingBacklogItem:
-    item = await db.get(CodingBacklogItem, item_id)
-    if not item or not _is_backlog_visible_to_user(item, user_id):
+    try:
+        return await backlog_store.get_visible_item(db, item_id, user_id)
+    except backlog_store.BacklogItemNotFound:
         raise HTTPException(status_code=404, detail="Not found")
-    return item
 
 
 def _append_manual_promotion_history(
@@ -377,11 +368,13 @@ def _to_response(
                 assigned_user_id=str(
                     collaboration.get("assigned_user_id")
                     or getattr(item, "assigned_user_id", "")
+                    or ""
                 ).strip()
                 or None,
                 assigned_by_user_id=str(
                     collaboration.get("assigned_by_user_id")
                     or getattr(item, "assigned_by_user_id", "")
+                    or ""
                 ).strip()
                 or None,
                 assigned_at=str(
@@ -649,39 +642,15 @@ async def list_coding_backlog_items(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    visibility_scope = str(visibility_scope or "mine").strip().lower() or "mine"
-    stmt = select(CodingBacklogItem).where(
-        or_(
-            CodingBacklogItem.user_id == current_user.id,
-            CodingBacklogItem.visibility == "shared",
-            CodingBacklogItem.assigned_user_id == current_user.id,
-        )
+    rows, total = await backlog_store.list_visible_items(
+        db,
+        current_user.id,
+        scope=visibility_scope,
+        status=status_filter,
+        assigned_user_id=assigned_user_id,
+        limit=limit,
+        offset=offset,
     )
-    if status_filter:
-        stmt = stmt.where(
-            CodingBacklogItem.status == str(status_filter).strip().lower()
-        )
-    rows = [
-        row
-        for row in list(
-            (await db.execute(stmt.order_by(desc(CodingBacklogItem.updated_at))))
-            .scalars()
-            .all()
-        )
-        if _is_backlog_visible_to_user(row, current_user.id)
-    ]
-    if visibility_scope == "mine":
-        rows = [row for row in rows if str(row.user_id) == str(current_user.id)]
-    elif visibility_scope == "shared":
-        rows = [row for row in rows if str(row.user_id) != str(current_user.id)]
-    if assigned_user_id:
-        rows = [
-            row
-            for row in rows
-            if str(getattr(row, "assigned_user_id", "") or "") == str(assigned_user_id)
-        ]
-    total = len(rows)
-    rows = rows[offset : offset + limit]
     user_lookup = await _build_backlog_user_lookup(db, current_user=current_user)
     return CodingBacklogItemListResponse(
         items=[

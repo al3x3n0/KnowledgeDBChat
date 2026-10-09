@@ -1586,6 +1586,26 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
 - Key dependency chain: `AgentService` → `LLMService`, `DocumentService`, `VectorStoreService`, `MemoryService`
 - The agent runtime is intentionally split into many small `agent_*` services around `autonomous_agent_executor.py` — prefer extending the relevant sub-service over growing the executor
 
+- **The coding backlog's reads live in `modules/coding_backlog/application/backlog_store.py`**
+  (the visibility rule, `get_visible_item`, `list_visible_items`), on the
+  pattern `modules/workflows` set: the endpoint maps to HTTP. The list route
+  used to fetch every item shared with anyone, decide in Python which the
+  caller could see, filter in Python and slice a page; a person's own items
+  are now selected, counted and paged by the database, and for other
+  people's the database narrows and the rule decides (the grant is a JSON
+  list). The first test to run that route found it **had answered 500 for
+  every unassigned item since July**: `getattr(item, "assigned_user_id", "")`
+  returns None when the attribute exists and is None, and `str(None)` went to
+  the response model as the id "None". All three items in the dev database
+  failed. `getattr(obj, name, default)` is not `getattr(...) or default`.
+  The 650-line action handler is still in the endpoint, untested; it needs
+  characterisation tests before it moves.
+- The operator queue presents a job only where it becomes a row. The full
+  presenter ran for every job a user had ever run on every poll, to show the
+  handful waiting. It still **loads** every job: a database pre-filter needs
+  a column saying a job wants an operator (an approval checkpoint can sit in
+  `results` under any status), which is a schema change not made.
+
 - **Lower layers do not import higher ones** (`tests/test_layering.py`, read
   from source including imports inside functions). Nothing outside `app/api`
   imports `app.api`; services, models, schemas, core, agent_core, utils and mcp

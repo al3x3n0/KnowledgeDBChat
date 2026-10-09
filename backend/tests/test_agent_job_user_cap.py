@@ -338,3 +338,45 @@ class TestTheSweepAndAWaitingJob:
         sent = self._sweep(monkeypatch)
 
         assert sent and str(job.id) in sent[0]
+
+
+class TestClaimsTakeTurns:
+    def test_the_users_row_is_locked_before_anything_is_counted(self):
+        # Rendered for Postgres, since SQLite has no row locks to render: six
+        # jobs delivered together each counted none running and all started.
+        from sqlalchemy.dialects import postgresql
+
+        statements = []
+
+        class _Db:
+            async def execute(self, statement):
+                statements.append(str(statement.compile(dialect=postgresql.dialect())))
+
+        _run(agent_job_user_cap.lock_user_claims(_Db(), uuid4()))
+
+        assert len(statements) == 1
+        assert "FROM users" in statements[0]
+        # Does not block an insert that refers to the user.
+        assert statements[0].rstrip().endswith("FOR NO KEY UPDATE")
+
+    def test_the_lock_comes_before_the_count(self, db_session, task, monkeypatch):
+        order = []
+        real_lock = agent_job_user_cap.lock_user_claims
+        real_count = agent_job_user_cap.running_for_user
+
+        async def lock(*args, **kwargs):
+            order.append("lock")
+            return await real_lock(*args, **kwargs)
+
+        async def count(*args, **kwargs):
+            order.append("count")
+            return await real_count(*args, **kwargs)
+
+        monkeypatch.setattr(agent_job_user_cap, "lock_user_claims", lock)
+        monkeypatch.setattr(agent_job_user_cap, "running_for_user", count)
+        job = _job(uuid4())
+        _seed(db_session, job)
+
+        task(job)
+
+        assert order == ["lock", "count"]

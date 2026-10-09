@@ -263,6 +263,14 @@ celeryAgents:
   # the general worker consume the agents queue too, so jobs still run.
   enabled: true
   replicaCount: 1
+  # prefork: one process per running job, about 430 MiB each (measured: six
+  # slots held 2.6 GiB after six jobs). threads: every job in one process,
+  # each on its own event loop -- twelve concurrent jobs peaked at 1.8 GiB.
+  # With threads, raise `concurrency` instead of adding replicas for memory.
+  # Experimental: run live on short research jobs only. A thread cannot be
+  # killed, so a job that wedges holds its slot until the pod restarts; its
+  # lease lapses and the stalled-job sweep hands the job to another worker.
+  pool: prefork
   concurrency: 4
   resources:
     requests:

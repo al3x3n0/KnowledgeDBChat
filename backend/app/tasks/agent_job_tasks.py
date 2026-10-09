@@ -313,6 +313,11 @@ async def _hold_for_user_cap(db: Any, job: AgentJob) -> Optional[dict]:
     now = datetime.utcnow()
     if not is_orphaned(job, now):
         return None
+    # One claim at a time per user, held until the lease below is committed.
+    # Counting and claiming are two statements: six jobs delivered together
+    # each counted none running and all six started -- measured, on a cap of
+    # four. Postgres only; SQLite has no row locks and renders none.
+    await agent_job_user_cap.lock_user_claims(db, job.user_id)
     running = await agent_job_user_cap.running_for_user(
         db, job.user_id, excluding=job.id, now=now
     )

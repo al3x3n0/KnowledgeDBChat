@@ -38,6 +38,7 @@ spec:
             - app.core.celery
             - worker
             - --loglevel={{ lower .Values.config.logLevel }}
+            - --pool={{ .Values.celeryAgents.pool | default "prefork" }}
             - --concurrency={{ .Values.celeryAgents.concurrency }}
             - -Q
             - {{ .Values.config.extra.AGENT_JOB_CELERY_QUEUE | default "agents" | quote }}

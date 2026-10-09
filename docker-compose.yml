@@ -503,7 +503,7 @@ services:
     extends:
       service: celery
     container_name: knowledge_db_celery_agents
-    command: celery -A app.core.celery worker -Q agents --loglevel=info --concurrency=2 --hostname=agents@%h
+    command: celery -A app.core.celery worker -Q agents --loglevel=info --pool=${AGENT_WORKER_POOL:-prefork} --concurrency=${AGENT_WORKER_CONCURRENCY:-2} --hostname=agents@%h
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.core.celery inspect ping -d agents@$$(hostname)"]
       interval: 30s

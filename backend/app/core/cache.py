@@ -14,12 +14,11 @@ runtime would silently fall back to its default on the deploy that changed
 the format.
 """
 
-import asyncio
 import io
 import json
 import pickle
 from functools import wraps
-from typing import Any, Callable, Dict, Optional, TypeVar
+from typing import Any, Callable, Optional, TypeVar
 
 try:
     import redis.asyncio as aioredis
@@ -29,8 +28,10 @@ except ImportError:
 from loguru import logger
 
 from app.core.config import settings
+from app.utils.per_loop import PerLoop
 
 T = TypeVar("T")
+
 
 #: One client per event loop, not one per process.
 #:
@@ -43,9 +44,19 @@ T = TypeVar("T")
 #: Redis in workers and fell back to settings, which looks like flags simply
 #: not taking effect.
 #:
-#: Keyed by id(loop) and swept of closed loops on each access, so a worker
-#: that runs thousands of tasks does not accumulate thousands of clients.
-_redis_clients: Dict[int, aioredis.Redis] = {}
+#: One per loop, dropped when its loop closes (`utils.per_loop`). It used to
+#: drop every client but the caller's on each access, which is right only
+#: while a process has one live loop at a time: two jobs in two threads each
+#: evicted the other's client on every call.
+def _new_redis_client() -> aioredis.Redis:
+    return aioredis.from_url(
+        settings.REDIS_URL,
+        encoding="utf-8",
+        decode_responses=False,  # We'll handle encoding ourselves
+    )
+
+
+_redis_clients: PerLoop[aioredis.Redis] = PerLoop(_new_redis_client)
 
 
 async def get_redis_client() -> aioredis.Redis:
@@ -55,30 +66,15 @@ async def get_redis_client() -> aioredis.Redis:
     Returns:
         Redis client instance bound to this loop
     """
-    loop = asyncio.get_running_loop()
-    for key in [k for k, c in _redis_clients.items() if k != id(loop)]:
-        # Its loop is gone; the client cannot be used or cleanly closed from
-        # here, so drop the reference and let it be collected.
-        _redis_clients.pop(key, None)
-
-    client = _redis_clients.get(id(loop))
-    if client is None:
-        client = aioredis.from_url(
-            settings.REDIS_URL,
-            encoding="utf-8",
-            decode_responses=False,  # We'll handle encoding ourselves
-        )
-        _redis_clients[id(loop)] = client
-    return client
+    return _redis_clients.get()
 
 
 async def close_redis_client():
     """Close the client for the running loop, if there is one."""
     try:
-        loop_id = id(asyncio.get_running_loop())
+        client = _redis_clients.pop()
     except RuntimeError:
-        loop_id = None
-    client = _redis_clients.pop(loop_id, None) if loop_id is not None else None
+        client = None
     if client:
         await client.close()
 

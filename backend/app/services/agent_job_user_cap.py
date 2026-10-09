@@ -14,9 +14,10 @@ pending until one of the user's other jobs ends does not.
 it: a job whose worker died stays ``running`` until the sweep notices, and
 counting it would hold a user's queue for work nobody is doing.
 
-Soft, like the other shared limits: the count and the claim are two
-statements, so two workers claiming for one user in the same instant can both
-pass. That overshoots by a job, which costs nothing a hard limit would save.
+The count and the claim are two statements, so on Postgres a lock on the
+user's row makes one user's claims take turns (`lock_user_claims`). Without
+it, six jobs delivered together each counted none running and all six
+started. A job whose worker was killed still counts until its lease lapses.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from sqlalchemy import func, select
 
 from app.core.config import settings
 from app.models.agent_job import AgentJob
+from app.models.user import User
 from app.services.config_values import safe_int
 
 #: `queue_reason` in a job's scheduler state while it waits on this cap.
@@ -68,6 +70,18 @@ async def running_for_user(
     return int((await db.execute(statement)).scalar() or 0)
 
 
+async def lock_user_claims(db: Any, user_id: Any) -> None:
+    """Make this user's claims take turns, until the transaction ends.
+
+    A lock on the user's row that does not block inserts referring to it
+    (FOR NO KEY UPDATE), so creating a job for the user is never held up by
+    one being claimed.
+    """
+    await db.execute(
+        select(User.id).where(User.id == user_id).with_for_update(key_share=True)
+    )
+
+
 def waiting_state(*, now: datetime, running: int, cap: int, retry_in: int) -> dict:
     """What a held job records about why it is not running."""
     return {
@@ -97,6 +111,7 @@ __all__ = [
     "REDELIVERY_GRACE_SECONDS",
     "is_waiting",
     "limit",
+    "lock_user_claims",
     "retry_seconds",
     "running_for_user",
     "waiting_state",

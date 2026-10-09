@@ -174,7 +174,7 @@ services:
     extends:
       service: celery
     container_name: knowledge_db_celery_agents_prod
-    command: celery -A app.core.celery worker -Q agents --loglevel=info --concurrency=4 --hostname=agents@%h
+    command: celery -A app.core.celery worker -Q agents --loglevel=info --pool=${AGENT_WORKER_POOL:-prefork} --concurrency=${AGENT_WORKER_CONCURRENCY:-4} --hostname=agents@%h
 
   # Dedicated Celery worker for LaTeX compilation (TeX Live image, isolated queue)
   celery_latex:

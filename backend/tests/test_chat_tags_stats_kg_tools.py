@@ -44,6 +44,7 @@ from app.services.agent_tool_dispatch import (
     build_autonomous_document_provider,
 )
 from app.services.search_service import search_service
+from app.utils.per_loop import PerLoop
 
 pytestmark = pytest.mark.unit
 
@@ -148,7 +149,7 @@ def _service(vector_store=None):
     service = AgentService.__new__(AgentService)
     service.vector_store = vector_store or _VectorStore()
     service._vector_store_initialized = True
-    service._vector_store_init_lock = asyncio.Lock()
+    service._vector_store_init_locks = PerLoop(asyncio.Lock)
     return service
 
 

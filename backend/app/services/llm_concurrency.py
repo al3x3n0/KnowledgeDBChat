@@ -29,11 +29,12 @@ import random
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Dict, Optional, Tuple
+from typing import AsyncIterator, Optional
 
 from loguru import logger
 
 from app.core.config import settings
+from app.utils.per_loop import PerLoop
 
 SLOTS_KEY = "llm:concurrency:slots"
 
@@ -53,24 +54,28 @@ return 0
 #: After Redis fails, how long the global cap is skipped before trying again.
 REDIS_BACKOFF_SECONDS = 30.0
 
-_local: Dict[int, Tuple[int, asyncio.Semaphore]] = {}
 _redis_down_until = 0.0
+
+
+class _Sized:
+    """A loop's semaphore and the size it was made at."""
+
+    def __init__(self) -> None:
+        self.size = 0
+        self.semaphore: Optional[asyncio.Semaphore] = None
+
+
+_local: PerLoop[_Sized] = PerLoop(_Sized)
 
 
 def _local_semaphore() -> asyncio.Semaphore:
     """This event loop's semaphore, at the currently configured size."""
-    loop = asyncio.get_running_loop()
-    # Keep only this loop's. A worker runs its loops one after another, so
-    # another entry is a loop that has ended; a holder on a loop still alive
-    # in another thread keeps its own reference and releases it normally.
-    for key in [k for k in _local if k != id(loop)]:
-        del _local[key]
+    held = _local.get()
     size = max(1, int(settings.LLM_MAX_CONCURRENCY))
-    held = _local.get(id(loop))
-    if held is None or held[0] != size:
-        held = (size, asyncio.Semaphore(size))
-        _local[id(loop)] = held
-    return held[1]
+    if held.semaphore is None or held.size != size:
+        # Resized: holders of the old one keep their reference and release it.
+        held.size, held.semaphore = size, asyncio.Semaphore(size)
+    return held.semaphore
 
 
 async def _redis():

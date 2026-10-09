@@ -62,6 +62,7 @@ from app.services.document_service import DocumentService
 from app.services.llm_service import LLMService, UserLLMSettings, load_user_llm_settings
 from app.services.memory_service import MemoryService
 from app.services.vector_store import VectorStore, vector_store_service
+from app.utils.per_loop import PerLoop
 
 #: Receives progress events during a chat turn: planning, each tool starting
 #: and finishing, and the answer being written.
@@ -104,14 +105,15 @@ class AgentService:
         )
         self._vector_store_initialized = False
         self._agents_loaded = False
-        self._vector_store_init_lock = asyncio.Lock()
-        self._agents_load_lock = asyncio.Lock()
+        # Per loop, for the reason given in VectorStoreService.
+        self._vector_store_init_locks: PerLoop[asyncio.Lock] = PerLoop(asyncio.Lock)
+        self._agents_load_locks: PerLoop[asyncio.Lock] = PerLoop(asyncio.Lock)
 
     async def _ensure_vector_store_initialized(self):
         """Ensure vector store is initialized."""
         if self._vector_store_initialized:
             return
-        async with self._vector_store_init_lock:
+        async with self._vector_store_init_locks.get():
             if self._vector_store_initialized:
                 return
             await self.vector_store.initialize(background=True)
@@ -121,7 +123,7 @@ class AgentService:
         """Ensure agent definitions are loaded from database."""
         if self._agents_loaded:
             return
-        async with self._agents_load_lock:
+        async with self._agents_load_locks.get():
             if self._agents_loaded:
                 return
             await self.router.load_agents(db)

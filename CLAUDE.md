@@ -1666,6 +1666,27 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   test_silent_exception_swallows.py`, 227 and only shrinking). Not a demand
   to rewrite them: a new best-effort step catches what it expects or logs
   what it ignores.
+- **A time limit on waiting is not a time limit on the work.**
+  `await asyncio.wait_for(asyncio.to_thread(run), timeout)` stops waiting and
+  leaves the thread blocked on a child nobody will kill. The system-status
+  route did that for `docker version`: with the daemon hung, each request
+  kept one of the default executor's threads for ever, and every
+  `asyncio.to_thread` in the process shares that executor. Nine
+  `subprocess.run` calls had no `timeout` of their own (the two Docker
+  probes, the admin image pull and sandbox check, three diagram renders, the
+  custom-tool image inspect, the Whisper weights download). Each has one now,
+  and `tests/test_subprocesses_have_a_time_limit.py` refuses a call without.
+- **A task nobody awaits is started with `utils.background.spawn`.** The loop
+  refers to its tasks weakly, so `asyncio.create_task(...)` on a line by
+  itself can be collected while it runs -- it just stops, with nothing
+  raised -- and its error is reported only at collection. Four places did
+  that: the two admin downloads (a status stuck at "downloading"), export
+  progress, and chat's memory extraction. `spawn` keeps the task until it
+  ends and logs what it raised; `tests/test_background_tasks_are_kept.py`
+  refuses the bare form. The fourth was also **handed the request's database
+  session**, which is closed when the reply is sent while the extraction
+  runs on; it opens its own now. Work that outlives a request never borrows
+  the request's session.
 - **Object storage does not run on the event loop, and it has a time limit.**
   The MinIO SDK is synchronous and `storage_service` called it straight from
   its `async` methods -- 23 calls -- on the SDK's default client, which waits

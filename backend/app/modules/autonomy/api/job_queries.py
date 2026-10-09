@@ -5,19 +5,20 @@ from typing import Any, Awaitable, Callable, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import String, and_, cast, func, literal, select
+from sqlalchemy import String, and_, cast, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, defer, selectinload
 
 from app.api.endpoints.auth import get_current_active_user
 from app.core.database import get_db
-from app.models.agent_job import AgentJob, AgentJobStatus
+from app.models.agent_job import AgentJob, AgentJobStatus, collaborator_pattern
 from app.models.user import User
 from app.schemas.agent_job import (
     AgentJobListResponse,
     AgentJobResponse,
     AgentJobStatsResponse,
 )
+from app.services.auth_service import is_admin
 
 JobSerializer = Callable[..., AgentJobResponse]
 JobVisibility = Callable[[AgentJob, User], bool]
@@ -106,11 +107,26 @@ def build_job_query_api(
         normalized_visibility = (
             str(visibility_scope or "mine").strip().lower() or "mine"
         )
+        # An admin sees every job, so the database decides which rows belong.
+        # For anyone else, a job of somebody else's is visible only if it
+        # names them, which `collaborator_index` answers; `is_job_visible`
+        # below still has the last word on those.
+        sees_everything = normalized_visibility != "mine" and is_admin(current_user)
+        names_caller = and_(
+            AgentJob.collaborator_index.is_not(None),
+            AgentJob.collaborator_index.like(collaborator_pattern(current_user.id)),
+        )
         statement = select(AgentJob)
         if normalized_visibility == "mine":
             statement = statement.where(AgentJob.user_id == current_user.id)
         elif normalized_visibility == "shared":
             statement = statement.where(AgentJob.user_id != current_user.id)
+            if not sees_everything:
+                statement = statement.where(names_caller)
+        elif not sees_everything:
+            statement = statement.where(
+                or_(AgentJob.user_id == current_user.id, names_caller)
+            )
 
         if status:
             statement = statement.where(AgentJob.status == status)
@@ -197,11 +213,13 @@ def build_job_query_api(
         )
         offset = (page - 1) * page_size
         # The database can page when it can also decide which rows belong:
-        # the caller's own jobs, newest first. This used to load every job the
-        # user had ever run, whole, to return twenty of them. Visibility of
-        # other people's jobs and the swarm sorts are decided from each row's
-        # JSON in Python, so those still read every candidate.
-        pages_in_sql = normalized_visibility == "mine" and not requires_swarm_projection
+        # the caller's own jobs, or any jobs for an admin, newest first. This
+        # used to load every job the user had ever run, whole, to return
+        # twenty of them. The swarm sorts rank on each row's JSON in Python,
+        # so those still read every candidate.
+        pages_in_sql = (
+            normalized_visibility == "mine" or sees_everything
+        ) and not requires_swarm_projection
         count_statement = statement.with_only_columns(func.count(AgentJob.id))
         # A list row shows nothing from the execution log, and the log is the
         # largest thing on the row (163 KB after 80 iterations, measured).

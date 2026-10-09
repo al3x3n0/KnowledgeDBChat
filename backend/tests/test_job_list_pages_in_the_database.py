@@ -27,7 +27,7 @@ def _job(user_id, n: int, **kwargs) -> AgentJob:
         job_type="research",
         user_id=user_id,
         status=kwargs.pop("status", AgentJobStatus.COMPLETED.value),
-        config={},
+        config=kwargs.pop("config", {}),
         results=kwargs.pop("results", {}),
         execution_log=[{"phase": "acting", "iteration": i} for i in range(5)],
         created_at=datetime(2026, 9, 1) + timedelta(minutes=n),
@@ -225,3 +225,160 @@ class TestWhoseNamesTheListMayShow:
         visible = await list_collaboration_user_ids(db_session, current_user=test_user)
 
         assert colleague in visible
+
+
+class TestSharingIsAColumn:
+    """`collaborator_index` is kept by the model, whoever writes `results`."""
+
+    @pytest.mark.asyncio
+    async def test_it_follows_the_collaboration_block(self, db_session, test_user):
+        job = _job(test_user.id, 1)
+        db_session.add(job)
+        await db_session.commit()
+        assert job.collaborator_index is None
+
+        colleague, reviewer = uuid4(), uuid4()
+        job.results = {
+            "swarm_collaboration": {
+                "assigned_user_id": str(reviewer),
+                "shared_with_user_ids": [str(colleague)],
+            }
+        }
+        await db_session.commit()
+        await db_session.refresh(job)
+        assert job.collaborator_index == f"|{reviewer}|{colleague}|"
+
+        # Edited in place, as the executor does, not reassigned.
+        job.results["swarm_collaboration"]["shared_with_user_ids"] = []
+        await db_session.commit()
+        await db_session.refresh(job)
+        assert job.collaborator_index == f"|{reviewer}|"
+
+        job.results = {"findings": []}
+        await db_session.commit()
+        await db_session.refresh(job)
+        assert job.collaborator_index is None
+
+    @pytest.mark.asyncio
+    async def test_an_id_is_matched_whole(self, db_session, test_user):
+        from app.models.agent_job import collaborator_index_for, collaborator_pattern
+
+        index = collaborator_index_for(
+            {"swarm_collaboration": {"shared_with_user_ids": ["ABC-123"]}}
+        )
+        assert index == "|abc-123|"
+        assert collaborator_pattern("ABC-123") == "%|abc-123|%"
+        # "abc-12" is not somebody the job is shared with.
+        assert "|abc-12|" not in index
+
+    @pytest.mark.asyncio
+    async def test_a_block_naming_nobody_is_still_a_block(self):
+        from app.models.agent_job import collaborator_index_for
+
+        assert collaborator_index_for({"swarm_collaboration": {}}) == "|"
+        assert collaborator_index_for({"swarm_collaboration": "yes"}) is None
+        assert collaborator_index_for(None) is None
+
+    @pytest.mark.asyncio
+    async def test_the_lookup_reads_no_ones_results_to_find_them(
+        self, db_session, test_user
+    ):
+        from app.services.collaboration_service import list_collaboration_user_ids
+
+        # Mentions the caller's id in its results without sharing anything.
+        db_session.add(_job(uuid4(), 1, results={"notes": f"asked by {test_user.id}"}))
+        await db_session.commit()
+
+        with _Selects() as seen:
+            await list_collaboration_user_ids(db_session, current_user=test_user)
+
+        assert seen.statements
+        assert all("cast(agent_jobs.results" not in text for text in seen.statements)
+
+
+class TestOtherPeoplesJobs:
+    def _shared_with(self, user_id, n, owner):
+        return _job(
+            owner,
+            n,
+            config={"launch_mode": "bug_triage_swarm_repair_handoff"},
+            results={"swarm_collaboration": {"shared_with_user_ids": [str(user_id)]}},
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_shared_view_reads_only_jobs_that_name_you(
+        self, db_session, test_user
+    ):
+        owner = await _person(db_session, "owner")
+        db_session.add_all([_job(owner, n) for n in range(10)])
+        db_session.add(self._shared_with(test_user.id, 50, owner))
+        await db_session.commit()
+
+        with _Selects() as seen:
+            listed = await _list(db_session, test_user, visibility_scope="shared")
+
+        assert [job.name for job in listed.jobs] == ["job 50"]
+        assert listed.total == 1
+        whole_rows = [text for text in seen.statements if "agent_jobs.goal" in text]
+        assert len(whole_rows) == 1
+        assert "collaborator_index like" in whole_rows[0]
+
+    @pytest.mark.asyncio
+    async def test_the_all_view_is_yours_and_what_names_you(
+        self, db_session, test_user
+    ):
+        owner = await _person(db_session, "owner")
+        db_session.add_all(
+            [
+                _job(test_user.id, 1),
+                _job(owner, 2),
+                self._shared_with(test_user.id, 3, owner),
+            ]
+        )
+        await db_session.commit()
+
+        listed = await _list(db_session, test_user, visibility_scope="all")
+
+        assert [job.name for job in listed.jobs] == ["job 03", "job 01"]
+
+    @pytest.mark.asyncio
+    async def test_naming_you_is_not_enough_without_the_rule(
+        self, db_session, test_user
+    ):
+        # The column narrows the candidates; `is_job_visible` still decides.
+        # A job that is not a coding swarm is not shown, shared or not.
+        owner = await _person(db_session, "owner")
+        db_session.add(
+            _job(
+                owner,
+                1,
+                results={
+                    "swarm_collaboration": {"shared_with_user_ids": [str(test_user.id)]}
+                },
+            )
+        )
+        await db_session.commit()
+
+        listed = await _list(db_session, test_user, visibility_scope="shared")
+
+        assert listed.jobs == []
+
+    @pytest.mark.asyncio
+    async def test_an_admin_sees_everyones_and_the_database_pages_them(
+        self, db_session, admin_user
+    ):
+        owner = await _person(db_session, "owner")
+        db_session.add_all([_job(owner, n) for n in range(25)])
+        await db_session.commit()
+
+        with _Selects() as seen:
+            listed = await _list(
+                db_session, admin_user, visibility_scope="all", page_size=10
+            )
+
+        assert [job.name for job in listed.jobs] == [
+            f"job {n:02d}" for n in range(24, 14, -1)
+        ]
+        assert listed.total == 25
+        whole_rows = [text for text in seen.statements if "agent_jobs.goal" in text]
+        assert len(whole_rows) == 1 and " limit " in whole_rows[0]

@@ -258,6 +258,11 @@ helm-validate: helm-lint ## Render the chart and validate it against the Kuberne
 		--set backend.podDisruptionBudget.enabled=true --set secrets.redisPassword=test \
 		| kubeconform -strict -summary -kubernetes-version 1.31.0'
 	@bash -o pipefail -c 'helm template $(K8S_RELEASE) $(CHART) -f $(CHART)/values-prod.example.yaml | kubeconform -strict -summary -kubernetes-version 1.31.0'
+	@# The KEDA ScaledObject's schema comes from the CRD catalog, pinned.
+	@bash -o pipefail -c 'helm template $(K8S_RELEASE) $(CHART) \
+		--set celeryAgents.autoscaling.enabled=true --set networkPolicy.enabled=true \
+		| kubeconform -strict -summary -kubernetes-version 1.31.0 -schema-location default \
+		-schema-location "https://raw.githubusercontent.com/datreeio/CRDs-catalog/63669a570e231d4f1f8396d229a1de512bcf0a34/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"'
 
 minikube-up: ## Start minikube, build images into it, and install the chart
 	./deploy/minikube/bootstrap.sh

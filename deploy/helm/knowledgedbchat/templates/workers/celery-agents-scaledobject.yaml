@@ -1,0 +1,80 @@
+{{- if and .Values.celeryAgents.enabled .Values.celeryAgents.autoscaling.enabled }}
+{{- /*
+Scales the agent-job worker on how many jobs want a slot, which needs KEDA
+(https://keda.sh) on the cluster: the count comes from Postgres, and a plain
+HorizontalPodAutoscaler can only read pod metrics.
+
+Not CPU: an agent job mostly waits on a model, so a full worker looks idle.
+Not queue depth alone: a running job has left the queue, so an empty queue
+would scale away the pods that are doing the work. The demand is the jobs a
+worker holds (a live execution lease) plus the pending jobs that could start
+now -- not one waiting for its schedule, and not one held back by its owner's
+job cap, which no number of pods would let run. files/agent-worker-demand.sql
+holds the query; tests/test_agent_worker_demand_query.py runs it on Postgres.
+
+Scaling down removes a pod without asking which one. A job on it is given
+terminationGracePeriodSeconds to finish, then killed; its lease lapses and the
+stalled-job sweep resumes it from its last checkpoint on another pod, which
+can take half an hour to notice. So scale-down is slow on purpose.
+*/}}
+{{- $auto := .Values.celeryAgents.autoscaling }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ printf "%s-celery-agents" (include "kdbc.fullname" .) }}
+  labels:
+    {{- include "kdbc.componentLabels" (dict "ctx" . "component" "celery-agents") | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ printf "%s-celery-agents" (include "kdbc.fullname" .) }}
+  minReplicaCount: {{ $auto.minReplicas }}
+  maxReplicaCount: {{ $auto.maxReplicas }}
+  pollingInterval: {{ $auto.pollingIntervalSeconds }}
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: {{ $auto.scaleDownStabilizationSeconds }}
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: {{ $auto.scaleDownPeriodSeconds }}
+  triggers:
+    - type: postgresql
+      metadata:
+        host: {{ include "kdbc.postgres.host" . | quote }}
+        port: {{ include "kdbc.postgres.port" . | quote }}
+        dbName: {{ include "kdbc.postgres.database" . | quote }}
+        userName: {{ include "kdbc.postgres.username" . | quote }}
+        # Read from the worker container's own environment, so the password
+        # stays in the release's Secret and is not copied here.
+        passwordFromEnv: POSTGRES_PASSWORD
+        sslmode: {{ $auto.postgresSslMode | quote }}
+        query: {{ .Files.Get "files/agent-worker-demand.sql" | splitList "\n" | join " " | trim | quote }}
+        # One pod per `concurrency` jobs: what a pod can run at once.
+        targetQueryValue: {{ .Values.celeryAgents.concurrency | quote }}
+{{- if and .Values.networkPolicy.enabled .Values.postgres.enabled }}
+---
+# The datastores accept traffic only from this release's pods; KEDA's
+# operator asks Postgres from its own namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ printf "%s-postgres-from-keda" (include "kdbc.fullname" .) }}
+  labels:
+    {{- include "kdbc.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kdbc.componentSelectorLabels" (dict "ctx" . "component" "postgres") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $auto.kedaNamespace | quote }}
+      ports:
+        - protocol: TCP
+          port: 5432
+{{- end }}
+{{- end }}

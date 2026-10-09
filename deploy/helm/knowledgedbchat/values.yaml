@@ -272,6 +272,26 @@ celeryAgents:
   # lease lapses and the stalled-job sweep hands the job to another worker.
   pool: prefork
   concurrency: 4
+  # How long a pod being removed may keep finishing its jobs before it is
+  # killed. A killed job resumes from its last checkpoint on another pod.
+  terminationGracePeriodSeconds: 120
+  # Scale on how many jobs want a slot: one pod per `concurrency` jobs that
+  # are running or could start now. Needs KEDA on the cluster (the count is a
+  # Postgres query, which a plain HorizontalPodAutoscaler cannot read). Off
+  # by default. Rendered and schema-checked, not run on a cluster.
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 5
+    pollingIntervalSeconds: 30
+    # Scale down slowly: removing a pod can interrupt a job hours into its
+    # run. Demand must stay low this long, and one pod goes per period.
+    scaleDownStabilizationSeconds: 1800
+    scaleDownPeriodSeconds: 600
+    # How KEDA's operator connects to Postgres, and where it runs (for the
+    # NetworkPolicy that lets it in when networkPolicy.enabled).
+    postgresSslMode: disable
+    kedaNamespace: keda
   resources:
     requests:
       cpu: 250m

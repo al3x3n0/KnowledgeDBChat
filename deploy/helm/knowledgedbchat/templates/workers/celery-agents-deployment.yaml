@@ -11,7 +11,9 @@ metadata:
   labels:
     {{- include "kdbc.componentLabels" (dict "ctx" . "component" "celery-agents") | nindent 4 }}
 spec:
+  {{- if not .Values.celeryAgents.autoscaling.enabled }}
   replicas: {{ .Values.celeryAgents.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "kdbc.componentSelectorLabels" (dict "ctx" . "component" "celery-agents") | nindent 6 }}
@@ -27,7 +29,7 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       # Celery drains in-flight tasks on SIGTERM; give it room before SIGKILL.
-      terminationGracePeriodSeconds: 120
+      terminationGracePeriodSeconds: {{ .Values.celeryAgents.terminationGracePeriodSeconds }}
       containers:
         - name: celery-agents
           image: "{{ .Values.image.backend.repository }}:{{ .Values.image.backend.tag }}"

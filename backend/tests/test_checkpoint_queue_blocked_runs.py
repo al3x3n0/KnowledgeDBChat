@@ -130,3 +130,42 @@ class TestItDoesNotDisturbTheRestOfTheQueue:
     def test_a_running_job_is_not_swept_in(self):
         job = _job(status=AgentJobStatus.RUNNING.value)
         assert _blocked(job) == []
+
+
+class TestOnlyRowsArePresented:
+    """The presenter ran for every job on every poll, to show the few waiting."""
+
+    def _presented(self, monkeypatch, *jobs):
+        from app.modules.autonomy.application import checkpoint_queue_jobs
+
+        presented = []
+        real = checkpoint_queue_jobs.build_job_checkpoint_queue_items
+
+        def counting(jobs_, *, now, deps):
+            from dataclasses import replace
+
+            def present(job):
+                presented.append(job.id)
+                return deps.present_job(job)
+
+            return real(jobs_, now=now, deps=replace(deps, present_job=present))
+
+        monkeypatch.setattr(
+            checkpoint_queue_jobs, "build_job_checkpoint_queue_items", counting
+        )
+        rows = _rows(*jobs)
+        return presented, rows
+
+    def test_a_job_with_nothing_to_answer_is_not_presented(self, monkeypatch):
+        waiting = _job()
+        finished = [
+            _job(
+                status=AgentJobStatus.COMPLETED.value, current_phase="done", results={}
+            )
+            for _ in range(5)
+        ]
+
+        presented, rows = self._presented(monkeypatch, waiting, *finished)
+
+        assert [row.job_id for row in rows] == [waiting.id]
+        assert presented == [waiting.id]

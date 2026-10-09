@@ -76,10 +76,12 @@ def build_job_checkpoint_queue_items(
 ) -> list[AgentCheckpointQueueItemResponse]:
     items: list[AgentCheckpointQueueItemResponse] = []
     for job in jobs:
+        # A job is presented only where it becomes a row. The presenter is
+        # the expensive step, and it used to run for every job a user had
+        # ever run, on every poll of the queue, to show the handful waiting.
         checkpoint = deps.extract_approval_checkpoint(job)
         scheduler_state = deps.extract_scheduler_state(job)
         customer = deps.queue_customer_for_job(job)
-        job_response = deps.present_job(job)
         if checkpoint:
             created_at = (
                 job.last_activity_at
@@ -142,7 +144,7 @@ def build_job_checkpoint_queue_items(
                     action_count=len(action_rows),
                     created_at=created_at,
                     job_id=job.id,
-                    job=job_response,
+                    job=deps.present_job(job),
                     checkpoint=checkpoint,
                     scheduler_state=scheduler_state,
                     actions=action_rows,
@@ -219,7 +221,7 @@ def build_job_checkpoint_queue_items(
                     action_count=len(action_rows),
                     created_at=created_at,
                     job_id=job.id,
-                    job=job_response,
+                    job=deps.present_job(job),
                     # What it lacks, named, so the row can be acted on without
                     # opening the run.
                     checkpoint={
@@ -303,7 +305,7 @@ def build_job_checkpoint_queue_items(
                     action_count=len(action_rows),
                     created_at=created_at,
                     job_id=job.id,
-                    job=job_response,
+                    job=deps.present_job(job),
                     checkpoint={
                         "kind": "contract_unmet",
                         "reason": unmet.get("reason"),
@@ -411,7 +413,7 @@ def build_job_checkpoint_queue_items(
                 action_count=len(action_rows),
                 created_at=created_at,
                 job_id=job.id,
-                job=job_response,
+                job=deps.present_job(job),
                 scheduler_state={**(scheduler_state or {}), "queue_reason": reason},
                 actions=action_rows,
             )

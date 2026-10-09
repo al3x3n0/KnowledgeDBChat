@@ -307,6 +307,18 @@ jobs:
             --set backend.dbPool.size=5 --set backend.dbPool.maxOverflow=5 \
             --set backend.podDisruptionBudget.enabled=true --set secrets.redisPassword=test \
             | kubeconform -strict -summary -kubernetes-version 1.31.0
+      - name: Validate rendered manifests (agent-worker autoscaling)
+        shell: bash
+        # A KEDA ScaledObject is not a Kubernetes API type, so its schema
+        # comes from the CRD catalog, pinned to a commit. Without it -strict
+        # refuses the kind, and with -ignore-missing-schemas nothing would
+        # check the one object this option adds.
+        run: |
+          helm template kdbc deploy/helm/knowledgedbchat \
+            --set celeryAgents.autoscaling.enabled=true --set networkPolicy.enabled=true \
+            | kubeconform -strict -summary -kubernetes-version 1.31.0 \
+                -schema-location default \
+                -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/63669a570e231d4f1f8396d229a1de512bcf0a34/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
       - name: Validate rendered manifests (external data services)
         shell: bash
         run: |

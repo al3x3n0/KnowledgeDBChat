@@ -47,7 +47,7 @@ kubectl -n knowledgedbchat get pods -w
 | --- | --- | --- |
 | `backend` | Deployment | gunicorn + uvicorn workers, `/health` probes, optional HPA/PDB |
 | `celery` | Deployment | default queue; optional HPA; 120s graceful drain. Takes the `agents` queue too when `celeryAgents` is disabled |
-| `celery-agents` | Deployment | autonomous agent jobs (`agents` queue, `AGENT_JOB_CELERY_QUEUE`): hours long and mostly waiting on a model, so they no longer hold the general worker's processes; no CPU autoscaling, since an idle-waiting worker shows no CPU |
+| `celery-agents` | Deployment | autonomous agent jobs (`agents` queue, `AGENT_JOB_CELERY_QUEUE`): hours long and mostly waiting on a model, so they no longer hold the general worker's processes. `celeryAgents.pool: threads` runs every job in one process (experimental). `celeryAgents.autoscaling` (off; needs [KEDA](https://keda.sh)) scales on jobs running or able to start, one pod per `concurrency` — not CPU, since an idle-waiting worker shows none, and not queue depth, since a running job has left the queue. Scale-down is slow on purpose: removing a pod can interrupt a job, which then resumes from its last checkpoint |
 | `celery-latex` | Deployment | off by default; read-only rootfs, all caps dropped |
 | `celery-transcription` | Deployment | off by default; the only pod carrying Whisper and the audio stack (~250 MB the backend and celery pods no longer replicate). Its image builds `FROM` the backend image, so build that first (`BUILD_TRANSCRIPTION=1 deploy/minikube/bootstrap.sh`) |
 | `celery-beat` | Deployment | pinned to 1 replica with `Recreate` — two schedulers double-fire tasks |

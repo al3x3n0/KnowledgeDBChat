@@ -24,7 +24,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
-from app.utils.per_loop import PerLoop
 from app.models.agent_definition import AgentConversationContext, AgentDefinition
 from app.models.document import Document, DocumentSource
 from app.models.memory import UserPreferences
@@ -63,6 +62,7 @@ from app.services.document_service import DocumentService
 from app.services.llm_service import LLMService, UserLLMSettings, load_user_llm_settings
 from app.services.memory_service import MemoryService
 from app.services.vector_store import VectorStore, vector_store_service
+from app.utils.per_loop import PerLoop
 
 #: Receives progress events during a chat turn: planning, each tool starting
 #: and finishing, and the answer being written.

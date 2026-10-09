@@ -36,7 +36,6 @@ from app.agent_core.tool_specs import spec_for
 from app.models.document import Document, DocumentChunk, DocumentSource
 from app.models.knowledge_graph import Entity, EntityMention, Relationship
 from app.services.agent_service import AgentService
-from app.utils.per_loop import PerLoop
 from app.services.agent_tool_dispatch import (
     AgentToolExecutionContext,
     build_agent_service_analytics_content_provider,
@@ -45,6 +44,7 @@ from app.services.agent_tool_dispatch import (
     build_autonomous_document_provider,
 )
 from app.services.search_service import search_service
+from app.utils.per_loop import PerLoop
 
 pytestmark = pytest.mark.unit
 

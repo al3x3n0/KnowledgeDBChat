@@ -39,8 +39,8 @@ from loguru import logger
 from rank_bm25 import BM25Okapi
 
 from app.core.config import settings
-from app.utils.per_loop import PerLoop
 from app.models.document import Document, DocumentChunk
+from app.utils.per_loop import PerLoop
 
 try:
     from qdrant_client import QdrantClient  # type: ignore

@@ -29,8 +29,8 @@ from app.models.document import Document, DocumentChunk, DocumentSource
 from app.services.agent_service import AgentService
 from app.services.document_service import DocumentService
 from app.services.llm_service import LLMService
-from app.utils.per_loop import PerLoop
 from app.services.vector_store import VectorStoreService
+from app.utils.per_loop import PerLoop
 
 pytestmark = pytest.mark.unit
 

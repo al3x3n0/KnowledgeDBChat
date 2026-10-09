@@ -4,7 +4,6 @@ Mermaid diagram rendering service.
 Renders Mermaid diagram code to PNG images using local or external Kroki service.
 """
 
-import asyncio
 import base64
 import zlib
 from typing import Optional
@@ -13,6 +12,7 @@ import httpx
 from loguru import logger
 
 from app.core.config import settings
+from app.utils.per_loop import PerLoop
 
 
 class MermaidRenderError(Exception):
@@ -31,8 +31,9 @@ class MermaidRenderer:
     TIMEOUT = 30
 
     def __init__(self):
-        self._client: Optional[httpx.AsyncClient] = None
-        self._client_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._clients: PerLoop[httpx.AsyncClient] = PerLoop(
+            lambda: httpx.AsyncClient(timeout=self.TIMEOUT)
+        )
 
     # Read when used, not when the singleton is built: the singleton outlives
     # whatever configuration the process had when it was first asked for. An
@@ -76,17 +77,13 @@ class MermaidRenderer:
         bound to a loop that has closed, so in a worker every render after the
         first failed and the diagram was quietly left out.
         """
-        loop = asyncio.get_running_loop()
-        if self._client is None or self._client_loop is not loop:
-            self._client = httpx.AsyncClient(timeout=self.TIMEOUT)
-            self._client_loop = loop
-        return self._client
+        return self._clients.get()
 
     async def close(self):
-        """Close the HTTP client."""
-        if self._client:
-            await self._client.aclose()
-            self._client = None
+        """Close the running loop's HTTP client."""
+        client = self._clients.pop()
+        if client:
+            await client.aclose()
 
     def _is_companion(self, base_url: str) -> bool:
         """Whether this endpoint is a Kroki companion rather than a gateway.

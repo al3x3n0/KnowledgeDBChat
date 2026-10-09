@@ -36,6 +36,7 @@ from app.agent_core.tool_specs import spec_for
 from app.models.document import Document, DocumentChunk, DocumentSource
 from app.models.knowledge_graph import Entity, EntityMention, Relationship
 from app.services.agent_service import AgentService
+from app.utils.per_loop import PerLoop
 from app.services.agent_tool_dispatch import (
     AgentToolExecutionContext,
     build_agent_service_analytics_content_provider,
@@ -148,7 +149,7 @@ def _service(vector_store=None):
     service = AgentService.__new__(AgentService)
     service.vector_store = vector_store or _VectorStore()
     service._vector_store_initialized = True
-    service._vector_store_init_lock = asyncio.Lock()
+    service._vector_store_init_locks = PerLoop(asyncio.Lock)
     return service
 
 

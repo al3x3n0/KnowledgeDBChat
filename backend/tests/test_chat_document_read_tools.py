@@ -29,6 +29,7 @@ from app.models.document import Document, DocumentChunk, DocumentSource
 from app.services.agent_service import AgentService
 from app.services.document_service import DocumentService
 from app.services.llm_service import LLMService
+from app.utils.per_loop import PerLoop
 from app.services.vector_store import VectorStoreService
 
 pytestmark = pytest.mark.unit
@@ -88,7 +89,7 @@ def _service(store=None, llm=None):
     service.vector_store = store or _Store()
     service.llm_service = llm or _LLM()
     service._vector_store_initialized = False
-    service._vector_store_init_lock = asyncio.Lock()
+    service._vector_store_init_locks = PerLoop(asyncio.Lock)
     return service
 
 

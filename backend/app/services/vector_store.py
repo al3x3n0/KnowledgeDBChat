@@ -39,6 +39,7 @@ from loguru import logger
 from rank_bm25 import BM25Okapi
 
 from app.core.config import settings
+from app.utils.per_loop import PerLoop
 from app.models.document import Document, DocumentChunk
 
 try:
@@ -87,7 +88,11 @@ class VectorStoreService:
         self._init_error: Optional[str] = None
         self._init_task: asyncio.Task | None = None
         self._initialized = False
-        self._init_lock = asyncio.Lock()
+        # One lock per loop: it keeps one loop from initialising twice. Two
+        # loops in two threads may each initialise once, which repeats work
+        # and assigns the same things; a lock shared between loops can leave
+        # one of them waiting on a wake-up that never arrives.
+        self._init_locks: PerLoop[asyncio.Lock] = PerLoop(asyncio.Lock)
         self._embedding_dim: Optional[int] = None
 
     async def initialize(
@@ -103,7 +108,7 @@ class VectorStoreService:
         if self._initialized:
             return
 
-        async with self._init_lock:
+        async with self._init_locks.get():
             if self._initialized:
                 return
 

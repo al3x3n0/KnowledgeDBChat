@@ -8,6 +8,11 @@ from celery.schedules import crontab
 from app.core.config import settings
 
 # Create Celery app
+#: The wall clock an agent job task gets (8h10m). Celery enforces it with a
+#: signal, which only the prefork pool can deliver; the task also enforces it
+#: itself (agent_job_tasks), so a worker running jobs in threads has it too.
+AGENT_JOB_SOFT_TIME_LIMIT_SECONDS = 8 * 60 * 60 + 10 * 60
+
 celery_app = Celery(
     "knowledge_db",
     broker=settings.CELERY_BROKER_URL,
@@ -97,8 +102,8 @@ celery_app.conf.update(
         # and only the invisible one binding. Sized to the 480-minute maximum
         # the schema permits, so the job's own limit is what stops it.
         "app.tasks.agent_job_tasks.execute_agent_job_task": {
-            "soft_time_limit": 8 * 60 * 60 + 10 * 60,  # 8h10m
-            "time_limit": 8 * 60 * 60 + 20 * 60,  # 8h20m
+            "soft_time_limit": AGENT_JOB_SOFT_TIME_LIMIT_SECONDS,
+            "time_limit": AGENT_JOB_SOFT_TIME_LIMIT_SECONDS + 10 * 60,  # 8h20m
         },
     },
     task_time_limit=30 * 60,  # 30 minutes

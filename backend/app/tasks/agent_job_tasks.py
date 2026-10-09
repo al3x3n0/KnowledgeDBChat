@@ -21,7 +21,7 @@ from loguru import logger
 from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import selectinload
 
-from app.core.celery import celery_app
+from app.core.celery import AGENT_JOB_SOFT_TIME_LIMIT_SECONDS, celery_app
 from app.core.database import create_celery_session
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.services import agent_job_user_cap
@@ -647,6 +647,23 @@ def is_terminal_task_error(exc: BaseException) -> bool:
     return isinstance(exc, TERMINAL_TASK_ERRORS)
 
 
+async def _within_wall_clock(execution: Awaitable[Any], seconds: float) -> Any:
+    """Run the job, ending it as Celery's soft time limit would.
+
+    Celery delivers that limit as a signal to the process running the task,
+    which only the prefork pool can do: in a thread pool no limit is enforced
+    at all. Enforced here, it holds in either. Cancelling lets the run's own
+    cleanup happen -- the heartbeat stops and the lease is released -- and
+    the error raised is the one the failure path already treats as terminal.
+    """
+    try:
+        return await asyncio.wait_for(execution, timeout=seconds)
+    except asyncio.TimeoutError:
+        raise SoftTimeLimitExceeded(
+            f"agent job exceeded its wall clock of {int(seconds)}s"
+        ) from None
+
+
 def _redeliver_after_user_cap(job_id: str, user_id: str, outcome: dict) -> None:
     """Send the job back to its queue to be tried again later.
 
@@ -695,7 +712,9 @@ def execute_agent_job_task(self, job_id: str, user_id: str):
         lease_owner_id=task_owner_id,
     )
     try:
-        outcome = asyncio.run(execution_coro)
+        outcome = asyncio.run(
+            _within_wall_clock(execution_coro, AGENT_JOB_SOFT_TIME_LIMIT_SECONDS)
+        )
         if isinstance(outcome, dict) and outcome.get("status") == USER_CAP_DEFERRED:
             _redeliver_after_user_cap(job_id, user_id, outcome)
 

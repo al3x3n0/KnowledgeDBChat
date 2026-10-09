@@ -18,6 +18,7 @@ Two generation paths:
 """
 
 import asyncio
+import threading
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -43,6 +44,7 @@ from app.services.llm_routing import (
     resolve_tier_overrides,
 )
 from app.utils.exceptions import LLMServiceError
+from app.utils.per_loop import PerLoop
 
 #: The last completion's reasoning, per asyncio task.
 #:
@@ -306,18 +308,37 @@ class LLMService:
         self.provider = (settings.LLM_PROVIDER or "deepseek").lower()
         self.base_url = settings.OLLAMA_BASE_URL
         self.default_model = settings.DEFAULT_MODEL
-        # A single client is enough; per-request overrides set timeouts/headers
-        self.client = httpx.AsyncClient(timeout=120.0)
+        # One client per event loop; per-request overrides set timeouts and
+        # headers. It was one client for the service, and the service is
+        # shared by every job in a worker: an httpx client's connections
+        # belong to the loop that opened them.
+        self._clients: PerLoop[httpx.AsyncClient] = PerLoop(
+            lambda: httpx.AsyncClient(timeout=120.0)
+        )
+        self._client_override: Optional[httpx.AsyncClient] = None
         self._unhealthy_until: Dict[str, float] = {}
         self._unhealthy_reason: Dict[str, str] = {}
-        self._unhealthy_lock = asyncio.Lock()
+        # A thread lock, not an asyncio one: nothing is awaited while it is
+        # held, and the callers may be on different loops in different threads.
+        self._unhealthy_lock = threading.Lock()
+
+    @property
+    def client(self) -> httpx.AsyncClient:
+        if self._client_override is not None:
+            return self._client_override
+        return self._clients.get()
+
+    @client.setter
+    def client(self, value: Optional[httpx.AsyncClient]) -> None:
+        # Assigning one (a test's fake, usually) uses it on every loop.
+        self._client_override = value
 
     async def _is_healthy(self, key: str) -> bool:
         try:
             now = asyncio.get_event_loop().time()
         except Exception:
             now = 0.0
-        async with self._unhealthy_lock:
+        with self._unhealthy_lock:
             until = self._unhealthy_until.get(key)
             if until is None:
                 return True
@@ -335,7 +356,7 @@ class LLMService:
             now = asyncio.get_event_loop().time()
         except Exception:
             now = 0.0
-        async with self._unhealthy_lock:
+        with self._unhealthy_lock:
             self._unhealthy_until[key] = float(now) + float(cooldown_seconds)
             self._unhealthy_reason[key] = str(reason or "")[:200]
 
@@ -1818,4 +1839,9 @@ Citation format:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.client.aclose()
+        if self._client_override is not None:
+            await self._client_override.aclose()
+            return
+        client = self._clients.pop()
+        if client is not None:
+            await client.aclose()

@@ -1696,6 +1696,18 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   loop" on its first contended wait. The counting is a Lua script, which a
   fake cannot check, so three tests run against a real Redis in the Postgres
   CI job (`TEST_REDIS_URL`) and skip without one.
+  **Sandbox runs are capped the same way** (`SANDBOX_MAX_CONCURRENT_RUNS`,
+  4; `services/shared_slots.py` is the counter both use). Nothing limited
+  them: each worker process could start a container per tool call, two CPUs
+  apiece, on a daemon whose load none of them could see -- and a run timed
+  beside too many others measures the others. The count is **per daemon**
+  (`agent_sandbox_runtime.sandbox_slots_key`): a TCP `DOCKER_HOST` is one
+  daemon every client shares, a unix socket is the chart's per-pod sidecar
+  and is keyed by host name. Waiting for a slot is not charged to the run's
+  time limit, and a run still waiting after `SANDBOX_SLOT_WAIT_SECONDS`
+  proceeds. Only `run_in_sandbox` is capped; the four callers that build the
+  command for `subprocess.run` (experiments, the ingestion demo, the admin
+  check) and custom Docker tools are not.
 
 ### Feature Flags (`core/feature_flags.py`)
 - Two-tier resolution: Redis cache → Settings fallback

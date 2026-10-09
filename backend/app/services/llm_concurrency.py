@@ -14,47 +14,23 @@ each task in a fresh loop, so in a worker the first contended acquire bound
 the semaphore to a loop that then closed, and a later contended one raised
 "bound to a different event loop". The local cap is now kept per loop.
 
-The global cap is **soft**, on purpose. Redis being unreachable disables it
-for a while rather than failing calls, a caller that has waited
-``LLM_GLOBAL_ACQUIRE_TIMEOUT_SECONDS`` proceeds anyway, and a slot expires
-after ``LLM_GLOBAL_SLOT_TTL_SECONDS`` so a process that died holding one does
-not hold it for ever. Overshooting a provider's quota costs a 429 the caller
-already handles; a limiter that can stop every model call costs the platform.
+The global cap is counted by ``shared_slots`` and is **soft** (see there): a
+caller that has waited ``LLM_GLOBAL_ACQUIRE_TIMEOUT_SECONDS`` proceeds, and a
+slot expires after ``LLM_GLOBAL_SLOT_TTL_SECONDS``. Overshooting a provider's
+quota costs a 429 the caller already handles.
 """
 
 from __future__ import annotations
 
 import asyncio
-import random
-import time
-import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
 
-from loguru import logger
-
 from app.core.config import settings
+from app.services import shared_slots
 from app.utils.per_loop import PerLoop
 
 SLOTS_KEY = "llm:concurrency:slots"
-
-#: Atomically: forget expired holders, then take a slot if one is free.
-#: KEYS[1] the sorted set (member = holder, score = when its slot expires).
-#: ARGV: now, expiry, limit, holder. Returns 1 when the slot was taken.
-_ACQUIRE = """
-redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
-if redis.call('ZCARD', KEYS[1]) < tonumber(ARGV[3]) then
-  redis.call('ZADD', KEYS[1], ARGV[2], ARGV[4])
-  redis.call('EXPIRE', KEYS[1], math.ceil(ARGV[2] - ARGV[1]) + 60)
-  return 1
-end
-return 0
-"""
-
-#: After Redis fails, how long the global cap is skipped before trying again.
-REDIS_BACKOFF_SECONDS = 30.0
-
-_redis_down_until = 0.0
 
 
 class _Sized:
@@ -78,61 +54,6 @@ def _local_semaphore() -> asyncio.Semaphore:
     return held.semaphore
 
 
-async def _redis():
-    from app.core.cache import get_redis_client
-
-    return await get_redis_client()
-
-
-async def _acquire_global(limit: int) -> Optional[str]:
-    """Take a shared slot; None when the cap is off, unreachable or timed out."""
-    global _redis_down_until
-    if limit <= 0 or time.monotonic() < _redis_down_until:
-        return None
-    holder = uuid.uuid4().hex
-    ttl = max(30.0, float(settings.LLM_GLOBAL_SLOT_TTL_SECONDS))
-    deadline = time.monotonic() + max(
-        0.0, float(settings.LLM_GLOBAL_ACQUIRE_TIMEOUT_SECONDS)
-    )
-    delay = 0.05
-    while True:
-        try:
-            client = await _redis()
-            now = time.time()
-            taken = await client.eval(
-                _ACQUIRE, 1, SLOTS_KEY, now, now + ttl, limit, holder
-            )
-        except Exception as exc:
-            _redis_down_until = time.monotonic() + REDIS_BACKOFF_SECONDS
-            logger.warning(
-                "LLM global concurrency cap skipped for "
-                f"{REDIS_BACKOFF_SECONDS:.0f}s: Redis unavailable ({exc})"
-            )
-            return None
-        if int(taken or 0) == 1:
-            return holder
-        if time.monotonic() >= deadline:
-            logger.warning(
-                f"LLM global concurrency cap ({limit}) still full after "
-                f"{settings.LLM_GLOBAL_ACQUIRE_TIMEOUT_SECONDS}s; proceeding"
-            )
-            return None
-        # Jittered, so waiters across processes do not retry in step.
-        await asyncio.sleep(delay * (0.5 + random.random()))
-        delay = min(delay * 2, 1.0)
-
-
-async def _release_global(holder: Optional[str]) -> None:
-    if not holder:
-        return
-    try:
-        client = await _redis()
-        await client.zrem(SLOTS_KEY, holder)
-    except Exception as exc:
-        # The slot expires by itself; nothing else depends on this.
-        logger.debug(f"LLM slot release failed, will expire: {exc}")
-
-
 @asynccontextmanager
 async def llm_slot() -> AsyncIterator[None]:
     """Hold one model-call slot: this process's, then the deployment's.
@@ -143,18 +64,19 @@ async def llm_slot() -> AsyncIterator[None]:
     await semaphore.acquire()
     holder: Optional[str] = None
     try:
-        holder = await _acquire_global(int(settings.LLM_GLOBAL_MAX_CONCURRENCY))
+        holder = await shared_slots.acquire(
+            SLOTS_KEY,
+            int(settings.LLM_GLOBAL_MAX_CONCURRENCY),
+            ttl=settings.LLM_GLOBAL_SLOT_TTL_SECONDS,
+            wait=settings.LLM_GLOBAL_ACQUIRE_TIMEOUT_SECONDS,
+            what="model calls",
+        )
         yield
     finally:
         semaphore.release()
-        await _release_global(holder)
+        await shared_slots.release(SLOTS_KEY, holder)
 
 
 async def slots_in_use() -> Optional[int]:
     """Shared slots currently held, or None when Redis cannot say."""
-    try:
-        client = await _redis()
-        await client.zremrangebyscore(SLOTS_KEY, "-inf", time.time())
-        return int(await client.zcard(SLOTS_KEY))
-    except Exception:
-        return None
+    return await shared_slots.in_use(SLOTS_KEY)

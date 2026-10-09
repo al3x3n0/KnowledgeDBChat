@@ -1598,8 +1598,23 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   returns None when the attribute exists and is None, and `str(None)` went to
   the response model as the id "None". All three items in the dev database
   failed. `getattr(obj, name, default)` is not `getattr(...) or default`.
-  The 650-line action handler is still in the endpoint, untested; it needs
-  characterisation tests before it moves.
+  **The action handler followed, tests first.** It was thirteen branches in
+  one 650-line route with no test. `tests/test_coding_backlog_actions.py` was
+  written against it as it stood -- through the real route, with jobs really
+  created and only the task's `.delay` recorded -- and then the code moved:
+  `backlog_actions.py` (one function per action; `ACTIONS` says in one place
+  who may do each and whether it is about a slice), `backlog_jobs.py` (the
+  repair and apply jobs an action starts), `backlog_slices.py` (slice state
+  as plain data). The endpoint went from 1,526 lines to 478. The application
+  layer raises `ActionRefused(kind, detail)` and imports nothing from
+  FastAPI; `_REFUSAL_STATUS` in the endpoint is the only place that knows the
+  status codes. Writing the tests found two defects before anything moved: a
+  second operator note never replaced the first in `latest_summary` (the
+  stored dict was edited in place and assigned back, which a plain JSON
+  column does not see as a change), and relaunching a slice recorded the job
+  it had **just started** as the one it retried from, because it read the
+  slice's child job after overwriting it. Characterise before moving: the
+  tests are what make a 650-line move checkable, and they find things first.
 - The operator queue presents a job only where it becomes a row. The full
   presenter ran for every job a user had ever run on every poll, to show the
   handful waiting. It still **loads** every job: a database pre-filter needs

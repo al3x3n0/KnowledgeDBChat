@@ -62,6 +62,7 @@ from app.services.transcription_service import TranscriptionService
 from app.tasks.ingestion_tasks import ingest_from_source
 from app.tasks.summarization_tasks import summarize_document as summarize_task
 from app.utils.exceptions import DocumentNotFoundError, ValidationError
+from app.utils.http_headers import content_disposition
 from app.utils.ingestion_state import (
     get_ingestion_task_mapping,
     set_ingestion_cancel_flag,
@@ -161,7 +162,7 @@ async def download_document_source_zip(
         filename = (
             re.sub(r"[^A-Za-z0-9_.-]+", "_", source.name or "source")[:80] + ".zip"
         )
-        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+        headers = {"Content-Disposition": content_disposition(filename)}
         return StreamingResponse(buf, media_type="application/zip", headers=headers)
     except HTTPException:
         raise
@@ -488,7 +489,7 @@ async def download_document_head(
                     "Content-Type": content_type,
                     "Content-Length": str(file_size),
                     "Accept-Ranges": "bytes",
-                    "Content-Disposition": f'inline; filename="{filename}"',
+                    "Content-Disposition": content_disposition(filename, inline=True),
                     "Access-Control-Allow-Origin": "*",
                     "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
                     "Access-Control-Allow-Headers": "Range, Authorization, Content-Type",
@@ -698,7 +699,9 @@ async def download_document(
                                 "Content-Range": f"bytes {start}-{end}/{file_size}",
                                 "Content-Length": str(content_length),
                                 "Accept-Ranges": "bytes",
-                                "Content-Disposition": f'inline; filename="{filename}"',
+                                "Content-Disposition": content_disposition(
+                                    filename, inline=True
+                                ),
                                 "Cache-Control": "public, max-age=3600",
                             },
                         )
@@ -728,7 +731,9 @@ async def download_document(
                     file_stream,
                     media_type=content_type,
                     headers={
-                        "Content-Disposition": f'inline; filename="{filename}"',  # Changed to inline for video playback
+                        "Content-Disposition": content_disposition(
+                            filename, inline=True
+                        ),  # Changed to inline for video playback
                         "Content-Length": str(file_size),
                         "Accept-Ranges": "bytes",  # Enable range requests
                         "Cache-Control": "public, max-age=3600",  # Cache for 1 hour

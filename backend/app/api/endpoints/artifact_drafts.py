@@ -25,6 +25,7 @@ from app.schemas.artifact_draft import (
 )
 from app.services.auth_service import get_current_user, is_admin
 from app.services.storage_service import StorageService
+from app.utils.http_headers import content_disposition
 
 router = APIRouter()
 
@@ -331,7 +332,7 @@ async def download_published_artifact(
         content=content,
         media_type=media_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": content_disposition(filename),
             "Content-Length": str(len(content)),
         },
     )

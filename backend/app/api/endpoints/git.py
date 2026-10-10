@@ -19,6 +19,7 @@ from app.schemas.git import GitBranchResponse, GitCompareJobResponse, GitCompare
 from app.services.auth_service import get_current_user
 from app.services.git_service import GitService
 from app.tasks.git_compare_tasks import compare_git_branches
+from app.utils.http_headers import content_disposition
 from app.utils.ingestion_state import (
     get_git_compare_task,
     set_git_compare_cancel_flag,
@@ -346,7 +347,9 @@ async def generate_architecture_diagram_png(
             content=png_bytes,
             media_type="image/png",
             headers={
-                "Content-Disposition": f"inline; filename=architecture_{request.project_id}.png"
+                "Content-Disposition": content_disposition(
+                    f"architecture_{request.project_id}.png", inline=True
+                )
             },
         )
 
@@ -412,7 +415,9 @@ async def generate_architecture_diagram_svg(
             content=result["svg"],
             media_type="image/svg+xml",
             headers={
-                "Content-Disposition": f"inline; filename=architecture_{request.project_id}.svg"
+                "Content-Disposition": content_disposition(
+                    f"architecture_{request.project_id}.svg", inline=True
+                )
             },
         )
 

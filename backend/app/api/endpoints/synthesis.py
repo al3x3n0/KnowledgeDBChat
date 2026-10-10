@@ -35,6 +35,7 @@ from app.services.research_opportunity_reprioritization_service import (
 )
 from app.services.storage_service import storage_service
 from app.services.synthesis_service import synthesis_service
+from app.utils.http_headers import content_disposition
 
 router = APIRouter()
 
@@ -1196,7 +1197,7 @@ async def download_synthesis_result(
         return StreamingResponse(
             file_obj,
             media_type=content_type,
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            headers={"Content-Disposition": content_disposition(filename)},
         )
 
     except Exception as e:

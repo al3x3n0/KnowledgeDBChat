@@ -1642,6 +1642,30 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   first-party class called without `await`; it resolves the receiver to the
   class, so a third-party object sharing a method name is not accused.
 
+- **A download's filename goes through `utils/http_headers.content_disposition`.**
+  Thirteen routes wrote a title or an upload's own name into
+  `Content-Disposition` with an f-string. A header is latin-1, so a name in
+  any other script (`отчёт.pdf`) raised `UnicodeEncodeError` when the
+  response was built and the download was a 500; a double quote ended the
+  value early; a line break was a second header. The helper sends an ASCII
+  fallback and, when the name needs it, the real one as `filename*=UTF-8''...`
+  (RFC 5987). `tests/test_download_filenames.py` refuses a hand-built one.
+- **A call on an object built a line earlier is checked too**
+  (`tests/test_locally_built_objects.py`). The import and signature guards
+  cover singletons and `self.x = X()`; an object built inside the function
+  slipped past both, twice, each inside `except Exception`: the chat tool
+  `run_workflow` built `WorkflowEngine()` with no arguments and called an
+  `execute` it does not have (it queues through `queue_workflow` now, as the
+  workflows page does), and the PPTX template upload passed
+  `StorageService.upload_file` a `prefix` it does not take, so **no template
+  was ever uploaded** (it uses `upload_to_path` with the path it records).
+  The guard follows first-party base classes, reads only a function's body
+  (a decorator's `router` is the module's, not the local one), and only
+  judges a name assigned once.
+- The presentation routes have tests (`tests/test_presentation_routes.py`);
+  the list's `limit` and `offset` are bounded, since a negative limit is "no
+  limit" to the database.
+
 - **Lower layers do not import higher ones** (`tests/test_layering.py`, read
   from source including imports inside functions). Nothing outside `app/api`
   imports `app.api`; services, models, schemas, core, agent_core, utils and mcp

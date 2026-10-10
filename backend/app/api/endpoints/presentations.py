@@ -2,6 +2,7 @@
 API endpoints for AI-powered presentation generation.
 """
 
+import asyncio
 import os
 import re
 import tempfile
@@ -14,6 +15,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     UploadFile,
     WebSocket,
     status,
@@ -37,6 +39,7 @@ from app.schemas.presentation import (
 )
 from app.services.auth_service import get_current_user
 from app.services.storage_service import StorageService
+from app.utils.http_headers import content_disposition
 
 router = APIRouter()
 
@@ -223,8 +226,10 @@ async def create_research_presentation(
 
 @router.get("", response_model=List[PresentationJobResponse])
 async def list_presentations(
-    limit: int = 20,
-    offset: int = 0,
+    # Bounded: a negative limit is "no limit" to the database, and this
+    # returned every job the user had.
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     status_filter: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -449,7 +454,8 @@ async def upload_pptx_template(
         from pptx.exc import PackageNotFoundError
 
         try:
-            prs = PptxPresentation(temp_path)
+            # Parsing a 50 MB deck is seconds of CPU; not on the event loop.
+            prs = await asyncio.to_thread(PptxPresentation, temp_path)
             slide_count = len(prs.slides)
             layout_count = len(prs.slide_layouts)
             logger.info(
@@ -480,12 +486,14 @@ async def upload_pptx_template(
         object_path = f"templates/{template_id}/{safe_filename}"
 
         try:
-            await storage.upload_file(
-                document_id=str(template_id),
-                filename=safe_filename,
+            # To the path recorded on the template below. This called
+            # `upload_file` with a `prefix` argument it does not take, so
+            # every upload raised TypeError here and answered "Failed to
+            # store template file": no PPTX template was ever stored.
+            await storage.upload_to_path(
+                object_path=object_path,
                 content=content,
                 content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                prefix="templates",
             )
             logger.info(f"Uploaded template file to {object_path}")
         except Exception as e:
@@ -592,7 +600,9 @@ async def delete_template(
     if template.file_path:
         storage = StorageService()
         try:
-            await storage.delete_file(template.file_path)
+            # It answers False instead of raising when the file is still there.
+            if not await storage.delete_file(template.file_path):
+                logger.warning(f"Template file {template.file_path} was not removed")
         except Exception as e:
             logger.warning(f"Failed to delete template file {template.file_path}: {e}")
 
@@ -662,7 +672,7 @@ async def download_presentation(
             content=content,
             media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
             headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Disposition": content_disposition(filename),
                 "Content-Length": str(len(content)),
             },
         )
@@ -697,7 +707,9 @@ async def delete_presentation(
     if job.file_path:
         storage = StorageService()
         try:
-            await storage.delete_file(job.file_path)
+            # It answers False instead of raising when the file is still there.
+            if not await storage.delete_file(job.file_path):
+                logger.warning(f"Presentation file {job.file_path} was not removed")
         except Exception as e:
             logger.warning(f"Failed to delete presentation file {job.file_path}: {e}")
 

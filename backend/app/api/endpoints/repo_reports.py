@@ -25,6 +25,7 @@ from app.schemas.repo_report import (
 from app.services.auth_service import get_current_user
 from app.services.repo_analysis_service import parse_repo_url as _parse_repo_url
 from app.services.storage_service import StorageService
+from app.utils.http_headers import content_disposition
 
 router = APIRouter()
 
@@ -269,7 +270,7 @@ async def download_repo_report(
             content=content,
             media_type=media_type,
             headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Disposition": content_disposition(filename),
                 "Content-Length": str(len(content)),
             },
         )

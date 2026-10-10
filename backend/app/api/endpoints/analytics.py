@@ -14,6 +14,7 @@ from app.core.database import get_db
 from app.models.user import User
 from app.services.analytics_service import analytics_service
 from app.services.auth_service import get_current_user
+from app.utils.http_headers import content_disposition
 
 router = APIRouter()
 
@@ -151,5 +152,5 @@ async def export_data(
     return Response(
         content=content,
         media_type=content_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": content_disposition(filename)},
     )

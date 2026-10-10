@@ -79,6 +79,7 @@ from app.tasks.monitoring_tasks import (
 )
 from app.tasks.sync_tasks import ingest_from_source, sync_all_sources
 from app.utils.background import spawn
+from app.utils.http_headers import content_disposition
 from app.utils.ingestion_state import (
     get_ingestion_task_mapping,
     set_force_full_flag,
@@ -2411,7 +2412,7 @@ async def export_source_sync_logs_csv(
 
         csv_data = buf.getvalue()
         headers = {
-            "Content-Disposition": f'attachment; filename="sync_logs_{source_id}.csv"'
+            "Content-Disposition": content_disposition(f"sync_logs_{source_id}.csv")
         }
         return Response(content=csv_data, media_type="text/csv", headers=headers)
     except Exception as e:

@@ -4040,10 +4040,7 @@ Generate the Mermaid diagram code:"""
     ) -> Dict[str, Any]:
         """Execute a workflow by name or ID."""
         from app.models.workflow import Workflow
-        from app.services.workflow_engine import (
-            WorkflowEngine,
-            WorkflowExecutionError,
-        )
+        from app.services.workflow_engine import WorkflowEngine, WorkflowExecutionError
 
         workflow_name = params.get("workflow_name")
         workflow_id = params.get("workflow_id")

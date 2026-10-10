@@ -19,7 +19,6 @@ from fastapi import (
     status,
 )
 from loguru import logger
-from sqlalchemy import delete
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -143,23 +142,20 @@ async def create_research_presentation(
     The arXiv papers are ingested synchronously (fast-path) so they're
     immediately available for the presentation.
     """
-    import hashlib
-    from uuid import uuid4
-
-    from app.models.document import Document as DocModel
-    from app.models.document import DocumentChunk
+    from app.services import arxiv_instant_ingest
     from app.services.connectors.arxiv_connector import ArxivConnector
-    from app.services.text_processor import TextProcessor
-    from app.services.vector_store import vector_store_service
     from app.tasks.presentation_tasks import generate_presentation_task
 
     source_document_ids = []
-    text_processor = TextProcessor()
+    # Read now. A rollback below expires every object in the session, the
+    # caller among them, and reading an expired attribute afterwards is a
+    # database call from a place that cannot make one.
+    user_id = current_user.id
 
     # If include_arxiv, search and ingest papers
     if include_arxiv and arxiv_max_papers > 0:
+        connector = ArxivConnector()
         try:
-            connector = ArxivConnector()
             await connector.initialize(
                 {
                     "queries": [topic],
@@ -167,97 +163,39 @@ async def create_research_presentation(
                     "sort_by": "relevance",
                 }
             )
-
             docs = await connector.list_documents()
             logger.info(f"Found {len(docs)} arXiv papers for topic: {topic}")
 
             for doc_info in docs[:arxiv_max_papers]:
                 arxiv_id = doc_info["identifier"]
-
-                # Check if already exists
-                existing = await db.execute(
-                    select(DocModel).where(DocModel.source_identifier == arxiv_id)
-                )
-                existing_doc = existing.scalar_one_or_none()
-
-                if existing_doc and existing_doc.is_processed:
-                    source_document_ids.append(str(existing_doc.id))
-                    continue
-
-                # Fetch and ingest
-                content = await connector.get_document_content(arxiv_id)
-                metadata = await connector.get_document_metadata(arxiv_id)
-
-                if existing_doc:
-                    document = existing_doc
-                    document.content = content
-                    document.content_hash = hashlib.sha256(content.encode()).hexdigest()
-                else:
-                    document = DocModel(
-                        id=uuid4(),
-                        title=doc_info["title"],
-                        content=content,
-                        content_hash=hashlib.sha256(content.encode()).hexdigest(),
-                        source_identifier=arxiv_id,
-                        url=doc_info.get("url"),
-                        author=doc_info.get("author"),
-                        extra_metadata={
-                            "arxiv": True,
-                            "authors": metadata.get("authors", []),
-                            "categories": metadata.get("categories", []),
-                            "research_presentation": True,
-                        },
+                # One paper at a time: a paper that cannot be fetched or
+                # indexed is left out, and the ones after it still go in.
+                # One `try` around the whole loop lost every later paper to
+                # the first failure.
+                try:
+                    paper = await arxiv_instant_ingest.ingest_paper(
+                        db,
+                        connector,
+                        arxiv_id,
+                        doc_info,
+                        user_id=user_id,
+                        marker={"research_presentation": True},
                     )
-                    db.add(document)
-
-                await db.commit()
-                await db.refresh(document)
-
-                # Quick chunking
-                chunks_data = text_processor.split_text(
-                    content, chunk_size=1000, chunk_overlap=200
-                )
-
-                # Delete old chunks if updating
-                if existing_doc:
-                    await db.execute(
-                        delete(DocumentChunk).where(
-                            DocumentChunk.document_id == document.id
-                        )
-                    )
-                    await db.commit()
-
-                chunks = []
-                for idx, chunk_text in enumerate(chunks_data):
-                    chunk = DocumentChunk(
-                        id=uuid4(),
-                        document_id=document.id,
-                        content=chunk_text,
-                        chunk_index=idx,
-                    )
-                    chunks.append(chunk)
-                    db.add(chunk)
-
-                await db.commit()
-
-                # Add to vector store
-                await vector_store_service.initialize()
-                await vector_store_service.add_document_chunks(document, chunks)
-
-                document.is_processed = True
-                await db.commit()
-
-                source_document_ids.append(str(document.id))
-
-            await connector.cleanup()
-
+                    source_document_ids.append(str(paper.document.id))
+                except Exception as e:
+                    logger.warning(f"Could not ingest arXiv paper {arxiv_id}: {e}")
+                    # Whatever the failure left half-written must not ride
+                    # along into the next paper's commit, or the job's.
+                    await db.rollback()
         except Exception as e:
-            logger.warning(f"Failed to ingest arXiv papers: {e}")
-            # Continue without arXiv papers
+            logger.warning(f"Failed to search arXiv for '{topic}': {e}")
+            await db.rollback()
+        finally:
+            await connector.cleanup()
 
     # Create presentation job
     job = PresentationJob(
-        user_id=current_user.id,
+        user_id=user_id,
         title=f"Research: {topic}",
         topic=topic,
         source_document_ids=source_document_ids,
@@ -274,7 +212,7 @@ async def create_research_presentation(
     await db.refresh(job)
 
     # Queue generation task
-    generate_presentation_task.delay(str(job.id), str(current_user.id))
+    generate_presentation_task.delay(str(job.id), str(user_id))
 
     logger.info(
         f"Created research presentation job {job.id} with {len(source_document_ids)} source documents"

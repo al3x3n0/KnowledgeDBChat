@@ -1621,6 +1621,27 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   a column saying a job wants an operator (an approval checkpoint can sit in
   `results` under any status), which is a schema change not made.
 
+- **One inline arXiv ingest, `services/arxiv_instant_ingest.ingest_paper`.**
+  `POST /documents/ingest-arxiv-instant` and `POST
+  /presentations/from-research` each carried a copy, and neither copy could
+  store a new paper. The document was built without `source_id` (NOT NULL),
+  `TextProcessor.split_text` -- a coroutine function -- was called without
+  `await`, and the chunks had no `content_hash` (NOT NULL): three failures,
+  the first refused by the database so the others never ran. The documents
+  route answered 500; the presentations route caught the error and then
+  failed on the session it had poisoned. The shared function files the
+  document under a built-in, **inactive** source ("ArXiv Instant") and hands
+  it to `DocumentService._process_document_async`, the pipeline an upload
+  uses, so one place knows what a chunk needs. It looks a paper up without
+  assuming one row per arXiv id (an ordinary source may hold the same paper).
+  The presentations route ingests **one paper per `try`** -- one `try` around
+  the loop lost every later paper to the first failure -- and reads
+  `current_user.id` **before** any rollback, because a rollback expires every
+  object in the session, the caller among them (the borrowed-session trap).
+  `tests/test_coroutines_are_awaited.py` refuses an async method of a
+  first-party class called without `await`; it resolves the receiver to the
+  class, so a third-party object sharing a method name is not accused.
+
 - **Lower layers do not import higher ones** (`tests/test_layering.py`, read
   from source including imports inside functions). Nothing outside `app/api`
   imports `app.api`; services, models, schemas, core, agent_core, utils and mcp

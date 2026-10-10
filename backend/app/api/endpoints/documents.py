@@ -1926,19 +1926,14 @@ async def ingest_arxiv_instant(
     - arxiv:2401.12345
     - 2401.12345
     """
-    from app.models.document import DocumentChunk
+    from app.services import arxiv_instant_ingest
     from app.services.connectors.arxiv_connector import ArxivConnector
-    from app.services.vector_store import vector_store_service
     from app.tasks.summarization_tasks import summarize_document as summarize_task
 
     arxiv_id = request.arxiv_input  # Already validated/extracted by schema
 
     try:
-        # Check if paper already exists
-        existing = await db.execute(
-            sql_select(_Document).where(_Document.source_identifier == arxiv_id)
-        )
-        existing_doc = existing.scalar_one_or_none()
+        existing_doc = await arxiv_instant_ingest.existing_paper(db, arxiv_id)
 
         if existing_doc and existing_doc.is_processed:
             # Paper already indexed, return existing
@@ -1959,96 +1954,28 @@ async def ingest_arxiv_instant(
                 background_tasks=["already_indexed"],
             )
 
-        # Fetch paper from arXiv
+        # Fetch the paper and make it searchable. The connector is released
+        # whatever happens; it used to be released only on the way out of a
+        # success, so a paper arXiv does not have left its client open.
         connector = ArxivConnector()
-        await connector.initialize({"paper_ids": [arxiv_id]})
-
-        docs = await connector.list_documents()
-        if not docs:
-            raise HTTPException(
-                status_code=404, detail=f"Paper not found on arXiv: {arxiv_id}"
+        try:
+            await connector.initialize({"paper_ids": [arxiv_id]})
+            docs = await connector.list_documents()
+            if not docs:
+                raise HTTPException(
+                    status_code=404, detail=f"Paper not found on arXiv: {arxiv_id}"
+                )
+            paper = await arxiv_instant_ingest.ingest_paper(
+                db,
+                connector,
+                arxiv_id,
+                docs[0],
+                user_id=current_user.id,
+                marker={"instant_ingest": True},
             )
-
-        doc_info = docs[0]
-        content = await connector.get_document_content(arxiv_id)
-        metadata = await connector.get_document_metadata(arxiv_id)
-
-        await connector.cleanup()
-
-        # Create or update document
-        if existing_doc:
-            document = existing_doc
-            document.title = doc_info["title"]
-            document.content = content
-            document.content_hash = hashlib.sha256(content.encode()).hexdigest()
-            document.url = doc_info.get("url")
-            document.author = doc_info.get("author")
-            document.extra_metadata = {
-                "arxiv": True,
-                "authors": metadata.get("authors", []),
-                "categories": metadata.get("categories", []),
-                "primary_category": metadata.get("primary_category"),
-                "doi": metadata.get("doi"),
-                "instant_ingest": True,
-            }
-        else:
-            document = _Document(
-                id=uuid4(),
-                title=doc_info["title"],
-                content=content,
-                content_hash=hashlib.sha256(content.encode()).hexdigest(),
-                source_identifier=arxiv_id,
-                url=doc_info.get("url"),
-                author=doc_info.get("author"),
-                extra_metadata={
-                    "arxiv": True,
-                    "authors": metadata.get("authors", []),
-                    "categories": metadata.get("categories", []),
-                    "primary_category": metadata.get("primary_category"),
-                    "doi": metadata.get("doi"),
-                    "instant_ingest": True,
-                },
-            )
-            db.add(document)
-
-        await db.commit()
-        await db.refresh(document)
-
-        # Process chunks synchronously
-        chunks_data = text_processor_service.split_text(
-            content, chunk_size=1000, chunk_overlap=200
-        )
-
-        # Delete existing chunks if updating
-        if existing_doc:
-            from sqlalchemy import delete
-
-            await db.execute(
-                delete(DocumentChunk).where(DocumentChunk.document_id == document.id)
-            )
-            await db.commit()
-
-        # Create new chunks
-        chunks = []
-        for idx, chunk_text in enumerate(chunks_data):
-            chunk = DocumentChunk(
-                id=uuid4(),
-                document_id=document.id,
-                content=chunk_text,
-                chunk_index=idx,
-            )
-            chunks.append(chunk)
-            db.add(chunk)
-
-        await db.commit()
-
-        # Add to vector store synchronously
-        await vector_store_service.initialize()
-        await vector_store_service.add_document_chunks(document, chunks)
-
-        # Mark as processed
-        document.is_processed = True
-        await db.commit()
+        finally:
+            await connector.cleanup()
+        document, content = paper.document, paper.content
 
         # Queue background tasks (non-blocking)
         background_tasks = []
@@ -2099,7 +2026,7 @@ async def ingest_arxiv_instant(
             categories=doc_metadata.get("categories", []),
             url=document.url or f"https://arxiv.org/abs/{arxiv_id}",
             pdf_url=f"https://arxiv.org/pdf/{arxiv_id}.pdf",
-            chunks_created=len(chunks),
+            chunks_created=paper.chunks_created,
             ready_for_chat=True,
             background_tasks=background_tasks,
         )

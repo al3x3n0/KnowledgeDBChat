@@ -27,6 +27,7 @@ from app.schemas.template import TemplateJobListResponse, TemplateJobResponse
 from app.services.auth_service import get_current_user, is_admin
 from app.services.storage_service import storage_service
 from app.tasks.template_tasks import fill_template
+from app.utils.http_headers import content_disposition
 
 router = APIRouter()
 
@@ -240,7 +241,7 @@ async def download_filled_template(
             content=content,
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Disposition": content_disposition(filename),
                 "Content-Length": str(len(content)),
             },
         )

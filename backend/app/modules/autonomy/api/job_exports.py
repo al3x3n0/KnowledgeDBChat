@@ -15,6 +15,7 @@ from app.core.exceptions import internal_error_detail
 from app.models.agent_job import AgentJob
 from app.models.user import User
 from app.services.llm_service import load_user_llm_settings
+from app.utils.http_headers import content_disposition
 
 ExporterFactory = Callable[..., Any]
 UserSettingsLoader = Callable[..., Awaitable[Any]]
@@ -174,7 +175,7 @@ def build_job_export_api(
         return Response(
             content=file_bytes,
             media_type=CONTENT_TYPES[format],
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            headers={"Content-Disposition": content_disposition(filename)},
         )
 
     @router.get("/{job_id}/export/transcript")

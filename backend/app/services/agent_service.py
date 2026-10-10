@@ -4040,7 +4040,10 @@ Generate the Mermaid diagram code:"""
     ) -> Dict[str, Any]:
         """Execute a workflow by name or ID."""
         from app.models.workflow import Workflow
-        from app.services.workflow_engine import WorkflowEngine
+        from app.services.workflow_engine import (
+            WorkflowEngine,
+            WorkflowExecutionError,
+        )
 
         workflow_name = params.get("workflow_name")
         workflow_id = params.get("workflow_id")
@@ -4084,8 +4087,10 @@ Generate the Mermaid diagram code:"""
                     "workflow_id": str(workflow.id),
                 }
 
-            # Execute the workflow
-            engine = WorkflowEngine()
+            # Queue it, as the workflows page and the autonomous tool do. This
+            # built the engine with no arguments (it takes the session and the
+            # user) and called an `execute` it does not have, so the chat tool
+            # answered "Failed to run workflow" every time it was used.
             from app.models.user import User
 
             user_result = await db.execute(select(User).where(User.id == user_id))
@@ -4094,21 +4099,25 @@ Generate the Mermaid diagram code:"""
             if not user:
                 return {"error": "User not found"}
 
-            execution_id = await engine.execute(
-                workflow_id=workflow.id,
-                trigger_type="agent",
-                trigger_data={"source": "agent_tool"},
-                inputs=inputs,
-                user=user,
-                db=db,
-            )
+            workflow_name = workflow.name
+            try:
+                execution = await WorkflowEngine(db, user).queue_workflow(
+                    workflow_id=workflow.id,
+                    trigger_type="agent",
+                    trigger_data={"source": "agent_tool"},
+                    initial_context=inputs if isinstance(inputs, dict) else {},
+                )
+            except WorkflowExecutionError as refused:
+                # A workflow that cannot start says why; that is the answer.
+                return {"error": str(refused), "workflow_id": str(workflow.id)}
+            execution_id = execution.id
 
             return {
-                "status": "started",
-                "workflow_name": workflow.name,
+                "status": "queued",
+                "workflow_name": workflow_name,
                 "workflow_id": str(workflow.id),
                 "execution_id": str(execution_id),
-                "message": f"Workflow '{workflow.name}' execution started",
+                "message": f"Workflow '{workflow_name}' was queued to run",
             }
 
         except Exception as e:

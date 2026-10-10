@@ -26,6 +26,7 @@ from app.schemas.export import (
 )
 from app.services.auth_service import get_current_user
 from app.services.export_service import export_service
+from app.utils.http_headers import content_disposition
 
 router = APIRouter()
 
@@ -332,7 +333,7 @@ async def download_export(
         content=content,
         media_type=content_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": content_disposition(filename),
             "Content-Length": str(len(content)),
         },
     )

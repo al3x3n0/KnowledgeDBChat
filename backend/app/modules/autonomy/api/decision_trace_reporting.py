@@ -28,6 +28,7 @@ from app.schemas.agent_job import (
 )
 from app.services.autonomy_event_service import event_to_trace_payload
 from app.utils.datetimes import is_past
+from app.utils.http_headers import content_disposition
 
 DecisionTraceQuery = Callable[..., Awaitable[AgentDecisionTraceResponse]]
 VisibleUserIdsLoader = Callable[..., Awaitable[set[UUID]]]
@@ -316,7 +317,7 @@ def build_decision_trace_reporting_api(
         return Response(
             content=buffer.getvalue(),
             media_type="text/csv; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            headers={"Content-Disposition": content_disposition(filename)},
         )
 
     @router.get(

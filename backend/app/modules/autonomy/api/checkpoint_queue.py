@@ -7,15 +7,14 @@ from typing import Any, Awaitable, Callable, Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.api.endpoints.auth import get_current_active_user
 from app.core.database import get_db
-from app.models.agent_job import AgentJob
 from app.models.domain_research_profile import DomainResearchProfile
 from app.models.research_inbox import ResearchInboxItem
 from app.models.research_portfolio import ResearchPortfolio
 from app.models.user import User
+from app.modules.autonomy.application.checkpoint_queue_candidates import load_queue_jobs
 from app.schemas.agent_job import (
     AgentCheckpointQueueItemResponse,
     AgentCheckpointQueueResponse,
@@ -93,18 +92,6 @@ def build_checkpoint_queue_api(
         db: AsyncSession = Depends(get_db),
         current_user: User = Depends(get_current_active_user),
     ):
-        jobs = list(
-            (
-                await db.execute(
-                    select(AgentJob)
-                    .options(selectinload(AgentJob.agent_definition))
-                    .where(AgentJob.user_id == current_user.id)
-                    .order_by(AgentJob.created_at.desc())
-                )
-            )
-            .scalars()
-            .all()
-        )
         inbox_items = list(
             (
                 await db.execute(
@@ -123,6 +110,14 @@ def build_checkpoint_queue_api(
             )
             .scalars()
             .all()
+        )
+        # Only the jobs that could become a row, plus the job behind each
+        # inbox item, which the monitor snapshot looks up. This loaded every
+        # job the caller had ever run, whole, on each call.
+        jobs = await load_queue_jobs(
+            db,
+            current_user.id,
+            also=[item.job_id for item in inbox_items],
         )
         portfolios = list(
             (

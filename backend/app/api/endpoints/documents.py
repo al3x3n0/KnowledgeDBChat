@@ -2037,10 +2037,18 @@ async def ingest_arxiv_instant(
 
     except HTTPException:
         raise
+    except arxiv_instant_ingest.PaperNotIndexed as e:
+        # Fetched and stored, but the index would not take it. The paper is
+        # kept and a later call retries; for now the answer is "not yet".
+        raise HTTPException(
+            status_code=503,
+            detail=internal_error_detail(e, "The paper could not be indexed"),
+        )
     except Exception as e:
         logger.error(f"Error in instant arXiv ingest: {e}", exc_info=True)
+        # arXiv not answering is arXiv's outage, not a fault here.
         raise HTTPException(
-            status_code=500,
+            status_code=failure_status(e),
             detail=internal_error_detail(e, "Failed to ingest arXiv paper"),
         )
 

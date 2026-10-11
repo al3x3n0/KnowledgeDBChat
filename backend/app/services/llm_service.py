@@ -313,7 +313,8 @@ class LLMService:
         # shared by every job in a worker: an httpx client's connections
         # belong to the loop that opened them.
         self._clients: PerLoop[httpx.AsyncClient] = PerLoop(
-            lambda: httpx.AsyncClient(timeout=120.0)
+            lambda: httpx.AsyncClient(timeout=120.0),
+            close=lambda client: client.aclose(),
         )
         self._client_override: Optional[httpx.AsyncClient] = None
         self._unhealthy_until: Dict[str, float] = {}

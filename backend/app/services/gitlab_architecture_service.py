@@ -12,6 +12,7 @@ from loguru import logger
 
 from app.services.llm_service import LLMService
 from app.services.mermaid_renderer import MermaidRenderError, get_mermaid_renderer
+from app.utils.per_loop import PerLoop, close_all
 
 
 class GitLabArchitectureService:
@@ -102,11 +103,16 @@ class GitLabArchitectureService:
         # Keyed by token: this service is a process-wide singleton, and a
         # client carries its Authorization header. A single cached client
         # sent the first caller's token with every later caller's requests.
-        self._clients: Dict[str, httpx.AsyncClient] = {}
+        # And per event loop: a client's connections belong to the loop it
+        # first ran on, and a worker runs each job on its own.
+        self._clients: PerLoop[Dict[str, httpx.AsyncClient]] = PerLoop(
+            dict, close=close_all
+        )
 
     async def _get_client(self, gitlab_url: str, token: str) -> httpx.AsyncClient:
         """Get or create the HTTP client that authenticates as ``token``."""
-        client = self._clients.get(token)
+        clients = self._clients.get()
+        client = clients.get(token)
         if client is None:
             client = httpx.AsyncClient(
                 headers={
@@ -115,14 +121,12 @@ class GitLabArchitectureService:
                 },
                 timeout=30.0,
             )
-            self._clients[token] = client
+            clients[token] = client
         return client
 
     async def close(self):
-        """Close every HTTP client."""
-        clients, self._clients = list(self._clients.values()), {}
-        for client in clients:
-            await client.aclose()
+        """Close this loop's HTTP clients; another loop's are not ours to close."""
+        await close_all(self._clients.pop() or {})
 
     async def analyze_repository(
         self,

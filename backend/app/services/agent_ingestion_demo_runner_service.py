@@ -19,6 +19,7 @@ from app.services import agent_sandbox_runtime
 from app.services.agent_artifact_paths import safe_relpath
 from app.services.agent_runner_progress import phase_reporter
 from app.services.auth_service import is_admin as auth_service_is_admin
+from app.utils.limited_process import process_limits, with_limits
 
 
 class AgentIngestionDemoRunnerService:
@@ -571,24 +572,16 @@ class AgentIngestionDemoRunnerService:
             getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_STDERR_CHARS", 20000)
         )
 
-        def _limit_resources():
-            try:
-                import resource
-
-                cpu = int(max(1, min(timeout_seconds + 1, 120)))
-                resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
-                resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-                resource.setrlimit(
-                    resource.RLIMIT_FSIZE, (10 * 1024 * 1024, 10 * 1024 * 1024)
-                )
-                resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
-                mem_mb = int(
-                    getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_MEMORY_MB", 512)
-                )
-                mem = mem_mb * 1024 * 1024
-                resource.setrlimit(resource.RLIMIT_AS, (mem, mem))
-            except Exception:
-                return
+        local_limits = process_limits(
+            cpu_seconds=int(max(1, min(timeout_seconds + 1, 120))),
+            file_bytes=10 * 1024 * 1024,
+            open_files=64,
+            memory_bytes=int(
+                getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_MEMORY_MB", 512)
+            )
+            * 1024
+            * 1024,
+        )
 
         behavior: dict = {
             "enabled": True,
@@ -654,10 +647,8 @@ class AgentIngestionDemoRunnerService:
                         pids_limit=str(max(32, min(pids, 1024))),
                         name=container_name,
                     )
-                    preexec = None
                 else:
-                    cmd = [sys.executable, "-I", "-S", ep]
-                    preexec = _limit_resources if os.name == "posix" else None
+                    cmd = with_limits([sys.executable, "-I", "-S", ep], local_limits)
 
                 start = datetime.utcnow()
                 try:
@@ -670,7 +661,6 @@ class AgentIngestionDemoRunnerService:
                                 capture_output=True,
                                 text=True,
                                 timeout=float(timeout_seconds),
-                                preexec_fn=preexec,
                             )
                         ),
                         timeout=float(timeout_seconds + 2),
@@ -1060,27 +1050,16 @@ class AgentIngestionDemoRunnerService:
                 result["error"] = f"Entrypoint not found: {entrypoint}"
                 return result
 
-            def _limit_resources():
-                try:
-                    import resource
-
-                    cpu = int(max(1, min(behavioral_timeout_seconds + 1, 120)))
-                    resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
-                    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-                    # 10MB max file size
-                    resource.setrlimit(
-                        resource.RLIMIT_FSIZE, (10 * 1024 * 1024, 10 * 1024 * 1024)
-                    )
-                    # Basic FD cap
-                    resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
-                    # Memory cap (address space)
-                    mem_mb = int(
-                        getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_MEMORY_MB", 512)
-                    )
-                    mem = mem_mb * 1024 * 1024
-                    resource.setrlimit(resource.RLIMIT_AS, (mem, mem))
-                except Exception:
-                    return
+            local_limits = process_limits(
+                cpu_seconds=int(max(1, min(behavioral_timeout_seconds + 1, 120))),
+                file_bytes=10 * 1024 * 1024,
+                open_files=64,
+                memory_bytes=int(
+                    getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_MEMORY_MB", 512)
+                )
+                * 1024
+                * 1024,
+            )
 
             stdout_cap = int(
                 getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_STDOUT_CHARS", 20000)
@@ -1143,11 +1122,8 @@ class AgentIngestionDemoRunnerService:
                         pids_limit=str(max(32, min(pids, 1024))),
                         name=container_name,
                     )
-                    # For docker backend, don't apply RLIMITs in the host process.
-                    local_preexec = None
                 else:
-                    cmd = [sys.executable, "-I", "-S", ep]
-                    local_preexec = _limit_resources if os.name == "posix" else None
+                    cmd = with_limits([sys.executable, "-I", "-S", ep], local_limits)
                 start = time.time()
                 try:
                     completed = subprocess.run(
@@ -1157,7 +1133,6 @@ class AgentIngestionDemoRunnerService:
                         capture_output=True,
                         text=True,
                         timeout=float(behavioral_timeout_seconds),
-                        preexec_fn=local_preexec,
                     )
                     result["ran"] = True
                     result["exit_code"] = int(completed.returncode)

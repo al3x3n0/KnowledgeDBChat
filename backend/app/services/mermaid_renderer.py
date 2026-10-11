@@ -32,7 +32,8 @@ class MermaidRenderer:
 
     def __init__(self):
         self._clients: PerLoop[httpx.AsyncClient] = PerLoop(
-            lambda: httpx.AsyncClient(timeout=self.TIMEOUT)
+            lambda: httpx.AsyncClient(timeout=self.TIMEOUT),
+            close=lambda client: client.aclose(),
         )
 
     # Read when used, not when the singleton is built: the singleton outlives

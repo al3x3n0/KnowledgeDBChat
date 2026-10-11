@@ -13,6 +13,14 @@ value: a Redis connection opened per call and never closed, a semaphore that
 is new every time and so limits nothing.
 
 Here an entry is dropped only when its loop has closed or been collected.
+
+**A value that holds connections is closed before its loop ends.** Dropping
+it afterwards is too late: the connections can only be closed on the loop
+that opened them, and an SDK client that notices it was never closed
+schedules its own close on whatever loop is running when it is collected --
+in a worker running jobs in threads, some other job's. A holder given a
+``close`` is registered, and ``close_running_loop_values`` closes what the
+running loop holds; the agent-job task calls it as its last act.
 """
 
 from __future__ import annotations
@@ -20,16 +28,31 @@ from __future__ import annotations
 import asyncio
 import threading
 import weakref
-from typing import Callable, Dict, Generic, Optional, Tuple, TypeVar
+from typing import Awaitable, Callable, Dict, Generic, Optional, Tuple, TypeVar
+
+from loguru import logger
 
 T = TypeVar("T")
+
+#: Holders whose values need closing. Weak: a service built per use takes
+#: its holder with it.
+_CLOSABLE: "weakref.WeakSet[PerLoop]" = weakref.WeakSet()
+_CLOSABLE_GUARD = threading.Lock()
 
 
 class PerLoop(Generic[T]):
     """`get()` returns the running loop's value, making it on first use."""
 
-    def __init__(self, factory: Callable[[], T]):
+    def __init__(
+        self,
+        factory: Callable[[], T],
+        close: Optional[Callable[[T], Awaitable[None]]] = None,
+    ):
         self._factory = factory
+        self._close = close
+        if close is not None:
+            with _CLOSABLE_GUARD:
+                _CLOSABLE.add(self)
         self._values: Dict[int, Tuple["weakref.ref[asyncio.AbstractEventLoop]", T]] = {}
         # Loops in different threads reach this table at the same time.
         self._guard = threading.Lock()
@@ -75,4 +98,33 @@ class PerLoop(Generic[T]):
             return len(self._values)
 
 
-__all__ = ["PerLoop"]
+async def close_running_loop_values() -> int:
+    """Close what the running loop holds in every closable holder; how many.
+
+    For the end of a loop's life. Never raises: one value that will not close
+    must not keep the others open, or fail the task that is finishing.
+    """
+    with _CLOSABLE_GUARD:
+        holders = list(_CLOSABLE)
+    closed = 0
+    for holder in holders:
+        value = holder.pop()
+        if value is None or holder._close is None:
+            continue
+        try:
+            await holder._close(value)
+            closed += 1
+        except Exception as error:
+            logger.debug(f"A per-loop value did not close cleanly: {error}")
+    return closed
+
+
+async def close_all(values) -> None:
+    """Close each of a table's clients, by whichever name it closes under."""
+    for value in list(getattr(values, "values", lambda: values)()):
+        closer = getattr(value, "aclose", None) or getattr(value, "close", None)
+        if closer is not None:
+            await closer()
+
+
+__all__ = ["PerLoop", "close_all", "close_running_loop_values"]

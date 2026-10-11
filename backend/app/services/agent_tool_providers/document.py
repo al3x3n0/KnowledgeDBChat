@@ -193,27 +193,51 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
     ) -> Any:
         from uuid import UUID
 
-        from app.models.document import Document
+        from sqlalchemy import func
+
+        from app.models.document import Document, DocumentSource
 
         doc_id = params.get("document_id")
         if not doc_id:
             return {"error": "Missing required parameter: document_id"}
-        doc_result = await ctx.db.execute(
-            select(Document).where(Document.id == UUID(doc_id))
-        )
-        doc = doc_result.scalar_one_or_none()
-        if not doc:
+        try:
+            wanted = UUID(str(doc_id))
+        except ValueError:
+            return {"error": f"document_id is not a document id: {doc_id}"}
+        # Columns, and the source's name by a join. This read `doc.source`,
+        # a relationship: on an async session that is a lazy load, which
+        # raises MissingGreenlet -- unless something earlier in the run had
+        # happened to load that source, which is why the failure came and
+        # went. When it did load, the answer carried a model object.
+        row = (
+            await ctx.db.execute(
+                select(
+                    Document.id,
+                    Document.title,
+                    Document.file_type,
+                    Document.author,
+                    Document.summary,
+                    func.coalesce(func.length(Document.content), 0),
+                    DocumentSource.name,
+                    DocumentSource.source_type,
+                )
+                .outerjoin(DocumentSource, DocumentSource.id == Document.source_id)
+                .where(Document.id == wanted)
+            )
+        ).first()
+        if row is None:
             return {"error": "Document not found"}
         return {
             "success": True,
             "data": {
-                "id": str(doc.id),
-                "title": doc.title,
-                "source": doc.source,
-                "file_type": doc.file_type,
-                "author": doc.author,
-                "summary": doc.summary,
-                "has_content": bool(doc.content),
+                "id": str(row[0]),
+                "title": row[1],
+                "source": row[6],
+                "source_type": row[7],
+                "file_type": row[2],
+                "author": row[3],
+                "summary": row[4],
+                "has_content": bool(row[5]),
             },
         }
 

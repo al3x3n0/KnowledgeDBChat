@@ -849,8 +849,10 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             return {"error": f"Could not read the workspace diff: {exc}"}
 
         if proc.returncode not in (0, None):
-            # A workspace built from KB documents has no .git, and git exits
-            # 129 with nothing on stdout. That used to read as "no changes".
+            # Outside a repository git exits 129 with nothing on stdout, which
+            # used to read as "no changes". A workspace built from KB
+            # documents is given a baseline commit when it is made, so this is
+            # now one whose baseline could not be written.
             detail = (stderr_bytes or b"").decode("utf-8", errors="replace").strip()
             return {
                 "error": (

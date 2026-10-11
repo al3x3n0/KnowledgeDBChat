@@ -1417,6 +1417,12 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   - **A workspace belongs to its job.** `get_or_default(..., job=ctx.job)`
     refuses a workspace another job owns; naming its id used to propose that
     job's diff as your own.
+  - **A workspace built from knowledge-base documents starts with a git
+    commit** (`coding_workspace_manager._commit_baseline`). It kept hashes of
+    its original files and not the files, so nothing could say what an edit
+    changed and `propose_code_patch` answered "Not a git repository" on every
+    one. `git add -f`, so a `.gitignore` among the documents hides nothing
+    from the baseline. Best effort: without git the workspace is still made.
   - **`propose_code_patch` writes a `CodePatchProposal` row.** It used to stay
     in run state, which no review page reads. It also includes files the run
     created (bare `git diff` omits untracked files), lists deleted files, and

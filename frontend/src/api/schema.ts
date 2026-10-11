@@ -7797,8 +7797,6 @@ export interface paths {
         /**
          * Download Presentation
          * @description Download the generated presentation.
-         *
-         *     Redirects to a presigned MinIO URL for direct download.
          */
         get: operations["download_presentation_api_v1_presentations__job_id__download_get"];
         put?: never;

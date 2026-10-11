@@ -1679,7 +1679,10 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   judges a name assigned once.
 - The presentation routes have tests (`tests/test_presentation_routes.py`);
   the list's `limit` and `offset` are bounded, since a negative limit is "no
-  limit" to the database.
+  limit" to the database. Their queries and writes are in
+  `modules/presentations/application/presentation_store.py`, moved under
+  those tests; it raises `Refused(kind, detail)` and the endpoint maps the
+  kind to a status, queues the task and builds the responses.
 
 - **Every route is sent a request, and none may answer 500**
   (`tests/test_every_route_answers.py`). About four in five route handlers

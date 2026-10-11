@@ -24,12 +24,16 @@ from loguru import logger
 
 from app.core.config import settings
 from app.utils.exceptions import LLMServiceError
+from app.utils.per_loop import PerLoop, close_all
 
 from .base import BaseLLMProvider, LLMCompletion, LLMToolCall, to_anthropic_tools
 
 STRUCTURED_OUTPUT_TOOL = "emit_structured_output"
 
-_CLIENT_CACHE: Dict[tuple, Any] = {}
+#: SDK clients, per event loop. A client holds connections that belong to the
+#: loop it first ran on; one table for the process handed a client made on one
+#: job's loop to the next job, on another loop or after the first had closed.
+_CLIENT_CACHE: PerLoop[Dict[tuple, Any]] = PerLoop(dict, close=close_all)
 
 
 class AnthropicProvider(BaseLLMProvider):
@@ -59,13 +63,14 @@ class AnthropicProvider(BaseLLMProvider):
                 "(pip install anthropic)"
             )
         cache_key = (self.base_url, self.api_key)
-        client = _CLIENT_CACHE.get(cache_key)
+        clients = _CLIENT_CACHE.get()
+        client = clients.get(cache_key)
         if client is None:
             kwargs: Dict[str, Any] = {"api_key": self.api_key}
             if self.base_url:
                 kwargs["base_url"] = self.base_url
             client = AsyncAnthropic(**kwargs)
-            _CLIENT_CACHE[cache_key] = client
+            clients[cache_key] = client
         return client
 
     async def complete(

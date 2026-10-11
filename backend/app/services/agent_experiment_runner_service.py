@@ -16,6 +16,7 @@ from app.services.agent_artifact_paths import insert_before_end_document, safe_r
 from app.services.agent_runner_progress import phase_reporter
 from app.services.llm_service import LLMService
 from app.services.project_profile_service import build_project_profile
+from app.utils.limited_process import process_limits, with_limits
 
 
 def _build_repeated_command_schedule(
@@ -1340,27 +1341,27 @@ class AgentExperimentRunnerService:
                 env.setdefault("PYTHONHASHSEED", "0")
                 env.setdefault("HOME", tmp)
 
-                def _limit_resources():
-                    try:
-                        import resource
-
-                        cpu = int(max(1, min(timeout_seconds + 1, 7200)))
-                        resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
-                        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-                        resource.setrlimit(
-                            resource.RLIMIT_FSIZE, (20 * 1024 * 1024, 20 * 1024 * 1024)
-                        )
-                        resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))
-                        mem_mb = int(
-                            cfg.get("unsafe_code_exec_max_memory_mb")
-                            or getattr(
-                                app_settings, "UNSAFE_CODE_EXEC_MAX_MEMORY_MB", 512
-                            )
-                        )
-                        mem = max(128, min(mem_mb, 8192)) * 1024 * 1024
-                        resource.setrlimit(resource.RLIMIT_AS, (mem, mem))
-                    except Exception:
-                        return
+                local_limits = process_limits(
+                    cpu_seconds=int(max(1, min(timeout_seconds + 1, 7200))),
+                    file_bytes=20 * 1024 * 1024,
+                    open_files=128,
+                    memory_bytes=max(
+                        128,
+                        min(
+                            int(
+                                cfg.get("unsafe_code_exec_max_memory_mb")
+                                or getattr(
+                                    app_settings,
+                                    "UNSAFE_CODE_EXEC_MAX_MEMORY_MB",
+                                    512,
+                                )
+                            ),
+                            8192,
+                        ),
+                    )
+                    * 1024
+                    * 1024,
+                )
 
                 async def _run_command_batch(
                     batch: List[str],
@@ -1436,16 +1437,15 @@ class AgentExperimentRunnerService:
                                     "timeout": float(timeout_seconds),
                                 }
                             else:
-                                command = ["/bin/sh", "-lc", cmd]
+                                command = with_limits(
+                                    ["/bin/sh", "-lc", cmd], local_limits
+                                )
                                 run_kwargs = {
                                     "cwd": str(tmp_path),
                                     "env": env,
                                     "capture_output": True,
                                     "text": True,
                                     "timeout": float(timeout_seconds),
-                                    "preexec_fn": _limit_resources
-                                    if _os.name == "posix"
-                                    else None,
                                 }
                             completed = await _asyncio.wait_for(
                                 _asyncio.to_thread(

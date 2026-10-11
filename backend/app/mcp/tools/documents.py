@@ -11,6 +11,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.mcp.auth import MCPAuthContext
 from app.models.document import Document, DocumentSource
+from app.services.config_values import bounded_int
+
+# The most rows one list call returns, and the furthest it may skip.
+MAX_LIST_LIMIT = 200
+MAX_LIST_OFFSET = 1_000_000
+
+
+def _sync_status(source: DocumentSource) -> str:
+    """One word for where a source's sync stands."""
+    if source.is_syncing:
+        return "syncing"
+    if source.last_error:
+        return "error"
+    return "synced" if source.last_sync else "never_synced"
 
 
 class DocumentsTool:
@@ -96,6 +110,11 @@ class DocumentsTool:
         """List documents accessible to the user."""
         auth.require_scope("read")
 
+        # The number comes from an API client or from a model's tool call: a
+        # negative limit is "no limit" to the database.
+        limit = bounded_int(limit, 20, 1, MAX_LIST_LIMIT)
+        offset = bounded_int(offset, 0, 0, MAX_LIST_OFFSET)
+
         logger.info(f"MCP list_documents: user={auth.user.username}, limit={limit}")
 
         try:
@@ -180,7 +199,9 @@ class DocumentsTool:
                 "created_at": doc.created_at.isoformat() if doc.created_at else None,
                 "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
                 "summary": doc.summary,
-                "metadata": doc.metadata,
+                # The column is mapped as `extra_metadata`; `doc.metadata` is
+                # SQLAlchemy's table registry, which no response can carry.
+                "metadata": doc.extra_metadata,
             }
 
             if include_content and doc.content:
@@ -209,6 +230,8 @@ class DocumentsTool:
         """List available document sources."""
         auth.require_scope("read")
 
+        limit = bounded_int(limit, 50, 1, MAX_LIST_LIMIT)
+
         logger.info(f"MCP list_sources: user={auth.user.username}")
 
         try:
@@ -220,18 +243,31 @@ class DocumentsTool:
             )
             sources = result.scalars().all()
 
+            counts: Dict[Any, int] = {}
+            if sources:
+                counted = await db.execute(
+                    select(Document.source_id, func.count())
+                    .where(Document.source_id.in_([src.id for src in sources]))
+                    .group_by(Document.source_id)
+                )
+                counts = {source_id: count for source_id, count in counted.all()}
+
+            # Four of these keys were read from attributes the model does not
+            # have, so every call ended in the `except` below with no sources.
             return {
                 "sources": [
                     {
                         "id": str(src.id),
                         "name": src.name,
                         "source_type": src.source_type,
-                        "description": src.description,
-                        "document_count": src.document_count,
-                        "last_sync_at": src.last_sync_at.isoformat()
-                        if src.last_sync_at
+                        "description": (src.config or {}).get("description")
+                        if isinstance(src.config, dict)
                         else None,
-                        "sync_status": src.sync_status,
+                        "document_count": counts.get(src.id, 0),
+                        "last_sync_at": src.last_sync.isoformat()
+                        if src.last_sync
+                        else None,
+                        "sync_status": _sync_status(src),
                     }
                     for src in sources
                 ],

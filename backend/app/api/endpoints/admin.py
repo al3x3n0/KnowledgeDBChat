@@ -4,9 +4,10 @@ Admin API endpoints for system management.
 import asyncio
 import json
 import re
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
 from uuid import UUID, uuid4
 
 from celery.result import AsyncResult
@@ -16,6 +17,7 @@ from fastapi import (
     BackgroundTasks,
     Depends,
     HTTPException,
+    Query,
     WebSocket,
     WebSocketDisconnect,
 )
@@ -2641,9 +2643,26 @@ async def purge_tasks(current_user: User = Depends(require_admin)):
         raise HTTPException(status_code=500, detail="Failed to purge tasks")
 
 
+MAX_LOG_LINES = 5000
+
+
+def _tail_of_file(path: str, lines: int) -> Tuple[List[str], int]:
+    """The last `lines` lines of a text file, and how many it has."""
+    tail: deque = deque(maxlen=lines)
+    total = 0
+    with open(path, "r", errors="replace") as f:
+        for line in f:
+            tail.append(line)
+            total += 1
+    return list(tail), total
+
+
 @router.get("/logs")
 async def get_system_logs(
-    lines: int = 100, current_user: User = Depends(require_admin)
+    # Bounded: 0 was a slice from the start (the whole file) and a negative
+    # number dropped lines from the wrong end.
+    lines: int = Query(100, ge=1, le=MAX_LOG_LINES),
+    current_user: User = Depends(require_admin),
 ):
     """Get recent system logs."""
     try:
@@ -2656,16 +2675,15 @@ async def get_system_logs(
         if not os.path.exists(log_file):
             return {"logs": [], "message": "Log file not found"}
 
-        # Read last N lines
-        with open(log_file, "r") as f:
-            log_lines = f.readlines()
-
-        # Get last 'lines' number of lines
-        recent_logs = log_lines[-lines:] if len(log_lines) > lines else log_lines
+        # In a thread, keeping only the tail: the file was read whole, on the
+        # event loop, into a list of every line it has.
+        recent_logs, total_lines = await asyncio.to_thread(
+            _tail_of_file, log_file, lines
+        )
 
         return {
             "logs": [line.strip() for line in recent_logs],
-            "total_lines": len(log_lines),
+            "total_lines": total_lines,
             "returned_lines": len(recent_logs),
         }
 

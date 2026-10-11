@@ -70,6 +70,7 @@ from .plugin import Plugin, PluginInstallation
 from .presentation import PresentationJob, PresentationTemplate
 from .reading_list import ReadingList, ReadingListItem
 from .repo_report import RepoReportJob
+from .research_campaign import ResearchCampaign, ResearchCampaignItem
 from .research_inbox import ResearchInboxItem
 from .research_monitor_profile import ResearchMonitorProfile
 from .research_note import ResearchNote
@@ -200,6 +201,8 @@ __all__ = [
     "ResearchInboxItem",
     "ResearchMonitorProfile",
     "DomainResearchProfile",
+    "ResearchCampaign",
+    "ResearchCampaignItem",
     "ResearchPortfolio",
     "CodePatchProposal",
     "PatchPR",

@@ -47,8 +47,9 @@ def test_get_vector_store_stats_admin(client: TestClient, admin_headers):
     """Test getting vector store statistics (admin only)."""
     response = client.get("/api/v1/admin/vector-store/stats", headers=admin_headers)
 
-    # May return 200 with stats or 500 if vector store not initialized
-    assert response.status_code in [200, 500]
+    # 200 with stats, or 503 when the store is not there to ask: that is a
+    # dependency being away, which a 500 would misreport as this server's fault.
+    assert response.status_code in [200, 503]
 
 
 def test_get_task_status_admin(client: TestClient, admin_headers):

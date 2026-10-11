@@ -82,10 +82,37 @@ def _direct(node):
         yield from _direct(child)
 
 
+def _blocking_celery_call(node: ast.Call, awaited: set):
+    """Waiting on Celery from the event loop, by the shape of the call.
+
+    `task.get(timeout=60)` is a blocking read of the result backend: the
+    admin dry-run route held the whole API process for up to a minute with
+    it. No positional argument is what tells it from `client.get(url,
+    timeout=...)`, and an awaited call is not blocking whatever it is named.
+    `app.control.inspect()` and `.purge()` broadcast and wait for replies.
+    """
+    target = node.func
+    if id(node) in awaited or not isinstance(target, ast.Attribute):
+        return None
+    keywords = {keyword.arg for keyword in node.keywords}
+    if target.attr == "get" and not node.args and keywords & {"timeout", "propagate"}:
+        return "AsyncResult.get"
+    if (
+        target.attr in {"inspect", "purge", "ping"}
+        and isinstance(target.value, ast.Attribute)
+        and target.value.attr == "control"
+    ):
+        return f"control.{target.attr}"
+    return None
+
+
 def _blocking_calls(tree: ast.AST):
     for function in ast.walk(tree):
         if not isinstance(function, ast.AsyncFunctionDef):
             continue
+        awaited = {
+            id(node.value) for node in _direct(function) if isinstance(node, ast.Await)
+        }
         for node in _direct(function):
             if not isinstance(node, ast.Call):
                 continue
@@ -101,6 +128,9 @@ def _blocking_calls(tree: ast.AST):
                     yield function.name, node.lineno, target.attr
             elif isinstance(target, ast.Name) and target.id in BLOCKING_HELPERS:
                 yield function.name, node.lineno, target.id
+            celery = _blocking_celery_call(node, awaited)
+            if celery:
+                yield function.name, node.lineno, celery
 
 
 def test_no_blocking_call_runs_on_the_event_loop():

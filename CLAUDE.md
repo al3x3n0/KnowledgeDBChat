@@ -1666,6 +1666,38 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   the list's `limit` and `offset` are bounded, since a negative limit is "no
   limit" to the database.
 
+- **Every route is sent a request, and none may answer 500**
+  (`tests/test_every_route_answers.py`). About four in five route handlers
+  are named in no test, and each one first run by hand had never worked. The
+  test does not check what a route returns: as an admin it sends every GET,
+  and every DELETE/PUT/PATCH/POST that has a path parameter, an id naming
+  nothing and an empty body, and requires an answer that is not a 500. 503 is
+  allowed (a dependency is away); `NEEDS_A_SERVICE` lists what waits on
+  another process. Its first run found ten routes, pinned in
+  `tests/test_weak_spots_found_by_running_every_route.py`:
+  - `GET /workflows/tools/builtin` was a 500, so the workflow editor had no
+    built-in tools: JSON Schema lets `type` be a list (`["array", "string"]`)
+    and the response model wants a string. `_parameter_type` picks the first
+    that is not `"null"`.
+  - **The campaign models were never imported by `app/models/__init__`.**
+    That import is how the schema drift check and every test database learn
+    which tables exist, so the drift check had never looked at the campaign
+    tables and no test could store a campaign. A guard requires every model
+    module to be registered. (Built from the migrations afterwards, the
+    schema does match.)
+  - Knowledge-graph path ids were typed `str`; a malformed one reached the
+    database as text. They are `UUID`, so the framework answers 422.
+  - `GET /admin/vector-store/stats` answers 503, not 500, when the store is
+    away.
+- **Waiting on Celery from a route goes to a thread.** `task.get(timeout=60)`
+  in `POST /admin/sources/{id}/dry-run` was a blocking read on the event
+  loop: for up to a minute that API process served nobody else. The admin
+  health and stats routes did the same for two seconds a poll, and the task
+  status route ran three `control.inspect()` broadcasts inline. The
+  blocking-call guard now knows these shapes: `.get(timeout=...)` with no
+  positional argument that is not awaited (which is what tells it from
+  `client.get(url, timeout=...)`), and `control.inspect/purge/ping`.
+
 - **Lower layers do not import higher ones** (`tests/test_layering.py`, read
   from source including imports inside functions). Nothing outside `app/api`
   imports `app.api`; services, models, schemas, core, agent_core, utils and mcp

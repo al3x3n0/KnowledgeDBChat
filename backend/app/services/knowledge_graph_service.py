@@ -338,7 +338,9 @@ class KnowledgeGraphService:
 
         from app.models.knowledge_graph import Entity, EntityMention, Relationship
 
-        ent = await db.get(Entity, _UUID(entity_id))
+        if not isinstance(entity_id, _UUID):
+            entity_id = _UUID(str(entity_id))
+        ent = await db.get(Entity, entity_id)
         if not ent:
             raise ValueError("Entity not found")
 
@@ -974,7 +976,7 @@ class KnowledgeGraphService:
         """Get a single relationship by ID."""
         from uuid import UUID as _UUID
 
-        return await db.get(Relationship, _UUID(rel_id))
+        return await db.get(Relationship, _UUID(str(rel_id)))
 
     async def get_relationship_detail(
         self, db: AsyncSession, rel_id: str
@@ -982,7 +984,7 @@ class KnowledgeGraphService:
         """Get a relationship with source and target entity names."""
         from uuid import UUID as _UUID
 
-        rel = await db.get(Relationship, _UUID(rel_id))
+        rel = await db.get(Relationship, _UUID(str(rel_id)))
         if not rel:
             return None
 
@@ -1081,7 +1083,7 @@ class KnowledgeGraphService:
         """Update a relationship's type, confidence, or evidence."""
         from uuid import UUID as _UUID
 
-        rel = await db.get(Relationship, _UUID(rel_id))
+        rel = await db.get(Relationship, _UUID(str(rel_id)))
         if not rel:
             return None
 
@@ -1111,7 +1113,7 @@ class KnowledgeGraphService:
         """Delete a relationship by ID."""
         from uuid import UUID as _UUID
 
-        rel = await db.get(Relationship, _UUID(rel_id))
+        rel = await db.get(Relationship, _UUID(str(rel_id)))
         if not rel:
             return False
 

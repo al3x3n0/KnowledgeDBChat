@@ -59,7 +59,7 @@ async def kg_stats(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/document/{document_id}/graph", response_model=KGGraph)
-async def document_graph(document_id: str, db: AsyncSession = Depends(get_db)):
+async def document_graph(document_id: UUID, db: AsyncSession = Depends(get_db)):
     try:
         svc = KnowledgeGraphService()
         return await svc.graph_for_document(db, document_id)
@@ -259,7 +259,7 @@ async def list_entities(
 
 @router.get("/entity/{entity_id}/relationships", response_model=List[KGRelationship])
 async def entity_relationships(
-    entity_id: str,
+    entity_id: UUID,
     limit: int = Query(default=100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ):
@@ -282,7 +282,7 @@ async def entity_relationships(
 
 
 @router.post("/document/{document_id}/rebuild")
-async def rebuild_document_graph(document_id: str, db: AsyncSession = Depends(get_db)):
+async def rebuild_document_graph(document_id: UUID, db: AsyncSession = Depends(get_db)):
     try:
         svc = KnowledgeGraphService()
         result = await svc.rebuild_for_document(db, document_id)
@@ -295,14 +295,14 @@ async def rebuild_document_graph(document_id: str, db: AsyncSession = Depends(ge
 
 @router.get("/chunk/{chunk_id}", response_model=KGChunk)
 async def get_chunk(
-    chunk_id: str,
+    chunk_id: UUID,
     evidence: Optional[str] = Query(
         default=None, description="Evidence text to locate within the chunk"
     ),
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        chunk = await db.get(DocumentChunk, UUID(chunk_id))
+        chunk = await db.get(DocumentChunk, chunk_id)
         if not chunk:
             raise HTTPException(status_code=404, detail="Chunk not found")
         # Load document title
@@ -336,7 +336,7 @@ async def get_chunk(
 
 @router.get("/entity/{entity_id}/mentions")
 async def entity_mentions(
-    entity_id: str,
+    entity_id: UUID,
     limit: int = Query(default=25, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
@@ -391,9 +391,9 @@ async def merge_entities(
 
 
 @router.get("/entity/{entity_id}", response_model=KGEntityDetail)
-async def get_entity(entity_id: str, db: AsyncSession = Depends(get_db)):
+async def get_entity(entity_id: UUID, db: AsyncSession = Depends(get_db)):
     try:
-        ent = await db.get(Entity, UUID(entity_id))
+        ent = await db.get(Entity, entity_id)
         if not ent:
             raise HTTPException(status_code=404, detail="Entity not found")
         return KGEntityDetail(
@@ -413,13 +413,13 @@ async def get_entity(entity_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.patch("/entity/{entity_id}", response_model=KGEntityDetail)
 async def update_entity(
-    entity_id: str,
+    entity_id: UUID,
     data: KGEntityUpdate,
     db: AsyncSession = Depends(get_db),
     current_user=Depends(require_admin),
 ):
     try:
-        ent = await db.get(Entity, UUID(entity_id))
+        ent = await db.get(Entity, entity_id)
         if not ent:
             raise HTTPException(status_code=404, detail="Entity not found")
         changed = False
@@ -447,7 +447,7 @@ async def update_entity(
                     action="update_entity",
                     details=json.dumps(
                         {
-                            "entity_id": entity_id,
+                            "entity_id": str(entity_id),
                             "changes": data.dict(exclude_unset=True),
                         }
                     ),
@@ -473,7 +473,7 @@ async def update_entity(
 
 @router.post("/entity/{entity_id}/infer-type", response_model=KGInferEntityTypeResponse)
 async def infer_entity_type(
-    entity_id: str,
+    entity_id: UUID,
     db: AsyncSession = Depends(get_db),
     current_user=Depends(require_admin),
 ):
@@ -484,7 +484,7 @@ async def infer_entity_type(
     from app.services.llm_service import LLMService
 
     try:
-        ent = await db.get(Entity, UUID(entity_id))
+        ent = await db.get(Entity, entity_id)
         if not ent:
             raise HTTPException(status_code=404, detail="Entity not found")
 
@@ -571,7 +571,7 @@ async def infer_entity_type(
 
 @router.delete("/entity/{entity_id}")
 async def delete_entity(
-    entity_id: str,
+    entity_id: UUID,
     confirm_name: str = Query(
         ..., description="Type the entity canonical name to confirm"
     ),
@@ -579,7 +579,7 @@ async def delete_entity(
     current_user=Depends(require_admin),
 ):
     try:
-        ent = await db.get(Entity, UUID(entity_id))
+        ent = await db.get(Entity, entity_id)
         if not ent:
             raise HTTPException(status_code=404, detail="Entity not found")
         if ent.canonical_name != confirm_name:
@@ -595,7 +595,7 @@ async def delete_entity(
             log = KGAuditLog(
                 user_id=current_user.id,
                 action="delete_entity",
-                details=json.dumps({"entity_id": entity_id, **result}),
+                details=json.dumps({"entity_id": str(entity_id), **result}),
             )
             db.add(log)
             await db.commit()
@@ -625,7 +625,7 @@ async def list_relation_types(db: AsyncSession = Depends(get_db)):
 
 @router.get("/relationship/{rel_id}", response_model=KGRelationshipDetail)
 async def get_relationship(
-    rel_id: str,
+    rel_id: UUID,
     db: AsyncSession = Depends(get_db),
 ):
     """Get detailed information about a relationship."""
@@ -690,7 +690,7 @@ async def create_relationship(
 
 @router.patch("/relationship/{rel_id}", response_model=KGRelationshipDetail)
 async def update_relationship(
-    rel_id: str,
+    rel_id: UUID,
     data: KGRelationshipUpdate,
     db: AsyncSession = Depends(get_db),
     current_user=Depends(require_admin),
@@ -725,7 +725,7 @@ async def update_relationship(
                 action="update_relationship",
                 details=json.dumps(
                     {
-                        "relationship_id": rel_id,
+                        "relationship_id": str(rel_id),
                         "changes": changes,
                     }
                 ),
@@ -750,7 +750,7 @@ async def update_relationship(
 
 @router.delete("/relationship/{rel_id}")
 async def delete_relationship(
-    rel_id: str,
+    rel_id: UUID,
     confirm: bool = Query(False, description="Set to true to confirm deletion"),
     db: AsyncSession = Depends(get_db),
     current_user=Depends(require_admin),
@@ -783,7 +783,7 @@ async def delete_relationship(
                 action="delete_relationship",
                 details=json.dumps(
                     {
-                        "relationship_id": rel_id,
+                        "relationship_id": str(rel_id),
                         "relation_type": detail["relation_type"],
                         "source_entity_id": detail["source_entity_id"],
                         "target_entity_id": detail["target_entity_id"],

@@ -1,6 +1,7 @@
 """
 Admin API endpoints for system management.
 """
+import asyncio
 import json
 import re
 from datetime import datetime, timedelta, timezone
@@ -1052,7 +1053,9 @@ async def get_system_health(current_user: User = Depends(require_admin)):
         # Wait for result with timeout
         try:
             # Keep this very short; UI should load even if Celery/LLM are still warming up.
-            result = task.get(timeout=2)  # Wait up to 2 seconds
+            # In a thread: waiting for a Celery result is a blocking read,
+            # and on the event loop it held every other request for as long.
+            result = await asyncio.to_thread(task.get, timeout=2)
             return HealthCheckResponse(**result)
         except Exception as task_error:
             # If task fails or times out, return basic health check
@@ -1126,7 +1129,7 @@ async def get_system_stats(current_user: User = Depends(require_admin)):
         task = generate_stats.delay()
         try:
             # Keep this very short; fallback computes quickly without relying on Celery.
-            result = task.get(timeout=2)  # Wait up to 2 seconds
+            result = await asyncio.to_thread(task.get, timeout=2)
             return SystemStatsResponse(**result)
         except Exception as task_error:
             logger.warning(
@@ -2205,7 +2208,10 @@ async def dry_run_source(
     """Run a dry-run ingestion; returns counts and a small sample inline."""
     try:
         task = dry_run_task.delay(str(source_id), overrides or {})
-        result = task.get(timeout=60)
+        # In a thread. This waited up to a minute for the worker with a
+        # blocking read on the event loop: for that minute the API process
+        # served nobody else.
+        result = await asyncio.to_thread(task.get, timeout=60)
         return result
     except Exception as e:
         logger.error(f"Dry-run failed: {e}")
@@ -2469,8 +2475,10 @@ async def get_vector_store_stats(current_user: User = Depends(require_admin)):
 
     except Exception as e:
         log_error(e, context={"endpoint": "vector_store_stats"})
+        # The store is somewhere else and did not answer: unavailable, not
+        # a fault in this server.
         raise HTTPException(
-            status_code=500, detail="Failed to get vector store statistics"
+            status_code=503, detail="Failed to get vector store statistics"
         )
 
 
@@ -2528,20 +2536,20 @@ async def get_task_status(
         from app.core.celery import celery_app
         from app.models.document import DocumentSource as _DocumentSource
 
-        # Get active tasks (returns None if no workers available)
-        active_tasks = celery_app.control.inspect().active()
-        if active_tasks is None:
-            active_tasks = {}
+        # Each of these broadcasts to the workers and waits for replies (None
+        # when no worker answers). Three blocking waits, so they go to a
+        # thread together and not onto the event loop.
+        def _inspect():
+            inspector = celery_app.control.inspect()
+            return (
+                inspector.active() or {},
+                inspector.scheduled() or {},
+                inspector.reserved() or {},
+            )
 
-        # Get scheduled tasks (returns None if no workers available)
-        scheduled_tasks = celery_app.control.inspect().scheduled()
-        if scheduled_tasks is None:
-            scheduled_tasks = {}
-
-        # Get reserved tasks (returns None if no workers available)
-        reserved_tasks = celery_app.control.inspect().reserved()
-        if reserved_tasks is None:
-            reserved_tasks = {}
+        active_tasks, scheduled_tasks, reserved_tasks = await asyncio.to_thread(
+            _inspect
+        )
 
         # Also get active ingestion tasks from sources
         ingestion_tasks = []
@@ -2617,7 +2625,7 @@ async def purge_tasks(current_user: User = Depends(require_admin)):
         from app.core.celery import celery_app
 
         # Purge all tasks
-        celery_app.control.purge()
+        await asyncio.to_thread(celery_app.control.purge)
 
         logger.warning("All pending tasks purged by admin user")
 

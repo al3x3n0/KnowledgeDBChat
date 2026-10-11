@@ -71994,6 +71994,7 @@
             "name": "chunk_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Chunk Id",
               "type": "string"
             }
@@ -72075,6 +72076,7 @@
             "name": "document_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Document Id",
               "type": "string"
             }
@@ -72138,6 +72140,7 @@
             "name": "document_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Document Id",
               "type": "string"
             }
@@ -72354,6 +72357,7 @@
             "name": "entity_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Entity Id",
               "type": "string"
             }
@@ -72424,6 +72428,7 @@
             "name": "entity_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Entity Id",
               "type": "string"
             }
@@ -72485,6 +72490,7 @@
             "name": "entity_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Entity Id",
               "type": "string"
             }
@@ -72559,6 +72565,7 @@
             "name": "entity_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Entity Id",
               "type": "string"
             }
@@ -72622,6 +72629,7 @@
             "name": "entity_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Entity Id",
               "type": "string"
             }
@@ -72706,6 +72714,7 @@
             "name": "entity_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Entity Id",
               "type": "string"
             }
@@ -73068,6 +73077,7 @@
             "name": "rel_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Rel Id",
               "type": "string"
             }
@@ -73140,6 +73150,7 @@
             "name": "rel_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Rel Id",
               "type": "string"
             }
@@ -73202,6 +73213,7 @@
             "name": "rel_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Rel Id",
               "type": "string"
             }

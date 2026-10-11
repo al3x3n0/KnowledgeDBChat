@@ -7,7 +7,7 @@ Provides:
 - Execution history
 - WebSocket for real-time execution updates
 """
-from typing import List, Optional
+from typing import Any, List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket
@@ -464,6 +464,21 @@ async def execution_stream(
 # =============================================================================
 
 
+def _parameter_type(declared: Any) -> str:
+    """One type name for the editor, whatever the schema declared.
+
+    JSON Schema lets `type` be a list (`["array", "string"]`, or a type with
+    `"null"`), and several built-in tools use that. The response model wants
+    a string, so one such tool made the whole list a 500 and the workflow
+    editor had no built-in tools to offer. The first type that is not "null"
+    is the one a form field can be drawn for.
+    """
+    if isinstance(declared, (list, tuple)):
+        named = [str(item) for item in declared if item and str(item) != "null"]
+        return named[0] if named else "any"
+    return str(declared) if declared else "any"
+
+
 def _flatten_json_schema(schema: dict) -> List[ToolParameterDetail]:
     """
     Flatten a JSON Schema into a list of parameter details for UI display.
@@ -476,7 +491,7 @@ def _flatten_json_schema(schema: dict) -> List[ToolParameterDetail]:
         parameters.append(
             ToolParameterDetail(
                 name=name,
-                type=prop_schema.get("type", "any"),
+                type=_parameter_type(prop_schema.get("type", "any")),
                 description=prop_schema.get("description"),
                 required=name in required,
                 default=prop_schema.get("default"),

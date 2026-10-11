@@ -53,7 +53,7 @@ from app.schemas.document import (
     InstantArxivIngestRequest,
     InstantArxivIngestResponse,
 )
-from app.services.auth_service import ensure_admin, get_current_user
+from app.services.auth_service import auth_service, ensure_admin, get_current_user
 from app.services.document_folder_service import FolderError, document_folder_service
 from app.services.document_service import DocumentService
 from app.services.storage_service import storage_service
@@ -418,15 +418,14 @@ async def get_current_user_optional(
     # The token may arrive as a query parameter (media players cannot set a
     # header) or in the Authorization header. Either way it is read by the
     # one decoder every other entry point uses.
-    from sqlalchemy import select
-
     for candidate in (token, request.headers.get("Authorization")):
         user_id = decode_access_token(candidate)
         if not user_id:
             continue
-        user = (
-            await db.execute(select(User).where(User.id == user_id))
-        ).scalar_one_or_none()
+        # Through the one lookup that turns the token's subject into an id;
+        # compared as a bare string, a subject that is not a UUID was a
+        # database error and not "nobody".
+        user = await auth_service.get_user_by_id(user_id, db)
         if user and user.is_active:
             return user
 

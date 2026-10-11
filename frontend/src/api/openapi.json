@@ -79909,7 +79909,7 @@
     },
     "/api/v1/presentations/{job_id}/download": {
       "get": {
-        "description": "Download the generated presentation.\n\nRedirects to a presigned MinIO URL for direct download.",
+        "description": "Download the generated presentation.",
         "operationId": "download_presentation_api_v1_presentations__job_id__download_get",
         "parameters": [
           {

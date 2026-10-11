@@ -12,6 +12,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.mcp.auth import MCPAuthContext
 from app.models.presentation import PresentationJob
 from app.models.repo_report import RepoReportJob
+from app.services.config_values import bounded_int
+
+MAX_SLIDES = 30
+MAX_JOBS_LISTED = 50
+PRESENTATION_STYLES = (
+    "professional",
+    "technical",
+    "modern",
+    "minimal",
+    "corporate",
+    "creative",
+    "dark",
+)
+REPORT_FORMATS = ("docx", "pdf", "pptx")
 
 
 class GenerationTool:
@@ -147,6 +161,15 @@ class GenerationTool:
             f"MCP create_presentation: topic='{topic[:50]}', user={auth.user.username}"
         )
 
+        # What a model typed: a deck has between 3 and 30 slides, as the
+        # tool's schema says, and a style the builder knows.
+        slide_count = bounded_int(slide_count, 10, 3, MAX_SLIDES)
+        if style not in PRESENTATION_STYLES:
+            return {
+                "error": f"Unknown style '{style}'. "
+                f"Use one of: {', '.join(PRESENTATION_STYLES)}"
+            }
+
         try:
             from uuid import uuid4
 
@@ -207,6 +230,12 @@ class GenerationTool:
         logger.info(
             f"MCP create_repo_report: url={repo_url}, user={auth.user.username}"
         )
+
+        if output_format not in REPORT_FORMATS:
+            return {
+                "error": f"Unknown output_format '{output_format}'. "
+                f"Use one of: {', '.join(REPORT_FORMATS)}"
+            }
 
         try:
             import re
@@ -323,7 +352,10 @@ class GenerationTool:
                     response["download_available"] = True
                     response["file_path"] = job.file_path
                 elif job.status == "failed":
-                    response["error"] = job.error_message
+                    # The column is `error`. `error_message` does not exist,
+                    # so a failed presentation reported an AttributeError
+                    # where its own failure should have been.
+                    response["error"] = job.error
 
                 return response
 
@@ -380,6 +412,7 @@ class GenerationTool:
         """List user's generation jobs."""
         auth.require_scope("read")
 
+        limit = bounded_int(limit, 20, 1, MAX_JOBS_LISTED)
         jobs = []
 
         try:

@@ -1951,6 +1951,16 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
 - Tools filtered by API key capabilities; high-risk tools require approval
 - Usage logging for rate limiting and quota tracking
 
+- The search, chat and generation tools had no test
+  (`tests/test_mcp_search_chat_generation_tools.py` calls them as the server
+  does). Search loaded the id of every document, capped at 10,000, and dropped
+  results outside that list, so past the cap a document could not be found;
+  everyone may read every document, so it no longer builds the list. A
+  **source filter is handed to the store**: search and chat applied it to a
+  window of the best chunks from anywhere, which other sources' matches could
+  fill. Chat read a filter matching no document as no filter. A failed
+  presentation's status read `error_message`, which the model lacks.
+
 ### RAG Pipeline
 - Query → hybrid search (vector + BM25) → reranking (cross-encoder) → MMR / deduplication / query expansion → optional KG context → LLM response
 - Retrieval traces recorded for observability (`models/retrieval_trace.py`, `/retrieval-traces` endpoints)

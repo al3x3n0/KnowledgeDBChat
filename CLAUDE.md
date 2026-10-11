@@ -1617,9 +1617,24 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   tests are what make a 650-line move checkable, and they find things first.
 - The operator queue presents a job only where it becomes a row. The full
   presenter ran for every job a user had ever run on every poll, to show the
-  handful waiting. It still **loads** every job: a database pre-filter needs
-  a column saying a job wants an operator (an approval checkpoint can sit in
-  `results` under any status), which is a schema change not made.
+  handful waiting. **And it loads only the jobs that could become a row**
+  (`checkpoint_queue_candidates.load_queue_jobs`, used by the queue route
+  and the monitoring task). Two of the four reasons a job becomes a row are
+  visible to the database (paused on a person; a recurring job that failed,
+  paused or went quiet). The other two are inside JSON, so two flags carry
+  them, `has_approval_checkpoint` and `has_contract_unmet_entry` (migration
+  `0108`), each kept by a mapper event **from its own source alone** -- one
+  combined column could not be kept right for a row loaded without its log,
+  which is how the job list loads them. The query may select too many jobs
+  and never too few: the projector still decides. Asking for too few would
+  hide a row with nobody told, so `tests/test_checkpoint_queue_candidates.py`
+  builds the queue both ways over every combination of status, phase,
+  schedule, results, log and age (15,750 jobs) and requires the same rows.
+  On a copy of the dev data: 305 jobs, 54 candidates, the same 53 rows. The
+  job behind each accepted inbox item is loaded whatever its state, since
+  the monitor snapshot looks it up. `has_approval_checkpoint` restates
+  `extract_approval_checkpoint` because a model cannot import a service; a
+  test holds the two equal on every shape.
 
 - **One inline arXiv ingest, `services/arxiv_instant_ingest.ingest_paper`.**
   `POST /documents/ingest-arxiv-instant` and `POST

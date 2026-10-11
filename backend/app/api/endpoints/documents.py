@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.celery import celery_app
 from app.core.database import AsyncSessionLocal, get_db
-from app.core.exceptions import internal_error_detail
+from app.core.exceptions import failure_status, internal_error_detail
 from app.core.logging import log_error
 from app.core.rate_limit import UPLOAD_LIMIT, limiter
 from app.core.tokens import decode_access_token
@@ -890,7 +890,7 @@ async def upload_document(
             },
         )
         raise HTTPException(
-            status_code=500,
+            status_code=failure_status(e),
             detail=internal_error_detail(e, "Failed to upload document"),
         )
 

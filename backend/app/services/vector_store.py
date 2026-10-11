@@ -40,6 +40,7 @@ from rank_bm25 import BM25Okapi
 
 from app.core.config import settings
 from app.models.document import Document, DocumentChunk
+from app.utils.exceptions import VectorStoreNotReady
 from app.utils.per_loop import PerLoop
 
 try:
@@ -285,12 +286,12 @@ class VectorStoreService:
         """Ensure the vector store is initialized."""
         if require_embeddings:
             if not self.is_embeddings_ready:
-                raise RuntimeError(
+                raise VectorStoreNotReady(
                     "Vector store embeddings not initialized. Call initialize() first."
                 )
         else:
             if not self.is_chroma_ready:
-                raise RuntimeError(
+                raise VectorStoreNotReady(
                     "Vector store not initialized. Call initialize() first."
                 )
 

@@ -27,7 +27,7 @@ from app.core.cache import cache_service
 from app.core.celery import celery_app
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.exceptions import internal_error_detail
+from app.core.exceptions import failure_status, internal_error_detail
 from app.core.feature_flags import get_flags as get_feature_flags
 from app.core.feature_flags import get_str as get_feature_str
 from app.core.feature_flags import set_flag as set_feature_flag
@@ -1890,7 +1890,10 @@ async def set_ai_hub_customer_profile(
     if profile.id is None:
         profile.id = uuid4()
     profile.keywords = _normalize_profile_keywords(profile.keywords)
-    raw = json.dumps(profile.model_dump(), ensure_ascii=False)
+    # mode="json": the profile carries a UUID, which json.dumps cannot write.
+    # This always assigns one above, so saving a profile always raised and
+    # no customer profile was ever stored.
+    raw = json.dumps(profile.model_dump(mode="json"), ensure_ascii=False)
     ok = await set_feature_str("ai_hub_customer_profile", raw)
     if not ok:
         raise HTTPException(status_code=400, detail="Failed to update setting")
@@ -2452,7 +2455,9 @@ async def reset_vector_store(
 
     except Exception as e:
         logger.error(f"Error resetting vector store: {e}")
-        raise HTTPException(status_code=500, detail="Failed to reset vector store")
+        raise HTTPException(
+            status_code=failure_status(e), detail="Failed to reset vector store"
+        )
 
 
 @router.get("/vector-store/stats")

@@ -1138,14 +1138,14 @@ async def list_synthesis_jobs(
 
 @router.get("/{job_id}", response_model=SynthesisJobResponse)
 async def get_synthesis_job(
-    job_id: str,
+    job_id: UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Get a synthesis job by ID."""
     result = await db.execute(
         select(SynthesisJob).where(
-            SynthesisJob.id == UUID(job_id), SynthesisJob.user_id == current_user.id
+            SynthesisJob.id == job_id, SynthesisJob.user_id == current_user.id
         )
     )
     job = result.scalar_one_or_none()
@@ -1158,14 +1158,14 @@ async def get_synthesis_job(
 
 @router.get("/{job_id}/download")
 async def download_synthesis_result(
-    job_id: str,
+    job_id: UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Download the generated synthesis file."""
     result = await db.execute(
         select(SynthesisJob).where(
-            SynthesisJob.id == UUID(job_id), SynthesisJob.user_id == current_user.id
+            SynthesisJob.id == job_id, SynthesisJob.user_id == current_user.id
         )
     )
     job = result.scalar_one_or_none()
@@ -1209,7 +1209,7 @@ async def download_synthesis_result(
     "/{job_id}/save-as-note", response_model=ResearchNoteResponse, status_code=201
 )
 async def save_synthesis_as_note(
-    job_id: str,
+    job_id: UUID,
     payload: SaveSynthesisAsNoteRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -1217,7 +1217,7 @@ async def save_synthesis_as_note(
     """Persist a completed synthesis result as a research note with provenance."""
     result = await db.execute(
         select(SynthesisJob).where(
-            SynthesisJob.id == UUID(job_id),
+            SynthesisJob.id == job_id,
             SynthesisJob.user_id == current_user.id,
         )
     )
@@ -1436,14 +1436,14 @@ async def save_synthesis_as_note(
 
 @router.post("/{job_id}/review", response_model=SynthesisJobResponse)
 async def review_synthesis_job(
-    job_id: str,
+    job_id: UUID,
     payload: ReviewSynthesisJobRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     result = await db.execute(
         select(SynthesisJob).where(
-            SynthesisJob.id == UUID(job_id),
+            SynthesisJob.id == job_id,
             SynthesisJob.user_id == current_user.id,
         )
     )
@@ -1515,14 +1515,14 @@ async def review_synthesis_job(
 
 @router.delete("/{job_id}")
 async def delete_synthesis_job(
-    job_id: str,
+    job_id: UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Delete a synthesis job."""
     result = await db.execute(
         select(SynthesisJob).where(
-            SynthesisJob.id == UUID(job_id), SynthesisJob.user_id == current_user.id
+            SynthesisJob.id == job_id, SynthesisJob.user_id == current_user.id
         )
     )
     job = result.scalar_one_or_none()
@@ -1545,14 +1545,14 @@ async def delete_synthesis_job(
 
 @router.post("/{job_id}/cancel")
 async def cancel_synthesis_job(
-    job_id: str,
+    job_id: UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Cancel a running synthesis job."""
     result = await db.execute(
         select(SynthesisJob).where(
-            SynthesisJob.id == UUID(job_id), SynthesisJob.user_id == current_user.id
+            SynthesisJob.id == job_id, SynthesisJob.user_id == current_user.id
         )
     )
     job = result.scalar_one_or_none()
@@ -1579,7 +1579,9 @@ async def cancel_synthesis_job(
 class QuickSynthesisRequest(BaseModel):
     """Request for quick synthesis without creating a job."""
 
-    document_ids: List[str] = Field(..., description="Document IDs to synthesize")
+    # Ids, so one that is not is refused before the handler runs; as plain
+    # strings a malformed one raised inside it and the answer was a 500.
+    document_ids: List[UUID] = Field(..., description="Document IDs to synthesize")
     topic: Optional[str] = Field(None, description="Focus topic")
     max_length: int = Field(500, description="Maximum word count")
 
@@ -1602,16 +1604,21 @@ async def quick_summary(
 
     from app.services.content_generation_service import content_generation_service
 
-    document_ids = [UUID(doc_id) for doc_id in request.document_ids]
+    document_ids = list(request.document_ids)
 
-    result = await content_generation_service.generate_executive_summary(
-        db=db,
-        document_ids=document_ids,
-        topic=request.topic,
-        max_length=request.max_length,
-        include_recommendations=True,
-        include_metrics=True,
-    )
+    try:
+        result = await content_generation_service.generate_executive_summary(
+            db=db,
+            document_ids=document_ids,
+            topic=request.topic,
+            max_length=request.max_length,
+            include_recommendations=True,
+            include_metrics=True,
+        )
+    except ValueError as refused:
+        # The service's word for "nothing to summarise", e.g. ids that name
+        # no document. That is the request's fault, not the server's.
+        raise HTTPException(status_code=400, detail=str(refused)) from refused
 
     return result
 
@@ -1639,23 +1646,26 @@ async def quick_compare(
 
     from app.services.content_generation_service import content_generation_service
 
-    document_ids = [UUID(doc_id) for doc_id in request.document_ids]
+    document_ids = list(request.document_ids)
 
-    result = await content_generation_service.generate_report(
-        db=db,
-        report_type="analysis",
-        document_ids=document_ids,
-        title=f"Comparison: {request.topic}"
-        if request.topic
-        else "Document Comparison",
-        sections=[
-            "Executive Summary",
-            "Document Overview",
-            "Similarities",
-            "Differences",
-            "Conclusions",
-        ],
-    )
+    try:
+        result = await content_generation_service.generate_report(
+            db=db,
+            report_type="analysis",
+            document_ids=document_ids,
+            title=f"Comparison: {request.topic}"
+            if request.topic
+            else "Document Comparison",
+            sections=[
+                "Executive Summary",
+                "Document Overview",
+                "Similarities",
+                "Differences",
+                "Conclusions",
+            ],
+        )
+    except ValueError as refused:
+        raise HTTPException(status_code=400, detail=str(refused)) from refused
 
     return result
 

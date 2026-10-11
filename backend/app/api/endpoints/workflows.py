@@ -15,7 +15,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.exceptions import internal_error_detail
+from app.core.exceptions import failure_status, internal_error_detail
 from app.models.user import User
 from app.modules.workflows.application import workflow_store
 from app.schemas.workflow import (
@@ -178,7 +178,9 @@ async def synthesize_workflow(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         logger.error(f"Error synthesizing workflow: {exc}")
-        raise HTTPException(status_code=500, detail=internal_error_detail(exc)) from exc
+        raise HTTPException(
+            status_code=failure_status(exc), detail=internal_error_detail(exc)
+        ) from exc
 
 
 @router.get("/{workflow_id}", response_model=WorkflowResponse)

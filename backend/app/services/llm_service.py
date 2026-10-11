@@ -703,6 +703,29 @@ class LLMService:
             raise last_err
         raise LLMServiceError("Failed to generate response")
 
+    async def generate_text(
+        self,
+        *,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.1,
+        max_tokens: int = 200,
+    ) -> str:
+        """A short completion: the other half of `agent_core.contracts.LLMClient`.
+
+        The contract names two methods and this class had one. The agent
+        router asks for intent analysis through this one, so every such call
+        raised AttributeError inside the router's `except Exception` and
+        routing fell back to keyword matching: the model was never consulted
+        about which specialist a message is for.
+        """
+        return await self.generate_response(
+            query=prompt,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
     async def generate_structured(
         self,
         *,

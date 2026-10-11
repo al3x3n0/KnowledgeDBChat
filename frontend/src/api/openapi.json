@@ -48484,6 +48484,8 @@
             "required": false,
             "schema": {
               "default": 100,
+              "maximum": 5000,
+              "minimum": 1,
               "title": "Lines",
               "type": "integer"
             }
@@ -60982,6 +60984,8 @@
             "required": false,
             "schema": {
               "default": 30,
+              "maximum": 366,
+              "minimum": 1,
               "title": "Days",
               "type": "integer"
             }
@@ -69971,6 +69975,8 @@
             "required": false,
             "schema": {
               "default": 1,
+              "maximum": 100000,
+              "minimum": 1,
               "title": "Page",
               "type": "integer"
             }
@@ -69981,6 +69987,8 @@
             "required": false,
             "schema": {
               "default": 20,
+              "maximum": 100,
+              "minimum": 1,
               "title": "Page Size",
               "type": "integer"
             }
@@ -75553,6 +75561,8 @@
             "required": false,
             "schema": {
               "default": 20,
+              "maximum": 200,
+              "minimum": 1,
               "title": "Limit",
               "type": "integer"
             }
@@ -75563,6 +75573,8 @@
             "required": false,
             "schema": {
               "default": 0,
+              "maximum": 1000000,
+              "minimum": 0,
               "title": "Offset",
               "type": "integer"
             }
@@ -75746,6 +75758,8 @@
             "required": false,
             "schema": {
               "default": 50,
+              "maximum": 200,
+              "minimum": 1,
               "title": "Limit",
               "type": "integer"
             }

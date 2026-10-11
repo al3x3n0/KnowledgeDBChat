@@ -5,7 +5,7 @@ Allows users to create, list, and revoke API keys for external tool access.
 """
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -182,7 +182,8 @@ async def revoke_api_key(
 @router.get("/{key_id}/usage", response_model=APIKeyUsageStats)
 async def get_api_key_usage(
     key_id: UUID,
-    days: int = 30,
+    # Bounded: it becomes a timedelta, which overflows on a large number.
+    days: int = Query(30, ge=1, le=366),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):

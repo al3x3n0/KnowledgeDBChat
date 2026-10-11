@@ -4,7 +4,7 @@ API endpoints for DOCX/PDF export functionality.
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from loguru import logger
 from sqlalchemy import func, select
@@ -341,8 +341,10 @@ async def download_export(
 
 @router.get("", response_model=ExportJobListResponse)
 async def list_export_jobs(
-    page: int = 1,
-    page_size: int = 20,
+    # Bounded: page_size is a divisor below, and a negative limit is "no
+    # limit" to the database.
+    page: int = Query(1, ge=1, le=100000),
+    page_size: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):

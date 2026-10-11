@@ -8,7 +8,7 @@ can use to interact with the KnowledgeDB platform.
 import time
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,7 +22,7 @@ from app.mcp.auth import (
 )
 from app.mcp.tools.chat import ChatTool
 from app.mcp.tools.docker_execute import DockerExecuteTool
-from app.mcp.tools.documents import DocumentsTool
+from app.mcp.tools.documents import MAX_LIST_LIMIT, MAX_LIST_OFFSET, DocumentsTool
 from app.mcp.tools.generation import GenerationTool
 from app.mcp.tools.sandbox_skills import SandboxSkillTool
 from app.mcp.tools.search import SearchTool
@@ -555,8 +555,8 @@ async def chat_endpoint(
 
 @mcp_router.get("/documents")
 async def list_documents_endpoint(
-    limit: int = 20,
-    offset: int = 0,
+    limit: int = Query(20, ge=1, le=MAX_LIST_LIMIT),
+    offset: int = Query(0, ge=0, le=MAX_LIST_OFFSET),
     source_id: Optional[str] = None,
     file_type: Optional[str] = None,
     search: Optional[str] = None,
@@ -593,7 +593,7 @@ async def get_document_endpoint(
 
 @mcp_router.get("/sources")
 async def list_sources_endpoint(
-    limit: int = 50,
+    limit: int = Query(50, ge=1, le=MAX_LIST_LIMIT),
     auth: MCPAuthContext = Depends(get_mcp_auth),
     db: AsyncSession = Depends(get_db),
 ):

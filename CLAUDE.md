@@ -1662,6 +1662,18 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   The guard follows first-party base classes, reads only a function's body
   (a decorator's `router` is the module's, not the local one), and only
   judges a name assigned once.
+- **A number that sizes a query has a floor and a ceiling**
+  (`tests/test_paging_parameters_are_bounded.py`). `limit: int = 20` on a
+  route accepts -1, which is "no limit" to the database, and 0, which is a
+  divisor in every page count: `GET /export?page_size=0` was a 500, API-key
+  usage overflowed a timedelta on a large `days`, and `GET /admin/logs`
+  returned the whole file for `lines=0` (and read it whole on the event
+  loop; it keeps a tail in a thread now). The test requires `ge` and `le` on
+  such a parameter; a route that clamps by hand is in `CLAMPED_BY_HAND`,
+  which may only shrink. Writing its MCP half found that **MCP
+  `list_sources` had never returned a source** (it read four attributes the
+  model lacks, inside `except Exception`) and `get_document` returned
+  `doc.metadata`, the table registry, where `extra_metadata` was meant.
 - The presentation routes have tests (`tests/test_presentation_routes.py`);
   the list's `limit` and `offset` are bounded, since a negative limit is "no
   limit" to the database.

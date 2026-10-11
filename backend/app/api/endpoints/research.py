@@ -14,6 +14,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.exceptions import failure_status
 from app.models.document import Document, DocumentSource
 from app.models.user import User
 from app.services.arxiv_search_service import ArxivSearchService
@@ -164,7 +165,9 @@ async def translate_arxiv_query(
         return ArxivTranslateQueryResponse(query=query)
     except Exception as exc:
         logger.warning(f"Failed to translate arXiv query: {exc}")
-        raise HTTPException(status_code=500, detail="Failed to translate query")
+        raise HTTPException(
+            status_code=failure_status(exc), detail="Failed to translate query"
+        )
 
 
 @router.get("/arxiv/imports")

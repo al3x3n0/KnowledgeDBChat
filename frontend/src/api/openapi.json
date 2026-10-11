@@ -33563,6 +33563,7 @@
           "document_ids": {
             "description": "Document IDs to synthesize",
             "items": {
+              "format": "uuid",
               "type": "string"
             },
             "title": "Document Ids",
@@ -86876,6 +86877,7 @@
             "name": "job_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Job Id",
               "type": "string"
             }
@@ -86936,6 +86938,7 @@
             "name": "job_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Job Id",
               "type": "string"
             }
@@ -87000,6 +87003,7 @@
             "name": "job_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Job Id",
               "type": "string"
             }
@@ -87062,6 +87066,7 @@
             "name": "job_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Job Id",
               "type": "string"
             }
@@ -87123,6 +87128,7 @@
             "name": "job_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Job Id",
               "type": "string"
             }
@@ -87197,6 +87203,7 @@
             "name": "job_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Job Id",
               "type": "string"
             }

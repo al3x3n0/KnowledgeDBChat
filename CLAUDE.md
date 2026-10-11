@@ -1689,6 +1689,32 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
     database as text. They are `UUID`, so the framework answers 422.
   - `GET /admin/vector-store/stats` answers 503, not 500, when the store is
     away.
+- **POST routes are walked too, with a body built from their own schema.**
+  The same test builds, for each POST route with no path parameter, the
+  smallest body its declared schema accepts, so the handler really runs. The
+  network is closed for that walk (`socket.connect` refuses), the model
+  raises `LLMServiceError`, and task dispatch is recorded, so a route that
+  needs a dependency must answer 503. Nine more routes answered 500:
+  - **No AI Hub customer profile could be saved.** The route assigns the
+    profile a UUID and then called `json.dumps(profile.model_dump())`, which
+    cannot write one. `model_dump(mode="json")`.
+  - **The agent router never consulted the model.** `agent_core.contracts.
+    LLMClient` names `generate_response` and `generate_text`; `LLMService`
+    had only the first, so intent analysis raised AttributeError inside
+    `except Exception` and every message was routed by keywords. The service
+    has `generate_text` now, and a test requires it to satisfy the protocol.
+  - **"A dependency did not answer" is 503, decided in one place**
+    (`core/exceptions.failure_status`, `is_dependency_failure`). The typed
+    errors already map to 503 in the global handler, but a route that wraps
+    its body in `except Exception` and raises its own 500 never lets them
+    reach it: workflow synthesis, arXiv query translation, the three LaTeX
+    copilots, document upload and the vector-store reset all said "server
+    error" when the model or storage was merely away. Causes are followed,
+    since services wrap what they catch. A vector store that is not ready
+    raises `VectorStoreNotReady`, still a `RuntimeError` for callers that
+    catch one.
+  - Synthesis job and document ids are `UUID` in the routes and the quick
+    request; "nothing to summarise" is a 400.
 - **Waiting on Celery from a route goes to a thread.** `task.get(timeout=60)`
   in `POST /admin/sources/{id}/dry-run` was a blocking read on the event
   loop: for up to a minute that API process served nobody else. The admin

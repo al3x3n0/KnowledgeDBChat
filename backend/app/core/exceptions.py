@@ -40,6 +40,46 @@ def internal_error_detail(exc: BaseException, what: str = GENERIC_ERROR) -> str:
     return f"{what} (reference {reference})"
 
 
+#: Libraries whose connection and timeout errors mean "that service is away".
+_TRANSPORT_MODULES = {"urllib3", "httpx", "httpcore", "aiohttp", "redis", "requests"}
+_TRANSPORT_WORDS = ("Connect", "Timeout", "MaxRetry", "Transport", "Network")
+
+
+def is_dependency_failure(exc: BaseException) -> bool:
+    """Whether `exc` says something this server depends on did not answer.
+
+    The model, the vector store, object storage: when one is away the honest
+    answer is 503, "try again", not 500, "this server is broken". The typed
+    errors already map to 503 in the handler below, but a route that wraps
+    its body in `except Exception` and raises its own 500 never lets them
+    get that far. Causes are followed, since services wrap what they catch.
+    """
+    seen = 0
+    current: BaseException | None = exc
+    while current is not None and seen < 8:
+        if isinstance(current, (LLMServiceError, VectorStoreError)):
+            return True
+        if isinstance(current, (ConnectionError, TimeoutError)):
+            return True
+        kind = type(current)
+        if kind.__module__.split(".")[0] in _TRANSPORT_MODULES and any(
+            word in kind.__name__ for word in _TRANSPORT_WORDS
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+        seen += 1
+    return False
+
+
+def failure_status(exc: BaseException) -> int:
+    """503 when a dependency did not answer, 500 for a fault of our own."""
+    return (
+        status.HTTP_503_SERVICE_UNAVAILABLE
+        if is_dependency_failure(exc)
+        else status.HTTP_500_INTERNAL_SERVER_ERROR
+    )
+
+
 async def knowledge_db_exception_handler(
     request: Request, exc: KnowledgeDBException
 ) -> JSONResponse:

@@ -49,15 +49,17 @@ NEEDS_A_SERVICE = {
 }
 
 
-def _request_path(route: APIRoute) -> str:
+def _request_path(route: APIRoute, malformed: bool = False) -> str:
     def value(match):
         name = match.group(1).split(":")[0]
-        return str(uuid.uuid4()) if name.endswith("id") else "x"
+        if not name.endswith("id"):
+            return "x"
+        return "not-an-id" if malformed else str(uuid.uuid4())
 
     return re.sub(r"\{([^}]+)\}", value, route.path)
 
 
-def _requests(app):
+def _requests(app, malformed: bool = False):
     for route in app.routes:
         if not isinstance(route, APIRoute):
             continue
@@ -67,14 +69,17 @@ def _requests(app):
                 has_parameter and method in {"DELETE", "PUT", "PATCH", "POST"}
             ):
                 if (method, route.path) not in NEEDS_A_SERVICE:
-                    yield method, route.path, _request_path(route)
+                    yield method, route.path, _request_path(route, malformed)
 
 
 @pytest.mark.skipif(
     TEST_ON_POSTGRES,
     reason="the HTTP client cannot share a Postgres session across loops",
 )
-def test_no_route_answers_with_a_server_error(db_session, admin_user, monkeypatch):
+@pytest.mark.parametrize("ids", ["naming nothing", "malformed"])
+def test_no_route_answers_with_a_server_error(db_session, admin_user, monkeypatch, ids):
+    # An id that names nothing should be a 404; one that is not an id at all
+    # should be refused, a 422 or 400. Neither is the server's fault.
     from app.services.storage_service import storage_service
     from app.services.vector_store import vector_store_service
     from app.utils.redis_subscriber import redis_subscriber
@@ -95,7 +100,7 @@ def test_no_route_answers_with_a_server_error(db_session, admin_user, monkeypatc
     try:
         # A handler that raises is reported as a 500, like one that answers it.
         with TestClient(app, raise_server_exceptions=False) as client:
-            for method, declared, path in _requests(app):
+            for method, declared, path in _requests(app, ids == "malformed"):
                 body = {} if method in {"POST", "PUT", "PATCH"} else None
                 answer = client.request(method, path, headers=headers, json=body)
                 asked += 1
@@ -180,6 +185,35 @@ def _value(schema, spec, name="", depth=0):
 
 _FILE = object()
 
+#: What a route's own validator wants beyond what its schema's types say:
+#: one of several fields, a name of a particular shape, a value from a list
+#: the schema does not carry. Without these the body is refused with a 422
+#: and the handler never runs. Merged over the built body.
+EXTRA_FIELDS = {
+    "/api/v1/agent-jobs/checkpoint-queue/follow-up-action": {
+        "inbox_item_id": str(uuid.uuid4())
+    },
+    "/api/v1/agent-jobs/checkpoint-queue/follow-up-bulk-action": {
+        "portfolio_id": str(uuid.uuid4()),
+        "portfolio_opportunity_ids": ["probe"],
+    },
+    "/api/v1/agent-jobs/quick-start/repo-bug-triage": {"goal": "probe goal"},
+    "/api/v1/agent-jobs/quick-start/bug-triage-swarm": {"goal": "probe goal"},
+    "/api/v1/agent-jobs/quick-start/build-break-swarm": {"goal": "probe goal"},
+    "/api/v1/agent-jobs/quick-start/frontend-regression-swarm": {"goal": "probe goal"},
+    "/api/v1/agent/agents": {"name": "probe_agent"},
+    "/api/v1/auth/login": {"username": "nobody", "password": "wrong-password"},
+    "/api/v1/documents/ingest-arxiv-instant": {"arxiv_input": "2401.12345"},
+    "/api/v1/documents/sources/": {"source_type": "web"},
+    "/api/v1/documents/sources/arxiv": {"paper_ids": ["2401.12345"]},
+    "/api/v1/memory/": {"memory_type": "fact"},
+    "/api/v1/sandbox-skills": {"manifest": {"id": "probe_skill"}},
+    "/api/v1/sandbox-skills/images": {
+        "slug": "probe-image",
+        "dockerfile": "FROM scratch",
+    },
+}
+
 
 def _post_requests(spec):
     for path, item in sorted(spec["paths"].items()):
@@ -188,12 +222,14 @@ def _post_requests(spec):
             continue
         content = (operation.get("requestBody") or {}).get("content") or {}
         sent = {}
+        extra = EXTRA_FIELDS.get(path, {})
         if "application/json" in content:
-            sent["json"] = _value(content["application/json"].get("schema", {}), spec)
+            built = _value(content["application/json"].get("schema", {}), spec)
+            sent["json"] = {**built, **extra} if isinstance(built, dict) else built
         else:
             form = next((content[kind] for kind in content if "form" in kind), None)
             if form is not None:
-                fields = _value(form.get("schema", {}), spec) or {}
+                fields = {**(_value(form.get("schema", {}), spec) or {}), **extra}
                 files = {
                     name: ("probe.txt", b"probe file\n", "text/plain")
                     for name, value in fields.items()
@@ -264,7 +300,7 @@ def _posted(db_session, admin_user, monkeypatch):
             monkeypatch.setattr(socket.socket, "connect", _no_network, raising=False)
             for path, sent in _post_requests(spec):
                 answer = client.post(path, headers=headers, **sent)
-                answers.append((path, answer.status_code, answer.text[:160]))
+                answers.append((path, answer.status_code, answer.text[:700]))
                 client.portal.call(db_session.rollback)
             monkeypatch.undo()
     finally:
@@ -293,4 +329,4 @@ def test_most_built_bodies_reach_their_handler(_posted):
     # this walk is checking nothing.
     refused = [path for path, status, _ in _posted if status == 422]
 
-    assert len(refused) <= 20, refused
+    assert len(refused) <= 6, refused

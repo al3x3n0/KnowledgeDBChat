@@ -30,6 +30,19 @@ class VectorStoreError(KnowledgeDBException):
         super().__init__(f"Vector store error: {message}", detail)
 
 
+class VectorStoreNotReady(VectorStoreError, RuntimeError):
+    """The vector store has not been initialised, or could not be.
+
+    It was a bare RuntimeError, which says "a bug" to everything that sorts
+    errors by type: a route asked for search while the store was away
+    answered 500. It is still a RuntimeError, for the callers that catch
+    one, and now also the store's own error, which maps to 503.
+    """
+
+    def __init__(self, message: str, detail: Optional[str] = None):
+        KnowledgeDBException.__init__(self, message, detail)
+
+
 class LLMServiceError(KnowledgeDBException):
     """Raised when LLM service operations fail."""
 

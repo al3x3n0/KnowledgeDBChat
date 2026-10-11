@@ -28,12 +28,6 @@ class TextProcessor:
     """Service for processing and extracting text from various document formats."""
 
     def __init__(self):
-        self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
-            length_function=len,
-            separators=["\n\n", "\n", " ", ""],
-        )
         # Loading sentence-transformers can download model files and must not block
         # API module imports. Initialize it lazily on the first semantic split.
         self.semantic_model = None
@@ -523,31 +517,29 @@ class TextProcessor:
         # Detect if text is markdown and use markdown-aware separators
         is_markdown = self._is_markdown(text)
 
-        # Update splitter configuration if different from default
-        if (
-            chunk_size != self.text_splitter._chunk_size
-            or chunk_overlap != self.text_splitter._chunk_overlap
-        ):
-            # Use markdown-aware separators if content is markdown
-            # This helps preserve structure: headers, code blocks, lists
-            separators = (
-                ["\n\n## ", "\n\n# ", "\n\n```", "\n\n", "\n", " ", ""]
-                if is_markdown
-                else ["\n\n", "\n", " ", ""]
-            )
+        # Markdown-aware separators preserve structure: headers, code blocks,
+        # lists.
+        separators = (
+            ["\n\n## ", "\n\n# ", "\n\n```", "\n\n", "\n", " ", ""]
+            if is_markdown
+            else ["\n\n", "\n", " ", ""]
+        )
 
-            self.text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-                length_function=len,
-                separators=separators,
-            )
+        # Built for this call. It used to be kept on the service, which is
+        # shared, and replaced whenever a caller wanted other sizes: two
+        # callers at once could each split with the other's.
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            length_function=len,
+            separators=separators,
+        )
 
         # Clean the text
         cleaned_text = self._clean_text(text)
 
         # Split into chunks
-        chunks = self.text_splitter.split_text(cleaned_text)
+        chunks = splitter.split_text(cleaned_text)
 
         # Filter out very short chunks
         min_chunk_length = 50

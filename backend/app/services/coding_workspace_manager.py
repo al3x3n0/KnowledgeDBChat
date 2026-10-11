@@ -49,6 +49,8 @@ MAX_FILE_BYTES = 5 * 1024 * 1024  # 5 MB
 MAX_CHECKPOINTS = 8
 MAX_CHECKPOINT_FILES = 5000
 MAX_CHECKPOINT_BYTES = 100 * 1024 * 1024
+# Each git step of a baseline commit: init, add, commit.
+BASELINE_STEP_TIMEOUT_SECONDS = 60
 
 
 def _sha256(data: bytes) -> str:
@@ -95,6 +97,69 @@ def _new_workspace_dir(workspace_id: str) -> Path:
     path = _workspace_root() / workspace_id
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+async def _commit_baseline(base_path: Path, workspace_id: str) -> bool:
+    """Record a workspace's starting files as a git commit.
+
+    A workspace cloned from a repository arrives with its history. One written
+    out from knowledge-base documents had hashes of its originals and not the
+    originals, so nothing could say what an edit changed: `propose_code_patch`
+    answered "Not a git repository" on every such workspace. With a baseline
+    commit the same `git diff` works for both.
+
+    Best effort: without git, or with a tree it refuses, the workspace is as
+    usable as it was before and only the diff is missing.
+    """
+    steps = (
+        ["git", "init", "-q"],
+        # -f: a .gitignore among the documents must not hide a file from the
+        # baseline, or a later edit to it would show as no change.
+        ["git", "add", "-A", "-f"],
+        [
+            "git",
+            "-c",
+            "user.name=workspace",
+            "-c",
+            "user.email=workspace@localhost",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "--no-verify",
+            "-m",
+            "Workspace baseline",
+        ],
+    )
+    for step in steps:
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *step,
+                cwd=str(base_path),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _out, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=BASELINE_STEP_TIMEOUT_SECONDS
+            )
+        except (asyncio.TimeoutError, OSError) as error:
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+            logger.warning(
+                f"Workspace {workspace_id}: no git baseline "
+                f"({' '.join(step[:2])}: {error!r})"
+            )
+            return False
+        if proc.returncode != 0:
+            detail = stderr.decode("utf-8", errors="replace").strip()[:300]
+            logger.warning(
+                f"Workspace {workspace_id}: no git baseline "
+                f"({' '.join(step[:2])} exit {proc.returncode}: {detail})"
+            )
+            return False
+    return True
 
 
 class CodingWorkspaceManager:
@@ -170,6 +235,8 @@ class CodingWorkspaceManager:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content_bytes)
             original_hashes[rel] = _sha256(content_bytes)
+
+        await _commit_baseline(base_path, workspace_id)
 
         ws = CodingWorkspace(
             workspace_id=workspace_id,
@@ -926,9 +993,11 @@ class CodingWorkspaceManager:
         A workspace cloned from a repository keeps its `.git` (the clone is
         `--depth 1`, which is shallow in history, not in working tree), so the
         real diff is already there and only needed asking for. A workspace
-        built from knowledge-base documents has no git and no stored originals,
-        and for those this returns None -- which the caller must present as
-        "the change cannot be shown" rather than "there was no change".
+        built from knowledge-base documents is given a baseline commit when it
+        is made (`_commit_baseline`). Where that failed, or for a workspace
+        made before it existed, this returns None -- which the caller must
+        present as "the change cannot be shown" rather than "there was no
+        change".
 
         Read-only by construction. `git diff` alone: no `add -N` to pick up
         untracked files, because that writes to the index, and a window that

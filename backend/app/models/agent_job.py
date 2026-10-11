@@ -21,6 +21,7 @@ from sqlalchemy import (
     String,
     Text,
     event,
+    false,
     text,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -80,6 +81,14 @@ class AgentJob(Base):
         # Small because sharing is rare: it holds only the jobs that have a
         # collaboration block. On user_id, not on the index text itself, which
         # can outgrow what a btree entry may hold (200 ids).
+        Index(
+            "ix_agent_jobs_wants_operator",
+            "user_id",
+            postgresql_where=text(
+                "has_approval_checkpoint OR has_contract_unmet_entry"
+            ),
+            sqlite_where=text("has_approval_checkpoint OR has_contract_unmet_entry"),
+        ),
         Index(
             "ix_agent_jobs_has_collaborators",
             "user_id",
@@ -156,6 +165,18 @@ class AgentJob(Base):
     # a user used to mean casting every job's whole `results` to text and
     # pattern-matching it, on every request for the job list.
     collaborator_index = Column(Text, nullable=True)
+    # The two reasons a job may belong in the operator queue that live inside
+    # JSON: an approval checkpoint in `results`, and a completed-with-contract-
+    # unmet entry in the log. Each is kept by the mapper events below from its
+    # own source alone, so a row loaded without its log (the job list defers
+    # it) can still have its results edited. The queue loaded every job a user
+    # had ever run, whole, to find the handful where one of these holds.
+    has_approval_checkpoint = Column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    has_contract_unmet_entry = Column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     # Example results for research job:
     # {
     #   "papers_found": 45,
@@ -466,6 +487,55 @@ def collaborator_index_for(results: Any) -> Optional[str]:
 def collaborator_pattern(user_id: Any) -> str:
     """The LIKE pattern matching a `collaborator_index` that names this user."""
     return f"%|{str(user_id).strip().lower()}|%"
+
+
+#: The log entry a run leaves when it completes with its contract unmet.
+#: `checkpoint_queue_jobs.CONTRACT_UNMET_PHASE` is the reader; a test holds
+#: the two equal.
+CONTRACT_UNMET_LOG_PHASE = "completed_contract_unmet"
+
+
+def approval_checkpoint_in(results: Any) -> bool:
+    """Whether `results` carries a pending approval, as the queue reads it.
+
+    The same two places `agent_job_queue_helpers.extract_approval_checkpoint`
+    looks, restated here because a model cannot import a service; a test
+    requires the two to agree on every shape.
+    """
+    if not isinstance(results, dict):
+        return False
+    direct = results.get("approval_checkpoint")
+    if isinstance(direct, dict) and direct:
+        return True
+    execution = results.get("execution_strategy")
+    approvals = (
+        execution.get("approval_checkpoints") if isinstance(execution, dict) else None
+    )
+    pending = approvals.get("pending") if isinstance(approvals, dict) else None
+    return isinstance(pending, dict) and bool(pending)
+
+
+def contract_unmet_entry_in(execution_log: Any) -> bool:
+    return isinstance(execution_log, list) and any(
+        isinstance(entry, dict) and entry.get("phase") == CONTRACT_UNMET_LOG_PHASE
+        for entry in execution_log
+    )
+
+
+@event.listens_for(AgentJob, "before_insert")
+@event.listens_for(AgentJob, "before_update")
+def _keep_operator_flags(_mapper, _connection, job: "AgentJob") -> None:
+    # Each flag from its own source, and only when that source is loaded: an
+    # attribute that is not loaded has not been changed.
+    loaded = job.__dict__
+    for source, flag, present in (
+        ("results", "has_approval_checkpoint", approval_checkpoint_in),
+        ("execution_log", "has_contract_unmet_entry", contract_unmet_entry_in),
+    ):
+        if source in loaded:
+            value = present(loaded[source])
+            if loaded.get(flag, object()) != value:
+                setattr(job, flag, value)
 
 
 @event.listens_for(AgentJob, "before_insert")

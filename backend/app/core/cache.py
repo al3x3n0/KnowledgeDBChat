@@ -56,7 +56,9 @@ def _new_redis_client() -> aioredis.Redis:
     )
 
 
-_redis_clients: PerLoop[aioredis.Redis] = PerLoop(_new_redis_client)
+_redis_clients: PerLoop[aioredis.Redis] = PerLoop(
+    _new_redis_client, close=lambda client: client.close()
+)
 
 
 async def get_redis_client() -> aioredis.Redis:

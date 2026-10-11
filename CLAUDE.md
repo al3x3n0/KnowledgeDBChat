@@ -1417,6 +1417,12 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   - **A workspace belongs to its job.** `get_or_default(..., job=ctx.job)`
     refuses a workspace another job owns; naming its id used to propose that
     job's diff as your own.
+  - **A workspace built from knowledge-base documents starts with a git
+    commit** (`coding_workspace_manager._commit_baseline`). It kept hashes of
+    its original files and not the files, so nothing could say what an edit
+    changed and `propose_code_patch` answered "Not a git repository" on every
+    one. `git add -f`, so a `.gitignore` among the documents hides nothing
+    from the baseline. Best effort: without git the workspace is still made.
   - **`propose_code_patch` writes a `CodePatchProposal` row.** It used to stay
     in run state, which no review page reads. It also includes files the run
     created (bare `git diff` omits untracked files), lists deleted files, and
@@ -1617,9 +1623,24 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   tests are what make a 650-line move checkable, and they find things first.
 - The operator queue presents a job only where it becomes a row. The full
   presenter ran for every job a user had ever run on every poll, to show the
-  handful waiting. It still **loads** every job: a database pre-filter needs
-  a column saying a job wants an operator (an approval checkpoint can sit in
-  `results` under any status), which is a schema change not made.
+  handful waiting. **And it loads only the jobs that could become a row**
+  (`checkpoint_queue_candidates.load_queue_jobs`, used by the queue route
+  and the monitoring task). Two of the four reasons a job becomes a row are
+  visible to the database (paused on a person; a recurring job that failed,
+  paused or went quiet). The other two are inside JSON, so two flags carry
+  them, `has_approval_checkpoint` and `has_contract_unmet_entry` (migration
+  `0108`), each kept by a mapper event **from its own source alone** -- one
+  combined column could not be kept right for a row loaded without its log,
+  which is how the job list loads them. The query may select too many jobs
+  and never too few: the projector still decides. Asking for too few would
+  hide a row with nobody told, so `tests/test_checkpoint_queue_candidates.py`
+  builds the queue both ways over every combination of status, phase,
+  schedule, results, log and age (15,750 jobs) and requires the same rows.
+  On a copy of the dev data: 305 jobs, 54 candidates, the same 53 rows. The
+  job behind each accepted inbox item is loaded whatever its state, since
+  the monitor snapshot looks it up. `has_approval_checkpoint` restates
+  `extract_approval_checkpoint` because a model cannot import a service; a
+  test holds the two equal on every shape.
 
 - **One inline arXiv ingest, `services/arxiv_instant_ingest.ingest_paper`.**
   `POST /documents/ingest-arxiv-instant` and `POST
@@ -1676,7 +1697,10 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   `doc.metadata`, the table registry, where `extra_metadata` was meant.
 - The presentation routes have tests (`tests/test_presentation_routes.py`);
   the list's `limit` and `offset` are bounded, since a negative limit is "no
-  limit" to the database.
+  limit" to the database. Their queries and writes are in
+  `modules/presentations/application/presentation_store.py`, moved under
+  those tests; it raises `Refused(kind, detail)` and the endpoint maps the
+  kind to a status, queues the task and builds the responses.
 
 - **Every route is sent a request, and none may answer 500**
   (`tests/test_every_route_answers.py`). About four in five route handlers
@@ -1701,6 +1725,32 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
     database as text. They are `UUID`, so the framework answers 422.
   - `GET /admin/vector-store/stats` answers 503, not 500, when the store is
     away.
+- **POST routes are walked too, with a body built from their own schema.**
+  The same test builds, for each POST route with no path parameter, the
+  smallest body its declared schema accepts, so the handler really runs. The
+  network is closed for that walk (`socket.connect` refuses), the model
+  raises `LLMServiceError`, and task dispatch is recorded, so a route that
+  needs a dependency must answer 503. Nine more routes answered 500:
+  - **No AI Hub customer profile could be saved.** The route assigns the
+    profile a UUID and then called `json.dumps(profile.model_dump())`, which
+    cannot write one. `model_dump(mode="json")`.
+  - **The agent router never consulted the model.** `agent_core.contracts.
+    LLMClient` names `generate_response` and `generate_text`; `LLMService`
+    had only the first, so intent analysis raised AttributeError inside
+    `except Exception` and every message was routed by keywords. The service
+    has `generate_text` now, and a test requires it to satisfy the protocol.
+  - **"A dependency did not answer" is 503, decided in one place**
+    (`core/exceptions.failure_status`, `is_dependency_failure`). The typed
+    errors already map to 503 in the global handler, but a route that wraps
+    its body in `except Exception` and raises its own 500 never lets them
+    reach it: workflow synthesis, arXiv query translation, the three LaTeX
+    copilots, document upload and the vector-store reset all said "server
+    error" when the model or storage was merely away. Causes are followed,
+    since services wrap what they catch. A vector store that is not ready
+    raises `VectorStoreNotReady`, still a `RuntimeError` for callers that
+    catch one.
+  - Synthesis job and document ids are `UUID` in the routes and the quick
+    request; "nothing to summarise" is a 400.
 - **Waiting on Celery from a route goes to a thread.** `task.get(timeout=60)`
   in `POST /admin/sources/{id}/dry-run` was a blocking read on the event
   loop: for up to a minute that API process served nobody else. The admin
@@ -1872,7 +1922,14 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
 - Wall-clock measurements report the machine they were taken on: `benchmark_c_snippet` samples `/proc/loadavg` and `nproc` in the same container as the trials and returns `load_per_cpu`, `measurement_environment` (quiet/busy/saturated) and `trial_spread`, warning when the host was busy or the trials unstable. Carried on the finding as well as the result, so `validity.bounds` can refuse a run whose numbers were taken on a machine too busy to measure anything. Only the wall-clock tool needs this — simulated cycles are the same on a busy host as a quiet one
 - One user's running jobs are capped (`AGENT_JOBS_MAX_RUNNING_PER_USER`, 4; 0 turns it off; `services/agent_job_user_cap.py`). A running job holds a worker process for hours and nothing bounded one user's share of them. Applied **where a worker claims a job, not where one is created**: pipelines, swarms and campaigns create jobs on a user's behalf, and refusing one breaks the run that asked. "Running" means holding a live lease, since a dead worker's job still says `running`. A held job stays `pending` with `queue_reason: user_job_cap` in its scheduler state and is sent again as a **new message** (`self.retry` would spend the retry budget of a job that has not failed). Three things keep "held" from turning into something else: only a job this delivery could claim is held (an ended or already-held job answers `lease_conflict`, or it would be redelivered for ever); a held job is set back to `pending` with no task id; and the stalled-job sweep skips a job whose redelivery is still due, because old, pending and unclaimed is also what "never dispatched" looks like, and three of those fail the job. Count and claim are two statements, so on Postgres a row lock on the user (`lock_user_claims`, FOR NO KEY UPDATE) makes one user's claims take turns: run live without it, six jobs delivered together each counted none running and all six started on a cap of four; with it, eight delivered together ran four at a time. A job whose worker was killed counts until its lease lapses. Not FIFO among one user's held jobs
 - The job list reads the page it returns (`modules/autonomy/api/job_queries.py`). It loaded every job the caller had ever run, whole, and sliced twenty out in Python; the execution log alone is 163 KB after 80 iterations. The caller's own jobs in the default order are now paged and counted by the database, and the log column is deferred on every path -- so **nothing on the list path may read `job.execution_log`**, which on an async session is a MissingGreenlet, not a lazy load. The swarm sorts rank on each row's JSON in Python and still read every candidate. `collaboration_service.list_collaboration_user_ids` runs on every list request and did the same thing; it now selects the two columns it reads. Who a swarm job is shared with is a column now, `agent_jobs.collaborator_index` (`|id|id|`, migration `0107`): the lookup used to cast every job's `results` to text and pattern-match it across the whole table. **Mapper events on `AgentJob` keep it** from `results["swarm_collaboration"]`, not the functions that edit sharing, because `results` is also replaced whole by the executor and the finaliser; a Core `update(AgentJob).values(results=...)` would bypass them, and there is none. The partial index behind it is on `user_id`, since 200 ids outgrow a btree entry. The shared and all views use the column to narrow candidates and `is_job_visible` still decides; an admin's views are paged by the database. Measured on the way: a run rewrites its row about 10 MB in total over 80 iterations (quadratic in iterations), which is not worth moving the log to its own table at the default budget of 100
-- Several agent jobs can share one worker process (`celeryAgents.pool: threads` in the chart, `AGENT_WORKER_POOL=threads` in compose; prefork is still the default). Each job runs on its own event loop in its own thread, so a job that blocks its loop stalls its own lease heartbeat and nobody else's. Measured on this stack with real jobs: prefork idles at 1.0 GiB for six slots and held 2.6 GiB after six jobs; threads idles at 0.3 GiB and ran **twelve at once in 1.8 GiB**, all completing, with the embedding models loaded once. Two things had to change. **State that assumed one live loop per process**: three per-loop tables (Redis client, model-call semaphore, diagram client) dropped every entry but the caller's on each access, which is right only while loops run one after another -- with two alive, each access evicted the other's live value. `utils/per_loop.PerLoop` is the one holder now, dropping an entry when its loop closes; `LLMService.client` and the init locks in `vector_store` and `agent_service` use it. A new process-wide singleton holding an asyncio lock, semaphore or client must too. **The wall clock**: Celery's soft limit is a signal only prefork can deliver, so the job task enforces `AGENT_JOB_SOFT_TIME_LIMIT_SECONDS` itself. A thread cannot be killed: a wedged job holds its slot until the worker restarts, while its lease lapses and the sweep moves the job on. Run live on short research jobs only -- not on sandbox, gem5 or coding runs
+- Several agent jobs can share one worker process (`celeryAgents.pool: threads` in the chart, `AGENT_WORKER_POOL=threads` in compose; prefork is still the default). Each job runs on its own event loop in its own thread, so a job that blocks its loop stalls its own lease heartbeat and nobody else's. Measured on this stack with real jobs: prefork idles at 1.0 GiB for six slots and held 2.6 GiB after six jobs; threads idles at 0.3 GiB and ran **twelve at once in 1.8 GiB**, all completing, with the embedding models loaded once. Two things had to change. **State that assumed one live loop per process**: three per-loop tables (Redis client, model-call semaphore, diagram client) dropped every entry but the caller's on each access, which is right only while loops run one after another -- with two alive, each access evicted the other's live value. `utils/per_loop.PerLoop` is the one holder now, dropping an entry when its loop closes; `LLMService.client` and the init locks in `vector_store` and `agent_service` use it. A new process-wide singleton holding an asyncio lock, semaphore or client must too. **The wall clock**: Celery's soft limit is a signal only prefork can deliver, so the job task enforces `AGENT_JOB_SOFT_TIME_LIMIT_SECONDS` itself. A thread cannot be killed: a wedged job holds its slot until the worker restarts, while its lease lapses and the sweep moves the job on. **Run live on every kind of job**: eight at once in one worker (sandbox, gem5, coding and research, two users), all completing with their contracted evidence, and ten threads of the real compiler, binary-rewrite, BOLT and gem5 tools in one process. What that found, none of it visible with one job per process (`tests/test_jobs_share_a_worker_process.py`):
+  - **A network client is closed on its own loop, before the loop ends.** A holder given a `close` is closed by `per_loop.close_running_loop_values`, the job task's last act. The provider SDK clients were one table for the process (now per loop), and an SDK client nobody closed schedules its own close on whatever loop is running when it is collected -- another job's.
+  - **anyio's backend is imported in `core/celery.py`.** anyio looks for it in `sys.modules` without waiting on the import lock; jobs starting together met it half initialised and lost a model call.
+  - **A vector-store write waits for a model load already under way** (`_wait_for_models`). `initialize(background=True)` returns while models load, and a write straight after was refused -- the first reprocess in any fresh worker.
+  - **No `preexec_fn`** (`utils/limited_process.with_limits`): a fork hook is unsafe in a process with threads. Limits are set by a launcher that then `exec`s the command.
+  - A tree-sitter parser is made per parse, libclang parses one at a time, and the text splitter is built per call instead of kept on the shared service.
+  - **`get_document_details` read `doc.source`, a lazy relationship**: MissingGreenlet unless something earlier in the run had loaded that source, which is why it failed in 18 runs and never on demand.
+- **The sandbox's user owns its work directory** (`agent_sandbox_runtime.open_to_sandbox_user`, called where the directory is mounted). `tempfile` makes a directory only root may enter and the container runs as 65534, so on a Linux daemon -- the stack's own -- every sandbox tool but skills failed alone: "cannot create compile_err.txt: Permission denied", reported as a kernel that did not compile. Docker Desktop's file sharing, which the first live runs went through, does not carry ownership. Opening the permission bits was not enough (BOLT's script runs `chmod +x` on a file the server wrote, which only an owner may), so as root the tree is given to the sandbox's uid.
 - Agent workers can autoscale (`celeryAgents.autoscaling`, off by default, needs KEDA on the cluster). **The signal is demand, not CPU and not queue depth**: a job waiting on a model shows no CPU, and a running job has left the queue, so an empty queue would scale away the pods doing the work. Demand is the jobs a worker holds (a live lease, which includes one finished but still writing up) plus the pending jobs that could start now -- not one waiting for its schedule, and not one held by its owner's cap, which no number of pods would let run. One pod per `concurrency`. The query is `deploy/helm/knowledgedbchat/files/agent-worker-demand.sql`, and `tests/test_agent_worker_demand_query.py` runs it on Postgres (in the slice) and ties its literals to the code, because nothing else type-checks SQL kept in a chart. KEDA reads the password from the worker's own environment (`passwordFromEnv`); `DATABASE_URL` cannot be used because it is assembled with `$(POSTGRES_PASSWORD)`. **Scaling down can interrupt a job**: the pod removed is not chosen by whether it is busy, the job gets `terminationGracePeriodSeconds` and is then killed, and the sweep resumes it from its last checkpoint, which can take half an hour to notice -- so scale-down waits 30 minutes of low demand and removes one pod per 10. Rendered and validated against KEDA's CRD schema; **not run on a cluster**
 - Job chaining: parent/child jobs with configurable trigger conditions (`on_complete`, `on_fail`, `on_findings`)
 - Swarm consensus is typed, not textual (`services/agent_swarm_consensus.py`): roles' findings are grouped by finding type and subject, and compared on their numbers. Four verdicts rather than two, for the same reason `compare_to_claim` has three — **contested** (they disagreed), **corroborated** (they agreed within a tolerance narrow enough to mean something), **inconclusive** (they measured the same thing through an instrument too imprecise to resolve it) and **uncorroborated** (only one role spoke to it). Tolerance comes from the claims' own reported spread, which is right until the spread is enormous: the first swarm whose roles both benchmarked reported `agreement 1.0` over two measurements taken on a `saturated` host, where the 142% tolerance would have admitted any two numbers. Above `MAX_USEFUL_TOLERANCE` (50%) a pair that falls *inside* the window is `inconclusive`; a gap that exceeds it is still `contested`, because a disagreement surviving a generous window is the most confident verdict there is. `inconclusive` is out of the `agreement` denominator — it is not evidence either way

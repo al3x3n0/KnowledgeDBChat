@@ -29,6 +29,7 @@ Each result is (name, kind, start_line, end_line), 1-based and inclusive.
 from __future__ import annotations
 
 import os
+import threading
 from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -79,9 +80,9 @@ def _clang_index():
 
 
 @lru_cache(maxsize=4)
-def _ts_parser(kind: str):
+def _ts_language(kind: str):
     try:
-        from tree_sitter import Language, Parser
+        from tree_sitter import Language
 
         if kind == "js":
             import tree_sitter_javascript as grammar
@@ -95,9 +96,29 @@ def _ts_parser(kind: str):
                 if kind == "tsx"
                 else grammar.language_typescript()
             )
+        return language
+    except Exception:
+        return None
+
+
+def _ts_parser(kind: str):
+    # A parser per call, from the cached grammar. A parser holds the state of
+    # the parse it is doing, and one shared by every caller was shared by
+    # every job in a worker running jobs in threads.
+    language = _ts_language(kind)
+    if language is None:
+        return None
+    try:
+        from tree_sitter import Parser
+
         return Parser(language)
     except Exception:
         return None
+
+
+#: One libclang parse at a time. The index is shared by the process, and
+#: nothing here has shown libclang safe to drive from two threads at once.
+_CLANG_PARSE = threading.Lock()
 
 
 def _release_clang_index() -> None:
@@ -190,6 +211,11 @@ def clang_symbols(
     from clang import cindex
 
     index = _clang_index()
+    with _CLANG_PARSE:
+        return _clang_symbols_locked(index, cindex, path, text, repo_root)
+
+
+def _clang_symbols_locked(index, cindex, path, text, repo_root) -> List[Symbol]:
     try:
         tu = index.parse(
             str(path),

@@ -32,6 +32,7 @@ from app.services.agent_execution_lease_service import (
 from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 from app.services.research_inbox_follow_up_service import sync_follow_up_outcome_for_job
 from app.tasks import job_support
+from app.utils.per_loop import close_running_loop_values
 
 #: Phases that mean a run is waiting for a human, not idling. The stalled-job
 #: sweep must leave these alone: resuming a job paused for approval is not
@@ -667,6 +668,14 @@ async def _within_wall_clock(execution: Awaitable[Any], seconds: float) -> Any:
         raise SoftTimeLimitExceeded(
             f"agent job exceeded its wall clock of {int(seconds)}s"
         ) from None
+    finally:
+        # This loop ends when the task does, and its network clients can
+        # only be closed on it. Left open they are closed later, by the
+        # garbage collector, on whichever job's loop is running then.
+        try:
+            await asyncio.wait_for(close_running_loop_values(), timeout=15)
+        except Exception:
+            logger.debug("Closing this job's network clients did not finish")
 
 
 def _redeliver_after_user_cap(job_id: str, user_id: str, outcome: dict) -> None:

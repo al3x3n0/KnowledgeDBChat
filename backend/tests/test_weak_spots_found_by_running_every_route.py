@@ -126,3 +126,105 @@ async def test_deleting_an_entity_takes_an_id_in_either_form(db_session):
     for missing in (uuid4(), str(uuid4())):
         with pytest.raises(ValueError, match="Entity not found"):
             await service.delete_entity(db_session, missing)
+
+
+# --- found by posting to every route ----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_customer_profile_can_be_saved(monkeypatch):
+    # It always carries a UUID (one is assigned when absent), and json.dumps
+    # cannot write one: saving a profile raised every time it was tried.
+    import json
+
+    from app.api.endpoints import admin
+    from app.schemas.customer_profile import CustomerProfile, CustomerProfileSetRequest
+
+    stored = {}
+
+    async def set_feature_str(key, value):
+        stored[key] = value
+        return True
+
+    monkeypatch.setattr(admin, "set_feature_str", set_feature_str)
+
+    answer = await admin.set_ai_hub_customer_profile(
+        payload=CustomerProfileSetRequest(profile=CustomerProfile(name="Acme")),
+        current_user=None,
+    )
+
+    saved = json.loads(stored["ai_hub_customer_profile"])
+    assert answer.ok is True
+    assert saved["name"] == "Acme"
+    assert saved["id"] == str(answer.profile.id)
+    # What was stored reads back as the profile it was.
+    assert CustomerProfile.model_validate(saved).id == answer.profile.id
+
+
+def test_the_model_service_is_the_client_the_agent_core_asks_for():
+    # agent_core.contracts.LLMClient names two methods; the service had one.
+    # The router's intent analysis called the missing one inside `except
+    # Exception`, so the model was never asked which specialist to use.
+    from app.agent_core.contracts import LLMClient
+    from app.services.llm_service import LLMService
+
+    assert isinstance(LLMService(), LLMClient)
+
+
+@pytest.mark.asyncio
+async def test_the_router_gets_an_answer_from_the_model(monkeypatch):
+    from app.agent_core.routing import AgentRouter as CoreRouter
+    from app.services.llm_service import LLMService
+
+    asked = {}
+
+    async def generate_response(self, **kwargs):
+        asked.update(kwargs)
+        return '{"capabilities_needed": ["summarization"], "confidence": 0.9}'
+
+    monkeypatch.setattr(LLMService, "generate_response", generate_response)
+    router = CoreRouter(LLMService())
+
+    result = await router._analyze_intent_with_llm("boil this down for me", [])
+
+    assert result["capabilities_needed"] == ["summarization"]
+    assert "boil this down for me" in asked["query"]
+    assert asked["max_tokens"] == 200 and asked["temperature"] == 0.1
+
+
+def test_a_store_that_is_not_ready_is_unavailable_not_broken():
+    from app.core.exceptions import failure_status, is_dependency_failure
+    from app.services.vector_store import VectorStoreService
+    from app.utils.exceptions import VectorStoreError
+
+    store = VectorStoreService()
+    with pytest.raises(RuntimeError) as not_ready:  # callers that catch this still do
+        store._ensure_initialized()
+
+    assert isinstance(not_ready.value, VectorStoreError)
+    assert "not initialized" in str(not_ready.value)
+    assert is_dependency_failure(not_ready.value)
+    assert failure_status(not_ready.value) == 503
+
+
+def test_which_failures_are_a_dependency_being_away():
+    from app.core.exceptions import failure_status
+    from app.utils.exceptions import LLMServiceError
+
+    def wrapped(cause):
+        try:
+            try:
+                raise cause
+            except Exception as inner:
+                raise RuntimeError("the service gave up") from inner
+        except RuntimeError as outer:
+            return outer
+
+    assert failure_status(LLMServiceError("no key")) == 503
+    assert failure_status(ConnectionRefusedError("minio")) == 503
+    assert failure_status(TimeoutError("slow")) == 503
+    # Services wrap what they catch; the cause still counts.
+    assert failure_status(wrapped(LLMServiceError("no key"))) == 503
+    # A fault of our own stays a 500.
+    assert failure_status(KeyError("title")) == 500
+    assert failure_status(wrapped(ValueError("bad"))) == 500

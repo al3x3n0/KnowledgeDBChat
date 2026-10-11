@@ -2,6 +2,13 @@
 Celery configuration for background task processing.
 """
 
+# Imported here, before a worker runs anything. anyio loads this backend the
+# first time a coroutine needs it, and looks for it in `sys.modules` without
+# waiting on the import lock: with jobs in threads, eight starting together
+# made their first model call at once, and one found the module half
+# initialised ("partially initialized module 'anyio._backends._asyncio' has no
+# attribute 'CancelScope'") and lost that call.
+import anyio._backends._asyncio  # noqa: F401
 from celery import Celery
 from celery.schedules import crontab
 

@@ -40,7 +40,11 @@ from rank_bm25 import BM25Okapi
 
 from app.core.config import settings
 from app.models.document import Document, DocumentChunk
+from app.utils.exceptions import VectorStoreNotReady
 from app.utils.per_loop import PerLoop
+
+#: How long a write waits for a model load that is already under way.
+MODEL_LOAD_WAIT_SECONDS = 300.0
 
 try:
     from qdrant_client import QdrantClient  # type: ignore
@@ -281,16 +285,39 @@ class VectorStoreService:
     def init_error(self) -> Optional[str]:
         return self._init_error
 
+    async def _wait_for_models(self) -> None:
+        """For an operation that cannot do without the models: have them.
+
+        Most callers start the store with ``initialize(background=True)``,
+        which returns while the models are still loading, and a write made
+        straight afterwards was refused with "embeddings not initialized" --
+        the first reprocess in a fresh worker, and with jobs in threads every
+        job that arrived while another's load was under way. A load already
+        running, on this loop or another, is waited for rather than started
+        again; with none running this loads in the foreground.
+        """
+        if self._initialized:
+            return
+        deadline = time.monotonic() + MODEL_LOAD_WAIT_SECONDS
+        while not self._initialized and time.monotonic() < deadline:
+            loading = self._init_task
+            # `done()` is safe to read from another loop's thread.
+            if loading is None or loading.done():
+                break
+            await asyncio.sleep(0.1)
+        if not self._initialized:
+            await self.initialize()
+
     def _ensure_initialized(self, require_embeddings: bool = True):
         """Ensure the vector store is initialized."""
         if require_embeddings:
             if not self.is_embeddings_ready:
-                raise RuntimeError(
+                raise VectorStoreNotReady(
                     "Vector store embeddings not initialized. Call initialize() first."
                 )
         else:
             if not self.is_chroma_ready:
-                raise RuntimeError(
+                raise VectorStoreNotReady(
                     "Vector store not initialized. Call initialize() first."
                 )
 
@@ -615,10 +642,7 @@ class VectorStoreService:
         self, document: Document, chunks: List[DocumentChunk]
     ) -> List[str]:
         """Add document chunks to the vector store."""
-        # Auto-initialize if not already initialized
-        if not self._initialized:
-            await self.initialize()
-
+        await self._wait_for_models()
         self._ensure_initialized()
 
         if not chunks:
@@ -1701,6 +1725,7 @@ class VectorStoreService:
         Returns:
             True if chunks were deleted, False if no chunks found
         """
+        await self._wait_for_models()
         self._ensure_initialized()
 
         try:

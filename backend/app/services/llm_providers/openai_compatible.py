@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 
 from app.utils.exceptions import LLMServiceError
+from app.utils.per_loop import PerLoop, close_all
 
 from .base import (
     BaseLLMProvider,
@@ -28,7 +29,10 @@ from .base import (
     try_parse_json_object,
 )
 
-_CLIENT_CACHE: Dict[tuple, Any] = {}
+#: SDK clients, per event loop. A client holds connections that belong to the
+#: loop it first ran on; one table for the process handed a client made on one
+#: job's loop to the next job, on another loop or after the first had closed.
+_CLIENT_CACHE: PerLoop[Dict[tuple, Any]] = PerLoop(dict, close=close_all)
 
 
 def _mentions_json(messages: List[Dict[str, Any]]) -> bool:
@@ -81,14 +85,15 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                 "(pip install openai)"
             )
         cache_key = (self.base_url, self.api_key)
-        client = _CLIENT_CACHE.get(cache_key)
+        clients = _CLIENT_CACHE.get()
+        client = clients.get(cache_key)
         if client is None:
             client = AsyncOpenAI(
                 api_key=self.api_key or "not-set",
                 base_url=self.base_url,
                 timeout=float(self.timeout_seconds),
             )
-            _CLIENT_CACHE[cache_key] = client
+            clients[cache_key] = client
         return client
 
     async def complete(

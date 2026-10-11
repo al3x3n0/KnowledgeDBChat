@@ -28,6 +28,7 @@ from app.models.synthesis_job import SynthesisJob
 from app.modules.autonomy.application.checkpoint_queue_builder import (
     build_checkpoint_queue_items as _build_checkpoint_queue_items,
 )
+from app.modules.autonomy.application.checkpoint_queue_candidates import load_queue_jobs
 from app.services.citation_lines import is_line_citable as _is_line_citable
 from app.services.llm_service import LLMService
 from app.services.notification_service import notification_service
@@ -1376,13 +1377,6 @@ async def _async_emit_queue_urgency_alerts() -> Dict[str, Any]:
                     else 6
                 )
 
-                jobs_result = await db.execute(
-                    select(AgentJob)
-                    .where(AgentJob.user_id == user_id)
-                    .order_by(AgentJob.created_at.desc())
-                )
-                jobs = list(jobs_result.scalars().all())
-
                 inbox_result = await db.execute(
                     select(ResearchInboxItem)
                     .where(
@@ -1397,6 +1391,12 @@ async def _async_emit_queue_urgency_alerts() -> Dict[str, Any]:
                     )
                 )
                 inbox_items = list(inbox_result.scalars().all())
+
+                # The jobs that could become a queue row, and the job behind
+                # each inbox item: not every job this user has ever run.
+                jobs = await load_queue_jobs(
+                    db, user_id, also=[item.job_id for item in inbox_items]
+                )
 
                 analytics = (
                     research_monitor_profile_service.build_effectiveness_snapshot(

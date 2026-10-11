@@ -1,11 +1,11 @@
 """
 API endpoints for AI-powered presentation generation.
+
+The queries and writes are in
+``modules/presentations/application/presentation_store.py``; this module maps
+them to HTTP, queues the generation task and builds the responses.
 """
 
-import asyncio
-import os
-import re
-import tempfile
 from typing import List, Optional
 from uuid import UUID
 
@@ -16,6 +16,7 @@ from fastapi import (
     Form,
     HTTPException,
     Query,
+    Response,
     UploadFile,
     WebSocket,
     status,
@@ -24,12 +25,12 @@ from loguru import logger
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import NO_VALUE
 
 from app.core.database import get_db
 from app.models.presentation import PresentationJob, PresentationTemplate
 from app.models.user import User
+from app.modules.presentations.application import presentation_store as store
 from app.schemas.presentation import (
     PresentationJobCreate,
     PresentationJobResponse,
@@ -38,10 +39,30 @@ from app.schemas.presentation import (
     PresentationTemplateUpdate,
 )
 from app.services.auth_service import get_current_user
-from app.services.storage_service import StorageService
 from app.utils.http_headers import content_disposition
 
 router = APIRouter()
+
+#: How each kind of refusal is told to a client. The store names the kind;
+#: this is the only place that knows the numbers.
+_REFUSAL_STATUS = {
+    "invalid": 400,
+    "forbidden": 403,
+    "not_found": 404,
+    "unavailable": 500,
+}
+
+
+def _http(refusal: store.Refused) -> HTTPException:
+    return HTTPException(
+        status_code=_REFUSAL_STATUS[refusal.kind], detail=refusal.detail
+    )
+
+
+def _queue(job: PresentationJob, user_id: UUID) -> None:
+    from app.tasks.presentation_tasks import generate_presentation_task
+
+    generate_presentation_task.delay(str(job.id), str(user_id))
 
 
 @router.post(
@@ -59,34 +80,18 @@ async def create_presentation(
     Use GET /presentations/{job_id} to check status or WebSocket for real-time updates.
     """
     template_name: Optional[str] = None
-    # Validate template if provided
-    if request.template_id:
-        result = await db.execute(
-            select(PresentationTemplate).where(
-                PresentationTemplate.id == request.template_id,
-                PresentationTemplate.is_active.is_(True),
+    try:
+        if request.template_id:
+            template = await store.usable_template(
+                db, request.template_id, current_user.id
             )
-        )
-        template = result.scalar_one_or_none()
-        if not template:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Template not found"
-            )
-        # Check access: user owns it, it's public, or it's a system template
-        if not (
-            template.is_system
-            or template.is_public
-            or template.user_id == current_user.id
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You don't have access to this template",
-            )
-        template_name = template.name
+            template_name = template.name
+    except store.Refused as refusal:
+        raise _http(refusal)
 
-    # Create job in database
-    job = PresentationJob(
-        user_id=current_user.id,
+    job = await store.create_job(
+        db,
+        current_user.id,
         title=request.title,
         topic=request.topic,
         source_document_ids=[str(doc_id) for doc_id in request.source_document_ids]
@@ -99,18 +104,8 @@ async def create_presentation(
         custom_theme=request.custom_theme.model_dump()
         if request.custom_theme
         else None,
-        status="pending",
-        progress=0,
     )
-
-    db.add(job)
-    await db.commit()
-    await db.refresh(job)
-
-    # Dispatch Celery task
-    from app.tasks.presentation_tasks import generate_presentation_task
-
-    generate_presentation_task.delay(str(job.id), str(current_user.id))
+    _queue(job, current_user.id)
 
     logger.info(f"Created presentation job {job.id} for user {current_user.id}")
 
@@ -145,77 +140,29 @@ async def create_research_presentation(
     The arXiv papers are ingested synchronously (fast-path) so they're
     immediately available for the presentation.
     """
-    from app.services import arxiv_instant_ingest
-    from app.services.connectors.arxiv_connector import ArxivConnector
-    from app.tasks.presentation_tasks import generate_presentation_task
-
-    source_document_ids = []
-    # Read now. A rollback below expires every object in the session, the
-    # caller among them, and reading an expired attribute afterwards is a
-    # database call from a place that cannot make one.
+    # Read now. A failed ingest rolls back, which expires every object in the
+    # session, the caller among them, and reading an expired attribute
+    # afterwards is a database call from a place that cannot make one.
     user_id = current_user.id
 
-    # If include_arxiv, search and ingest papers
+    source_document_ids: List[str] = []
     if include_arxiv and arxiv_max_papers > 0:
-        connector = ArxivConnector()
-        try:
-            await connector.initialize(
-                {
-                    "queries": [topic],
-                    "max_results": arxiv_max_papers,
-                    "sort_by": "relevance",
-                }
-            )
-            docs = await connector.list_documents()
-            logger.info(f"Found {len(docs)} arXiv papers for topic: {topic}")
+        source_document_ids = await store.ingest_arxiv_sources(
+            db, user_id, topic, arxiv_max_papers
+        )
 
-            for doc_info in docs[:arxiv_max_papers]:
-                arxiv_id = doc_info["identifier"]
-                # One paper at a time: a paper that cannot be fetched or
-                # indexed is left out, and the ones after it still go in.
-                # One `try` around the whole loop lost every later paper to
-                # the first failure.
-                try:
-                    paper = await arxiv_instant_ingest.ingest_paper(
-                        db,
-                        connector,
-                        arxiv_id,
-                        doc_info,
-                        user_id=user_id,
-                        marker={"research_presentation": True},
-                    )
-                    source_document_ids.append(str(paper.document.id))
-                except Exception as e:
-                    logger.warning(f"Could not ingest arXiv paper {arxiv_id}: {e}")
-                    # Whatever the failure left half-written must not ride
-                    # along into the next paper's commit, or the job's.
-                    await db.rollback()
-        except Exception as e:
-            logger.warning(f"Failed to search arXiv for '{topic}': {e}")
-            await db.rollback()
-        finally:
-            await connector.cleanup()
-
-    # Create presentation job
-    job = PresentationJob(
-        user_id=user_id,
+    job = await store.create_job(
+        db,
+        user_id,
         title=f"Research: {topic}",
         topic=topic,
         source_document_ids=source_document_ids,
         slide_count=slide_count,
         style=style,
         include_diagrams=include_diagrams,
-        status="pending",
-        progress=0,
         current_stage="queued",
     )
-
-    db.add(job)
-    await db.commit()
-    await db.refresh(job)
-
-    # Queue generation task
-    generate_presentation_task.delay(str(job.id), str(user_id))
+    _queue(job, user_id)
 
     logger.info(
         f"Created research presentation job {job.id} with {len(source_document_ids)} source documents"
@@ -239,41 +186,10 @@ async def list_presentations(
 
     Results are ordered by creation date (newest first).
     """
-    query = (
-        select(PresentationJob)
-        .where(PresentationJob.user_id == current_user.id)
-        .options(selectinload(PresentationJob.template))
+    jobs = await store.list_jobs(
+        db, current_user.id, limit=limit, offset=offset, status=status_filter
     )
-
-    if status_filter:
-        query = query.where(PresentationJob.status == status_filter)
-
-    query = query.order_by(PresentationJob.created_at.desc())
-    query = query.offset(offset).limit(limit)
-
-    result = await db.execute(query)
-    jobs = result.scalars().all()
-
     return [_job_to_response(job) for job in jobs]
-
-
-async def _get_user_job(
-    job_id: UUID, user_id: UUID, db: AsyncSession
-) -> PresentationJob:
-    """Get a job ensuring it belongs to the user."""
-    result = await db.execute(
-        select(PresentationJob)
-        .options(selectinload(PresentationJob.template))
-        .where(PresentationJob.id == job_id, PresentationJob.user_id == user_id)
-    )
-    job = result.scalar_one_or_none()
-
-    if not job:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Presentation job not found"
-        )
-
-    return job
 
 
 def _job_to_response(
@@ -336,24 +252,12 @@ async def list_templates(
 
     Returns user's own templates plus system and public templates.
     """
-    from sqlalchemy import or_
-
-    conditions = [PresentationTemplate.user_id == current_user.id]
-
-    if include_system:
-        conditions.append(PresentationTemplate.is_system.is_(True))
-    if include_public:
-        conditions.append(PresentationTemplate.is_public.is_(True))
-
-    query = (
-        select(PresentationTemplate)
-        .where(or_(*conditions), PresentationTemplate.is_active.is_(True))
-        .order_by(PresentationTemplate.is_system.desc(), PresentationTemplate.name)
+    templates = await store.list_templates(
+        db,
+        current_user.id,
+        include_system=include_system,
+        include_public=include_public,
     )
-
-    result = await db.execute(query)
-    templates = result.scalars().all()
-
     return [_template_to_response(t) for t in templates]
 
 
@@ -372,8 +276,9 @@ async def create_template(
 
     For PPTX file templates, use the upload endpoint instead.
     """
-    template = PresentationTemplate(
-        user_id=current_user.id,
+    template = await store.create_template(
+        db,
+        current_user.id,
         name=request.name,
         description=request.description,
         template_type=request.template_type,
@@ -381,12 +286,7 @@ async def create_template(
         if request.theme_config
         else None,
         is_public=request.is_public,
-        is_system=False,
     )
-
-    db.add(template)
-    await db.commit()
-    await db.refresh(template)
 
     logger.info(f"Created template {template.id} for user {current_user.id}")
     return _template_to_response(template)
@@ -411,121 +311,21 @@ async def upload_pptx_template(
     The uploaded file will be validated and stored in MinIO.
     It can then be used as a base template when generating presentations.
     """
-    # Validate file extension
-    if not file.filename:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Filename is required"
-        )
-
-    if not file.filename.lower().endswith(".pptx"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only .pptx files are allowed",
-        )
-
-    # Validate content type
-    valid_content_types = [
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        "application/octet-stream",  # Some browsers send this
-    ]
-    if file.content_type and file.content_type not in valid_content_types:
-        logger.warning(f"Unexpected content type: {file.content_type}")
-
-    # Read file content
-    content = await file.read()
-
-    # Validate file size (max 50MB)
-    max_size = 50 * 1024 * 1024  # 50MB
-    if len(content) > max_size:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File size exceeds maximum allowed (50MB)",
-        )
-
-    # Save to temp file and validate PPTX structure
-    temp_path = None
     try:
-        with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as temp_file:
-            temp_file.write(content)
-            temp_path = temp_file.name
-
-        # Validate PPTX structure using python-pptx
-        from pptx import Presentation as PptxPresentation
-        from pptx.exc import PackageNotFoundError
-
-        try:
-            # Parsing a 50 MB deck is seconds of CPU; not on the event loop.
-            prs = await asyncio.to_thread(PptxPresentation, temp_path)
-            slide_count = len(prs.slides)
-            layout_count = len(prs.slide_layouts)
-            logger.info(
-                f"Valid PPTX uploaded: {slide_count} slides, {layout_count} layouts"
-            )
-        except PackageNotFoundError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid or corrupted PPTX file",
-            )
-        except Exception as e:
-            logger.error(f"Error parsing PPTX: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Error parsing PPTX file: {str(e)}",
-            )
-
-        # Create template record first to get the ID
-        from uuid import uuid4
-
-        template_id = uuid4()
-
-        # Sanitize filename
-        safe_filename = re.sub(r"[^\w\-.]", "_", file.filename)
-
-        # Upload to MinIO
-        storage = StorageService()
-        object_path = f"templates/{template_id}/{safe_filename}"
-
-        try:
-            # To the path recorded on the template below. This called
-            # `upload_file` with a `prefix` argument it does not take, so
-            # every upload raised TypeError here and answered "Failed to
-            # store template file": no PPTX template was ever stored.
-            await storage.upload_to_path(
-                object_path=object_path,
-                content=content,
-                content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            )
-            logger.info(f"Uploaded template file to {object_path}")
-        except Exception as e:
-            logger.error(f"Failed to upload template to MinIO: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to store template file",
-            )
-
-        # Create template record
-        template = PresentationTemplate(
-            id=template_id,
-            user_id=current_user.id,
+        template = await store.store_uploaded_template(
+            db,
+            current_user.id,
+            filename=file.filename,
+            content=await file.read(),
             name=name,
             description=description,
-            template_type="pptx",
-            file_path=object_path,
             is_public=is_public,
-            is_system=False,
         )
+    except store.Refused as refusal:
+        raise _http(refusal)
 
-        db.add(template)
-        await db.commit()
-        await db.refresh(template)
-
-        logger.info(f"Created PPTX template {template.id} for user {current_user.id}")
-        return _template_to_response(template)
-
-    finally:
-        # Cleanup temp file
-        if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
+    logger.info(f"Created PPTX template {template.id} for user {current_user.id}")
+    return _template_to_response(template)
 
 
 @router.get("/templates/{template_id}", response_model=PresentationTemplateResponse)
@@ -535,7 +335,10 @@ async def get_template(
     db: AsyncSession = Depends(get_db),
 ):
     """Get a specific template."""
-    template = await _get_accessible_template(template_id, current_user.id, db)
+    try:
+        template = await store.get_accessible_template(db, template_id, current_user.id)
+    except store.Refused as refusal:
+        raise _http(refusal)
     return _template_to_response(template)
 
 
@@ -551,27 +354,23 @@ async def update_template(
 
     Only the template owner can update it. System templates cannot be modified.
     """
-    template = await _get_user_template(template_id, current_user.id, db)
-
-    if template.is_system:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cannot modify system templates",
+    try:
+        template = await store.update_template(
+            db,
+            template_id,
+            current_user.id,
+            {
+                "name": request.name,
+                "description": request.description,
+                "theme_config": request.theme_config.model_dump()
+                if request.theme_config is not None
+                else None,
+                "is_public": request.is_public,
+                "is_active": request.is_active,
+            },
         )
-
-    if request.name is not None:
-        template.name = request.name
-    if request.description is not None:
-        template.description = request.description
-    if request.theme_config is not None:
-        template.theme_config = request.theme_config.model_dump()
-    if request.is_public is not None:
-        template.is_public = request.is_public
-    if request.is_active is not None:
-        template.is_active = request.is_active
-
-    await db.commit()
-    await db.refresh(template)
+    except store.Refused as refusal:
+        raise _http(refusal)
 
     logger.info(f"Updated template {template_id}")
     return _template_to_response(template)
@@ -588,26 +387,10 @@ async def delete_template(
 
     Only the template owner can delete it. System templates cannot be deleted.
     """
-    template = await _get_user_template(template_id, current_user.id, db)
-
-    if template.is_system:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cannot delete system templates",
-        )
-
-    # Delete associated file if it's a PPTX template
-    if template.file_path:
-        storage = StorageService()
-        try:
-            # It answers False instead of raising when the file is still there.
-            if not await storage.delete_file(template.file_path):
-                logger.warning(f"Template file {template.file_path} was not removed")
-        except Exception as e:
-            logger.warning(f"Failed to delete template file {template.file_path}: {e}")
-
-    await db.delete(template)
-    await db.commit()
+    try:
+        await store.delete_template(db, template_id, current_user.id)
+    except store.Refused as refusal:
+        raise _http(refusal)
 
     logger.info(f"Deleted template {template_id}")
 
@@ -615,6 +398,16 @@ async def delete_template(
 # =============================================================================
 # Job Detail Endpoints
 # =============================================================================
+
+
+async def _get_user_job(
+    job_id: UUID, user_id: UUID, db: AsyncSession
+) -> PresentationJob:
+    """Get a job ensuring it belongs to the user."""
+    try:
+        return await store.get_job(db, job_id, user_id)
+    except store.Refused as refusal:
+        raise _http(refusal)
 
 
 @router.get("/{job_id}", response_model=PresentationJobResponse)
@@ -638,58 +431,21 @@ async def download_presentation(
 ):
     """
     Download the generated presentation.
-
-    Redirects to a presigned MinIO URL for direct download.
     """
     job = await _get_user_job(job_id, current_user.id, db)
-
-    if job.status != "completed":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Presentation is not ready. Current status: {job.status}",
-        )
-
-    if not job.file_path:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Presentation file not found"
-        )
-
-    # Stream file directly from MinIO
-    storage = StorageService()
     try:
-        content = await storage.get_file_content(job.file_path)
+        filename, content = await store.read_deck(job)
+    except store.Refused as refusal:
+        raise _http(refusal)
 
-        # Determine filename from path
-        filename = (
-            job.file_path.split("/")[-1] if "/" in job.file_path else job.file_path
-        )
-        if not filename.endswith(".pptx"):
-            filename = f"{job.title or 'presentation'}.pptx"
-
-        from fastapi.responses import Response
-
-        return Response(
-            content=content,
-            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            headers={
-                "Content-Disposition": content_disposition(filename),
-                "Content-Length": str(len(content)),
-            },
-        )
-    except FileNotFoundError:
-        logger.error(
-            f"Presentation file not found in storage for job {job_id}: {job.file_path}"
-        )
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Presentation file not found in storage",
-        )
-    except Exception as e:
-        logger.error(f"Failed to download presentation for job {job_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to download presentation",
-        )
+    return Response(
+        content=content,
+        media_type=store.PPTX_MEDIA_TYPE,
+        headers={
+            "Content-Disposition": content_disposition(filename),
+            "Content-Length": str(len(content)),
+        },
+    )
 
 
 @router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -702,20 +458,7 @@ async def delete_presentation(
     Delete a presentation job and its associated file.
     """
     job = await _get_user_job(job_id, current_user.id, db)
-
-    # Delete file from MinIO if exists
-    if job.file_path:
-        storage = StorageService()
-        try:
-            # It answers False instead of raising when the file is still there.
-            if not await storage.delete_file(job.file_path):
-                logger.warning(f"Presentation file {job.file_path} was not removed")
-        except Exception as e:
-            logger.warning(f"Failed to delete presentation file {job.file_path}: {e}")
-
-    # Delete job from database
-    await db.delete(job)
-    await db.commit()
+    await store.delete_job(db, job)
 
     logger.info(f"Deleted presentation job {job_id}")
 
@@ -730,17 +473,10 @@ async def cancel_presentation(
     Cancel a pending or in-progress presentation generation job.
     """
     job = await _get_user_job(job_id, current_user.id, db)
-
-    if job.status in ("completed", "failed", "cancelled"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cannot cancel job with status: {job.status}",
-        )
-
-    job.status = "cancelled"
-    job.error = "Cancelled by user"
-    await db.commit()
-    await db.refresh(job)
+    try:
+        job = await store.cancel_job(db, job)
+    except store.Refused as refusal:
+        raise _http(refusal)
 
     logger.info(f"Cancelled presentation job {job_id}")
 
@@ -798,54 +534,6 @@ async def presentation_progress(
         },
         already_finished=job.status in TERMINAL_STATUSES,
     )
-
-
-async def _get_accessible_template(
-    template_id: UUID, user_id: UUID, db: AsyncSession
-) -> PresentationTemplate:
-    """Get a template that the user can access (own, public, or system)."""
-    from sqlalchemy import or_
-
-    result = await db.execute(
-        select(PresentationTemplate).where(
-            PresentationTemplate.id == template_id,
-            PresentationTemplate.is_active.is_(True),
-            or_(
-                PresentationTemplate.user_id == user_id,
-                PresentationTemplate.is_system.is_(True),
-                PresentationTemplate.is_public.is_(True),
-            ),
-        )
-    )
-    template = result.scalar_one_or_none()
-
-    if not template:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Template not found"
-        )
-
-    return template
-
-
-async def _get_user_template(
-    template_id: UUID, user_id: UUID, db: AsyncSession
-) -> PresentationTemplate:
-    """Get a template owned by the user."""
-    result = await db.execute(
-        select(PresentationTemplate).where(
-            PresentationTemplate.id == template_id,
-            PresentationTemplate.user_id == user_id,
-        )
-    )
-    template = result.scalar_one_or_none()
-
-    if not template:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Template not found or you don't own it",
-        )
-
-    return template
 
 
 def _template_to_response(

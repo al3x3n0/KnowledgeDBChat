@@ -33563,6 +33563,7 @@
           "document_ids": {
             "description": "Document IDs to synthesize",
             "items": {
+              "format": "uuid",
               "type": "string"
             },
             "title": "Document Ids",
@@ -79923,7 +79924,7 @@
     },
     "/api/v1/presentations/{job_id}/download": {
       "get": {
-        "description": "Download the generated presentation.\n\nRedirects to a presigned MinIO URL for direct download.",
+        "description": "Download the generated presentation.",
         "operationId": "download_presentation_api_v1_presentations__job_id__download_get",
         "parameters": [
           {
@@ -86890,6 +86891,7 @@
             "name": "job_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Job Id",
               "type": "string"
             }
@@ -86950,6 +86952,7 @@
             "name": "job_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Job Id",
               "type": "string"
             }
@@ -87014,6 +87017,7 @@
             "name": "job_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Job Id",
               "type": "string"
             }
@@ -87076,6 +87080,7 @@
             "name": "job_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Job Id",
               "type": "string"
             }
@@ -87137,6 +87142,7 @@
             "name": "job_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Job Id",
               "type": "string"
             }
@@ -87211,6 +87217,7 @@
             "name": "job_id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "title": "Job Id",
               "type": "string"
             }

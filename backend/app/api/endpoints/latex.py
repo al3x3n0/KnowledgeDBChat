@@ -25,6 +25,7 @@ from starlette.responses import FileResponse
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.exceptions import failure_status
 from app.core.rate_limit import (
     LATEX_APPLY_DIFF_LIMIT,
     LATEX_CITATIONS_LIMIT,
@@ -382,7 +383,9 @@ async def latex_copilot_section(
         data = _extract_json(response_text)
     except Exception as exc:
         logger.error(f"LaTeX copilot generation failed: {exc}")
-        raise HTTPException(status_code=500, detail="LaTeX copilot failed") from exc
+        raise HTTPException(
+            status_code=failure_status(exc), detail="LaTeX copilot failed"
+        ) from exc
 
     tex_snippet = (data.get("tex_snippet") or "").strip()
     references_tex = (data.get("references_tex") or data.get("bibtex") or "").strip()
@@ -465,7 +468,9 @@ async def latex_copilot_fix(
         data = _extract_json(response_text)
     except Exception as exc:
         logger.error(f"LaTeX copilot fix failed: {exc}")
-        raise HTTPException(status_code=500, detail="LaTeX copilot fix failed") from exc
+        raise HTTPException(
+            status_code=failure_status(exc), detail="LaTeX copilot fix failed"
+        ) from exc
 
     fixed = (data.get("tex_source_fixed") or "").strip()
     notes = (data.get("notes") or "").strip()
@@ -645,7 +650,7 @@ async def latex_math_copilot(
     except Exception as exc:
         logger.error(f"LaTeX math copilot failed: {exc}")
         raise HTTPException(
-            status_code=500, detail="LaTeX math copilot failed"
+            status_code=failure_status(exc), detail="LaTeX math copilot failed"
         ) from exc
 
     conventions = (

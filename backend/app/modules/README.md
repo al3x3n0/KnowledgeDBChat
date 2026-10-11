@@ -97,3 +97,11 @@ table saying who may do each, `backlog_jobs.py` the repair and apply jobs they
 start, and `backlog_slices.py` slice state as plain data. They raise
 `ActionRefused` with a kind; `api/endpoints/coding_backlog.py` maps kinds to
 status codes and keeps the create and update routes and the response builder.
+
+`modules/presentations/application/presentation_store.py` owns presentation
+jobs and templates: the two template visibility rules (active and yours,
+public or system to use one; yours to change one), the uploaded-deck check,
+and the arXiv ingest a research presentation starts with. It raises
+`Refused` with a kind; `api/endpoints/presentations.py` maps kinds to status
+codes, queues the generation task and keeps the response builders and the
+progress socket.

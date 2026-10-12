@@ -20,6 +20,7 @@ from app.services.context_manager import ContextManager
 from app.services.llm_service import LLMService, UserLLMSettings
 from app.services.memory_service import MemoryService
 from app.services.query_processor import QueryProcessor
+from app.services.rag_retrieval import retrieve
 from app.services.vector_store import vector_store_service
 
 #: The title a session gets when nobody names it. Only this exact shape is
@@ -368,212 +369,24 @@ class ChatService:
                 db=db,
             )
 
-            # Process query
-            processed_query = self.query_processor.process_query(
+            # Retrieval: see services/rag_retrieval.py, where this block now
+            # lives so the agent's answer tool and MCP chat can use it too.
+            retrieved = await retrieve(
                 query,
-                expand=settings.RAG_QUERY_EXPANSION_ENABLED,
-                rewrite=True,
-                normalize=True,
+                db=db,
+                vector_store=self.vector_store,
+                query_processor=self.query_processor,
+                context_manager=self.context_manager,
+                llm_service=self.llm_service,
+                user_settings=effective_user_settings,
             )
-
-            # Use processed query for search
-            search_query = processed_query.get("processed", query)
-
-            # Ensure vector store is initialized
-            await self._ensure_vector_store_initialized()
-
-            # Generate multi-queries if enabled for better recall
-            all_search_results = []
-            retrieval_trace_payload: dict[str, Any] = {
-                "original_query": query,
-                "processed_query": search_query,
-                "query_processor": {
-                    "intent": processed_query.get("intent"),
-                    "key_terms": processed_query.get("key_terms"),
-                },
-            }
-            if settings.RAG_QUERY_EXPANSION_ENABLED:
-                try:
-                    query_variations = (
-                        await self.query_processor.generate_multi_queries(
-                            search_query,
-                            llm_service=self.llm_service,
-                            num_queries=3,
-                            user_settings=effective_user_settings,
-                        )
-                    )
-
-                    # Search with all variations
-                    traces: list[dict[str, Any]] = []
-                    for q_var in query_variations:
-                        results, one_trace = await self.vector_store.search_with_trace(
-                            query=q_var, limit=settings.MAX_SEARCH_RESULTS * 2
-                        )
-                        traces.append({"query": q_var, "trace": one_trace})
-                        all_search_results.extend(results)
-
-                    retrieval_trace_payload["multi_query"] = {
-                        "queries": query_variations,
-                        "traces": traces,
-                    }
-
-                    # Deduplicate by ID and merge scores
-                    seen_ids = {}
-                    for result in all_search_results:
-                        result_id = result.get("id")
-                        if result_id in seen_ids:
-                            # Merge scores (take max)
-                            seen_ids[result_id]["score"] = max(
-                                seen_ids[result_id]["score"], result.get("score", 0.0)
-                            )
-                        else:
-                            seen_ids[result_id] = result
-
-                    search_results = list(seen_ids.values())
-                    # Sort by score
-                    search_results = sorted(
-                        search_results, key=lambda x: x.get("score", 0.0), reverse=True
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"Multi-query generation failed: {e}, using single query"
-                    )
-                    (
-                        search_results,
-                        one_trace,
-                    ) = await self.vector_store.search_with_trace(
-                        query=search_query, limit=settings.MAX_SEARCH_RESULTS * 2
-                    )
-                    retrieval_trace_payload["single_query"] = {
-                        "query": search_query,
-                        "trace": one_trace,
-                    }
-            else:
-                # Single query search
-                search_results, one_trace = await self.vector_store.search_with_trace(
-                    query=search_query,
-                    limit=settings.MAX_SEARCH_RESULTS
-                    * 2,  # Get more for filtering/reranking
-                )
-                retrieval_trace_payload["single_query"] = {
-                    "query": search_query,
-                    "trace": one_trace,
-                }
-
-            # Filter by relevance
-            search_results = self.context_manager.filter_by_relevance(search_results)
-
-            # Select most relevant parts
-            search_results = self.context_manager.select_relevant_parts(
-                search_results,
-                query=search_query,
-                max_results=settings.MAX_SEARCH_RESULTS,
-            )
-
-            retrieval_trace_payload["selected_results"] = [
-                {
-                    "id": r.get("id"),
-                    "score": r.get("score"),
-                    "document_id": (r.get("metadata") or {}).get("document_id"),
-                    "chunk_id": (r.get("metadata") or {}).get("chunk_id"),
-                    "title": (r.get("metadata") or {}).get("title"),
-                    "source": (r.get("metadata") or {}).get("source")
-                    or (r.get("metadata") or {}).get("source_type"),
-                }
-                for r in (search_results or [])[: settings.MAX_SEARCH_RESULTS]
-            ]
-
-            # Build context with token management
-            context = await self.context_manager.compress_context(
-                search_results, llm_service=self.llm_service
-            )
-
-            # Get context metrics for logging
-            context_metrics = self.context_manager.get_context_metrics(search_results)
-            retrieval_trace_payload["context_metrics"] = context_metrics
-
-            # Inject Knowledge Graph context if enabled
-            kg_context = ""
-            if settings.RAG_KG_CONTEXT_ENABLED:
-                try:
-                    from app.services.knowledge_graph_service import (
-                        KnowledgeGraphService,
-                    )
-
-                    kg_service = KnowledgeGraphService()
-
-                    # Prefer a grounded "context pack" from the retrieved chunks/docs.
-                    kg_pack = await kg_service.build_chat_context_pack(
-                        db=db,
-                        search_results=search_results,
-                        max_entities=settings.RAG_KG_MAX_ENTITIES,
-                        max_relationships=settings.RAG_KG_MAX_RELATIONSHIPS,
-                    )
-                    if kg_pack.get("kg_context"):
-                        kg_context = str(kg_pack["kg_context"])
-                        # Keep the trace compact: it's JSON, but can grow quickly.
-                        retrieval_trace_payload["kg_context_pack"] = {
-                            "stats": kg_pack.get("stats"),
-                            "entities": (kg_pack.get("entities") or [])[
-                                : settings.RAG_KG_MAX_ENTITIES
-                            ],
-                            "relationships": (kg_pack.get("relationships") or [])[
-                                : settings.RAG_KG_MAX_RELATIONSHIPS
-                            ],
-                            # Useful for debugging / UI inspection; keep bounded.
-                            "kg_context": str(kg_context)[:8000],
-                        }
-
-                    # If the pack couldn't be built (e.g., no mentions in retrieved scope), fall back.
-                    if not kg_context:
-                        # Extract potential entity names from query and search results
-                        entity_names = (
-                            self.context_manager.extract_entity_names_from_results(
-                                search_results
-                            )
-                        )
-
-                        # Also add key terms from the processed query
-                        key_terms = processed_query.get("key_terms", [])
-                        for term in key_terms:
-                            if len(term) > 2 and term not in entity_names:
-                                entity_names.append(term)
-
-                        # Search for matching entities in KG
-                        if entity_names:
-                            entities = await kg_service.search_entities_by_names(
-                                names=entity_names[:20],  # Limit search candidates
-                                db=db,
-                                limit=settings.RAG_KG_MAX_ENTITIES,
-                            )
-
-                            if entities:
-                                # Get relationships between found entities
-                                entity_ids = [e.id for e in entities]
-                                kg_data = await kg_service.get_entity_context(
-                                    entity_ids=entity_ids,
-                                    db=db,
-                                    max_relationships=settings.RAG_KG_MAX_RELATIONSHIPS,
-                                )
-
-                                # Build KG context string
-                                kg_context = self.context_manager.build_kg_context(
-                                    entities=kg_data["entities"],
-                                    relationships=kg_data["relationships"],
-                                )
-                                logger.debug(
-                                    f"KG context injected: {len(kg_data['entities'])} entities, {len(kg_data['relationships'])} relationships"
-                                )
-                                retrieval_trace_payload["kg_context_fallback"] = {
-                                    "entity_names": entity_names[:20],
-                                    "entities": len(kg_data.get("entities") or []),
-                                    "relationships": len(
-                                        kg_data.get("relationships") or []
-                                    ),
-                                }
-                except Exception as e:
-                    logger.warning(f"KG context injection failed: {e}")
-                    # Continue without KG context - don't break the chat flow
+            search_query = retrieved.search_query
+            processed_query = retrieved.processed_query
+            search_results = retrieved.results
+            context = retrieved.context
+            kg_context = retrieved.kg_context
+            context_metrics = retrieved.context_metrics
+            retrieval_trace_payload = retrieved.trace
 
             memory_context = self._build_memory_context(relevant_memories)
             conversation_history = self._build_conversation_history(

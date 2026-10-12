@@ -2097,6 +2097,18 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
 - Query → hybrid search (vector + BM25) → reranking (cross-encoder) → MMR / deduplication / query expansion → optional KG context → LLM response
 - Retrieval traces recorded for observability (`models/retrieval_trace.py`, `/retrieval-traces` endpoints)
 - Configured via `RAG_*` environment variables
+- **One retrieval for every answer written from the knowledge base**
+  (`services/rag_retrieval.py`, `retrieve`). The pipeline above was inline in
+  `ChatService.generate_response`, so the chat page was the only place that
+  had it. The agent's `answer_question` tool and the MCP chat tool each
+  searched once and pasted in whatever came back -- no query rewriting, no
+  relevance floor, no knowledge-graph context -- and answered with the
+  default model whatever the person had chosen. The block was **moved, not
+  rewritten** (by script, text for text), and all three call it;
+  `document_ids` restricts the search in the store itself and `max_results`
+  is the caller's passage budget. This is the first step towards one chat:
+  the chat page still has its own turn (sessions, sources, traces, feedback)
+  and the widget has the agent turn, but they no longer retrieve differently.
 
 ## API Versioning
 

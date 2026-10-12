@@ -10,15 +10,17 @@ Provides optimized data for:
 """
 
 import asyncio
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.database import AsyncSessionLocal, get_db
 from app.models.user import User
 from app.services.auth_service import get_current_user
 from app.services.dashboard_service import dashboard_service
+from app.utils.websocket_auth import authenticate_websocket
 
 router = APIRouter()
 
@@ -191,90 +193,96 @@ async def get_full_dashboard(
 
 
 # WebSocket for real-time dashboard updates
+AUTH_WAIT_SECONDS = 10.0
+UPDATE_INTERVAL_SECONDS = 30
+
+
+async def _socket_user(websocket: WebSocket) -> Optional[User]:
+    """Who connected: a token in the query string or header, or in a first
+    `{"type": "auth", "token": ...}` message. Never an id the client states."""
+    user = await authenticate_websocket(websocket)
+    if user is not None:
+        return user
+    try:
+        message = await asyncio.wait_for(
+            websocket.receive_json(), timeout=AUTH_WAIT_SECONDS
+        )
+    except asyncio.TimeoutError:
+        return None
+    if not isinstance(message, dict) or message.get("type") != "auth":
+        return None
+    token = message.get("token")
+    if not isinstance(token, str) or not token:
+        return None
+    return await authenticate_websocket(websocket, token=token)
+
+
+async def _send_widget(websocket: WebSocket, user: User, widget: str, **extra) -> None:
+    """Send one widget's data, read on a session that lives for this read.
+
+    The handler used to take the request's session as a dependency and keep
+    it -- one of a limited number -- for as long as the socket stayed open.
+    """
+    async with AsyncSessionLocal() as db:
+        if widget == "overview":
+            data = await dashboard_service.get_overview_stats(db, user_id=user.id)
+            kind = "overview"
+        elif widget == "activity":
+            data = await dashboard_service.get_activity_feed(
+                db, user_id=user.id, limit=10
+            )
+            kind = "activity"
+        else:
+            data = await dashboard_service.get_source_health(db)
+            kind = "sources_health"
+    await websocket.send_json({"type": kind, "data": data, **extra})
+
+
 @router.websocket("/ws")
-async def dashboard_websocket(
-    websocket: WebSocket,
-    db: AsyncSession = Depends(get_db),
-):
+async def dashboard_websocket(websocket: WebSocket):
     """
     WebSocket endpoint for real-time dashboard updates.
 
     Sends periodic updates with latest stats.
     """
     await websocket.accept()
-    logger.info("Dashboard WebSocket connected")
 
     try:
-        # Try to authenticate from query params or first message
-        user_id = None
-
-        # Wait for auth message
-        try:
-            auth_message = await asyncio.wait_for(
-                websocket.receive_json(), timeout=10.0
-            )
-            if auth_message.get("type") == "auth":
-                # In production, validate the token
-                user_id = auth_message.get("user_id")
-        except asyncio.TimeoutError:
-            await websocket.send_json({"type": "error", "message": "Auth timeout"})
-            await websocket.close()
+        # It took `user_id` from the client's first message and checked no
+        # token: anyone who could reach the server was sent the overview,
+        # document titles and source health.
+        user = await _socket_user(websocket)
+        if user is None:
+            await websocket.close(code=4001, reason="Authentication required")
             return
+        logger.info("Dashboard WebSocket connected")
 
-        # Send initial data
-        overview = await dashboard_service.get_overview_stats(db, user_id=user_id)
-        await websocket.send_json({"type": "overview", "data": overview})
+        await _send_widget(websocket, user, "overview")
 
-        # Periodic updates
-        update_interval = 30  # seconds
         while True:
             try:
-                # Check for incoming messages (non-blocking)
-                try:
-                    message = await asyncio.wait_for(
-                        websocket.receive_json(), timeout=update_interval
-                    )
+                message = await asyncio.wait_for(
+                    websocket.receive_json(), timeout=UPDATE_INTERVAL_SECONDS
+                )
+            except asyncio.TimeoutError:
+                # No message received, send periodic update
+                await _send_widget(websocket, user, "overview", is_periodic=True)
+                continue
 
-                    # Handle refresh request
-                    if message.get("type") == "refresh":
-                        widget = message.get("widget", "all")
-                        if widget == "overview" or widget == "all":
-                            data = await dashboard_service.get_overview_stats(
-                                db, user_id=user_id
-                            )
-                            await websocket.send_json(
-                                {"type": "overview", "data": data}
-                            )
-                        if widget == "activity" or widget == "all":
-                            data = await dashboard_service.get_activity_feed(
-                                db, user_id=user_id, limit=10
-                            )
-                            await websocket.send_json(
-                                {"type": "activity", "data": data}
-                            )
-                        if widget == "sources" or widget == "all":
-                            data = await dashboard_service.get_source_health(db)
-                            await websocket.send_json(
-                                {"type": "sources_health", "data": data}
-                            )
+            if isinstance(message, dict) and message.get("type") == "refresh":
+                widget = message.get("widget", "all")
+                for name in ("overview", "activity", "sources"):
+                    if widget in (name, "all"):
+                        await _send_widget(websocket, user, name)
 
-                except asyncio.TimeoutError:
-                    # No message received, send periodic update
-                    overview = await dashboard_service.get_overview_stats(
-                        db, user_id=user_id
-                    )
-                    await websocket.send_json(
-                        {"type": "overview", "data": overview, "is_periodic": True}
-                    )
-
-            except WebSocketDisconnect:
-                logger.info("Dashboard WebSocket disconnected")
-                break
-
+    except WebSocketDisconnect:
+        logger.info("Dashboard WebSocket disconnected")
     except Exception as e:
         logger.error(f"Dashboard WebSocket error: {e}")
         try:
-            await websocket.send_json({"type": "error", "message": str(e)})
+            await websocket.send_json(
+                {"type": "error", "message": "Dashboard update failed"}
+            )
         except Exception:
             pass
     finally:

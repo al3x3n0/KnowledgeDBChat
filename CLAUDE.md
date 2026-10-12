@@ -1113,6 +1113,18 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   version means recomputing `MERMAID_INTEGRITY` — no test compares the two
   (that needs the network), and a stale hash shows up as the browser refusing
   the script, so every diagram falls back to its source text.
+- **An exemption that states a fact has to be true.** The auth guard's
+  socket list exempted `/dashboard/ws` as "waits for an auth message and
+  verifies its token". It took `user_id` from the client's first message and
+  verified nothing: anyone who could reach the server was sent the overview,
+  document titles and source health. It also held one request database
+  session for as long as it stayed open. It authenticates now (a token in the
+  query, a header, or a first `auth` message) and opens a session per read.
+  `tests/test_dashboard.py` connects without a token. The dashboard service
+  beside it had no test and failed with rows present: the activity feed read
+  `doc.source` (a lazy relationship) and `execution.updated_at` (no such
+  column), so one document made `/dashboard/activity` and `/dashboard/all` a
+  500; the route walk meets it with an empty database.
 - **A job's progress reaches a socket through one loop**
   (`utils/websocket_progress.forward_progress`). Five handlers each had a
   copy, and each got a different part wrong under conditions a manual test
@@ -1960,6 +1972,26 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   window of the best chunks from anywhere, which other sources' matches could
   fill. Chat read a filter matching no document as no filter. A failed
   presentation's status read `error_message`, which the model lacks.
+
+- **A key's own rate limits are enforced** (`mcp/auth.enforce_rate_limits`,
+  called from the `get_mcp_auth` dependency). Every key has a per-minute and a
+  per-day limit, set in the form and shown in the list, and nothing read
+  either. They are counted from the usage log, which every MCP request now
+  writes (only tool calls did), so the count is shared by every API process;
+  a refusal is a 429 with `Retry-After` and is not itself counted.
+  **`api_keys.key_prefix` was VARCHAR(8) while the service stores 12
+  characters**: Postgres refuses that, so no key could be created outside
+  SQLite. Migration `0109` widens it, and `tests/test_api_keys.py` is in the
+  Postgres slice, since SQLite does not enforce a width.
+
+- **A chat turn's test must tell the model's reply from an apology**
+  (`tests/test_chat_turn.py`). `ChatService.generate_response` answers every
+  failure with "I apologize..." stored as an assistant message, and the old
+  test accepted any non-empty reply, so it passed whether or not a turn
+  worked. Run with a model that answers: `POST
+  /chat/sessions/{id}/messages` stored the user's message twice (the route
+  and the service each did), and the copy became the model's conversation
+  history. The socket path never did.
 
 ### RAG Pipeline
 - Query → hybrid search (vector + BM25) → reranking (cross-encoder) → MMR / deduplication / query expansion → optional KG context → LLM response

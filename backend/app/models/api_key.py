@@ -33,9 +33,10 @@ class APIKey(Base):
     # Key identification
     name = Column(String(100), nullable=False)  # Human-readable name
     description = Column(Text, nullable=True)  # Optional description
-    key_prefix = Column(
-        String(8), nullable=False, index=True
-    )  # First 8 chars for identification
+    # The first 12 characters of the key ("taic_" and seven more), kept to
+    # tell keys apart. The column was 8 wide while the service wrote 12:
+    # Postgres refuses that, so no key could be created outside SQLite.
+    key_prefix = Column(String(16), nullable=False, index=True)
     key_hash = Column(String(128), nullable=False)  # SHA256 hash of the full key
 
     # Ownership

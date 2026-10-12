@@ -227,10 +227,9 @@ async def send_message(
         if not session:
             raise HTTPException(status_code=404, detail="Chat session not found")
 
-        # Create user message
-        await chat_service.create_message(
-            session_id=session_id, content=message_data.content, role="user", db=db
-        )
+        # The user's message is stored by `generate_response`. It was also
+        # stored here, so every message sent to this route was in the session
+        # twice, and the model was given the question as its own history.
 
         # Load user LLM preferences
         prefs_result = await db.execute(

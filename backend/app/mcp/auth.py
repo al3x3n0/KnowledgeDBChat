@@ -5,13 +5,13 @@ Handles API key validation and user context for MCP requests.
 """
 
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID
 
 from fastapi import HTTPException, Request, status
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.api_key import APIKey, APIKeyUsageLog
@@ -150,6 +150,41 @@ async def log_api_usage(
         await db.commit()
     except Exception as e:
         logger.warning(f"Failed to log API usage: {e}")
+
+
+# A refusal is not counted against the key, or a client retrying into a full
+# window would keep it full for ever.
+RATE_LIMITED = status.HTTP_429_TOO_MANY_REQUESTS
+
+
+async def enforce_rate_limits(db: AsyncSession, api_key: APIKey) -> None:
+    """Refuse a request beyond the key's own per-minute or per-day limit.
+
+    Every key has both limits; the form sets them and the list shows them, and
+    nothing read them. Counted from the usage log, which every MCP request
+    writes, so the count is shared by every API process without a second
+    store. A limit of None or 0 is no limit.
+    """
+    now = datetime.utcnow()
+    for limit, window, retry_after, name in (
+        (api_key.rate_limit_per_minute, timedelta(minutes=1), 60, "minute"),
+        (api_key.rate_limit_per_day, timedelta(days=1), 3600, "day"),
+    ):
+        if not limit or limit <= 0:
+            continue
+        used = await db.scalar(
+            select(func.count(APIKeyUsageLog.id)).where(
+                APIKeyUsageLog.api_key_id == api_key.id,
+                APIKeyUsageLog.timestamp >= now - window,
+                func.coalesce(APIKeyUsageLog.status_code, 0) != RATE_LIMITED,
+            )
+        )
+        if (used or 0) >= limit:
+            raise HTTPException(
+                status_code=RATE_LIMITED,
+                detail=f"API key rate limit reached: {limit} requests per {name}",
+                headers={"Retry-After": str(retry_after)},
+            )
 
 
 def extract_api_key(request: Request) -> Optional[str]:

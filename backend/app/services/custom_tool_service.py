@@ -12,7 +12,7 @@ import asyncio
 import json
 import re
 import time
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 import httpx
@@ -112,7 +112,7 @@ class CustomToolService:
 
             # Route to appropriate handler
             if tool.tool_type == "webhook":
-                result = await self._execute_webhook(tool.config, inputs)
+                result = await self._execute_webhook(tool.config, inputs, db=db)
             elif tool.tool_type == "external_agent":
                 from app.services.external_agent_gateway_service import (
                     external_agent_gateway_service,
@@ -219,7 +219,10 @@ class CustomToolService:
         return self._SINGLE_BRACE.sub(_fill, rendered)
 
     async def _execute_webhook(
-        self, config: Dict[str, Any], inputs: Dict[str, Any]
+        self,
+        config: Dict[str, Any],
+        inputs: Dict[str, Any],
+        db: Optional[AsyncSession] = None,
     ) -> Dict[str, Any]:
         """
         Execute a webhook tool - make HTTP request to external API.
@@ -252,8 +255,25 @@ class CustomToolService:
         if body_template:
             body = self._render_template(body_template, inputs)
 
+        # The URL is written by whoever authored the tool -- an agent may --
+        # and may be templated from the call's inputs. It went to the HTTP
+        # client as it was, so a tool could read the cloud metadata address
+        # or any service on the deployment's own network (the vector store
+        # and object storage answer without credentials there).
+        from app.services.web_scraper_service import OutboundGuard
+
+        guard = OutboundGuard(await self._webhook_private_hosts(db))
+        try:
+            url = await asyncio.to_thread(guard.check, url)
+        except ValueError as refused:
+            raise ToolExecutionError(
+                f"This webhook's URL is not allowed: {refused}. A webhook tool "
+                "may call public addresses, and private hosts an admin has "
+                "listed in CUSTOM_TOOL_WEBHOOK_PRIVATE_HOSTS."
+            )
+
         # Make request
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with guard.client(timeout=timeout) as client:
             try:
                 if method in ["GET", "DELETE"]:
                     response = await client.request(
@@ -340,6 +360,25 @@ class CustomToolService:
 
         else:
             raise ToolExecutionError(f"Unknown transform type: {transform_type}")
+
+    async def _webhook_private_hosts(self, db: Optional[AsyncSession]) -> List[str]:
+        """Private hosts a webhook may call: the setting, and web sources."""
+        from app.core.config import settings
+        from app.services.web_scraper_service import internal_scrape_allowed_hosts
+
+        hosts = [
+            h.strip().lower()
+            for h in str(
+                getattr(settings, "CUSTOM_TOOL_WEBHOOK_PRIVATE_HOSTS", "") or ""
+            ).split(",")
+            if h.strip()
+        ]
+        if db is not None:
+            try:
+                hosts.extend(await internal_scrape_allowed_hosts(db))
+            except Exception as exc:  # noqa: BLE001 - the setting still applies
+                logger.warning(f"Could not read the internal host allowlist: {exc}")
+        return hosts
 
     async def _execute_python(
         self, config: Dict[str, Any], inputs: Dict[str, Any], user: User

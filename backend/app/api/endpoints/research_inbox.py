@@ -120,6 +120,25 @@ def _extract_repo_urls(text: str) -> list[dict]:
     return out[:20]
 
 
+def _arxiv_page_url(url: str) -> Optional[str]:
+    """The https address of a stored arXiv URL, or None if it is not one.
+
+    arXiv's API gives entry ids as `http://arxiv.org/abs/...`, so both schemes
+    are accepted and the fetch is made over https.
+    """
+    from urllib.parse import urlparse, urlunparse
+
+    parsed = urlparse(str(url or "").strip())
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    if parsed.username or parsed.password or parsed.port not in (None, 80, 443):
+        return None
+    if host != "arxiv.org" and not host.endswith(".arxiv.org"):
+        return None
+    return urlunparse(("https", host, parsed.path, "", parsed.query, ""))
+
+
 @router.get("", response_model=ResearchInboxListResponse)
 async def list_inbox_items(
     status: Optional[str] = Query(None, description="new | accepted | rejected"),
@@ -657,6 +676,9 @@ async def extract_repos_for_inbox_item(
             import httpx
 
             entry_url = str(meta.get("entry_url") or item.url or "").strip()
+            # The URL is stored data. This is the arXiv page of an arXiv item,
+            # so that is the only place it may point.
+            entry_url = _arxiv_page_url(entry_url)
             if entry_url:
                 async with httpx.AsyncClient(
                     timeout=20.0, headers={"User-Agent": "KnowledgeDBChat-RepoScout"}

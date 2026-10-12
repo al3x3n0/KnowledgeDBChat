@@ -651,6 +651,13 @@ class Settings(BaseSettings):
     # Keep disabled by default for safety.
     CUSTOM_TOOL_DOCKER_ENABLED: bool = False
 
+    # Hosts on a private network that a webhook tool may call, comma-separated
+    # ("jira.lab.internal, build.lab"; a name covers its subdomains). Empty
+    # means none: a webhook tool
+    # reaches public addresses only, and never loopback or link-local. The
+    # hosts of active web sources are allowed as well.
+    CUSTOM_TOOL_WEBHOOK_PRIVATE_HOSTS: str = ""
+
     # Plugins
     # Where bundles shipped with this repository are read from, relative to the
     # backend root unless absolute. A plugin contributes tools that a model is

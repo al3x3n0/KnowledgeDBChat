@@ -39,10 +39,10 @@ class PythonToolConfig(BaseModel):
     """Configuration for Python script tools."""
 
     code: str = Field(..., description="Python code to execute")
-    timeout_seconds: int = Field(10, ge=1, le=60)
-    allowed_imports: List[str] = Field(
-        default_factory=lambda: ["json", "re", "datetime", "math", "collections"]
-    )
+    timeout_seconds: int = Field(30, ge=1, le=300)
+    # Not read any more: the code runs in the sandbox container, where the
+    # standard library is importable. Kept so a stored config still loads.
+    allowed_imports: List[str] = Field(default_factory=list)
 
 
 class LLMPromptToolConfig(BaseModel):

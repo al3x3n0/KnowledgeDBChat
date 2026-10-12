@@ -119,11 +119,14 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="execute_python",
-        description="Run Python code in a RestrictedPython sandbox. Output via the "
-        "'result' variable. Only whitelisted pure-Python modules are "
-        "importable: there is no subprocess, no filesystem and no network, "
-        "so this CANNOT compile code or invoke a toolchain. Use "
-        "compile_c_snippet or benchmark_c_snippet for compiler work.",
+        description="Run Python code in the sandbox container: no network, an "
+        "unprivileged user, the Python standard library only. Output via the "
+        "'result' variable (or an 'output' dict). The working directory is "
+        "this run's sandbox directory, so files a sandbox skill left are "
+        "there to read and files written here persist for later calls. "
+        "Use compile_c_snippet or benchmark_c_snippet for compiler work: "
+        "their results are judged and recorded as evidence, and this one's "
+        "are not.",
         parameters={
             "type": "object",
             "properties": {

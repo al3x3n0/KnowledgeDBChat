@@ -132,5 +132,4 @@ email-validator==2.1.0
 
 # Custom tool dependencies
 jsonpath-ng>=1.6.0
-RestrictedPython>=7.0
 Jinja2>=3.1.0

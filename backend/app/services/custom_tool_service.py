@@ -47,6 +47,7 @@ class CustomToolService:
         user: User,
         db: AsyncSession,
         bypass_approval_gate: bool = False,
+        workdir: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
         Execute a user-defined tool.
@@ -56,6 +57,9 @@ class CustomToolService:
             inputs: Input parameters for the tool
             user: The user executing the tool
             db: Database session
+            workdir: The caller's sandbox working directory, for a tool that
+                runs in the sandbox. A job or a conversation has one; without
+                it the tool owner's is used.
 
         Returns:
             Dict containing the tool output
@@ -133,7 +137,9 @@ class CustomToolService:
             elif tool.tool_type == "transform":
                 result = await self._execute_transform(tool.config, inputs)
             elif tool.tool_type == "python":
-                result = await self._execute_python(tool.config, inputs, user)
+                result = await self._execute_python(
+                    tool.config, inputs, user, workdir=workdir
+                )
             elif tool.tool_type == "llm_prompt":
                 result = await self._execute_llm_prompt(tool.config, inputs, user, db)
             elif tool.tool_type == "docker_container":
@@ -381,90 +387,43 @@ class CustomToolService:
         return hosts
 
     async def _execute_python(
-        self, config: Dict[str, Any], inputs: Dict[str, Any], user: User
+        self,
+        config: Dict[str, Any],
+        inputs: Dict[str, Any],
+        user: User,
+        workdir: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
-        Execute a Python tool - run sandboxed Python code.
+        Execute a Python tool: run its code in the confined sandbox container.
 
         Config:
             code: Python code to execute
             timeout_seconds: Execution timeout
-            allowed_imports: Modules to add, from `python_tool_sandbox.IMPORTABLE`
 
-        Security:
-            RestrictedPython compiles the code; `python_tool_sandbox` decides
-            what it may see. The code runs in this process, so the limits are
-            what is in scope, not a boundary an operating system enforces.
+        The code is given `input` and answers by assigning `output` or
+        `result`. It runs in `python_tool_container`, with `/work` as its
+        working directory: the caller's (`workdir`) when there is one, else
+        the tool owner's, which is the one sandbox skills use for that user.
+
+        `allowed_imports` is no longer read. It was the in-process sandbox's
+        list of names; a container needs none.
         """
-        from app.services import python_tool_sandbox
+        from app.services import python_tool_container, sandbox_skill_runtime
 
-        code = config.get("code", "")
-        timeout = config.get("timeout_seconds", 10)
-
-        try:
-            modules = python_tool_sandbox.modules_for(config.get("allowed_imports"))
-        except python_tool_sandbox.ModuleNotAllowed as refused:
-            raise ToolExecutionError(str(refused))
-
-        # Import the sandbox itself outside the main block. An ImportError here
-        # means the library is missing; one raised further down comes from the
-        # submitted code importing something the sandbox does not allow.
-        # Catching both in one place reported "install RestrictedPython" for
-        # code whose real problem was that it tried to import subprocess.
-        try:
-            from RestrictedPython import compile_restricted_exec
-        except ImportError as import_error:
-            raise ToolExecutionError(
-                "Python execution is not available. Install the "
-                f"RestrictedPython package ({import_error})."
+        if workdir is None and getattr(user, "id", None) is not None:
+            workdir = await asyncio.to_thread(
+                sandbox_skill_runtime.run_dir, f"user-{user.id}"
             )
-
         try:
-            # compile_restricted returns a bare code object, so reading .errors
-            # off it raised AttributeError for every input, valid or not.
-            # compile_restricted_exec returns the CompileResult that carries
-            # the diagnostics.
-            compiled = compile_restricted_exec(code, filename="<user_tool>")
-
-            if compiled.errors:
-                raise ToolExecutionError(f"Code compilation errors: {compiled.errors}")
-            if compiled.code is None:
-                raise ToolExecutionError("Code could not be compiled under the sandbox")
-            byte_code = compiled.code
-
-            # One namespace, not globals and locals: with two, a function the
-            # code defines is a local, and nothing nested inside another
-            # function or a comprehension can see it.
-            scope = python_tool_sandbox.build_globals(modules)
-            scope.update({"input": inputs, "output": {}, "result": None})
-
-            # Execute with timeout
-            def run_code():
-                exec(byte_code, scope)
-                return scope.get("output") or scope.get("result")
-
-            # Run in thread with timeout
-            loop = asyncio.get_event_loop()
-            result = await asyncio.wait_for(
-                loop.run_in_executor(None, run_code), timeout=timeout
+            result = await python_tool_container.run(
+                config.get("code", ""),
+                inputs,
+                workdir=workdir,
+                timeout_seconds=config.get("timeout_seconds"),
             )
-
-            return result if isinstance(result, dict) else {"result": result}
-
-        except asyncio.TimeoutError:
-            raise ToolExecutionError(f"Execution timed out after {timeout}s")
-        except ImportError as exc:
-            # Raised by the submitted code, not by the sandbox: it asked for a
-            # module outside the allowlist. Say so, and say which are allowed.
-            raise ToolExecutionError(
-                f"The code imported a module the sandbox does not allow ({exc}). "
-                f"Allowed modules: {', '.join(sorted(modules))}. This sandbox "
-                "cannot run subprocesses or reach the filesystem."
-            )
-        except ToolExecutionError:
-            raise
-        except Exception as e:
-            raise ToolExecutionError(f"Python execution failed: {str(e)}")
+        except python_tool_container.PythonToolFailed as failed:
+            raise ToolExecutionError(str(failed))
+        return result if isinstance(result, dict) else {"result": result}
 
     async def _execute_llm_prompt(
         self,

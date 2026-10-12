@@ -11,11 +11,15 @@ from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.document import Document
+from app.models.document import Document, DocumentChunk
 from app.models.knowledge_graph import Entity, EntityMention, Relationship
 from app.services.vector_store import vector_store_service
 
 KG_REL_TYPES = ("uses_method", "evaluated_on", "targets_task")
+#: Chunks of *other* documents to consider, and the most of a document's own
+#: chunks the window is widened by.
+VECTOR_WINDOW = 80
+MAX_OWN_CHUNKS = 400
 
 
 class PaperRecommendationService:
@@ -40,7 +44,20 @@ class PaperRecommendationService:
             raise ValueError("Document not found")
 
         kg_hits, kg_entities = await self._kg_candidates(db, doc.id, limit=60)
-        vec_hits = await self._vector_candidates(doc, limit=80)
+        # The query is built from this document, so its own chunks are the
+        # best matches and are then discarded. Ask for that many more, or a
+        # long document fills the window with itself and has no neighbours.
+        own_chunks = int(
+            await db.scalar(
+                select(func.count(DocumentChunk.id)).where(
+                    DocumentChunk.document_id == doc.id
+                )
+            )
+            or 0
+        )
+        vec_hits = await self._vector_candidates(
+            doc, limit=VECTOR_WINDOW + min(own_chunks, MAX_OWN_CHUNKS)
+        )
 
         candidate_ids = set(kg_hits.keys()) | set(vec_hits.keys())
         candidate_ids.discard(doc.id)
@@ -53,6 +70,12 @@ class PaperRecommendationService:
             )
         )
         title_by_id = {row[0]: row[1] for row in docs_result.all()}
+        # A candidate with no row is not a document: vectors can outlive what
+        # they were made from, and a chunk id read as a document id is one
+        # too. It was recommended with a null title.
+        candidate_ids = {cid for cid in candidate_ids if cid in title_by_id}
+        if not candidate_ids:
+            return []
 
         max_kg = max((v for v, _ in kg_hits.values()), default=0)
         max_vec = max((v for v, _ in vec_hits.values()), default=0.0)
@@ -155,7 +178,10 @@ class PaperRecommendationService:
         best: Dict[UUID, Tuple[float, Optional[UUID]]] = {}
         for r in results or []:
             meta = r.get("metadata", {}) or {}
-            doc_id_raw = meta.get("document_id") or r.get("id")
+            # Only the chunk's recorded document. The result's own id is the
+            # chunk's, and reading that as a document id named a document
+            # that does not exist.
+            doc_id_raw = meta.get("document_id")
             try:
                 cand_id = UUID(str(doc_id_raw))
             except Exception:

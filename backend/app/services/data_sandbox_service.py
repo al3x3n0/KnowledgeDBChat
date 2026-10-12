@@ -16,6 +16,26 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
+from app.services.data_expression import check_expression
+
+#: What `aggregate` may be asked for. The name is looked up on the column,
+#: so an unlisted one would call whatever method it happened to name.
+AGGREGATIONS = frozenset(
+    {
+        "sum",
+        "mean",
+        "median",
+        "min",
+        "max",
+        "count",
+        "std",
+        "var",
+        "first",
+        "last",
+        "nunique",
+    }
+)
+
 
 class DataSandbox:
     """
@@ -235,12 +255,15 @@ class DataSandbox:
         """
         Execute a pandas query on a dataset.
 
-        Uses DataFrame.query() for safe execution.
+        The string is checked first (`data_expression.check_expression`) and
+        evaluated with empty scopes: `DataFrame.query` on its own resolves
+        `@name` against Python, and is not a sandbox.
         """
         df = self.get_dataset(dataset_id)
+        query_str = check_expression(query_str)
 
         try:
-            result_df = df.query(query_str)
+            result_df = df.query(query_str, local_dict={}, global_dict={})
 
             # Store result as new dataset
             result_id = self._generate_dataset_id("query_result")
@@ -370,6 +393,20 @@ class DataSandbox:
             aggregations = {
                 col: ["mean", "sum", "min", "max", "count"] for col in numeric_cols
             }
+
+        if not isinstance(aggregations, dict):
+            raise ValueError("aggregations must map a column to a list of names")
+        for col, aggs in aggregations.items():
+            if col not in df.columns:
+                raise ValueError(f"Column '{col}' not found in dataset")
+            names = [aggs] if isinstance(aggs, str) else list(aggs or [])
+            unknown = [a for a in names if a not in AGGREGATIONS]
+            if unknown:
+                raise ValueError(
+                    f"Unknown aggregation {unknown[0]!r}. Use one of: "
+                    f"{', '.join(sorted(AGGREGATIONS))}"
+                )
+            aggregations[col] = names
 
         try:
             if group_by:
@@ -523,8 +560,14 @@ class DataSandbox:
             elif op == "add_column":
                 name = operation.get("name")
                 expr = operation.get("expression")
-                # Safe eval using pandas eval
-                df[name] = df.eval(expr)
+                if not isinstance(name, str) or not name.strip():
+                    raise ValueError("add_column needs a name")
+                # Checked first, and evaluated with nothing in scope but the
+                # columns: `DataFrame.eval` alone is not safe on a string a
+                # model wrote.
+                df[name] = df.eval(
+                    check_expression(expr), local_dict={}, global_dict={}
+                )
 
             elif op == "select":
                 df = df[operation.get("columns", [])]

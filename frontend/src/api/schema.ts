@@ -26491,6 +26491,11 @@ export interface components {
             judge_model: string;
             /** Num Cases */
             num_cases: number;
+            /**
+             * Num Judged
+             * @default 0
+             */
+            num_judged: number;
             /** Results */
             results: Record<string, never>[];
             /** Template Id */

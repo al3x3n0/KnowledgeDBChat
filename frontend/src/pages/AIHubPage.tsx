@@ -2309,7 +2309,7 @@ const ModelsTab: React.FC = () => {
                   </div>
                 </div>
                 <div className="text-xs text-gray-500 mt-1">
-                  {lastEval.template_id} • {lastEval.num_cases} cases • judge: {lastEval.judge_model}
+                  {lastEval.template_id} • {lastEval.num_cases} cases{typeof lastEval.num_judged === 'number' && lastEval.num_judged < lastEval.num_cases ? ` (${lastEval.num_judged} judged)` : ''} • judge: {lastEval.judge_model}
                 </div>
               </div>
             )}

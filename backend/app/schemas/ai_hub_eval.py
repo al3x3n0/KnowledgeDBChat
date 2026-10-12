@@ -34,4 +34,6 @@ class RunEvalResponse(BaseModel):
     judge_model: str
     avg_score: float
     num_cases: int
+    # How many of them the judge actually scored; the average is over these.
+    num_judged: int = 0
     results: List[Dict[str, Any]]

@@ -342,6 +342,24 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   learned from under those rules.
 - **Document generation** — LaTeX projects with server-side compilation (dedicated `celery_latex` worker, disabled/admin-only by default via `LATEX_COMPILER_*`), DOCX editor, PPTX/presentation generation, PDF export, artifact drafts staged for review before publishing.
 - **Training / AI Hub** — datasets, fine-tuning jobs (`services/trainers/`, backends: local/modal/runpod), model registry, eval templates and benchmark harness. Gated by `TRAINING_ENABLED`.
+  **Deploying an adapter says what Ollama did** (`model_registry_service`,
+  `tests/test_model_registry.py`). Every error from Ollama was logged and
+  ignored "for demo purposes", so an adapter was recorded as deployed with
+  Ollama unreachable; a failure is `DeploymentFailed` (503) now and leaves the
+  adapter `ready`, since `can_deploy` never accepts `failed`. No undeploy
+  ever removed its model: `AsyncClient.delete(..., json=...)` is a TypeError,
+  which the surrounding `except` swallowed. Deploy and undeploy are the
+  owner's only (they went through the lookup that also returns other
+  people's public adapters), and a deployment may not take the name of a
+  model Ollama already has, because `ollama create` replaces it and
+  undeploying deletes it. **The adapter's weights are still not applied**: the
+  Modelfile names the base model only, so a "deployed adapter" answers as the
+  base model. Not built.
+  **An eval counts only what the judge scored** (`ai_hub_eval_service`). A
+  judge reply that was not a score from 1 to 5 was entered as a 3 and
+  averaged in; it is `judged: false` now and `num_judged` says how many
+  counted. The "last eval" summary was edited into the dict the JSON column
+  already held and never saved.
 - **Experiments & scientific validation** — experiment plans/runs, Docker-sandboxed validation with image allowlists and resource caps (`SCIENTIFIC_VALIDATION_*`, `UNSAFE_CODE_EXEC_*` settings).
 - **Navigation & UI customization** — the nav was a literal inside
   `Layout.tsx`: the same five doors for everyone, changeable only by editing

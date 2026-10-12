@@ -1018,6 +1018,23 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   beside it. The detail endpoint returns the campaign's items, the list does
   not — loading every question of every campaign to render rows that show none
   of them is a query per campaign for nothing.
+- **Everything waiting on a person is one page** (`/review`, first in the
+  R&D door; `GET /review`, `modules/review/application/review_inbox.py`). The
+  decisions a person owes were on five pages under three doors: runs waiting
+  for sign-off, drafts in review, proposed patches, skills a run proposed,
+  the research inbox -- and tool approvals on the Admin page only, so anyone
+  who was not an admin had nowhere to approve an action waiting on *them*.
+  The page composes them and owns none: each section is read the way its own
+  page reads it (for runs, the operator queue's composer itself, so the two
+  cannot disagree about what a queue row is) and links there. Three choices
+  are deliberate. A section that cannot be read says so, with a savepoint
+  around each so one failure does not poison the rest, and its count is
+  "unknown", not zero. An approval waits on each person who still owes one
+  (`approval_waits_on`): the owner is not asked again while the admin's half
+  is outstanding. And approving from this page **runs** the action once
+  nobody else's approval is owed, because approval is consent for it to
+  happen; the Admin page still has the two as separate buttons. The queue's
+  monitor and portfolio rows are standing configuration and are not counted.
 - **The operator queue shows three different things.** An `approval_checkpoint`
   is a proposal awaiting sign-off; a `blocked_run` is a run that stopped
   because it needs a person and has nothing to propose

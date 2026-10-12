@@ -95,6 +95,9 @@ function item(
   return { key: navKey(to), name, to, icon, visibility };
 }
 
+/** The one entry that carries a count: what is waiting on this person. */
+export const REVIEW_ROUTE = '/review';
+
 /**
  * A door is one of the four things this application is for.
  *
@@ -139,6 +142,10 @@ export const NAV_CATALOG: NavDoor[] = [
     name: 'R&D',
     icon: Zap,
     sections: [
+      // Every decision a person owes, whichever door it was made behind:
+      // runs waiting for sign-off, approvals, patches, drafts, the inbox.
+      // First, because it is what to look at before starting anything new.
+      item('Review', REVIEW_ROUTE, ClipboardCheck),
       item('Runs', '/autonomous-agents', Zap),
       item('Campaigns', '/campaigns', Rocket),
       // A portfolio accumulates; a campaign concludes. Neighbours, not synonyms.

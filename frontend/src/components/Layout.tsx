@@ -19,11 +19,12 @@ import NotificationBell from './notifications/NotificationBell';
 import { useQuery } from 'react-query';
 import { apiClient } from '../services/api';
 import type { NavItem } from '../navigation/catalog';
+import { REVIEW_ROUTE } from '../navigation/catalog';
 import {
   isActiveNavItem as isActiveItem,
   useNavigation,
 } from '../navigation/useNavigation';
-import type { SystemHealth } from '../types';
+import type { ReviewInbox, SystemHealth } from '../types';
 
 const Layout: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -102,6 +103,30 @@ const Layout: React.FC = () => {
       retry: 1,
     }
   );
+
+  // How many decisions are waiting on this person. Shown on the Review entry
+  // and on the door that holds it, so it is visible from any other door: a
+  // list nobody is told about is a list nobody opens. Same query key as the
+  // Review page, so acting there updates the number here.
+  const { data: reviewInbox } = useQuery<ReviewInbox>(
+    ['reviewInbox'],
+    () => apiClient.getReviewInbox(),
+    {
+      enabled: !!user,
+      refetchInterval: 60000,
+      retry: false,
+    }
+  );
+  const reviewCount = reviewInbox?.total || 0;
+  const waitingBadge = (item: NavItem) =>
+    item.key === REVIEW_ROUTE && reviewCount > 0 ? (
+      <span
+        className="ml-auto rounded-full bg-primary-600 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white"
+        aria-label={`${reviewCount} waiting on you`}
+      >
+        {reviewCount > 99 ? '99+' : reviewCount}
+      </span>
+    ) : null;
 
   // The navigation is a catalog plus this person's own arrangement of it --
   // see `src/navigation/`. It used to be a literal here, which meant everyone
@@ -211,6 +236,9 @@ const Layout: React.FC = () => {
                       ${isActive ? '' : 'group-hover:scale-110'}`}
                   />
                   <span className="truncate">{door.name}</span>
+                  {door.sections.map((item) => (
+                    <React.Fragment key={item.key}>{waitingBadge(item)}</React.Fragment>
+                  ))}
                 </Link>
               );
             })}
@@ -335,6 +363,7 @@ const Layout: React.FC = () => {
                         >
                           <Icon className="w-4 h-4 flex-shrink-0" />
                           <span className="truncate">{item.name}</span>
+                          {waitingBadge(item)}
                         </Link>
                       );
                     })}
@@ -360,6 +389,7 @@ const Layout: React.FC = () => {
                     >
                       <Icon className="w-4 h-4 flex-shrink-0" />
                       <span className="truncate">{item.name}</span>
+                      {waitingBadge(item)}
                     </Link>
                   );
                 })}

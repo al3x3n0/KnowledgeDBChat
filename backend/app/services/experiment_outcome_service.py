@@ -236,6 +236,17 @@ def _apply_experiment_outcome_to_row(
     return normalize_research_opportunity(updated)
 
 
+def _same_owner(target: Any, run: ExperimentRun) -> bool:
+    """Whether the run's owner owns the thing its config points at.
+
+    The origin is read from the run's own config, which its owner writes. An
+    id found there named the profile or portfolio to update whoever it
+    belonged to, so a run could record its outcome on someone else's
+    opportunity.
+    """
+    return _text(getattr(target, "user_id", None)) == _text(run.user_id)
+
+
 async def _get_model_by_id(db: AsyncSession, model: type, value: str):
     text = _text(value)
     if not text:
@@ -264,7 +275,7 @@ async def reconcile_experiment_run_outcome_to_originating_opportunity(
 
     if source_kind == "profile":
         profile = await _get_model_by_id(db, DomainResearchProfile, source_id)
-        if profile is None:
+        if profile is None or not _same_owner(profile, run):
             return False
         summary = (
             dict(profile.latest_summary)
@@ -307,7 +318,7 @@ async def reconcile_experiment_run_outcome_to_originating_opportunity(
         return True
 
     portfolio = await _get_model_by_id(db, ResearchPortfolio, source_id)
-    if portfolio is None:
+    if portfolio is None or not _same_owner(portfolio, run):
         return False
     rows = list_normalized_research_opportunities(portfolio.opportunities or [])
     idx = next(

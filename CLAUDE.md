@@ -663,6 +663,20 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   but it had the same leak and now also sets `no-new-privileges` and a pids
   limit. It still does not drop capabilities: that could break a tool that
   legitimately runs as root, and is a decision rather than a cleanup.
+- **A dataset expression a model writes is parsed before pandas sees it**
+  (`services/data_expression.check_expression`). `query_data` and
+  `transform_data` passed their string to `DataFrame.query` / `.eval` under a
+  comment calling it safe. It is not: `@name` resolves against the caller's
+  Python scope (`@pd.io.common.os...` runs a command in the worker, which
+  holds the database credentials), and an attribute chain reaches the object
+  graph and the filesystem with no `@` at all (`a.__class__...`,
+  `a.to_csv(path)`). Each evaluated on the real library. The check allows
+  columns, constants, arithmetic, comparisons, boolean logic and fixed lists
+  of functions and column methods; the call is also made with empty scopes.
+  Aggregation names are a fixed list for the same reason: the name is looked
+  up on the column. **"Sandbox" in `data_sandbox_service` means per-job
+  datasets in the worker's memory, not isolation**; code that must be
+  confined runs through `agent_sandbox_runtime`.
 - **Tool governance** — `tool_registry.py` + `tool_policy_engine.py` + `models/tool_audit.py`; per-user tool policies, approval gates for dangerous tools (`AGENT_REQUIRE_TOOL_APPROVAL`, `AGENT_DANGEROUS_TOOLS`), full execution audit log, user-defined custom tools (optionally Docker-executed). Tool handlers live one module per provider in `services/agent_tool_providers/` (the registry and provider types in `base`, helpers several providers share in `common`); `agent_tool_dispatch.py` was a 12,000-line module holding all of them and is now a facade re-exporting every name. A test that reads handler source must read the provider modules, and one that patches a module global must patch it where the provider looks it up: three source checks (LLM snapshot coverage, tool effects, the removed 12,000-character cap) look for the *absence* of something and would have passed against the facade while checking nothing. Every tool is **declared once** in `app/agent_core/tool_specs/` (one module per domain): the schema a model reads, the governance classification, which job types may call it, and — for measurement tools — what evidence it produces. `agent_tools.AGENT_TOOLS`, the catalog, the job-type policy and the evidence map are all views of those specs, so adding a tool is a handler plus a `ToolSpec`, not four files kept in step by hand. `tests/test_tool_specs.py` enforces it.
 - **Chains are retired as an authoring concept.** `POST`/`PATCH
   /agent-jobs/chains` are marked `deprecated` in the OpenAPI schema and the

@@ -339,3 +339,103 @@ def test_nothing_else_writes_its_own_answer_retrieval():
     body = agent[start : agent.index("    async def ", start + 10)]
     assert "retrieve_for_answer" in body
     assert "vector_store.search(" not in body
+
+
+# --------------------------------------------------------------------------
+# every such answer can be inspected afterwards
+# --------------------------------------------------------------------------
+
+
+async def test_an_answer_from_the_agents_tool_leaves_a_trace(
+    db_session, test_user, model
+):
+    good, noise = await _documents(db_session, "Prefetching survey", "Lunch menu")
+    store = _Store([_hit(good, 0.82), _hit(noise, 0.05)])
+
+    result = await _agent(store)._tool_answer_question(
+        {"question": "How does stride work?"}, test_user.id, db_session
+    )
+    await db_session.commit()
+
+    from uuid import UUID
+
+    trace = await db_session.get(RetrievalTrace, UUID(result["retrieval_trace_id"]))
+    assert trace.trace_type == "tool"
+    assert trace.user_id == test_user.id
+    assert trace.session_id is None
+    assert trace.query == "How does stride work?"
+    assert [r["title"] for r in trace.trace["selected_results"]] == [
+        "Prefetching survey"
+    ]
+    assert trace.settings_snapshot["min_relevance"] == settings.RAG_MIN_RELEVANCE_SCORE
+
+
+async def test_the_tool_does_not_commit_the_turns_transaction(
+    db_session, test_user, model
+):
+    """It runs inside a chat turn or a job: what that has not committed must
+    still be the caller's to roll back."""
+    (doc,) = await _documents(db_session, "Paper")
+    pending = DocumentSource(
+        name=f"pending-{uuid4().hex[:6]}", source_type="file", config={}
+    )
+    db_session.add(pending)
+
+    result = await _agent(_Store([_hit(doc, 0.9)]))._tool_answer_question(
+        {"question": "What does it say?"}, test_user.id, db_session
+    )
+    await db_session.rollback()
+
+    from uuid import UUID
+
+    assert result["answer"] == "The answer."
+    assert (
+        await db_session.get(RetrievalTrace, UUID(result["retrieval_trace_id"])) is None
+    )
+    assert (
+        await db_session.execute(
+            select(DocumentSource).where(DocumentSource.name == pending.name)
+        )
+    ).scalar_one_or_none() is None
+
+
+async def test_an_answer_with_nothing_to_go_on_leaves_no_trace_id(
+    db_session, test_user, model
+):
+    result = await _agent(_Store([]))._tool_answer_question(
+        {"question": "Anything?"}, test_user.id, db_session
+    )
+
+    assert "retrieval_trace_id" not in result
+
+
+async def test_an_mcp_answer_leaves_a_trace(db_session, test_user, model, monkeypatch):
+    from types import SimpleNamespace
+    from uuid import UUID
+
+    from app.mcp.auth import MCPAuthContext
+    from app.mcp.tools import chat as mcp_chat
+    from app.mcp.tools.chat import ChatTool
+
+    (doc,) = await _documents(db_session, "Paper")
+    monkeypatch.setattr(mcp_chat, "vector_store_service", _Store([_hit(doc, 0.9)]))
+    key = SimpleNamespace(has_scope=lambda scope: True)
+    auth = MCPAuthContext(user=test_user, api_key=key, scopes=["chat"])
+
+    result = await ChatTool().execute(auth, db_session, question="What does it say?")
+
+    assert result["context_found"] is True
+    trace = await db_session.get(RetrievalTrace, UUID(result["retrieval_trace_id"]))
+    assert trace.trace_type == "mcp" and trace.user_id == test_user.id
+
+
+async def test_the_chat_pages_trace_is_still_a_chat_trace(db_session, test_user, model):
+    (doc,) = await _documents(db_session, "Paper")
+
+    session, message = await _chat(
+        db_session, test_user, _Store([_hit(doc, 0.9)]), "What does it say?"
+    )
+
+    trace = await db_session.get(RetrievalTrace, message.retrieval_trace_id)
+    assert trace.trace_type == "chat" and trace.session_id == session.id
+    assert trace.settings_snapshot["provider"] == "fake"

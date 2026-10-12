@@ -337,3 +337,60 @@ def confidence_of(results: List[Dict[str, Any]]) -> str:
     scores = [float(r.get("score") or 0.0) for r in results]
     average = sum(scores) / len(scores) if scores else 0.0
     return "high" if average > 0.7 else "medium" if average > 0.4 else "low"
+
+
+async def record_trace(
+    db: AsyncSession,
+    retrieved: Retrieved,
+    *,
+    query: str,
+    user_id: Any,
+    vector_store: Any,
+    trace_type: str,
+    session_id: Any = None,
+    commit: bool = True,
+) -> Any:
+    """Store how an answer's passages were found, and return the row.
+
+    Only the chat page did this, so an answer from the agent's tool or from
+    MCP could not be inspected afterwards: there was no record of which
+    passages it had been written from or why those. `trace_type` says which
+    surface asked ("chat", "tool", "mcp").
+
+    `commit=False` flushes instead, for a caller working inside somebody
+    else's transaction: the row is written when that transaction commits.
+    """
+    from app.models.retrieval_trace import RetrievalTrace
+
+    provider = getattr(vector_store, "provider", None)
+    row = RetrievalTrace(
+        user_id=user_id,
+        session_id=session_id,
+        trace_type=trace_type,
+        query=query,
+        processed_query=retrieved.search_query,
+        provider=provider,
+        settings_snapshot={
+            "provider": provider,
+            "hybrid_enabled": bool(
+                getattr(settings, "RAG_HYBRID_SEARCH_ENABLED", False)
+            ),
+            "hybrid_alpha": float(getattr(settings, "RAG_HYBRID_SEARCH_ALPHA", 0.0)),
+            "rerank_enabled": bool(getattr(settings, "RAG_RERANKING_ENABLED", False)),
+            "rerank_model": getattr(settings, "RAG_RERANKING_MODEL", None),
+            "mmr_enabled": bool(getattr(settings, "RAG_MMR_ENABLED", False)),
+            "dedup_enabled": bool(
+                getattr(settings, "RAG_DEDUPLICATION_ENABLED", False)
+            ),
+            "min_relevance": float(getattr(settings, "RAG_MIN_RELEVANCE_SCORE", 0.0)),
+            "max_search_results": int(getattr(settings, "MAX_SEARCH_RESULTS", 0)),
+        },
+        trace=retrieved.trace,
+    )
+    db.add(row)
+    if commit:
+        await db.commit()
+        await db.refresh(row)
+    else:
+        await db.flush()
+    return row

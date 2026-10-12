@@ -20,7 +20,7 @@ from app.services.context_manager import ContextManager
 from app.services.llm_service import LLMService, UserLLMSettings
 from app.services.memory_service import MemoryService
 from app.services.query_processor import QueryProcessor
-from app.services.rag_retrieval import retrieve
+from app.services.rag_retrieval import record_trace, retrieve
 from app.services.vector_store import vector_store_service
 
 #: The title a session gets when nobody names it. Only this exact shape is
@@ -380,13 +380,11 @@ class ChatService:
                 llm_service=self.llm_service,
                 user_settings=effective_user_settings,
             )
-            search_query = retrieved.search_query
             processed_query = retrieved.processed_query
             search_results = retrieved.results
             context = retrieved.context
             kg_context = retrieved.kg_context
             context_metrics = retrieved.context_metrics
-            retrieval_trace_payload = retrieved.trace
 
             memory_context = self._build_memory_context(relevant_memories)
             conversation_history = self._build_conversation_history(
@@ -424,43 +422,17 @@ class ChatService:
             from sqlalchemy import select as sql_select
 
             from app.models.document import Document
-            from app.models.retrieval_trace import RetrievalTrace
             from app.services.storage_service import storage_service
 
-            settings_snapshot = {
-                "provider": getattr(self.vector_store, "provider", None),
-                "hybrid_enabled": bool(
-                    getattr(settings, "RAG_HYBRID_SEARCH_ENABLED", False)
-                ),
-                "hybrid_alpha": float(
-                    getattr(settings, "RAG_HYBRID_SEARCH_ALPHA", 0.0)
-                ),
-                "rerank_enabled": bool(
-                    getattr(settings, "RAG_RERANKING_ENABLED", False)
-                ),
-                "rerank_model": getattr(settings, "RAG_RERANKING_MODEL", None),
-                "mmr_enabled": bool(getattr(settings, "RAG_MMR_ENABLED", False)),
-                "dedup_enabled": bool(
-                    getattr(settings, "RAG_DEDUPLICATION_ENABLED", False)
-                ),
-                "min_relevance": float(
-                    getattr(settings, "RAG_MIN_RELEVANCE_SCORE", 0.0)
-                ),
-                "max_search_results": int(getattr(settings, "MAX_SEARCH_RESULTS", 0)),
-            }
-            retrieval_trace = RetrievalTrace(
-                user_id=user_id,
-                session_id=session_id,
-                trace_type="chat",
+            retrieval_trace = await record_trace(
+                db,
+                retrieved,
                 query=query,
-                processed_query=search_query,
-                provider=getattr(self.vector_store, "provider", None),
-                settings_snapshot=settings_snapshot,
-                trace=retrieval_trace_payload,
+                user_id=user_id,
+                vector_store=self.vector_store,
+                trace_type="chat",
+                session_id=session_id,
             )
-            db.add(retrieval_trace)
-            await db.commit()
-            await db.refresh(retrieval_trace)
 
             # Batch fetch documents to avoid N+1 queries
             doc_ids = set()

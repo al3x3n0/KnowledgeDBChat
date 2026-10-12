@@ -3146,6 +3146,7 @@ Provide a 2-3 sentence comparison highlighting key similarities and differences.
         from app.services.rag_retrieval import (
             cited_sources,
             confidence_of,
+            record_trace,
             retrieve_for_answer,
         )
 
@@ -3185,12 +3186,29 @@ Provide a 2-3 sentence comparison highlighting key similarities and differences.
             )
 
             sources = cited_sources(retrieved.results, limit=max_sources)
-            return {
+            result = {
                 "answer": answer.strip(),
                 "sources": sources,
                 "source_count": len(sources),
                 "confidence": confidence_of(retrieved.results),
             }
+            # Recorded so the answer can be inspected afterwards, as a chat
+            # page answer can. Flushed, not committed: this runs inside the
+            # turn's transaction. Never a reason for the answer to fail.
+            try:
+                trace = await record_trace(
+                    db,
+                    retrieved,
+                    query=question,
+                    user_id=user_id,
+                    vector_store=self.vector_store,
+                    trace_type="tool",
+                    commit=False,
+                )
+                result["retrieval_trace_id"] = str(trace.id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"answer_question: trace not recorded: {exc}")
+            return result
 
         except Exception as e:
             logger.error(f"Error answering question: {e}")

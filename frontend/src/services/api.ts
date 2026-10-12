@@ -6,6 +6,7 @@ import type { components } from '../api/schema';
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import toast from 'react-hot-toast';
 import {
+  ReviewInbox,
   User,
   ChatSession,
   ChatMessage,
@@ -1720,6 +1721,12 @@ class ApiClient {
     request: components['schemas']['LdapImportRequest']
   ): Promise<components['schemas']['LdapImportResponse']> {
     const response = await this.client.post('/api/v1/admin/ldap/import', request);
+    return response.data;
+  }
+
+  // Everything waiting on the signed-in person, across the doors.
+  async getReviewInbox(): Promise<ReviewInbox> {
+    const response = await this.client.get('/api/v1/review');
     return response.data;
   }
 

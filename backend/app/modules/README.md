@@ -105,3 +105,9 @@ and the arXiv ingest a research presentation starts with. It raises
 `Refused` with a kind; `api/endpoints/presentations.py` maps kinds to status
 codes, queues the generation task and keeps the response builders and the
 progress socket.
+
+`modules/review/application/review_inbox.py` composes what is waiting on one
+person from the areas that own it (runs through the operator queue's own
+composer, tool approvals, patches, drafts, proposed skills, the research
+inbox). It owns no rows and no rule but one: whom an undecided tool approval
+is waiting on. `api/endpoints/review.py` only shapes the answer.

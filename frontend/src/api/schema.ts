@@ -8836,6 +8836,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Review Inbox
+         * @description Every decision this person owes, grouped by where it is made.
+         */
+        get: operations["get_review_inbox_api_v1_review_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sandbox-skills": {
         parameters: {
             query?: never;
@@ -26440,6 +26460,53 @@ export interface components {
             evidence: string;
             /** Reason */
             reason: string;
+        };
+        /** ReviewInboxResponse */
+        ReviewInboxResponse: {
+            /** Sections */
+            sections: components["schemas"]["ReviewSectionResponse"][];
+            /** Total */
+            total: number;
+        };
+        /** ReviewItemResponse */
+        ReviewItemResponse: {
+            /** Detail */
+            detail?: string | null;
+            /** Id */
+            id: string;
+            /** Kind */
+            kind?: string | null;
+            /** Link */
+            link?: string | null;
+            /** Title */
+            title: string;
+            /** Waiting Since */
+            waiting_since?: string | null;
+        };
+        /** ReviewSectionResponse */
+        ReviewSectionResponse: {
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            /** Description */
+            description: string;
+            /** Error */
+            error?: string | null;
+            /**
+             * Items
+             * @default []
+             */
+            items: components["schemas"]["ReviewItemResponse"][];
+            /** Key */
+            key: string;
+            /** Link */
+            link: string;
+            /** Oldest */
+            oldest?: string | null;
+            /** Title */
+            title: string;
         };
         /** ReviewSynthesisJobRequest */
         ReviewSynthesisJobRequest: {
@@ -47305,6 +47372,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RetrievalTraceResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_review_inbox_api_v1_review_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewInboxResponse"];
                 };
             };
             /** @description Validation Error */

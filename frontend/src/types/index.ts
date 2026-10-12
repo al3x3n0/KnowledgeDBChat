@@ -6143,3 +6143,31 @@ export interface ContractSuggestion {
 export interface ContractSuggestions {
   suggestions: Record<string, ContractSuggestion[]>;
 }
+
+/** One thing waiting on a person, as `GET /review` names it. */
+export interface ReviewItem {
+  id: string;
+  title: string;
+  detail?: string | null;
+  waiting_since?: string | null;
+  link?: string | null;
+  kind?: string | null;
+}
+
+/** One kind of decision and the page that owns it. */
+export interface ReviewSection {
+  key: string;
+  title: string;
+  description: string;
+  link: string;
+  count: number;
+  oldest?: string | null;
+  items: ReviewItem[];
+  /** Set when the section could not be read: its count is unknown, not zero. */
+  error?: string | null;
+}
+
+export interface ReviewInbox {
+  total: number;
+  sections: ReviewSection[];
+}

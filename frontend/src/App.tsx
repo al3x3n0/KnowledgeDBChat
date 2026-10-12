@@ -17,6 +17,7 @@ const ChatPage = lazy(() => import('./pages/ChatPage'));
 const DocumentsPage = lazy(() => import('./pages/DocumentsPage'));
 const MemoryPage = lazy(() => import('./pages/MemoryPage'));
 const CampaignsPage = lazy(() => import('./pages/CampaignsPage'));
+const ReviewPage = lazy(() => import('./pages/ReviewPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const AdminPage = lazy(() => import('./pages/AdminPage'));
 const KGAdminPage = lazy(() => import('./pages/KGAdminPage'));
@@ -374,6 +375,14 @@ const AppRoutes: React.FC = () => {
             element={
               <Suspense fallback={<PageLoader />}>
                 <PipelineStudioPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="review"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <ReviewPage />
               </Suspense>
             }
           />

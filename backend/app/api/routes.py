@@ -53,6 +53,7 @@ from app.api.endpoints import (
     research_papers,
     research_portfolios,
     retrieval_traces,
+    review,
     sandbox_skills,
     scientific_sandbox_profiles,
     searches,
@@ -155,6 +156,7 @@ api_router.include_router(
     prefix="/domain-research-profiles",
     tags=["domain-research-profiles"],
 )
+api_router.include_router(review.router, prefix="/review", tags=["review"])
 api_router.include_router(
     research_campaigns.router,
     prefix="/research/campaigns",

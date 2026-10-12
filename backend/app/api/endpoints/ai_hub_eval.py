@@ -19,7 +19,7 @@ from app.schemas.ai_hub_eval import (
     RunEvalRequest,
     RunEvalResponse,
 )
-from app.services.ai_hub_eval_service import ai_hub_eval_service
+from app.services.ai_hub_eval_service import EvalUnavailable, ai_hub_eval_service
 from app.services.model_registry_service import model_registry_service
 
 router = APIRouter()
@@ -122,32 +122,43 @@ async def run_eval(
     candidate_model = adapter.get_ollama_model_name()
     judge_model = payload.judge_model or base_model
 
-    report = await ai_hub_eval_service.run_eval(
-        template=template,
-        base_model=base_model,
-        candidate_model=candidate_model,
-        judge_model=judge_model,
-    )
+    try:
+        report = await ai_hub_eval_service.run_eval(
+            template=template,
+            base_model=base_model,
+            candidate_model=candidate_model,
+            judge_model=judge_model,
+        )
+    except EvalUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        )
 
     # Store a lightweight summary on the adapter for "last eval" display.
-    if adapter.training_metrics is None:
-        adapter.training_metrics = {}
-    eval_runs = adapter.training_metrics.get("eval_runs") or []
-    if not isinstance(eval_runs, list):
-        eval_runs = []
-    eval_runs.append(
-        {
-            "template_id": report["template_id"],
-            "template_version": report["template_version"],
-            "avg_score": report["avg_score"],
-            "num_cases": report["num_cases"],
-            "judge_model": report["judge_model"],
-            "candidate_model": report["candidate_model"],
-            "base_model": report["base_model"],
-            "ran_at": datetime.utcnow().isoformat(),
-        }
-    )
-    adapter.training_metrics["eval_runs"] = eval_runs[-20:]
-    await db.commit()
+    # Only on the caller's own adapter: a public one can be evaluated by
+    # anyone who can see it, and their runs are not its owner's record.
+    if adapter.user_id == current_user.id:
+        metrics = dict(adapter.training_metrics or {})
+        eval_runs = metrics.get("eval_runs")
+        eval_runs = list(eval_runs) if isinstance(eval_runs, list) else []
+        eval_runs.append(
+            {
+                "template_id": report["template_id"],
+                "template_version": report["template_version"],
+                "avg_score": report["avg_score"],
+                "num_cases": report["num_cases"],
+                "num_judged": report["num_judged"],
+                "judge_model": report["judge_model"],
+                "candidate_model": report["candidate_model"],
+                "base_model": report["base_model"],
+                "ran_at": datetime.utcnow().isoformat(),
+            }
+        )
+        metrics["eval_runs"] = eval_runs[-20:]
+        # A new dict, assigned: the column is plain JSON, which does not see
+        # an edit made inside the dict it already holds. Every run after the
+        # first training metrics existed was computed and then not saved.
+        adapter.training_metrics = metrics
+        await db.commit()
 
     return RunEvalResponse(**report)

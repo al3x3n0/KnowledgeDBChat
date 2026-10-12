@@ -40230,6 +40230,11 @@
             "title": "Num Cases",
             "type": "integer"
           },
+          "num_judged": {
+            "default": 0,
+            "title": "Num Judged",
+            "type": "integer"
+          },
           "results": {
             "items": {
               "type": "object"

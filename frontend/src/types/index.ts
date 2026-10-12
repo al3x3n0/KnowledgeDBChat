@@ -5857,6 +5857,7 @@ export interface TrainingEvalRunResponse {
   judge_model: string;
   avg_score: number;
   num_cases: number;
+  num_judged?: number;
   results: Array<Record<string, any>>;
 }
 

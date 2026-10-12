@@ -4,6 +4,7 @@ Model Registry Service for AI Hub.
 Manages trained model adapters: listing, deployment to Ollama, and inference.
 """
 
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -17,6 +18,28 @@ from app.core.config import settings
 from app.models.model_registry import AdapterStatus, ModelAdapter
 from app.schemas.training import DeployAdapterRequest, ModelAdapterUpdate
 from app.services.storage_service import storage_service
+
+# What Ollama accepts as a model name: a name and an optional tag.
+_MODEL_NAME = re.compile(r"^[a-z0-9][a-z0-9._/-]*(:[A-Za-z0-9._-]+)?$")
+
+
+class DeploymentFailed(Exception):
+    """Ollama did not create the model. Not the caller's request at fault."""
+
+
+def _one_line(value: Any) -> str:
+    """A value safe to put on one line of a Modelfile.
+
+    The file is line-oriented: a display name containing a line break would
+    add a directive of its author's choosing.
+    """
+    return " ".join(str(value or "").split())
+
+
+def _model_keys(name: str) -> set:
+    """The names one Ollama model answers to: `x` and `x:latest` are one."""
+    name = str(name or "").strip()
+    return {name, f"{name}:latest"} if ":" not in name else {name}
 
 
 class ModelRegistryService:
@@ -138,6 +161,44 @@ class ModelRegistryService:
         logger.info(f"Deleted adapter {adapter_id}")
         return True
 
+    async def _owned_adapter(
+        self, db: AsyncSession, adapter_id: UUID, user_id: UUID
+    ) -> ModelAdapter:
+        """An adapter the caller may change, or ValueError.
+
+        `get_adapter` also returns other people's public adapters, which is
+        right for reading and testing. Deploying and undeploying went through
+        it too, so anyone could do either to an adapter that was merely
+        shared with them.
+        """
+        adapter = await self.get_adapter(db, adapter_id, user_id)
+        if not adapter or adapter.user_id != user_id:
+            raise ValueError(f"Adapter {adapter_id} not found")
+        return adapter
+
+    async def _name_is_taken(
+        self, db: AsyncSession, adapter: ModelAdapter, model_name: str
+    ) -> Optional[str]:
+        """Why this name cannot be used, or None.
+
+        `ollama create` replaces a model of the same name and undeploying
+        deletes by name, so a deployment called after the installation's own
+        chat model would overwrite it and later remove it.
+        """
+        wanted = _model_keys(model_name)
+        others = await db.execute(
+            select(ModelAdapter).where(
+                ModelAdapter.is_deployed.is_(True), ModelAdapter.id != adapter.id
+            )
+        )
+        for other in others.scalars().all():
+            if wanted & _model_keys(other.get_ollama_model_name() or ""):
+                return "another adapter is deployed under that name"
+        for existing in await self.get_deployed_models():
+            if wanted & _model_keys(existing.get("name") or ""):
+                return "Ollama already has a model of that name"
+        return None
+
     async def deploy_to_ollama(
         self,
         db: AsyncSession,
@@ -148,11 +209,11 @@ class ModelRegistryService:
         """
         Deploy an adapter to Ollama as a custom model.
 
-        Creates a Modelfile and registers the model with Ollama.
+        Creates a Modelfile and registers the model with Ollama. Raises
+        ValueError for a request that cannot be honoured and DeploymentFailed
+        when Ollama did not create the model.
         """
-        adapter = await self.get_adapter(db, adapter_id, user_id)
-        if not adapter:
-            raise ValueError(f"Adapter {adapter_id} not found")
+        adapter = await self._owned_adapter(db, adapter_id, user_id)
 
         if not adapter.can_deploy():
             raise ValueError(f"Adapter cannot be deployed (status: {adapter.status})")
@@ -162,44 +223,42 @@ class ModelRegistryService:
             request.ollama_model_name
             if request and request.ollama_model_name
             else adapter.name
-        )
+        ).strip()
+        if not _MODEL_NAME.match(model_name):
+            raise ValueError(
+                "Model name must be lower-case letters, digits, '.', '_' or "
+                "'-', with an optional ':tag'"
+            )
+        taken = await self._name_is_taken(db, adapter, model_name)
+        if taken:
+            raise ValueError(f"Cannot deploy as '{model_name}': {taken}")
 
         adapter.status = AdapterStatus.DEPLOYING.value
         await db.commit()
 
         try:
-            # In production, we would:
-            # 1. Download adapter weights from MinIO
-            # 2. Merge adapter with base model
-            # 3. Create Modelfile
-            # 4. Call Ollama API to create model
-
-            # For now, simulate deployment
-            # This would be: ollama create {model_name} -f Modelfile
-
-            # Create the custom model via Ollama API
             await self._create_ollama_model(adapter, model_name)
-
-            # Update adapter record
-            adapter.is_deployed = True
-            adapter.status = AdapterStatus.DEPLOYED.value
-            adapter.deployment_config = {
-                "ollama_model_name": model_name,
-                "deployed_at": datetime.utcnow().isoformat(),
-            }
-            adapter.updated_at = datetime.utcnow()
-
-            await db.commit()
-            await db.refresh(adapter)
-
-            logger.info(f"Deployed adapter {adapter_id} as Ollama model '{model_name}'")
-            return adapter
-
         except Exception as e:
-            adapter.status = AdapterStatus.FAILED.value
-            adapter.deployment_config = {"error": str(e)}
+            # Back to READY, not FAILED: `can_deploy` requires READY, so one
+            # outage used to leave the adapter undeployable for good.
+            adapter.status = AdapterStatus.READY.value
+            adapter.deployment_config = {"last_error": str(e)[:500]}
             await db.commit()
-            raise ValueError(f"Failed to deploy adapter: {e}")
+            raise DeploymentFailed(f"Failed to deploy adapter: {e}") from e
+
+        adapter.is_deployed = True
+        adapter.status = AdapterStatus.DEPLOYED.value
+        adapter.deployment_config = {
+            "ollama_model_name": model_name,
+            "deployed_at": datetime.utcnow().isoformat(),
+        }
+        adapter.updated_at = datetime.utcnow()
+
+        await db.commit()
+        await db.refresh(adapter)
+
+        logger.info(f"Deployed adapter {adapter_id} as Ollama model '{model_name}'")
+        return adapter
 
     async def _create_ollama_model(
         self,
@@ -207,25 +266,26 @@ class ModelRegistryService:
         model_name: str,
     ):
         """
-        Create a custom model in Ollama.
+        Create a custom model in Ollama, or raise.
 
-        This is a simplified implementation. In production:
-        1. Download adapter weights
-        2. Merge with base model weights
-        3. Create GGUF or safetensors format
-        4. Register with Ollama
+        The Modelfile names the base model only: **the adapter's weights are
+        not applied**, so what is created answers as the base model under a
+        new name. Merging them is not built.
+
+        Every failure used to be logged and ignored ("continue anyway for
+        demo purposes"), so an adapter was recorded as deployed with Ollama
+        unreachable or refusing the request.
         """
-        # Build Modelfile content
-        modelfile = f"""FROM {adapter.base_model}
+        metrics = adapter.training_metrics or {}
+        modelfile = f"""FROM {_one_line(adapter.base_model)}
 
-# Custom adapter: {adapter.display_name}
-# Trained on: {adapter.training_metrics.get('training_date', 'unknown')}
+# Custom adapter: {_one_line(adapter.display_name)}
+# Trained on: {_one_line(metrics.get('training_date', 'unknown'))}
 
 PARAMETER temperature 0.7
 PARAMETER top_p 0.9
 """
 
-        # Call Ollama create API
         async with httpx.AsyncClient() as client:
             try:
                 response = await client.post(
@@ -233,22 +293,19 @@ PARAMETER top_p 0.9
                     json={
                         "name": model_name,
                         "modelfile": modelfile,
+                        "stream": False,
                     },
                     timeout=300.0,  # Model creation can take time
                 )
+            except httpx.TimeoutException as e:
+                raise RuntimeError("Ollama did not answer in time") from e
+            except httpx.HTTPError as e:
+                raise RuntimeError(f"Ollama is not reachable: {e}") from e
 
-                if response.status_code not in (200, 201):
-                    logger.warning(
-                        f"Ollama create returned {response.status_code}: {response.text}"
-                    )
-                    # For now, we'll consider it a success if we can proceed
-                    # In production, this would be a real error
-
-            except httpx.TimeoutException:
-                logger.warning("Ollama create timed out - model may still be creating")
-            except Exception as e:
-                logger.warning(f"Ollama create failed: {e}")
-                # Continue anyway for demo purposes
+        if response.status_code not in (200, 201):
+            raise RuntimeError(
+                f"Ollama answered {response.status_code}: {response.text[:300]}"
+            )
 
     async def undeploy_from_ollama(
         self,
@@ -257,9 +314,7 @@ PARAMETER top_p 0.9
         user_id: UUID,
     ) -> ModelAdapter:
         """Undeploy an adapter from Ollama."""
-        adapter = await self.get_adapter(db, adapter_id, user_id)
-        if not adapter:
-            raise ValueError(f"Adapter {adapter_id} not found")
+        adapter = await self._owned_adapter(db, adapter_id, user_id)
 
         if not adapter.is_deployed:
             raise ValueError("Adapter is not deployed")
@@ -268,16 +323,25 @@ PARAMETER top_p 0.9
         model_name = adapter.get_ollama_model_name()
 
         if model_name:
+            # `AsyncClient.delete` takes no body, so `delete(..., json=...)`
+            # raised TypeError into the `except` that used to be here: no
+            # undeploy ever removed its model, and the adapter was marked
+            # undeployed all the same.
             try:
-                # Delete model from Ollama
                 async with httpx.AsyncClient() as client:
-                    await client.delete(
+                    response = await client.request(
+                        "DELETE",
                         f"{self.ollama_url}/api/delete",
                         json={"name": model_name},
                         timeout=30.0,
                     )
-            except Exception as e:
-                logger.warning(f"Failed to delete Ollama model: {e}")
+            except httpx.HTTPError as e:
+                raise DeploymentFailed(f"Ollama is not reachable: {e}") from e
+            # 404: already gone, which is what was asked for.
+            if response.status_code not in (200, 404):
+                raise DeploymentFailed(
+                    f"Ollama answered {response.status_code}: {response.text[:300]}"
+                )
 
         # Update adapter record
         adapter.is_deployed = False

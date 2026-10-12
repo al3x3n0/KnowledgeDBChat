@@ -31,6 +31,10 @@ class EvalTemplate:
     cases: List[Dict[str, Any]]
 
 
+class EvalUnavailable(Exception):
+    """Ollama could not generate; nothing about the template or adapter."""
+
+
 class AIHubEvalService:
     def __init__(self) -> None:
         self._templates_dir = (
@@ -74,21 +78,27 @@ class AIHubEvalService:
     async def _ollama_generate(
         self, model: str, prompt: str, max_tokens: int = 512
     ) -> str:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{settings.OLLAMA_BASE_URL}/api/generate",
-                json={
-                    "model": model,
-                    "prompt": prompt,
-                    "options": {"num_predict": max_tokens, "temperature": 0.2},
-                    "stream": False,
-                },
-                timeout=120.0,
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{settings.OLLAMA_BASE_URL}/api/generate",
+                    json={
+                        "model": model,
+                        "prompt": prompt,
+                        "options": {"num_predict": max_tokens, "temperature": 0.2},
+                        "stream": False,
+                    },
+                    timeout=120.0,
+                )
+        except httpx.HTTPError as exc:
+            raise EvalUnavailable(f"Ollama is not reachable: {exc}") from exc
+        if resp.status_code != 200:
+            raise EvalUnavailable(
+                f"Ollama answered {resp.status_code} for model '{model}': "
+                f"{resp.text[:300]}"
             )
-            if resp.status_code != 200:
-                raise ValueError(f"Ollama generate failed: {resp.text}")
-            data = resp.json()
-            return data.get("response", "") or ""
+        data = resp.json()
+        return data.get("response", "") or ""
 
     async def run_eval(
         self,
@@ -149,11 +159,16 @@ class AIHubEvalService:
             except Exception:
                 pass
 
-            if score is None or score < 1 or score > 5:
-                score = 3
-                notes = (notes or "Judge output not parseable; defaulted to 3.")[:500]
+            # A reply that is not a score from 1 to 5 is no judgement. It
+            # used to be entered as a 3 and averaged with the real ones, so a
+            # judge that never answered in JSON reported 3.00 / 5.
+            judged = score is not None and 1 <= score <= 5
+            if judged:
+                scores.append(score)
+            else:
+                score = None
+                notes = "Judge output was not a score from 1 to 5; not counted."
 
-            scores.append(score)
             results.append(
                 {
                     "case_id": case_id,
@@ -164,6 +179,7 @@ class AIHubEvalService:
                     "candidate_response": cand_resp,
                     "judge_model": judge_model,
                     "score": score,
+                    "judged": judged,
                     "notes": notes,
                 }
             )
@@ -175,8 +191,11 @@ class AIHubEvalService:
             "base_model": base_model,
             "candidate_model": candidate_model,
             "judge_model": judge_model,
+            # Over the judged cases only; 0.0 with `num_judged` 0 means no
+            # case was judged, not that the candidate scored nothing.
             "avg_score": avg,
             "num_cases": len(results),
+            "num_judged": len(scores),
             "results": results,
         }
 

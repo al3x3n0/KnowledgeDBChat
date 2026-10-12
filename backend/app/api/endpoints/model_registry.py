@@ -20,7 +20,7 @@ from app.schemas.training import (
     TestAdapterRequest,
     TestAdapterResponse,
 )
-from app.services.model_registry_service import model_registry_service
+from app.services.model_registry_service import DeploymentFailed, model_registry_service
 
 router = APIRouter()
 
@@ -158,11 +158,19 @@ async def delete_adapter(
     current_user: User = Depends(get_current_active_user),
 ):
     """Delete a model adapter."""
-    success = await model_registry_service.delete_adapter(
-        db=db,
-        adapter_id=adapter_id,
-        user_id=current_user.id,
-    )
+    try:
+        success = await model_registry_service.delete_adapter(
+            db=db,
+            adapter_id=adapter_id,
+            user_id=current_user.id,
+        )
+    except DeploymentFailed as e:
+        # Still deployed and Ollama would not remove it: the adapter is kept,
+        # or its model would be left in Ollama with nothing pointing at it.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        )
 
     if not success:
         raise HTTPException(
@@ -192,6 +200,12 @@ async def deploy_adapter(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
+    except DeploymentFailed as e:
+        # Ollama's failure, not the request's.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        )
 
 
 @router.post("/{adapter_id}/undeploy", response_model=ModelAdapterResponse)
@@ -211,6 +225,11 @@ async def undeploy_adapter(
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except DeploymentFailed as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(e),
         )
 

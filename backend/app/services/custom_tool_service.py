@@ -350,19 +350,22 @@ class CustomToolService:
         Config:
             code: Python code to execute
             timeout_seconds: Execution timeout
-            allowed_imports: List of allowed module names
+            allowed_imports: Modules to add, from `python_tool_sandbox.IMPORTABLE`
 
         Security:
-            Uses RestrictedPython for sandboxed execution.
-            Limited to basic operations and whitelisted imports.
+            RestrictedPython compiles the code; `python_tool_sandbox` decides
+            what it may see. The code runs in this process, so the limits are
+            what is in scope, not a boundary an operating system enforces.
         """
+        from app.services import python_tool_sandbox
+
         code = config.get("code", "")
         timeout = config.get("timeout_seconds", 10)
-        allowed_imports = set(config.get("allowed_imports", []))
 
-        # Default safe imports
-        safe_imports = {"json", "re", "datetime", "math", "collections", "itertools"}
-        allowed = safe_imports.union(allowed_imports)
+        try:
+            modules = python_tool_sandbox.modules_for(config.get("allowed_imports"))
+        except python_tool_sandbox.ModuleNotAllowed as refused:
+            raise ToolExecutionError(str(refused))
 
         # Import the sandbox itself outside the main block. An ImportError here
         # means the library is missing; one raised further down comes from the
@@ -370,12 +373,7 @@ class CustomToolService:
         # Catching both in one place reported "install RestrictedPython" for
         # code whose real problem was that it tried to import subprocess.
         try:
-            from RestrictedPython import compile_restricted_exec, safe_globals
-            from RestrictedPython.Eval import default_guarded_getiter
-            from RestrictedPython.Guards import (
-                guarded_iter_unpack_sequence,
-                safer_getattr,
-            )
+            from RestrictedPython import compile_restricted_exec
         except ImportError as import_error:
             raise ToolExecutionError(
                 "Python execution is not available. Install the "
@@ -395,26 +393,16 @@ class CustomToolService:
                 raise ToolExecutionError("Code could not be compiled under the sandbox")
             byte_code = compiled.code
 
-            # Prepare safe globals
-            _globals = safe_globals.copy()
-            _globals["_getiter_"] = default_guarded_getiter
-            _globals["_iter_unpack_sequence_"] = guarded_iter_unpack_sequence
-            _globals["_getattr_"] = safer_getattr
-
-            # Add allowed imports
-            for module_name in allowed:
-                try:
-                    _globals[module_name] = __import__(module_name)
-                except ImportError:
-                    pass
-
-            # Prepare locals
-            _locals = {"input": inputs, "output": {}, "result": None}
+            # One namespace, not globals and locals: with two, a function the
+            # code defines is a local, and nothing nested inside another
+            # function or a comprehension can see it.
+            scope = python_tool_sandbox.build_globals(modules)
+            scope.update({"input": inputs, "output": {}, "result": None})
 
             # Execute with timeout
             def run_code():
-                exec(byte_code, _globals, _locals)
-                return _locals.get("output") or _locals.get("result")
+                exec(byte_code, scope)
+                return scope.get("output") or scope.get("result")
 
             # Run in thread with timeout
             loop = asyncio.get_event_loop()
@@ -431,9 +419,11 @@ class CustomToolService:
             # module outside the allowlist. Say so, and say which are allowed.
             raise ToolExecutionError(
                 f"The code imported a module the sandbox does not allow ({exc}). "
-                f"Allowed modules: {', '.join(sorted(allowed))}. This sandbox "
+                f"Allowed modules: {', '.join(sorted(modules))}. This sandbox "
                 "cannot run subprocesses or reach the filesystem."
             )
+        except ToolExecutionError:
+            raise
         except Exception as e:
             raise ToolExecutionError(f"Python execution failed: {str(e)}")
 

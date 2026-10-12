@@ -678,6 +678,25 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   datasets in the worker's memory, not isolation**; code that must be
   confined runs through `agent_sandbox_runtime`.
 - **Tool governance** — `tool_registry.py` + `tool_policy_engine.py` + `models/tool_audit.py`; per-user tool policies, approval gates for dangerous tools (`AGENT_REQUIRE_TOOL_APPROVAL`, `AGENT_DANGEROUS_TOOLS`), full execution audit log, user-defined custom tools (optionally Docker-executed). Tool handlers live one module per provider in `services/agent_tool_providers/` (the registry and provider types in `base`, helpers several providers share in `common`); `agent_tool_dispatch.py` was a 12,000-line module holding all of them and is now a facade re-exporting every name. A test that reads handler source must read the provider modules, and one that patches a module global must patch it where the provider looks it up: three source checks (LLM snapshot coverage, tool effects, the removed 12,000-character cap) look for the *absence* of something and would have passed against the facade while checking nothing. Every tool is **declared once** in `app/agent_core/tool_specs/` (one module per domain): the schema a model reads, the governance classification, which job types may call it, and — for measurement tools — what evidence it produces. `agent_tools.AGENT_TOOLS`, the catalog, the job-type policy and the evidence map are all views of those specs, so adding a tool is a handler plus a `ToolSpec`, not four files kept in step by hand. `tests/test_tool_specs.py` enforces it.
+- **A custom Python tool sees facades, not modules**
+  (`services/python_tool_sandbox.py`). `python` is a tool type anyone may
+  author, an agent included, and its code runs in the server's own process
+  under RestrictedPython. What that code can see is the whole of the sandbox,
+  and it was wrong both ways, each found by running code through the real
+  executor. It could leave: the "safe" modules were handed over whole, and a
+  module carries what it imported (`re.enum.sys.modules.get("os")` reached
+  `os` from the defaults), while a tool's own `allowed_imports` could name
+  any module. It could barely run: `input["x"]`, `output["k"] = v`, `+=`,
+  tuple unpacking and `print` each failed on a guard nobody had provided, and
+  a function the code defined was invisible inside a comprehension. A module
+  is now its public functions, classes and constants and none of its
+  submodules; the config may add only from a fixed list; `operator`,
+  `functools`, `string.Formatter` and `collections.UserString` are withheld
+  because each walks attributes where the attribute guard cannot see.
+  **This is still not a boundary**: the limit is what is in scope, an
+  in-process Python sandbox is a list of doors found so far, and a loop that
+  never ends keeps its thread after the timeout stops waiting. Work that
+  needs confinement belongs in `agent_sandbox_runtime`.
 - **Chains are retired as an authoring concept.** `POST`/`PATCH
   /agent-jobs/chains` are marked `deprecated` in the OpenAPI schema and the
   Chains tab points at Pipeline Studio's import, but both still serve and every

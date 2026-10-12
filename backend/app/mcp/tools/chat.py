@@ -11,8 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.mcp.auth import MCPAuthContext
 from app.models.document import Document
+from app.services.config_values import bounded_int
 from app.services.llm_service import LLMService, UserLLMSettings, load_user_llm_settings
 from app.services.vector_store import vector_store_service
+
+MAX_CONTEXT_CHUNKS = 20
 
 
 class ChatTool:
@@ -89,34 +92,44 @@ class ChatTool:
             f"MCP chat: question='{question[:50]}...', user={auth.user.username}"
         )
 
+        max_context_chunks = bounded_int(max_context_chunks, 5, 1, MAX_CONTEXT_CHUNKS)
+
         try:
             # Load user LLM settings
             user_settings = await self._load_user_settings(auth.user_id, db)
 
-            # Initialize vector store
-            await vector_store_service.initialize(background=True)
-
-            # Search for relevant context
-            raw_results = await vector_store_service.search(
-                query=question, limit=max_context_chunks * 2  # Get more to filter
-            )
-
-            # Filter results by accessible documents
+            # Resolve the filter first and hand it to the store. It used to be
+            # applied to a window of the best chunks from *anywhere*, so a
+            # question about one source was answered "nothing relevant"
+            # whenever other sources matched better; and a filter matching no
+            # document was treated as no filter at all.
+            filtering = bool(source_ids or document_ids)
             accessible_doc_ids = await self._get_accessible_doc_ids(
                 auth, db, source_ids, document_ids
             )
             doc_id_set = (
-                set(str(doc_id) for doc_id in accessible_doc_ids)
-                if accessible_doc_ids
+                set(str(doc_id) for doc_id in accessible_doc_ids or [])
+                if filtering
                 else None
             )
+
+            raw_results: List[Dict[str, Any]] = []
+            if doc_id_set is None or doc_id_set:
+                # Initialize vector store
+                await vector_store_service.initialize(background=True)
+
+                raw_results = await vector_store_service.search(
+                    query=question,
+                    limit=max_context_chunks,
+                    document_ids=sorted(doc_id_set) if doc_id_set else None,
+                )
 
             filtered_results = []
             sources_used = []
 
             for result in raw_results:
-                metadata = result.get("metadata", {})
-                result_doc_id = metadata.get("document_id", "")
+                metadata = result.get("metadata") or {}
+                result_doc_id = str(metadata.get("document_id") or "")
 
                 # If we have a filter, apply it
                 if doc_id_set is not None and result_doc_id not in doc_id_set:

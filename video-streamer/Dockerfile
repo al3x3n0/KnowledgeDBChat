@@ -3,9 +3,23 @@ FROM golang:1.23-alpine AS builder
 
 WORKDIR /app
 
+# Install git
+RUN apk add --no-cache git
+
 # Copy go mod files (go.sum may not exist initially)
 COPY go.mod ./
 COPY go.sum* ./
+
+# Set build variables related to self-signed certs
+ARG GIT_SSL_NO_VERIFY=false 
+ARG GOPROXY=proxy.golang.org 
+ARG GOSUMDB=on
+ARG GOINSECURE=""
+
+ENV GOPROXY=${GOPROXY} \
+    GOSUMDB=${GOSUMDB} \
+    GOINSECURE=${GOINSECURE} \
+    GIT_SSL_NO_VERIFY=${GIT_SSL_NO_VERIFY}
 
 # Download dependencies
 RUN go mod download

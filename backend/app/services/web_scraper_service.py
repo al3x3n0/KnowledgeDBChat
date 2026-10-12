@@ -592,3 +592,43 @@ class WebScraperService:
         if len(text) <= max_chars:
             return text
         return text[: max_chars - 200].rstrip() + "\n\n[truncated]"
+
+
+class OutboundGuard:
+    """The scraper's network rule, for another caller that fetches a URL.
+
+    A URL a person or a model wrote may only reach a public address, plus the
+    private hosts named in `private_hosts`. Loopback and link-local (the
+    cloud metadata address among them) are never reachable. `check` refuses a
+    URL before anything is sent, and `client` returns an HTTP client that
+    connects only to an address it has checked, so a name that resolves
+    differently the second time gains nothing.
+
+    Redirects are not followed: the caller asked for one URL.
+    """
+
+    def __init__(self, private_hosts: Optional[List[str]] = None):
+        self._rule = WebScraperService()
+        self._rule._private_hosts = [
+            h.strip().lower() for h in (private_hosts or []) if h and h.strip()
+        ]
+        self._rule._fetch_allows_private = False
+
+    def check(self, url: str) -> str:
+        """The normalised URL, or ValueError. Resolves the name: blocking."""
+        normalized = self._rule._normalize_url(str(url or ""))
+        self._rule._validate_safe_url(normalized, allow_private_networks=False)
+        return normalized
+
+    def client(self, *, timeout: float) -> httpx.AsyncClient:
+        transport = None
+        if not urllib.request.getproxies():
+            # Same reasoning as WebScraperService._get_client: behind a proxy
+            # the proxy resolves, and a transport would route around it.
+            transport = httpx.AsyncHTTPTransport()
+            transport._pool._network_backend = PinnedNetworkBackend(
+                self._rule._address_allowed
+            )
+        return httpx.AsyncClient(
+            timeout=timeout, follow_redirects=False, transport=transport
+        )

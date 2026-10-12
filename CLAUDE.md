@@ -1465,6 +1465,19 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
     at 127.0.0.1:1082). That made the first control test pass for the wrong
     reason. So did anyio resolving the IDNA-encoded name as *bytes*, which a
     fake DNS comparing against a `str` misses.
+  - **A webhook tool goes through the same rule**
+    (`web_scraper_service.OutboundGuard`). A custom webhook tool's URL is
+    written by whoever authored the tool, an agent included, and may be
+    templated from the call's inputs; it went straight to the HTTP client,
+    so a tool could read the cloud metadata address or the deployment's own
+    vector store and object storage, which answer without credentials on
+    that network. It now reaches public addresses only, over a pinned
+    connection, with no redirects followed. Private hosts are opt-in by name
+    (`CUSTOM_TOOL_WEBHOOK_PRIVATE_HOSTS`, plus the hosts of active web
+    sources); loopback and link-local are never reachable, listed or not.
+    The inbox's repo lookup fetched an item's stored URL wherever it
+    pointed; it fetches arXiv pages only, over https (arXiv's API returns
+    `http://` ids, so both are accepted).
   - `execute_workflow` **queues** (`WorkflowEngine.queue_workflow`, shared
     with `POST /workflows/{id}/execute/async`); it used to run the whole graph
     inside the tool call. What can be checked without running (owned, active,

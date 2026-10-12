@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.mcp.auth import (
     MCPAuthContext,
+    enforce_rate_limits,
     extract_api_key,
     log_api_usage,
     validate_api_key,
@@ -88,6 +89,9 @@ class MCPServerInfo(BaseModel):
 # =============================================================================
 
 
+TOOL_CALL_PATH = "/tools/call"
+
+
 async def get_mcp_auth(
     request: Request,
     db: AsyncSession = Depends(get_db),
@@ -111,6 +115,21 @@ async def get_mcp_auth(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired API key",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    await enforce_rate_limits(db, auth.api_key)
+
+    # A tool call logs itself with its outcome and duration. The other
+    # routes logged nothing, so they would not have counted towards a limit.
+    if not request.url.path.endswith(TOOL_CALL_PATH):
+        await log_api_usage(
+            db=db,
+            api_key_id=auth.api_key.id,
+            endpoint=request.url.path,
+            method=request.method,
+            status_code=200,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("User-Agent"),
         )
 
     return auth
@@ -243,7 +262,7 @@ async def list_tools(
     return MCPListToolsResponse(tools=tools)
 
 
-@mcp_router.post("/tools/call", response_model=MCPToolCallResponse)
+@mcp_router.post(TOOL_CALL_PATH, response_model=MCPToolCallResponse)
 async def call_tool(
     request: Request,
     tool_call: MCPToolCallRequest,

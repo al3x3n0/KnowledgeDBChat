@@ -45,7 +45,10 @@ WEBSOCKET_AUTH_CALLS = (
 
 #: Sockets that authenticate another way, and how.
 WEBSOCKET_OTHERWISE = {
-    "/api/v1/dashboard/ws": "waits for an auth message and verifies its token",
+    # Authenticates in `_socket_user`, a helper beside the handler. This
+    # entry used to say the handler verified a token when it verified
+    # nothing; tests/test_dashboard.py now connects without one.
+    "/api/v1/dashboard/ws": "authenticates in dashboard._socket_user",
 }
 
 

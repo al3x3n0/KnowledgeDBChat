@@ -24,6 +24,10 @@ from app.models.workflow import Workflow, WorkflowExecution
 from app.utils.datetimes import age
 
 
+def _iso(value: Optional[datetime]) -> Optional[str]:
+    return value.isoformat() if value else None
+
+
 class DashboardService:
     """Service for dashboard data aggregation."""
 
@@ -145,15 +149,28 @@ class DashboardService:
         """
         activities = []
 
-        # Recent documents
-        doc_query = select(Document).order_by(desc(Document.created_at)).limit(limit)
+        # Recent documents. The source's name is selected here: reading
+        # `doc.source` loads a relationship, which an async session cannot do
+        # from plain attribute access, so one document made this a 500.
+        doc_query = (
+            select(
+                Document.id,
+                Document.title,
+                Document.file_type,
+                Document.created_at,
+                DocumentSource.name.label("source_name"),
+            )
+            .outerjoin(DocumentSource, Document.source_id == DocumentSource.id)
+            .order_by(desc(Document.created_at))
+            .limit(limit)
+        )
         doc_result = await db.execute(doc_query)
-        for doc in doc_result.scalars():
+        for doc in doc_result.all():
             activities.append(
                 {
                     "type": "document_added",
                     "title": f"Document added: {doc.title}",
-                    "description": f"New document from {doc.source.name if doc.source else 'upload'}",
+                    "description": f"New document from {doc.source_name or 'upload'}",
                     "timestamp": doc.created_at.isoformat() if doc.created_at else None,
                     "icon": "document",
                     "metadata": {
@@ -195,11 +212,13 @@ class DashboardService:
                     "description": "Execution completed"
                     if execution.status == "completed"
                     else f"Status: {execution.status}",
-                    "timestamp": execution.updated_at.isoformat()
-                    if execution.updated_at
-                    else execution.created_at.isoformat()
-                    if execution.created_at
-                    else None,
+                    "timestamp": _iso(
+                        # An execution has no `updated_at`; the latest of
+                        # these is when it last moved.
+                        execution.completed_at
+                        or execution.started_at
+                        or execution.created_at
+                    ),
                     "icon": status_icon,
                     "metadata": {
                         "execution_id": str(execution.id),
@@ -430,10 +449,16 @@ class DashboardService:
         )
         result = await db.execute(query)
 
+        # Tags are compared without regard to case, as everywhere else. The
+        # column is JSON a client or a connector wrote: anything that is not
+        # a list of strings is skipped, not allowed to fail the request.
         all_tags = []
         for row in result.fetchall():
-            if row.tags:
-                all_tags.extend(row.tags)
+            if not isinstance(row.tags, list):
+                continue
+            for tag in row.tags:
+                if isinstance(tag, str) and tag.strip():
+                    all_tags.append(tag.strip().lower())
 
         tag_counts = Counter(all_tags).most_common(limit)
 
@@ -548,12 +573,22 @@ class DashboardService:
                 AgentDefinition.display_name,
                 func.count(AgentConversationContext.id).label("turns"),
             )
-            .join(AgentConversationContext)
+            .join(
+                AgentConversationContext,
+                AgentConversationContext.agent_definition_id == AgentDefinition.id,
+            )
             .where(AgentConversationContext.created_at >= cutoff)
             .group_by(AgentDefinition.id, AgentDefinition.display_name)
             .order_by(desc(func.count(AgentConversationContext.id)))
             .limit(5)
         )
+
+        if user_id:
+            # The total above is the caller's; this counted everyone's turns.
+            agent_query = agent_query.join(
+                AgentConversation,
+                AgentConversation.id == AgentConversationContext.conversation_id,
+            ).where(AgentConversation.user_id == user_id)
 
         agent_result = await db.execute(agent_query)
         top_agents = [

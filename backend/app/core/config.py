@@ -651,6 +651,10 @@ class Settings(BaseSettings):
     # Keep disabled by default for safety.
     CUSTOM_TOOL_DOCKER_ENABLED: bool = False
 
+    # The image a custom Python tool's code runs in. It needs `python3` and
+    # must be one of SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES.
+    CUSTOM_TOOL_PYTHON_IMAGE: str = "ghcr.io/al3x3n0/kdbc-compiler-research:latest"
+
     # Hosts on a private network that a webhook tool may call, comma-separated
     # ("jira.lab.internal, build.lab"; a name covers its subdomains). Empty
     # means none: a webhook tool

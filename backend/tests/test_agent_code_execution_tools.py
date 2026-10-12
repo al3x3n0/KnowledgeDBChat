@@ -31,7 +31,7 @@ class _Recorder:
     calls = []
     fail_with = None
 
-    async def _execute_python(self, config, inputs, user):
+    async def _execute_python(self, config, inputs, user, workdir=None):
         return self._record("python", config, inputs)
 
     async def _execute_docker(self, config, inputs, user):
@@ -45,9 +45,14 @@ class _Recorder:
 
 
 @pytest.fixture
-def run(monkeypatch):
+def run(monkeypatch, tmp_path):
     _Recorder.calls, _Recorder.fail_with = [], None
     monkeypatch.setattr(custom_tool_service, "CustomToolService", _Recorder)
+    # The handlers look up the job's sandbox directory, which is created on
+    # first use: keep it out of the machine's real temp directory.
+    from app.services import sandbox_skill_runtime
+
+    monkeypatch.setattr(sandbox_skill_runtime, "root_dir", lambda: tmp_path / "skills")
 
     class _Db:
         async def execute(self, *_a, **_k):

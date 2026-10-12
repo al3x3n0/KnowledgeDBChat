@@ -71,7 +71,7 @@ const TOOL_TYPES = {
   },
   python: {
     label: 'Python',
-    description: 'Run sandboxed Python code',
+    description: 'Run Python code in the sandbox container',
     icon: Code,
     color: 'green',
   },
@@ -489,8 +489,7 @@ const ToolEditorModal: React.FC<ToolEditorModalProps> = ({
       case 'python':
         return {
           code: '# Access inputs via `input` dict\n# Set results in `output` dict\noutput = {"result": input.get("value", "")}',
-          timeout_seconds: 10,
-          allowed_imports: ['json', 're', 'datetime', 'math'],
+          timeout_seconds: 30,
         };
       case 'llm_prompt':
         return {
@@ -871,32 +870,20 @@ const PythonConfigEditor: React.FC<ConfigEditorProps> = ({
           </label>
           <input
             type="number"
-            value={config.timeout_seconds || 10}
+            value={config.timeout_seconds || 30}
             onChange={(e) =>
               updateField('timeout_seconds', parseInt(e.target.value))
             }
             min={1}
-            max={60}
+            max={300}
             className="w-full px-3 py-2 border rounded-lg"
           />
         </div>
-        <div>
-          <label className="block text-sm text-gray-600 mb-1">
-            Allowed Imports (comma-separated)
-          </label>
-          <input
-            type="text"
-            value={(config.allowed_imports || []).join(', ')}
-            onChange={(e) =>
-              updateField(
-                'allowed_imports',
-                e.target.value.split(',').map((s) => s.trim())
-              )
-            }
-            className="w-full px-3 py-2 border rounded-lg"
-            placeholder="json, re, datetime, math"
-          />
-        </div>
+        <p className="text-xs text-gray-500 self-end pb-2">
+          Runs in the sandbox container with no network, using the Python
+          standard library. Its working directory is shared with your sandbox
+          skills, so files persist between calls.
+        </p>
       </div>
     </div>
   );

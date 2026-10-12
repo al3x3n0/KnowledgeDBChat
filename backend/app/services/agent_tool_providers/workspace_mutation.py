@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from loguru import logger
 from sqlalchemy import select
 
 from app.services.agent_tool_providers.base import (
@@ -188,6 +189,16 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             raise ValueError("User not found for code execution")
         return user
 
+    async def _sandbox_workdir(ctx: AgentToolExecutionContext) -> Any:
+        """This run's sandbox directory, shared with the skills it uses."""
+        from app.services.agent_sandbox_skill_tools import working_directory
+
+        try:
+            return await working_directory(ctx)
+        except Exception as exc:  # noqa: BLE001 - the tool can still run
+            logger.warning(f"No shared sandbox directory for this call: {exc}")
+            return None
+
     async def _execute_python(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -207,6 +218,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 config={"code": code, "timeout_seconds": timeout},
                 inputs={},
                 user=user,
+                workdir=await _sandbox_workdir(ctx),
             )
             history = state.get("code_execution_history")
             if not isinstance(history, list):
@@ -273,6 +285,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                     },
                     inputs={},
                     user=user,
+                    workdir=await _sandbox_workdir(ctx),
                 )
             history = state.get("code_execution_history")
             if not isinstance(history, list):
@@ -2690,7 +2703,11 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             inputs = {}
         try:
             output = await CustomToolService().execute_tool(
-                tool=tool, inputs=inputs, user=user, db=ctx.db
+                tool=tool,
+                inputs=inputs,
+                user=user,
+                db=ctx.db,
+                workdir=await _sandbox_workdir(ctx),
             )
         except Exception as exc:
             return {"error": f"Custom tool {tool_name!r} failed: {str(exc)[:300]}"}

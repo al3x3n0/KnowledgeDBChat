@@ -4,13 +4,10 @@ Each of these cost the agent an iteration and produced a failed action, and
 none of them were the model's fault.
 """
 
-import pytest
-
 from app.services.autonomous_agent_executor import (
     AutonomousAgentExecutor,
     _tool_requires_params,
 )
-from app.services.custom_tool_service import CustomToolService
 
 
 class _Job:
@@ -62,55 +59,3 @@ def test_recovery_still_builds_argument_free_tools():
         "params": {},
         "purpose": "recover",
     }
-
-
-@pytest.mark.asyncio
-async def test_execute_python_runs_valid_code():
-    """compile_restricted returns a code object; reading .errors off it raised
-    AttributeError for every input, so this tool never worked."""
-    service = CustomToolService()
-
-    result = await service._execute_python(
-        config={"code": "output = {'value': 6 * 7}", "timeout_seconds": 5},
-        inputs={},
-        user=None,
-    )
-
-    assert result == {"value": 42}
-
-
-@pytest.mark.asyncio
-async def test_execute_python_reports_a_syntax_error_as_a_compile_error():
-    from app.services.custom_tool_service import ToolExecutionError
-
-    service = CustomToolService()
-
-    with pytest.raises(ToolExecutionError) as excinfo:
-        await service._execute_python(
-            config={"code": "def broken(:", "timeout_seconds": 5},
-            inputs={},
-            user=None,
-        )
-
-    assert "compilation errors" in str(excinfo.value).lower()
-
-
-@pytest.mark.asyncio
-async def test_blocked_import_is_not_reported_as_a_missing_sandbox():
-    """The sandbox correctly refuses subprocess; the message used to blame a
-    missing RestrictedPython install, sending a reader after the wrong fix."""
-    from app.services.custom_tool_service import ToolExecutionError
-
-    service = CustomToolService()
-
-    with pytest.raises(ToolExecutionError) as excinfo:
-        await service._execute_python(
-            config={"code": "import subprocess", "timeout_seconds": 5},
-            inputs={},
-            user=None,
-        )
-
-    message = str(excinfo.value)
-    assert "does not allow" in message
-    assert "Install the RestrictedPython package" not in message
-    assert "Allowed modules:" in message

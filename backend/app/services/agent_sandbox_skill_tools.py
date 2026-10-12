@@ -211,6 +211,15 @@ async def _workdir(ctx: Any):
     return sandbox_skill_runtime.run_dir(f"user-{_user_id(ctx)}")
 
 
+async def working_directory(ctx: Any):
+    """The sandbox working directory of whoever is calling: see `_workdir`.
+
+    For another tool that runs in the sandbox and should find the files a
+    skill left -- a custom Python tool does.
+    """
+    return await _workdir(ctx)
+
+
 def _directory_view(workdir: Any) -> Dict[str, Any]:
     view = sandbox_skill_runtime.list_files(workdir)
     note = sandbox_skill_runtime.inheritance_note(workdir)

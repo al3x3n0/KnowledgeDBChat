@@ -37,6 +37,7 @@ from app.tasks.repo_report_tasks import generate_repo_report_task
 pytestmark = pytest.mark.unit
 
 _SEARCH = inspect.signature(VectorStoreService.search)
+_TRACE = inspect.signature(VectorStoreService.search_with_trace)
 
 
 class _Key:
@@ -97,6 +98,14 @@ class _Store:
             if wanted is None or c["metadata"]["document_id"] in set(wanted)
         ]
         return hits[: call["limit"]]
+
+    async def search_with_trace(self, *args, **kwargs):
+        """What the shared retrieval calls: the same search, with its trace."""
+        bound = _TRACE.bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        return await self.search(
+            **{k: v for k, v in bound.arguments.items() if k != "self"}
+        ), {"mode": "fake"}
 
 
 def _chunk(doc, score, file_type="md"):
@@ -229,9 +238,19 @@ async def test_search_filters_by_file_type(db_session, test_user, store):
 def model(monkeypatch):
     prompts = []
 
-    async def generate_response(self, query=None, **kwargs):
-        prompts.append(query)
+    async def generate_response(self, query=None, context=None, **kwargs):
+        # The question and the passages it is answered from.
+        prompts.append(f"{query}\n{context or ''}")
         return " An answer. "
+
+    async def one_phrasing(query, **kwargs):
+        return [query]
+
+    from app.services import rag_retrieval
+
+    monkeypatch.setattr(
+        rag_retrieval._QUERY_PROCESSOR, "generate_multi_queries", one_phrasing
+    )
 
     monkeypatch.setattr(chat_module.LLMService, "generate_response", generate_response)
     return prompts
@@ -244,7 +263,7 @@ async def test_chat_answers_from_the_named_source_only(
         db_session, "loud", [f"l{i}" for i in range(12)]
     )
     quiet_source, quiet = await _source_with_documents(db_session, "quiet", ["wanted"])
-    store([_chunk(d, 0.9) for d in loud] + [_chunk(quiet[0], 0.2)])
+    store([_chunk(d, 0.9) for d in loud] + [_chunk(quiet[0], 0.6)])
 
     result = await ChatTool().execute(
         _auth(test_user),
@@ -287,7 +306,8 @@ async def test_chat_bounds_the_context_size(
         _auth(test_user), db_session, question="what?", max_context_chunks=chunks
     )
 
-    assert fake.calls[0]["limit"] == expected
+    # Twice the budget is fetched, for the relevance filter to choose from.
+    assert fake.calls[0]["limit"] == expected * 2
 
 
 # --------------------------------------------------------------------------

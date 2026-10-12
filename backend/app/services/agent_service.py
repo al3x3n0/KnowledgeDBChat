@@ -3133,89 +3133,63 @@ Provide a 2-3 sentence comparison highlighting key similarities and differences.
     async def _tool_answer_question(
         self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
-        """Answer a question using RAG (Retrieval-Augmented Generation)."""
-        question = params.get("question", "")
+        """Answer a question from the knowledge base.
+
+        Retrieval is `rag_retrieval.retrieve`, the chat page's own: the
+        question is rewritten, irrelevant passages dropped, the context fitted
+        to its budget and the knowledge graph consulted. This tool used to
+        search once and paste in whatever came back, so the same question got
+        a worse answer here than on the chat page, written by the default
+        model whatever the person had chosen.
+        """
+        from app.services.llm_service import load_user_llm_settings
+        from app.services.rag_retrieval import (
+            cited_sources,
+            confidence_of,
+            retrieve_for_answer,
+        )
+
+        question = str(params.get("question") or "").strip()
         max_sources = bounded_int(params.get("max_sources"), 5, 0, 10)
 
-        if not question.strip():
+        if not question:
             return {"error": "Question is required"}
 
         try:
-            await self._ensure_vector_store_initialized()
-
-            # Step 1: Search for relevant document chunks
-            search_results = await self.vector_store.search(
-                query=question, limit=max_sources * 2  # Get more for better context
+            user_settings = await load_user_llm_settings(db, user_id)
+            retrieved = await retrieve_for_answer(
+                question,
+                db=db,
+                vector_store=self.vector_store,
+                llm_service=self.llm_service,
+                user_settings=user_settings,
+                max_results=max_sources or None,
             )
 
-            if not search_results:
+            if not retrieved.results:
                 return {
                     "answer": "I couldn't find any relevant documents to answer your question.",
                     "sources": [],
                     "confidence": "low",
                 }
 
-            # Step 2: Build context from search results
-            context_parts = []
-            sources = []
-            seen_docs = set()
-
-            for i, result in enumerate(search_results[:max_sources]):
-                content = result.get("content", "")
-                metadata = result.get("metadata", {})
-                doc_id = metadata.get("document_id")
-                title = metadata.get("title", "Unknown")
-                score = result.get("score", 0)
-
-                context_parts.append(f"[Source {i+1}: {title}]\n{content}\n")
-
-                if doc_id and doc_id not in seen_docs:
-                    seen_docs.add(doc_id)
-                    sources.append(
-                        {
-                            "document_id": doc_id,
-                            "title": title,
-                            "relevance_score": round(score, 3),
-                            "excerpt": content[:200] + "..."
-                            if len(content) > 200
-                            else content,
-                        }
-                    )
-
-            context = "\n".join(context_parts)
-
-            # Step 3: Generate answer using LLM
-            prompt = f"""Based on the following context from the knowledge base, answer the question accurately and concisely.
-If the context doesn't contain enough information to fully answer the question, say so.
-
-Context:
-{context}
-
-Question: {question}
-
-Answer:"""
-
             answer = await self.llm_service.generate_response(
-                query=prompt,
+                query=question,
+                context=retrieved.context,
+                kg_context=retrieved.kg_context,
                 max_tokens=1000,
+                user_settings=user_settings,
                 task_type="chat",
                 user_id=user_id,
                 db=db,
             )
 
-            # Determine confidence based on search scores
-            avg_score = sum(
-                r.get("score", 0) for r in search_results[:max_sources]
-            ) / max(len(search_results[:max_sources]), 1)
-            confidence = (
-                "high" if avg_score > 0.7 else "medium" if avg_score > 0.4 else "low"
-            )
-
+            sources = cited_sources(retrieved.results, limit=max_sources)
             return {
                 "answer": answer.strip(),
-                "sources": sources[:max_sources],
+                "sources": sources,
                 "source_count": len(sources),
-                "confidence": confidence,
+                "confidence": confidence_of(retrieved.results),
             }
 
         except Exception as e:

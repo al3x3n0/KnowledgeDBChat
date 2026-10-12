@@ -13,9 +13,15 @@ from app.mcp.auth import MCPAuthContext
 from app.models.document import Document
 from app.services.config_values import bounded_int
 from app.services.llm_service import LLMService, UserLLMSettings, load_user_llm_settings
+from app.services.rag_retrieval import retrieve_for_answer
 from app.services.vector_store import vector_store_service
 
 MAX_CONTEXT_CHUNKS = 20
+
+
+def _preview(content: str, chars: int = 200) -> str:
+    content = content or ""
+    return content[:chars] + "..." if len(content) > chars else content
 
 
 class ChatTool:
@@ -113,47 +119,8 @@ class ChatTool:
                 else None
             )
 
-            raw_results: List[Dict[str, Any]] = []
-            if doc_id_set is None or doc_id_set:
-                # Initialize vector store
-                await vector_store_service.initialize(background=True)
-
-                raw_results = await vector_store_service.search(
-                    query=question,
-                    limit=max_context_chunks,
-                    document_ids=sorted(doc_id_set) if doc_id_set else None,
-                )
-
-            filtered_results = []
-            sources_used = []
-
-            for result in raw_results:
-                metadata = result.get("metadata") or {}
-                result_doc_id = str(metadata.get("document_id") or "")
-
-                # If we have a filter, apply it
-                if doc_id_set is not None and result_doc_id not in doc_id_set:
-                    continue
-
-                content = result.get("content", result.get("page_content", ""))
-                filtered_results.append(content)
-
-                if include_sources:
-                    sources_used.append(
-                        {
-                            "document_id": result_doc_id,
-                            "title": metadata.get("title", "Unknown"),
-                            "score": result.get("score", 0),
-                            "chunk_preview": content[:200] + "..."
-                            if len(content) > 200
-                            else content,
-                        }
-                    )
-
-                if len(filtered_results) >= max_context_chunks:
-                    break
-
-            if not filtered_results:
+            if doc_id_set is not None and not doc_id_set:
+                # A filter that matches no document: nothing to answer from.
                 return {
                     "answer": "I couldn't find any relevant information in the knowledge base to answer your question.",
                     "question": question,
@@ -161,23 +128,31 @@ class ChatTool:
                     "context_found": False,
                 }
 
-            # Build context for LLM
-            context = "\n\n---\n\n".join(filtered_results)
+            # The chat page's own retrieval (services/rag_retrieval.py). This
+            # tool used to search once and use whatever came back.
+            retrieved = await retrieve_for_answer(
+                question,
+                db=db,
+                vector_store=vector_store_service,
+                llm_service=self.llm_service,
+                user_settings=user_settings,
+                document_ids=sorted(doc_id_set) if doc_id_set else None,
+                max_results=max_context_chunks,
+            )
+            results = retrieved.results
 
-            # Generate answer using LLM
-            prompt = f"""Based on the following context from the knowledge base, answer the user's question.
-If the context doesn't contain enough information to answer the question, say so.
-Be concise and accurate.
-
-Context:
-{context}
-
-Question: {question}
-
-Answer:"""
+            if not results:
+                return {
+                    "answer": "I couldn't find any relevant information in the knowledge base to answer your question.",
+                    "question": question,
+                    "sources": [],
+                    "context_found": False,
+                }
 
             answer = await self.llm_service.generate_response(
-                query=prompt,
+                query=question,
+                context=retrieved.context,
+                kg_context=retrieved.kg_context,
                 temperature=0.3,
                 max_tokens=1500,
                 user_settings=user_settings,
@@ -187,11 +162,23 @@ Answer:"""
                 "answer": answer.strip(),
                 "question": question,
                 "context_found": True,
-                "chunks_used": len(filtered_results),
+                "chunks_used": len(results),
             }
 
             if include_sources:
-                response["sources"] = sources_used
+                response["sources"] = [
+                    {
+                        "document_id": str(
+                            (r.get("metadata") or {}).get("document_id") or ""
+                        ),
+                        "title": (r.get("metadata") or {}).get("title", "Unknown"),
+                        "score": r.get("score", 0),
+                        "chunk_preview": _preview(
+                            r.get("content", r.get("page_content", ""))
+                        ),
+                    }
+                    for r in results
+                ]
 
             return response
 

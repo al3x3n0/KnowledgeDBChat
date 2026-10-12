@@ -63,6 +63,7 @@ from app.services.agent_restructure import (
     run_comparison,
     sandbox_blocked,
 )
+from app.utils.tree_copy import without_git_or_links
 
 BOLT_IMAGE = "ghcr.io/al3x3n0/kdbc-bolt-research:latest"
 GEM5_IMAGE = "ghcr.io/al3x3n0/kdbc-gem5-research:latest"
@@ -282,7 +283,10 @@ async def build_and_profile(
                 Path(workdir, name).write_text(text or "", encoding="utf-8")
         else:
             shutil.copytree(
-                root, workdir, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git")
+                root,
+                workdir,
+                dirs_exist_ok=True,
+                ignore=without_git_or_links,
             )
         for i, text in enumerate(inputs):
             Path(workdir, f"in_{i}.txt").write_text(text, encoding="utf-8")

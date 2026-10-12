@@ -19,6 +19,7 @@ from app.services.agent_tool_providers.base import (
     FunctionToolProvider,
 )
 from app.services.config_values import bounded_int, safe_int
+from app.utils.tree_copy import without_git_or_links
 
 
 def _as_float(value: Any) -> Optional[float]:
@@ -176,6 +177,10 @@ async def _store_patch_proposal(
     return row.id
 
 
+#: Where `execute_python` puts a copy of the repository, under /work.
+WORKSPACE_COPY_DIR = "workspace"
+
+
 def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolProvider:
     """Workspace mutation and code-execution tools for AutonomousAgentExecutor."""
 
@@ -199,6 +204,60 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             logger.warning(f"No shared sandbox directory for this call: {exc}")
             return None
 
+    async def _copy_workspace_in(
+        params: Dict[str, Any],
+        ctx: AgentToolExecutionContext,
+        state: Dict[str, Any],
+        workdir: Any,
+    ) -> Dict[str, Any]:
+        """Put a copy of the run's repository at `workspace/` in the sandbox.
+
+        A copy, because the sandbox daemon resolves mounts on its own
+        filesystem and cannot see where coding workspaces live -- the same
+        reason the scan tools copy. It is the repository as it is now,
+        without `.git`, replacing whatever an earlier call copied. **Nothing
+        written there goes back**: a run changes code through `write_file`
+        and `apply_patch`, which are the calls a patch proposal is built
+        from, and a second way in would be one the proposal cannot see.
+        """
+        import asyncio
+        import shutil
+
+        manager = getattr(executor, "workspace_manager", None)
+        ws = (
+            manager.get_or_default(params.get("workspace_id"), state, job=ctx.job)
+            if manager is not None
+            else None
+        )
+        if ws is None:
+            return {
+                "error": "include_workspace needs a coding workspace, and this "
+                "run has none. Call clone_and_index_repo first."
+            }
+        if workdir is None:
+            return {"error": "This call has no sandbox directory to copy into"}
+        target = Path(workdir) / WORKSPACE_COPY_DIR
+
+        def copy() -> int:
+            shutil.rmtree(target, ignore_errors=True)
+            shutil.copytree(
+                ws.base_path,
+                target,
+                ignore=without_git_or_links,
+            )
+            return sum(1 for p in target.rglob("*") if p.is_file())
+
+        try:
+            files = await asyncio.to_thread(copy)
+        except OSError as exc:
+            return {"error": f"The workspace could not be copied in: {exc}"}
+        return {
+            "path": WORKSPACE_COPY_DIR,
+            "files": files,
+            "note": "A copy. Changes made here are not written back to the "
+            "repository; use write_file or apply_patch for those.",
+        }
+
     async def _execute_python(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -211,6 +270,12 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         timeout = min(int(params.get("timeout_seconds", 10) or 10), 30)
         if not code.strip():
             return {"error": "No code provided"}
+        workdir = await _sandbox_workdir(ctx)
+        copied = None
+        if params.get("include_workspace") is True:
+            copied = await _copy_workspace_in(params, ctx, state, workdir)
+            if copied.get("error"):
+                return copied
         try:
             cts = CustomToolService()
             user = await _resolve_user(ctx)
@@ -218,8 +283,10 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 config={"code": code, "timeout_seconds": timeout},
                 inputs={},
                 user=user,
-                workdir=await _sandbox_workdir(ctx),
+                workdir=workdir,
             )
+            if copied:
+                exec_result = {**exec_result, "workspace": copied}
             history = state.get("code_execution_history")
             if not isinstance(history, list):
                 history = []

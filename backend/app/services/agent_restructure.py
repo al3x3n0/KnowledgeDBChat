@@ -57,6 +57,7 @@ from app.services.agent_compiler_sandbox import (
     robust_spread,
 )
 from app.services.agent_implementation_check import compare_output
+from app.utils.tree_copy import without_git_or_links
 
 DEFAULT_IMAGE = "ghcr.io/al3x3n0/kdbc-compiler-research:latest"
 DEFAULT_TIMEOUT_SECONDS = 300
@@ -830,7 +831,10 @@ async def run_comparison(
     with tempfile.TemporaryDirectory(prefix="restructure_") as workdir:
         if tree:
             shutil.copytree(
-                tree, workdir, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git")
+                tree,
+                workdir,
+                dirs_exist_ok=True,
+                ignore=without_git_or_links,
             )
         for name, content in files.items():
             target = Path(workdir, name)

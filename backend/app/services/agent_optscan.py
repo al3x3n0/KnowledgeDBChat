@@ -38,6 +38,7 @@ from loguru import logger
 
 from app.services import agent_sandbox_runtime
 from app.services.agent_toolchains import LLVM_PASSES
+from app.utils.tree_copy import without_git_or_links
 
 DEFAULT_IMAGE = "ghcr.io/al3x3n0/kdbc-compiler-research:latest"
 DEFAULT_TIMEOUT_SECONDS = 300
@@ -392,7 +393,7 @@ async def scan_workspace(
             base,
             workdir,
             dirs_exist_ok=True,
-            ignore=shutil.ignore_patterns(".git"),
+            ignore=without_git_or_links,
         )
         return await _scan_in(
             workdir,

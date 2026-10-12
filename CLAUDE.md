@@ -702,6 +702,20 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   same command line against the same files, and one test runs a real
   container (uid 65534, no network). **Not run against the stack's own
   `sandbox-docker` daemon**, only the host's.
+  `execute_python` takes `include_workspace`: the run's repository is copied
+  to `./workspace` first, as the scan tools copy it (the daemon cannot mount
+  where workspaces live). It is a copy of the repository as it is, without
+  `.git`, replaced on each call, and **nothing written there goes back**: a
+  run changes code through `write_file` and `apply_patch`, which a patch
+  proposal is built from.
+- **A repository copied into the sandbox leaves its symbolic links behind**
+  (`utils/tree_copy.without_git_or_links`). A cloned repository can hold a
+  link to any path on this machine, and `shutil.copytree` follows links: a
+  `notes.c` pointing at the server's `.env` arrived in the sandbox directory
+  as a copy of that file, for the tool about to run to read and quote back.
+  The scan, restructuring and BOLT tools all copied that way. Keeping the
+  links instead is no better, since a tool that writes a file of that name
+  writes through it. A test reads every `copytree` call in `app`.
 - **Chains are retired as an authoring concept.** `POST`/`PATCH
   /agent-jobs/chains` are marked `deprecated` in the OpenAPI schema and the
   Chains tab points at Pipeline Studio's import, but both still serve and every

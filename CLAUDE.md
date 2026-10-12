@@ -193,6 +193,19 @@ database that already has a revision recorded.
   language: a pattern answered "not found" for a function defined in the file
   it searched
 - **Diagrams**: Mermaid, rendered by `mermaid-renderer/` — a first-party Node service holding one headless Chromium, speaking the Kroki companion protocol (the full Kroki gateway was 3.76 GB to proxy to it, and its mermaid companion 1.54 GB); falls back to kroki.io
+  **What `diagram_service` generates is checked against the renderers**
+  (`tests/test_diagrams_render.py`). Its builders pasted a model's labels and
+  ids into Mermaid and DOT as they came, and 10 of 16 ordinary diagrams did
+  not render: a parenthesis in a label broke every flowchart, an id with a
+  space or a hyphen (or the word `end`) broke the graph, "dotted" was written
+  as `...`, a quote broke DOT. Labels are quoted strings now, unsafe ids are
+  replaced consistently, and each form was chosen by trying it in the real
+  renderer, which found one more the first list had missed (a colon in a
+  state label). `dot` runs wherever Graphviz is installed; the Mermaid cases
+  run only with `MERMAID_RENDERER_URL` set (start the image on a spare port),
+  so **CI checks the generated text, not that Mermaid accepts it**. The
+  Graphviz layout program and output format were taken from config and
+  reached a command line; both are chosen from a list.
 
 ### Backend Structure (`backend/app/`)
 - `api/endpoints/` - ~57 FastAPI route modules; `api/routes.py` assembles them all

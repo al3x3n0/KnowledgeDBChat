@@ -2109,6 +2109,10 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   is the caller's passage budget. This is the first step towards one chat:
   the chat page still has its own turn (sessions, sources, traces, feedback)
   and the widget has the agent turn, but they no longer retrieve differently.
+  Each of the three also **records a trace** (`record_trace`; `trace_type`
+  is `chat`, `tool` or `mcp`) and hands back its id: only chat-page answers
+  could be inspected afterwards. The agent tool flushes and does not commit,
+  because it runs inside the turn's transaction.
 
 ## API Versioning
 

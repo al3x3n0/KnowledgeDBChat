@@ -13,7 +13,7 @@ from app.mcp.auth import MCPAuthContext
 from app.models.document import Document
 from app.services.config_values import bounded_int
 from app.services.llm_service import LLMService, UserLLMSettings, load_user_llm_settings
-from app.services.rag_retrieval import retrieve_for_answer
+from app.services.rag_retrieval import record_trace, retrieve_for_answer
 from app.services.vector_store import vector_store_service
 
 MAX_CONTEXT_CHUNKS = 20
@@ -164,6 +164,19 @@ class ChatTool:
                 "context_found": True,
                 "chunks_used": len(results),
             }
+
+            try:
+                trace = await record_trace(
+                    db,
+                    retrieved,
+                    query=question,
+                    user_id=auth.user_id,
+                    vector_store=vector_store_service,
+                    trace_type="mcp",
+                )
+                response["retrieval_trace_id"] = str(trace.id)
+            except Exception as exc:  # noqa: BLE001 - the answer stands
+                logger.warning(f"MCP chat: trace not recorded: {exc}")
 
             if include_sources:
                 response["sources"] = [

@@ -341,3 +341,202 @@ async def test_in_a_real_container_the_code_is_confined(monkeypatch, tmp_path):
         assert (workdir / "made-here.txt").read_text() == "x"
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------
+# the run's repository, on request
+# --------------------------------------------------------------------------
+
+
+def _repo_workspace(manager, root, job_id, files):
+    """A coding workspace as clone_and_index_repo leaves one."""
+    from app.services.coding_workspace_manager import CodingWorkspace
+
+    base = root / f"repo-{uuid4().hex[:8]}"
+    (base / ".git").mkdir(parents=True)
+    (base / ".git" / "config").write_text("[core]\n")
+    for rel, text in files.items():
+        target = base / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+    ws = CodingWorkspace(
+        workspace_id=str(uuid4()), base_path=base, owner_job_id=str(job_id)
+    )
+    manager._workspaces[ws.workspace_id] = ws
+    return ws
+
+
+@pytest.fixture
+def run_tool(sandbox, tmp_path):
+    """`execute_python` as an autonomous job calls it."""
+    from app.services.agent_tool_providers.base import AgentToolExecutionContext
+    from app.services.agent_tool_providers.workspace_mutation import (
+        build_autonomous_workspace_mutation_provider,
+    )
+    from app.services.coding_workspace_manager import CodingWorkspaceManager
+
+    manager = CodingWorkspaceManager()
+    handler = build_autonomous_workspace_mutation_provider(
+        SimpleNamespace(workspace_manager=manager)
+    )._handlers["execute_python"]
+    job = SimpleNamespace(id=uuid4(), user_id=uuid4(), parent_job_id=None, config={})
+
+    class _Db:
+        async def execute(self, *_a, **_k):
+            return SimpleNamespace(
+                scalar_one_or_none=lambda: SimpleNamespace(id=job.user_id),
+                scalars=lambda: SimpleNamespace(all=lambda: []),
+            )
+
+    async def call(params, state=None):
+        ctx = AgentToolExecutionContext(
+            mode="autonomous",
+            db=_Db(),
+            service=None,
+            user_id=job.user_id,
+            job=job,
+            state={} if state is None else state,
+        )
+        return await handler(params, ctx)
+
+    return SimpleNamespace(call=call, manager=manager, job=job, root=tmp_path)
+
+
+async def test_the_repository_is_there_when_asked_for(run_tool, sandbox):
+    ws = _repo_workspace(
+        run_tool.manager,
+        run_tool.root,
+        run_tool.job.id,
+        {"src/parser.py": "END = 1\n", "README.md": "# Parser\n"},
+    )
+
+    result = await run_tool.call(
+        {
+            "code": "import os\n"
+            "result = {'src': open('workspace/src/parser.py').read(),"
+            " 'git': os.path.exists('workspace/.git')}",
+            "include_workspace": True,
+        },
+        state={"coding_workspace_id": ws.workspace_id},
+    )
+
+    assert result["success"] is True, result
+    assert result["data"]["src"] == "END = 1\n"
+    # History is not source, and is not copied.
+    assert result["data"]["git"] is False
+    assert result["data"]["workspace"]["files"] == 2
+    assert "not written back" in result["data"]["workspace"]["note"]
+
+
+async def test_what_the_code_changes_in_the_copy_stays_in_the_copy(run_tool, sandbox):
+    ws = _repo_workspace(
+        run_tool.manager, run_tool.root, run_tool.job.id, {"a.py": "x = 1\n"}
+    )
+    state = {"coding_workspace_id": ws.workspace_id}
+
+    await run_tool.call(
+        {
+            "code": "open('workspace/a.py', 'w').write('x = 2')\nresult = 1",
+            "include_workspace": True,
+        },
+        state,
+    )
+
+    assert (ws.base_path / "a.py").read_text() == "x = 1\n"
+    # And the next copy is the repository again, not the edited copy.
+    again = await run_tool.call(
+        {"code": "result = open('workspace/a.py').read()", "include_workspace": True},
+        state,
+    )
+    assert again["data"]["result"] == "x = 1\n"
+
+
+async def test_the_repository_is_not_copied_unless_asked(run_tool, sandbox):
+    ws = _repo_workspace(
+        run_tool.manager, run_tool.root, run_tool.job.id, {"a.py": "x = 1\n"}
+    )
+
+    result = await run_tool.call(
+        {"code": "import os\nresult = os.path.exists('workspace')"},
+        state={"coding_workspace_id": ws.workspace_id},
+    )
+
+    assert result["data"] == {"result": False}
+
+
+async def test_asking_for_a_repository_the_run_does_not_have_is_refused(
+    run_tool, sandbox
+):
+    result = await run_tool.call({"code": "result = 1", "include_workspace": True})
+
+    assert "clone_and_index_repo" in result["error"]
+    assert sandbox.calls == []
+
+
+async def test_another_jobs_repository_is_not_copied(run_tool, sandbox):
+    theirs = _repo_workspace(
+        run_tool.manager, run_tool.root, uuid4(), {"secret.py": "KEY = 1\n"}
+    )
+
+    result = await run_tool.call(
+        {
+            "code": "result = 1",
+            "include_workspace": True,
+            "workspace_id": theirs.workspace_id,
+        }
+    )
+
+    assert "error" in result and sandbox.calls == []
+
+
+async def test_a_link_out_of_the_repository_does_not_bring_the_file_with_it(
+    run_tool, sandbox, tmp_path
+):
+    """A cloned repository may hold a link to any path on this machine.
+    Followed, it arrives in the sandbox as a copy of that file."""
+    outside = tmp_path / "server.env"
+    outside.write_text("SECRET_KEY=do-not-leak\n")
+    ws = _repo_workspace(
+        run_tool.manager, run_tool.root, run_tool.job.id, {"a.py": "x = 1\n"}
+    )
+    (ws.base_path / "notes.txt").symlink_to(outside)
+    (ws.base_path / "etc").symlink_to(tmp_path, target_is_directory=True)
+
+    result = await run_tool.call(
+        {
+            "code": "import os\nresult = sorted(os.listdir('workspace'))",
+            "include_workspace": True,
+        },
+        state={"coding_workspace_id": ws.workspace_id},
+    )
+
+    assert result["data"] == {
+        "result": ["a.py"],
+        "workspace": result["data"]["workspace"],
+    }
+
+
+def test_every_copy_of_a_repository_into_the_sandbox_leaves_links_out():
+    """The scan, restructuring and BOLT tools copy a repository the same way,
+    and followed links the same way."""
+    import ast
+
+    backend = Path(__file__).resolve().parents[1]
+    copies = []
+    for path in sorted((backend / "app").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "copytree"
+            ):
+                keywords = {k.arg: ast.unparse(k.value) for k in node.keywords}
+                copies.append((path.name, keywords))
+
+    assert len(copies) >= 5
+    for name, keywords in copies:
+        safe = keywords.get("ignore") == "without_git_or_links" or (
+            keywords.get("symlinks") == "True"
+        )
+        assert safe, f"{name} copies a tree and follows its symbolic links"

@@ -135,6 +135,20 @@ SPECS: tuple[ToolSpec, ...] = (
                     "type": "integer",
                     "description": "Execution timeout in seconds (max 30, default 10)",
                 },
+                "include_workspace": {
+                    "type": "boolean",
+                    "description": "Copy this run's repository (from "
+                    "clone_and_index_repo) to ./workspace before the code "
+                    "runs, so it can read the source. It is a copy: changes "
+                    "made there are NOT written back. Use write_file or "
+                    "apply_patch to change the repository.",
+                    "default": False,
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Which workspace to copy, if not the "
+                    "run's current one",
+                },
             },
             "required": ["code"],
         },

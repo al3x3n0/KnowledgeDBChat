@@ -25,8 +25,9 @@ next.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Mapping, Optional, Sequence
+from uuid import UUID
 
 from loguru import logger
 from sqlalchemy import select
@@ -40,12 +41,21 @@ from app.models.research_campaign import (
     ResearchCampaignItem,
 )
 from app.services import agent_campaign_priority as priority
+from app.utils.datetimes import age
 
 TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled", "stopped"}
 DEFAULT_MAX_JOBS = 10
 # A campaign may not spawn unlimited work from one job's findings. Ten
 # candidates in a report are a reading list, not a plan.
 MAX_ITEMS_FROM_ONE_JOB = 5
+# A stage that has just completed may not have created the stage after it
+# yet: completing and starting the next are two writes. For this long, a
+# completed job with follow-up work it has not started is not "finished".
+STAGE_HANDOVER_GRACE = timedelta(minutes=5)
+
+WAITING_ON_JOB = "job"
+WAITING_ON_APPROVAL = "approval"
+WAITING_ON_PERSON = "person"
 
 
 async def create_campaign(
@@ -139,10 +149,72 @@ def _contract_of(job: AgentJob) -> Dict[str, Any]:
     return contract if isinstance(contract, dict) else {}
 
 
+async def _run_of(db: AsyncSession, job: AgentJob) -> List[AgentJob]:
+    """The job an item launched and every stage that followed from it.
+
+    An item's job may propose a pipeline, and once someone approves it the
+    work is done by the stages, not by the job the campaign started. Reading
+    that one job alone would settle the item before its work had begun and
+    conclude from none of what the stages found.
+    """
+    stages = (
+        (
+            await db.execute(
+                select(AgentJob)
+                .where(AgentJob.root_job_id == job.id, AgentJob.id != job.id)
+                .order_by(AgentJob.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [job, *stages]
+
+
+def _hands_over(job: AgentJob) -> bool:
+    """True while a completed job may still be about to start its successor."""
+    chain = job.chain_config if isinstance(job.chain_config, dict) else {}
+    if not chain.get("child_jobs") or getattr(job, "chain_triggered", False):
+        return False
+    if str(job.status or "") != "completed":
+        return False
+    since = age(job.completed_at)
+    return since is not None and since < STAGE_HANDOVER_GRACE
+
+
+def _waiting_on(run: Sequence[AgentJob]) -> Optional[str]:
+    """What an item's run is waiting for, or None when all of it has ended.
+
+    A run paused for a person is named apart from one that is working: a
+    campaign that has stopped until somebody approves a plan looks, from its
+    counters, exactly like one whose job is still running.
+    """
+    waiting: Optional[str] = None
+    for job in run:
+        status = str(job.status or "")
+        if status in TERMINAL_JOB_STATUSES:
+            if _hands_over(job):
+                waiting = waiting or WAITING_ON_JOB
+            continue
+        if status == AgentJobStatus.PAUSED.value:
+            if str(job.current_phase or "") == "awaiting_approval":
+                return WAITING_ON_APPROVAL
+            waiting = WAITING_ON_PERSON
+        elif waiting != WAITING_ON_PERSON:
+            waiting = WAITING_ON_JOB
+    return waiting
+
+
+def _stage_name(job: AgentJob) -> str:
+    config = job.config if isinstance(job.config, dict) else {}
+    return str(config.get("pipeline_stage") or job.name or "")[:120]
+
+
 async def _reconcile(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, Any]:
-    """Settle items whose job has finished, and harvest any work it revealed."""
+    """Settle items whose run has finished, and harvest any work it revealed."""
     settled = 0
     discovered = 0
+    waiting_on: Optional[str] = None
     template = campaign.job_template if isinstance(campaign.job_template, dict) else {}
     spawn_from = template.get("spawn_items_from")
     spawn_from = (
@@ -163,11 +235,15 @@ async def _reconcile(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, 
             item.outcome = {"error": "the job for this item no longer exists"}
             settled += 1
             continue
-        if str(job.status or "") not in TERMINAL_JOB_STATUSES:
+        run = await _run_of(db, job)
+        waiting = _waiting_on(run)
+        if waiting:
+            waiting_on = waiting
             continue
 
         contract = _contract_of(job)
-        findings = _findings_of(job)
+        findings = [finding for member in run for finding in _findings_of(member)]
+        stages = run[1:]
         item.status = (
             CampaignItemStatus.DONE
             if str(job.status) == "completed"
@@ -181,12 +257,24 @@ async def _reconcile(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, 
             "finding_counts": _counts(findings),
             "conclusion": str((job.results or {}).get("conclusion") or "")[:600],
         }
+        if stages:
+            # The stages are jobs this campaign caused, so they come out of
+            # its budget, counted here because only now is the number known.
+            campaign.jobs_launched = int(campaign.jobs_launched or 0) + len(stages)
+            item.outcome["stages"] = [
+                {
+                    "stage": _stage_name(stage),
+                    "job_status": str(stage.status or ""),
+                    "contract_satisfied": bool(_contract_of(stage).get("satisfied")),
+                }
+                for stage in stages[:12]
+            ]
         settled += 1
 
         if spawn_from:
             discovered += await _spawn_items(db, campaign, findings, spawn_from, item)
 
-    return {"settled": settled, "discovered": discovered}
+    return {"settled": settled, "discovered": discovered, "waiting_on": waiting_on}
 
 
 def _counts(findings: Sequence[Mapping[str, Any]]) -> Dict[str, int]:
@@ -408,10 +496,11 @@ async def _all_findings(
         ).scalar_one_or_none()
         if job is None:
             continue
-        for finding in _findings_of(job):
-            enriched = dict(finding)
-            enriched.setdefault("subject", item.title)
-            collected.append(enriched)
+        for member in await _run_of(db, job):
+            for finding in _findings_of(member):
+                enriched = dict(finding)
+                enriched.setdefault("subject", item.title)
+                collected.append(enriched)
     return collected
 
 
@@ -524,6 +613,9 @@ async def advance(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, Any
         "campaign": str(campaign.id),
         "action": action,
         "status": campaign.status,
+        # Why nothing moved, when nothing did: a job at work, a plan waiting
+        # for approval, or a run that stopped to ask a person something.
+        "waiting_on": reconciled["waiting_on"] if action == "waiting" else None,
         "settled": reconciled["settled"],
         "discovered": reconciled["discovered"],
         "dropped": triage["dropped"],
@@ -545,6 +637,32 @@ async def advance(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, Any
     }
 
 
+async def _what_it_waits_on(
+    db: AsyncSession, items: Sequence[ResearchCampaignItem]
+) -> Optional[str]:
+    """What the running item's run is waiting for, read without settling it."""
+    for item in items:
+        if item.status != CampaignItemStatus.RUNNING or item.job_id is None:
+            continue
+        job = (
+            await db.execute(select(AgentJob).where(AgentJob.id == item.job_id))
+        ).scalar_one_or_none()
+        if job is not None:
+            return _waiting_on(await _run_of(db, job))
+    return None
+
+
+async def remaining_jobs(db: AsyncSession, campaign_id: Any) -> Optional[int]:
+    """How many more jobs this campaign may cause, or None if it is not one."""
+    try:
+        campaign = await db.get(ResearchCampaign, UUID(str(campaign_id)))
+    except (ValueError, TypeError, AttributeError):
+        return None
+    if campaign is None:
+        return None
+    return max(0, int(campaign.max_jobs or 0) - int(campaign.jobs_launched or 0))
+
+
 async def summarize(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, Any]:
     """What the campaign has done, for an operator or a report."""
     items = await _items(db, campaign)
@@ -562,6 +680,7 @@ async def summarize(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, A
         "name": campaign.name,
         "status": campaign.status,
         "goal": campaign.goal,
+        "waiting_on": await _what_it_waits_on(db, items),
         "items": len(items),
         "by_status": by_status,
         "discovered_items": sum(1 for item in items if item.origin == "discovered"),

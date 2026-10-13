@@ -64,12 +64,30 @@ const ItemRow: React.FC<{ item: ResearchCampaignItem }> = ({ item }) => (
   </div>
 );
 
+// A campaign that has stopped for a person looks, from its counters, exactly
+// like one whose job is still working. Only the first needs someone to act.
+const WAITING_ON: Record<string, string> = {
+  approval: 'waiting for a plan to be approved',
+  person: 'waiting for an answer from you',
+};
+
 const Conclusion: React.FC<{ campaign: ResearchCampaign }> = ({ campaign }) => {
   const detail = campaign.conclusion_detail;
   const finished = campaign.status !== 'active';
 
   if (!campaign.conclusion && !detail) {
     if (!finished) {
+      const waiting = WAITING_ON[campaign.summary?.waiting_on];
+      if (waiting) {
+        return (
+          <p className="text-sm text-gray-500">
+            Stopped, {waiting}. Nothing more is asked until then.{' '}
+            <a href="/review" className="text-primary-600 hover:underline">
+              Open Review
+            </a>
+          </p>
+        );
+      }
       return (
         <p className="text-sm text-gray-500">
           Still running — it concludes when the work runs out or the budget does.
@@ -256,6 +274,9 @@ const CampaignsPage: React.FC = () => {
                       {launched} of {budget} job{budget === 1 ? '' : 's'} used
                       {campaign.status === 'exhausted' &&
                         ' · stopped early, out of budget'}
+                      {campaign.status === 'active' &&
+                        WAITING_ON[campaign.summary?.waiting_on] &&
+                        ` · ${WAITING_ON[campaign.summary?.waiting_on]}`}
                     </p>
                   </div>
                 </button>

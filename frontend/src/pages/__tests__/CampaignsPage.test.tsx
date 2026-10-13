@@ -52,6 +52,43 @@ describe('CampaignsPage', () => {
     ).toBeInTheDocument();
   });
 
+  it('says when it has stopped for a person, and where to go', async () => {
+    // Its job proposed a plan; the campaign asks nothing more until someone
+    // approves it, and the counters alone would read as "still running".
+    const waiting = campaign({
+      status: 'active',
+      summary: { waiting_on: 'approval' },
+    });
+    apiClient.listResearchCampaigns.mockResolvedValue({
+      items: [waiting],
+      total: 1,
+    });
+    apiClient.getResearchCampaign.mockResolvedValue(waiting);
+    render(<CampaignsPage />);
+
+    expect(
+      await screen.findByText(/waiting for a plan to be approved/)
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Prefetcher study'));
+    const link = await screen.findByText('Open Review');
+    expect(link).toHaveAttribute('href', '/review');
+    expect(screen.queryByText(/Still running/)).not.toBeInTheDocument();
+  });
+
+  it('does not call a job at work a wait on anyone', async () => {
+    const working = campaign({ status: 'active', summary: { waiting_on: 'job' } });
+    apiClient.listResearchCampaigns.mockResolvedValue({
+      items: [working],
+      total: 1,
+    });
+    apiClient.getResearchCampaign.mockResolvedValue(working);
+    render(<CampaignsPage />);
+
+    fireEvent.click(await screen.findByText('Prefetcher study'));
+    expect(await screen.findByText(/Still running/)).toBeInTheDocument();
+    expect(screen.queryByText(/waiting for/)).not.toBeInTheDocument();
+  });
+
   it('leads with the answer once one exists', async () => {
     apiClient.getResearchCampaign.mockResolvedValue(
       campaign({

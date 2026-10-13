@@ -89,6 +89,26 @@ def why_this_run_may_not_plan(job: Any) -> Optional[str]:
     return None
 
 
+async def _room_in_campaign(job: Any, db: Any) -> Optional[int]:
+    """Jobs left in the budget of the campaign this run belongs to, if any.
+
+    A campaign's budget is what stops findings begetting work without end,
+    and a plan's stages are work the campaign caused. Not knowing is not a
+    refusal: the campaign counts the stages when the run ends either way.
+    """
+    config = job.config if isinstance(getattr(job, "config", None), dict) else {}
+    campaign_id = config.get("campaign_id")
+    if not campaign_id or db is None:
+        return None
+    try:
+        from app.services import research_campaign_service
+
+        return await research_campaign_service.remaining_jobs(db, campaign_id)
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        logger.warning(f"Self-planned pipeline: campaign budget not read: {exc}")
+        return None
+
+
 def _refused(message: str, **data: Any) -> Dict[str, Any]:
     return {"error": message, **({"data": data} if data else {})}
 
@@ -184,6 +204,16 @@ async def propose(
             f"propose at most {limits['seconds']}s. Ask for less: fewer "
             "stages, or fewer loop iterations.",
             estimated_seconds=compiled.total_seconds,
+        )
+
+    room = await _room_in_campaign(job, db)
+    if room is not None and len(stages) > room:
+        return _refused(
+            f"This run belongs to a campaign with {room} job(s) left in its "
+            f"budget, and the plan has {len(stages)} stages. Ask for the part "
+            "that matters most.",
+            stages=stages,
+            campaign_jobs_left=room,
         )
 
     bound = agent_pipeline_binding.bind(pipeline)

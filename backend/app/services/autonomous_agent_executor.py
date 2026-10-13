@@ -3449,6 +3449,11 @@ class AutonomousAgentExecutor:
         if checkpoint:
             logger.info(f"Resuming job {job.id} from iteration {checkpoint.iteration}")
         state = initialize_runtime_state(checkpoint.state if checkpoint else None)
+        # A restart sets the job's iteration back to zero and a resume does
+        # not, so a checkpoint ahead of the job is a restarted run: it keeps
+        # what it found and forgets that it was stuck.
+        if checkpoint and int(checkpoint.iteration or 0) > int(job.iteration or 0):
+            agent_loop_policy.forget_stall(state)
         # Corrections an operator attached when resuming this run. They live on
         # the job because a run that blocked early has no checkpoint to carry
         # them, and they are merged rather than assigned so a clue already in

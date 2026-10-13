@@ -107,6 +107,29 @@ def record_round(state: Dict[str, Any], finding_count: int) -> None:
     state["loop_finding_counts"] = history[-20:]
 
 
+#: What a run knows about being stuck, as opposed to what it has learned.
+STALL_KEYS = (
+    "loop_finding_counts",
+    "loop_policy_stop_reason",
+    "stalled_iterations",
+    "repeated_action_iterations",
+)
+
+
+def forget_stall(state: Dict[str, Any]) -> None:
+    """Drop the history that says a run is stuck, keeping what it found.
+
+    For a run restarted by a person. Restarting gives a run its budget back
+    and keeps its findings and files, so the stage does not repeat what it
+    learned; but it kept the round counts too, and those are what the last
+    life ended on. A stage restarted on the live stack was stopped after one
+    round as "3 consecutive rounds produced no new findings": two of the
+    three were from before the restart.
+    """
+    for key in STALL_KEYS:
+        state.pop(key, None)
+
+
 def should_stop(
     config: Optional[Dict[str, Any]], state: Optional[Dict[str, Any]]
 ) -> Tuple[bool, str]:

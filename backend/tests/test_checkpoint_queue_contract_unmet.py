@@ -118,3 +118,58 @@ class TestWhatItMustNotClaim:
 
     def test_one_job_yields_one_row(self):
         assert len(_rows(_job())) == 1
+
+
+# A stage of a plan is a different case: the stages behind it start only when
+# its chain fires, and an unmet contract does not fire it. The first plan
+# approved live stopped at its first stage with three behind it, and the row
+# said only that one run had not met its contract.
+
+
+def _stage(name, then=None):
+    child = {"name": f"plan: {name}", "config": {"pipeline_stage": name}}
+    if then is not None:
+        child["chain_config"] = {"child_jobs": [then]}
+    return child
+
+
+PLAN_BEHIND = {
+    "trigger_condition": "on_complete",
+    "child_jobs": [_stage("apply", _stage("check", _stage("benchmark")))],
+}
+
+
+class TestAStageWithOthersBehindIt:
+    def test_the_row_names_the_stages_that_did_not_start(self):
+        (row,) = _unmet(_job(chain_config=PLAN_BEHIND, chain_triggered=False))
+
+        assert row.checkpoint["waiting_stages"] == ["apply", "check", "benchmark"]
+        assert "3 later stage(s) will not start" in row.summary
+        assert "apply, check, benchmark" in row.summary
+        # What was missing is still said.
+        assert "synthesis_document" in row.summary
+
+    def test_it_ranks_above_a_run_nobody_waits_on(self):
+        (stopped,) = _unmet(_job(chain_config=PLAN_BEHIND, chain_triggered=False))
+        (alone,) = _unmet(_job())
+
+        assert stopped.priority > alone.priority
+
+    def test_a_chain_that_already_fired_has_nothing_waiting(self):
+        (row,) = _unmet(_job(chain_config=PLAN_BEHIND, chain_triggered=True))
+
+        assert row.checkpoint["waiting_stages"] == []
+        assert "later stage" not in row.summary
+
+    def test_a_run_with_no_chain_is_unchanged(self):
+        (row,) = _unmet(_job())
+
+        assert row.checkpoint["waiting_stages"] == []
+        assert row.priority == 60
+
+    def test_a_malformed_chain_does_not_break_the_queue(self):
+        chain = {"child_jobs": ["not a stage", {"config": "nor this"}, None]}
+
+        (row,) = _unmet(_job(chain_config=chain, chain_triggered=False))
+
+        assert row.checkpoint["waiting_stages"] == []

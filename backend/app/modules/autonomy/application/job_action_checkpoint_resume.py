@@ -9,6 +9,7 @@ from app.modules.autonomy.application.job_action_contracts import (
     JobActionDependencies,
     JobActionError,
 )
+from app.modules.autonomy.application.job_action_dispatch import queue_job
 from app.services import agent_loop_policy
 
 
@@ -169,5 +170,5 @@ async def perform_resume_action(
     flag_modified(job, "results")
     job.status = AgentJobStatus.PENDING.value
     job.add_log_entry({"phase": "resumed", "reason": "user_request"})
-    deps.execute_agent_job_task.delay(str(job.id), str(current_user.id))
+    queue_job(db, deps, job.id, current_user.id)
     return job

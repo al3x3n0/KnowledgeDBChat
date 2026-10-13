@@ -465,3 +465,69 @@ def test_anything_else_is_listed_by_name_alone(schema):
     from app.services.autonomous_agent_executor import _required_choices
 
     assert _required_choices(schema) == ""
+
+
+# --- a stage's budget is the stage's ---
+#
+# The first plan approved live came from a scoping run allowed ten iterations.
+# Its first stage had to clone a repository, write a file and propose a patch,
+# inherited those ten, and ended with its contract unmet.
+
+
+async def test_a_stage_does_not_inherit_the_budget_of_the_run_that_planned_it(
+    db_session, test_user
+):
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    job = await _run(
+        db_session,
+        test_user,
+        max_iterations=10,
+        max_runtime_minutes=5,
+        max_tool_calls=20,
+        max_llm_calls=20,
+    )
+    await _propose(db_session, job)
+    job.status = AgentJobStatus.COMPLETED.value
+    job.results = {"findings": []}
+    await db_session.commit()
+
+    with patch("app.tasks.agent_job_tasks.execute_agent_job_task.delay"):
+        await AutonomousAgentExecutor()._trigger_chained_jobs(
+            job, "approval", db_session
+        )
+    await db_session.commit()
+
+    (first,) = (
+        (
+            await db_session.execute(
+                select(AgentJob).where(AgentJob.parent_job_id == job.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    # What a stage gets when a person launches the same pipeline.
+    assert first.max_iterations == 100
+    assert first.max_runtime_minutes == 60
+    assert first.max_tool_calls == 500
+    assert first.max_llm_calls == 200
+
+
+def test_a_budget_the_plan_states_is_kept():
+    stage = planning._with_a_stage_budget({"name": "s", "max_iterations": 7})
+
+    assert stage["max_iterations"] == 7
+    assert stage["max_runtime_minutes"] == 60
+
+
+def test_the_launch_route_gives_a_stage_the_same_iterations():
+    """Two numbers for one thing: the launch route's and this module's."""
+    import inspect
+
+    from app.api.endpoints import agent_pipelines
+
+    source = inspect.getsource(agent_pipelines)
+    assert (
+        f'root.get("max_iterations") or {planning._LAUNCHED_STAGE_ITERATIONS}' in source
+    )

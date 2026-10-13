@@ -94,6 +94,36 @@ def prompt_note(job: Any) -> str:
     )
 
 
+#: The limits a stage has when a person launches the same pipeline: the launch
+#: route's iteration budget and the job model's own defaults for the rest.
+_STAGE_LIMITS = ("max_tool_calls", "max_llm_calls", "max_runtime_minutes")
+_LAUNCHED_STAGE_ITERATIONS = 100
+
+
+def _with_a_stage_budget(root: Dict[str, Any]) -> Dict[str, Any]:
+    """The plan's first stage, with a launched pipeline's limits written in.
+
+    A chained job takes any limit its config does not name from its parent,
+    and a proposed plan's parent is the run that proposed it. The first plan
+    approved live came from a scoping run allowed ten iterations, so the
+    stage that had to clone a repository, write a file and propose a patch
+    was allowed ten as well: it spent them orienting, ended with its
+    contract unmet, and the stages behind it never started. A stage's budget
+    belongs to the stage. Stated on the first stage only, since the later
+    ones inherit from it; a limit the plan names (a stage with a `loop`) is
+    kept.
+    """
+    from app.models.agent_job import AgentJob
+
+    stage = dict(root)
+    stage.setdefault("max_iterations", _LAUNCHED_STAGE_ITERATIONS)
+    for limit in _STAGE_LIMITS:
+        default = getattr(AgentJob.__table__.c, limit).default
+        if default is not None:
+            stage.setdefault(limit, default.arg)
+    return stage
+
+
 def why_this_run_may_not_plan(job: Any) -> Optional[str]:
     """The reason this run cannot propose a pipeline, or None if it can."""
     if not enabled():
@@ -267,7 +297,7 @@ async def propose(
     job.chain_config = {
         "trigger_condition": ChainTriggerCondition.ON_APPROVAL.value,
         "inherit_results": True,
-        "child_jobs": list(bound.roots),
+        "child_jobs": [_with_a_stage_budget(root) for root in bound.roots],
         SELF_PLANNED: proposal,
     }
     state["pipeline_proposal"] = {k: v for k, v in proposal.items() if k != "spec"}

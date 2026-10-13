@@ -13,6 +13,7 @@ from app.modules.autonomy.application.job_action_contracts import (
     JobActionDependencies,
     JobActionError,
 )
+from app.modules.autonomy.application.job_action_dispatch import queue_job
 from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 
 SWARM_ACTIONS = frozenset(
@@ -198,7 +199,7 @@ async def perform_swarm_action(
             }
         )
         await db.commit()
-        deps.execute_agent_job_task.delay(str(new_job.id), str(current_user.id))
+        queue_job(db, deps, new_job.id, current_user.id)
         return new_job
 
     elif action == "promote_swarm_candidate":
@@ -288,7 +289,7 @@ async def perform_swarm_action(
             }
         )
         await db.commit()
-        deps.execute_agent_job_task.delay(str(new_job.id), str(current_user.id))
+        queue_job(db, deps, new_job.id, current_user.id)
         return new_job
 
     return job

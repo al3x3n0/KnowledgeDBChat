@@ -15,6 +15,7 @@ though the chain was never told the job completed.
 import pytest
 
 from app.models.agent_job import AgentJob, AgentJobStatus
+from app.modules.autonomy.application import job_action_checkpoints
 from app.services import agent_swarm_review_gate as gate
 from app.services.agent_runtime_finalizer import (
     SWARM_REVIEW_CHECKPOINT,
@@ -353,7 +354,7 @@ class TestReleasingTheGate:
             normalize_checkpoint_action_patch=lambda patch: patch,
             apply_checkpoint_action_patch=_noop,
             set_current_plan_step_status=_noop,
-            append_approval_event=lambda payload, state, event: None,
+            append_approval_event=job_action_checkpoints.append_approval_event,
             sync_execution_strategy_state=_noop,
             quick_start_relaunch_dispatcher=None,
             infer_coding_swarm_preset_key=_noop,

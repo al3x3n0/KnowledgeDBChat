@@ -10,6 +10,7 @@ exactly that.
 import pytest
 
 from app.models.agent_job import AgentJob, AgentJobStatus, ChainTriggerCondition
+from app.modules.autonomy.application import job_action_checkpoints
 from app.services.agent_runtime_finalizer import (
     CHAIN_GATE_CHECKPOINT,
     _hold_for_chain_approval,
@@ -164,6 +165,40 @@ class TestDecidingTheGate:
         assert requeued == [], "a gate must not re-run the job it gates"
 
     @pytest.mark.asyncio
+    async def test_the_decision_is_recorded_with_who_made_it(self, monkeypatch):
+        import app.modules.autonomy.application.job_action_checkpoint_decisions as mod
+
+        class _FakeExecutor:
+            async def _trigger_chained_jobs(self, job, event, db):
+                return ["child-1"]
+
+        monkeypatch.setattr(
+            "app.services.autonomous_agent_executor.AutonomousAgentExecutor",
+            _FakeExecutor,
+        )
+        for action, key in (("approve", "approvals"), ("reject", "rejections")):
+            job = _job()
+            _hold_for_chain_approval(job)
+            approval = {}
+            await mod._decide_chain_gate(
+                job,
+                action,
+                job.results["approval_checkpoint"],
+                "a note",
+                dict(job.results),
+                approval,
+                {},
+                None,
+                deps=_deps([]),
+                db=_FakeDb(),
+                current_user=_FakeUser(),
+            )
+
+            (event,) = approval[key]
+            assert event["approved_by"] == "user-1"
+            assert event["note"] == "a note"
+
+    @pytest.mark.asyncio
     async def test_rejecting_stops_the_pipeline_without_starting_anything(self):
         import app.modules.autonomy.application.job_action_checkpoint_decisions as mod
 
@@ -209,9 +244,11 @@ def _deps(requeued):
     class _Deps:
         execute_agent_job_task = _Task()
 
-        @staticmethod
-        def append_approval_event(*args, **kwargs):
-            pass
+        # The real one: a stand-in that accepted anything is how a call with
+        # the wrong arguments passed here and answered 500 in the API.
+        append_approval_event = staticmethod(
+            job_action_checkpoints.append_approval_event
+        )
 
         @staticmethod
         def sync_execution_strategy_state(*args, **kwargs):

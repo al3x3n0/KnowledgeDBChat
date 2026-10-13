@@ -779,9 +779,36 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   coding stage was planned as research. `agent_pipeline_draft.tidy` now
   drops an implied dependency and moves those two fields, as it already
   moved a misplaced goal; after that the same requests attached five of
-  five before the run was cut short. **No job has yet chosen to call the
-  tool, and no approved plan has been run to its end**: those tests script
-  the model and use the real hold and chain runtime.
+  five before the run was cut short. **A job has now proposed a plan on its own, a person approved it, and
+  it ran** (2026-10-13, real model, the stack's own worker). Three runs of
+  one scoping goal that asked for the follow-up to be left for a person: the
+  first called `create_handoff`, which started the work at once; the second
+  wrote the plan into a finding and stopped; both had `propose_pipeline` in
+  their list of 250. The stable prompt and the critic now carry
+  `agent_self_planned_pipeline.prompt_note` (what each way of "planning"
+  does), the two spawning tools say they start at once, and the third run
+  proposed a four-stage plan while a control with no follow-up proposed
+  none. The note depends only on the setting and on being nobody's stage,
+  since it is in the prompt that keys the cache. **Approving it was a 500**:
+  both gate decisions (chain and swarm review) called
+  `append_approval_event` with three positional arguments where it takes
+  two and keywords, and their tests passed a stand-in that accepted
+  anything, so no checkpoint or swarm verdict could be approved through the
+  API since each gate was added. The tests use the real function now. After
+  the fix the first stage started, spent its ten iterations orienting
+  (findings, spec, cloning a repository, browsing it), wrote no file, and
+  ended `completed` with its contract unmet; **the three stages behind it
+  never started**. A stage that fails still stops the plan. Also seen: a run
+  reads `completed` for the minutes its conclusion and memories are written
+  and only then `paused`, so look again before deciding a plan was not held;
+  and the run's conclusion synthesis returned no content (the model spent
+  its 8,000 tokens reasoning), which is not fixed.
+  **The tool list says what a required parameter accepts**
+  (`_required_choices`): it named parameters and not their values, and four
+  runs of four lost their first `save_research_finding` to a category the
+  tool does not have. Required parameters with at most eight fixed strings
+  are listed as `category*=key_insight|methodology|...`, 548 characters over
+  the whole catalog.
 - **`spawn_on` is the one place a pipeline edge does not mean "after".** Every
   other dependency waits for a stage to finish, which cannot describe a stage
   that never does -- a continuous monitor is still monitoring, and a successor

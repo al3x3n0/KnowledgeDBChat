@@ -187,7 +187,7 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="delegate_subtask",
-        description="Spawn a child agent job to work on a specific subtask. The child runs asynchronously as a background task.",
+        description="Spawn a child agent job to work on a specific subtask. The child runs asynchronously as a background task. It starts at once and nobody is asked first: for follow-up work that should wait for a person to agree, use propose_pipeline.",
         parameters={
             "type": "object",
             "properties": {
@@ -226,12 +226,14 @@ SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="propose_pipeline",
         description="Propose the work that should follow this run, as a pipeline "
-        "of stages. Use it when this run has shown what the next investigation "
-        "should be and that investigation is more than one job: describe it, "
-        "and the platform drafts the stages, checks that each one's evidence "
-        "can actually be produced, and prices it. Nothing starts: the plan is "
-        "attached to this run and a person approves or rejects it after the "
-        "run completes. Refused for a run that is itself a stage of a "
+        "of stages. This is the tool for follow-up work that must wait for a "
+        "person to agree: delegate_subtask and create_handoff start a child "
+        "at once and ask nobody. Use it when this run has shown what the next "
+        "investigation should be, whether that is one step or several: "
+        "describe it, and the platform drafts the stages, checks that each "
+        "one's evidence can actually be produced, and prices it. Nothing "
+        "starts: the plan is attached to this run and a person approves or "
+        "rejects it after the run completes. Refused for a run that is itself a stage of a "
         "pipeline. If the plan is rejected by the checker you are told why "
         "and may describe it differently.",
         parameters={
@@ -555,7 +557,7 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="create_handoff",
-        description="Create a structured handoff to spawn a child agent job with a typed contract specifying what the child should produce. The child will see the contract in its system prompt. Use instead of delegate_subtask when you need structured output expectations.",
+        description="Create a structured handoff to spawn a child agent job with a typed contract specifying what the child should produce. The child will see the contract in its system prompt. Use instead of delegate_subtask when you need structured output expectations. The child starts at once and nobody is asked first: for follow-up work that should wait for a person to agree, use propose_pipeline.",
         parameters={
             "type": "object",
             "properties": {

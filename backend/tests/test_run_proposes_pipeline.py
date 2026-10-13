@@ -376,3 +376,92 @@ async def test_the_tool_is_declared_and_answers_through_its_handler(
     assert result["success"] is True, result
     assert state["pipeline_proposal"]["stages"] == ["find", "specify"]
     assert "spec" not in state["pipeline_proposal"]
+
+
+# --- what a run is told about it ---
+#
+# Two live runs asked to leave follow-up work for a person had the tool in
+# their list and did not call it: one started a child with create_handoff, one
+# wrote the plan into a finding. The prompt now says what each of those does.
+
+
+def _prompted_job(**fields):
+    base = {"config": {}, "parent_job_id": None, "chain_config": None}
+    return SimpleNamespace(**{**base, **fields})
+
+
+def test_a_run_that_may_plan_is_told_which_tool_waits_for_a_person():
+    note = planning.prompt_note(_prompted_job())
+
+    assert "propose_pipeline" in note
+    assert "create_handoff" in note and "delegate_subtask" in note
+    assert "do not propose a plan for its own sake" in note
+
+
+def test_every_tool_the_note_names_exists():
+    from app.agent_core.tool_specs import STATIC_CATALOG
+
+    names = {spec.name for spec in STATIC_CATALOG.all_specs()}
+    for tool in ("propose_pipeline", "create_handoff", "delegate_subtask"):
+        assert tool in names
+
+
+def test_a_stage_is_not_told_to_plan(monkeypatch):
+    assert planning.prompt_note(_prompted_job(parent_job_id="p")) == ""
+    assert (
+        planning.prompt_note(_prompted_job(config={"pipeline_stage": {"name": "s"}}))
+        == ""
+    )
+    monkeypatch.setattr(settings, "AGENT_SELF_PLANNED_PIPELINES_ENABLED", False)
+    assert planning.prompt_note(_prompted_job()) == ""
+
+
+def test_the_note_does_not_change_once_a_plan_is_attached():
+    """It is in the stable prompt, which keys the provider's prompt cache."""
+    before = planning.prompt_note(_prompted_job())
+    after = planning.prompt_note(
+        _prompted_job(chain_config={planning.SELF_PLANNED: True})
+    )
+
+    assert before == after
+
+
+def test_the_tools_that_start_work_at_once_say_so():
+    from app.agent_core.tool_specs import STATIC_CATALOG
+
+    by_name = {spec.name: spec for spec in STATIC_CATALOG.all_specs()}
+    for tool in ("create_handoff", "delegate_subtask"):
+        assert "propose_pipeline" in by_name[tool].description
+        assert "at once" in by_name[tool].description
+
+
+# --- the tool list says what a required parameter accepts ---
+
+
+def test_a_required_parameter_with_a_few_fixed_values_lists_them():
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    listing = AutonomousAgentExecutor()._format_tools_for_prompt("research", {})
+    line = next(
+        entry
+        for entry in listing.splitlines()
+        if entry.startswith("- save_research_finding ")
+    )
+
+    assert "category*=key_insight|methodology|result|" in line
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"type": "string"},
+        {"enum": []},
+        {"enum": [1, 2]},
+        {"enum": [str(n) for n in range(9)]},
+        "not a schema",
+    ],
+)
+def test_anything_else_is_listed_by_name_alone(schema):
+    from app.services.autonomous_agent_executor import _required_choices
+
+    assert _required_choices(schema) == ""

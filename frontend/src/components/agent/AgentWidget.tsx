@@ -46,6 +46,7 @@ import MermaidDiagram from '../common/MermaidDiagram';
 import ReactMarkdown from 'react-markdown';
 import toast from 'react-hot-toast';
 import { useAgentWebSocket, AgentMessage, AgentToolCall, StreamingState, ConnectionStatus } from './useAgentWebSocket';
+import AnswerSources from './AnswerSources';
 import { safeExternalUrl } from '../../utils/safeUrl';
 
 // ============================================================================
@@ -231,6 +232,12 @@ const ToolOutputDisplay: React.FC<ToolOutputDisplayProps> = ({ output, toolName 
         ))}
       </div>
     );
+  }
+
+  // An answer written from the knowledge base: its sources, and how they
+  // were found.
+  if (toolName === 'answer_question' && output && !output.error) {
+    return <AnswerSources output={output} />;
   }
 
   // Search results

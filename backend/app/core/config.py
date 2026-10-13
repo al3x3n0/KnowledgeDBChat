@@ -651,6 +651,14 @@ class Settings(BaseSettings):
     # Keep disabled by default for safety.
     CUSTOM_TOOL_DOCKER_ENABLED: bool = False
 
+    # A run may propose a pipeline to follow it (the propose_pipeline tool).
+    # The plan is checked and priced like a person's, attached behind an
+    # approval, and started by nobody but the person who approves it. These
+    # bound what one may propose.
+    AGENT_SELF_PLANNED_PIPELINES_ENABLED: bool = True
+    AGENT_SELF_PLANNED_PIPELINE_MAX_STAGES: int = 6
+    AGENT_SELF_PLANNED_PIPELINE_MAX_SECONDS: int = 14400
+
     # The image a custom Python tool's code runs in. It needs `python3` and
     # must be one of SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES.
     CUSTOM_TOOL_PYTHON_IMAGE: str = "ghcr.io/al3x3n0/kdbc-compiler-research:latest"

@@ -748,6 +748,29 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   branch on an outcome or fire partway through. A converted pipeline arrives
   with empty contracts and so does not validate: that is the point, since
   `validate` then names per stage the contract someone has to write.
+- **A run can propose the pipeline that should follow it**
+  (`propose_pipeline`, `services/agent_self_planned_pipeline.py`). The step
+  from one job to a plan was always a person's: a run could spawn a child
+  and a person could draft a pipeline, but nothing let a run say "the next
+  thing is these stages, each done when this evidence exists". Three things
+  stay out of the model's hands. **It is checked, not trusted**: the draft
+  goes through `agent_pipeline_draft.problems_with`, the same validator,
+  skill check and chain-expressibility check a person's pipeline meets, and a
+  refused plan is handed back with the reasons and nothing attached. **It is
+  priced and bounded** (`AGENT_SELF_PLANNED_PIPELINE_MAX_STAGES`, 6;
+  `..._MAX_SECONDS`, 4 h), and a plan over either is refused with the figure.
+  **It starts nothing**: the bound pipeline becomes the run's `chain_config`
+  with trigger `on_approval`, the trigger a checkpoint stage uses, so the
+  finished run is held by `hold_for_chain_approval` like any other, shows in
+  the queue and on the Review page with its stages and estimate
+  (`approval_checkpoint.proposed_pipeline`), and the chain runtime starts the
+  first stage only when someone approves. No new approval machinery. Only a
+  run that is nobody's stage may propose one (a stage planning its own
+  pipeline is a plan that grows a plan), a run may replace its own proposal
+  but never a chain someone else configured, and it may ask three times.
+  Only a run that ends `completed` offers its plan. **Not run live**: the
+  tests script the model and use the real checker, binding, hold and chain
+  runtime.
 - **`spawn_on` is the one place a pipeline edge does not mean "after".** Every
   other dependency waits for a stage to finish, which cannot describe a stage
   that never does -- a continuous monitor is still monitoring, and a successor

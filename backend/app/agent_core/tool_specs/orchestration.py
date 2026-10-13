@@ -224,6 +224,35 @@ SPECS: tuple[ToolSpec, ...] = (
         cost_tier="medium",
     ),
     ToolSpec(
+        name="propose_pipeline",
+        description="Propose the work that should follow this run, as a pipeline "
+        "of stages. Use it when this run has shown what the next investigation "
+        "should be and that investigation is more than one job: describe it, "
+        "and the platform drafts the stages, checks that each one's evidence "
+        "can actually be produced, and prices it. Nothing starts: the plan is "
+        "attached to this run and a person approves or rejects it after the "
+        "run completes. Refused for a run that is itself a stage of a "
+        "pipeline. If the plan is rejected by the checker you are told why "
+        "and may describe it differently.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string",
+                    "description": (
+                        "What the follow-up should find out or build, and what "
+                        "would show it is done -- a few sentences. Name the "
+                        "concrete subject (the kernel, the paper, the "
+                        "repository), since the stages are written from this."
+                    ),
+                },
+            },
+            "required": ["description"],
+        },
+        effects="write",
+        cost_tier="medium",
+    ),
+    ToolSpec(
         name="wait_for_subtask",
         description="Check status or wait for a delegated subtask to complete. Returns current status and results if available.",
         parameters={

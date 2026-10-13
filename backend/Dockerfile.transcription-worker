@@ -61,7 +61,7 @@ RUN set -eux; \
     # anything it thinks became an orphan when the compiler goes.
     auto="$(apt-mark showauto)"; \
     [ -z "$auto" ] || apt-mark manual $auto > /dev/null; \
-    apt-get install -y --no-install-recommends build-essential; \
+    apt-get install -y --no-install-recommends build-essential libquadmath0; \
     # libgomp1 needs holding by name. The API image's ffmpeg arrived as FILES,
     # libgomp.so.1 among them, so apt has no record of it; installing gcc then
     # installs the package over that same file, and purging gcc takes both the
@@ -69,7 +69,8 @@ RUN set -eux; \
     # image reports "error while loading shared libraries: libgomp.so.1" -- the
     # assertion at the end of this RUN is what caught it.
     apt-mark manual libgomp1 > /dev/null; \
-    pip install --no-cache-dir --no-compile --index-url "${TORCH_INDEX_URL}" \
+    pip install --trusted-host download-r2.pytorch.org \
+        --no-cache-dir --no-compile --index-url "${TORCH_INDEX_URL}" \
         torch==2.1.1 torchaudio==2.1.1; \
     pip install --no-cache-dir --no-compile \
         -r requirements.transcription-worker.txt; \

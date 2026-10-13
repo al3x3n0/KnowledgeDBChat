@@ -1,6 +1,12 @@
 # Web Framework
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
+# ASGI server for the gunicorn deployment (Dockerfile CMD and the Helm chart's
+# "gunicorn main:app -w ... -k uvicorn.workers.UvicornWorker" command). Without
+# it the backend container fails at start with "gunicorn: executable file not
+# found in $PATH". Must be present in the base image: the migration Job reuses
+# it, and the transcription worker builds FROM the backend image.
+gunicorn==22.0.0
 websockets==12.0
 
 # Database

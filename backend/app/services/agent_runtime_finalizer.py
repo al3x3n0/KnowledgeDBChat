@@ -119,7 +119,7 @@ def hold_for_chain_approval(job: AgentJob) -> None:
         )
         for child in chain_config.get("child_jobs") or []
     ]
-    results["approval_checkpoint"] = {
+    checkpoint = {
         "checkpoint_type": CHAIN_GATE_CHECKPOINT,
         "message": (
             "This stage is finished and the next one waits for approval: "
@@ -128,6 +128,28 @@ def hold_for_chain_approval(job: AgentJob) -> None:
         "iteration": int(getattr(job, "iteration", 0) or 0),
         "waiting_stages": [name for name in waiting if name],
     }
+    # A plan the run wrote for itself: the person deciding is shown the whole
+    # of it and what it is estimated to cost, not the name of its first stage.
+    from app.services import agent_self_planned_pipeline
+
+    proposal = agent_self_planned_pipeline.proposal_of(job)
+    if proposal:
+        checkpoint["message"] = agent_self_planned_pipeline.approval_message(proposal)[
+            :300
+        ]
+        checkpoint["waiting_stages"] = [str(s) for s in proposal.get("stages") or []]
+        checkpoint["proposed_pipeline"] = {
+            key: proposal.get(key)
+            for key in (
+                "name",
+                "description",
+                "stages",
+                "stage_goals",
+                "estimated_seconds",
+                "checkpoints",
+            )
+        }
+    results["approval_checkpoint"] = checkpoint
     job.results = results
     job.status = AgentJobStatus.PAUSED.value
     job.current_phase = "awaiting_approval"

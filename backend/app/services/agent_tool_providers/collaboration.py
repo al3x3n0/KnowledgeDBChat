@@ -555,11 +555,27 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
         except Exception as exc:
             return {"error": f"Failed to read messages: {exc}"}
 
+    async def _propose_pipeline(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_self_planned_pipeline
+
+        if ctx.job is None:
+            return {"error": "propose_pipeline needs a run to attach the plan to"}
+        return await agent_self_planned_pipeline.propose(
+            ctx.job,
+            str(params.get("description") or ""),
+            db=ctx.db,
+            llm_service=executor.llm_service,
+            state=ctx.state if isinstance(ctx.state, dict) else {},
+        )
+
     return FunctionToolProvider(
         name="autonomous_collaboration_tools",
         modes={"autonomous"},
         handlers={
             "delegate_subtask": _delegate_subtask,
+            "propose_pipeline": _propose_pipeline,
             "wait_for_subtask": _wait_for_subtask,
             "share_findings": _share_findings,
             "request_review": _request_review,

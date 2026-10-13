@@ -6,6 +6,7 @@ Supports flowcharts, sequence diagrams, ER diagrams, architecture diagrams, and 
 """
 
 import base64
+import re
 import subprocess
 import tempfile
 import urllib.parse
@@ -21,6 +22,116 @@ from loguru import logger
 #: along with the thread that is waiting for it.
 PROBE_TIMEOUT_SECONDS = 10
 RENDER_TIMEOUT_SECONDS = 120
+
+
+# --------------------------------------------------------------------------
+# Text a model supplies, made safe for the diagram language it lands in.
+#
+# Every generator below pasted labels and identifiers into Mermaid or DOT as
+# they came. Run through the real renderers, 10 of 16 ordinary diagrams
+# failed: a label containing a parenthesis broke every flowchart, an id with
+# a space or a hyphen (or the word `end`) broke the graph, a quote broke DOT.
+# Each form here was checked against the renderer, not derived from the
+# grammar.
+# --------------------------------------------------------------------------
+
+_PLAIN_ID = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+#: Words Mermaid reads as syntax where an identifier is expected.
+_RESERVED_IDS = frozenset(
+    {
+        "end",
+        "graph",
+        "subgraph",
+        "flowchart",
+        "class",
+        "classdef",
+        "style",
+        "click",
+        "default",
+        "direction",
+        "state",
+        "note",
+        "linkstyle",
+    }
+)
+_PLAIN_TEXT = re.compile(r"^[A-Za-z0-9 _.,:/+\-]+$")
+
+
+def _one_line(value: Any) -> str:
+    return " ".join(str("" if value is None else value).split())
+
+
+def mermaid_label(value: Any) -> str:
+    """A label as a quoted Mermaid string: any character may appear in it."""
+    text = _one_line(value).replace("#", "#35;").replace('"', "#quot;")
+    return f'"{text}"'
+
+
+def mermaid_text(value: Any) -> str:
+    """Free text that runs to the end of its line (a message, a note).
+
+    A semicolon ends a Mermaid statement, and `#` starts an entity.
+    """
+    return _one_line(value).replace("#", "#35;").replace(";", "#59;")
+
+
+class _Ids:
+    """Identifiers for one diagram: the caller's where they are safe, a
+    generated one where they are not, and the same answer every time."""
+
+    def __init__(self, prefix: str = "n"):
+        self._prefix = prefix
+        self._by_raw: Dict[str, str] = {}
+        self._taken: set = set()
+
+    def of(self, raw: Any) -> str:
+        key = _one_line(raw)
+        if key in self._by_raw:
+            return self._by_raw[key]
+        safe = key if _PLAIN_ID.match(key) and key.lower() not in _RESERVED_IDS else ""
+        if not safe or safe in self._taken:
+            number = len(self._by_raw) + 1
+            safe = f"{self._prefix}{number}"
+            while safe in self._taken:
+                number += 1
+                safe = f"{self._prefix}{number}"
+        self._by_raw[key] = safe
+        self._taken.add(safe)
+        return safe
+
+
+def mermaid_name(value: Any, fallback: str = "Item") -> str:
+    """A bare name (a class, an entity, a state): word characters only."""
+    name = re.sub(r"[^A-Za-z0-9_]+", "_", _one_line(value)).strip("_")
+    if not name:
+        return fallback
+    return name if not name[0].isdigit() else f"_{name}"
+
+
+def dot_string(value: Any) -> str:
+    """A DOT double-quoted string, for an id or an attribute value."""
+    text = _one_line(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{text}"'
+
+
+#: What a render may be asked to produce, and which Graphviz program lays it
+#: out. Both reach a command line, so neither is taken as given.
+OUTPUT_FORMATS = ("svg", "png", "pdf")
+GRAPHVIZ_LAYOUTS = ("dot", "neato", "fdp", "sfdp", "circo", "twopi")
+_MIME_TYPES = {"svg": "image/svg+xml", "png": "image/png", "pdf": "application/pdf"}
+FLOW_DIRECTIONS = ("TD", "TB", "LR", "RL", "BT")
+#: An ER relationship marker such as `||--o{`.
+ER_CARDINALITY = re.compile(r"^[|o}]{2}(--|\.\.)[|o{]{2}$")
+
+
+def _gantt_text(value: Any) -> str:
+    """A Gantt name or field: a colon or a comma would end it."""
+    return _one_line(value).replace(":", " -").replace(",", " ")
+
+
+def _choice(value: Any, allowed: tuple, default: str) -> str:
+    text = str(value or "").strip()
+    return text if text in allowed else default
 
 
 class DiagramService:
@@ -191,54 +302,51 @@ class DiagramService:
 
     def _create_flowchart(self, data: Dict, config: Dict) -> str:
         """Create flowchart Mermaid code."""
-        direction = config.get("direction", "TD")  # TD, LR, BT, RL
+        direction = _choice(config.get("direction"), FLOW_DIRECTIONS, "TD")
         nodes = data.get("nodes", [])
         edges = data.get("edges", [])
+        ids = _Ids()
+
+        # (open, close) around the quoted label, per shape.
+        shapes = {
+            "rectangle": ("[", "]"),
+            "rounded": ("(", ")"),
+            "stadium": ("([", "])"),
+            "diamond": ("{", "}"),
+            "hexagon": ("{{", "}}"),
+            "parallelogram": ("[/", "/]"),
+            "cylinder": ("[(", ")]"),
+            "circle": ("((", "))"),
+        }
 
         node_lines = []
         for node in nodes:
-            node_id = node.get("id", str(uuid4())[:8])
-            label = node.get("label", node_id)
-            shape = node.get("shape", "rectangle")
-
-            # Mermaid node shapes
-            if shape == "rectangle":
-                node_lines.append(f"    {node_id}[{label}]")
-            elif shape == "rounded":
-                node_lines.append(f"    {node_id}({label})")
-            elif shape == "stadium":
-                node_lines.append(f"    {node_id}([{label}])")
-            elif shape == "diamond":
-                node_lines.append(f"    {node_id}{{{label}}}")
-            elif shape == "hexagon":
-                node_lines.append(f"    {node_id}{{{{{label}}}}}")
-            elif shape == "parallelogram":
-                node_lines.append(f"    {node_id}[/{label}/]")
-            elif shape == "cylinder":
-                node_lines.append(f"    {node_id}[({label})]")
-            elif shape == "circle":
-                node_lines.append(f"    {node_id}(({label}))")
-            else:
-                node_lines.append(f"    {node_id}[{label}]")
+            raw_id = node.get("id") or str(uuid4())[:8]
+            label = node.get("label", raw_id)
+            opening, closing = shapes.get(node.get("shape", "rectangle"), ("[", "]"))
+            node_lines.append(
+                f"    {ids.of(raw_id)}{opening}{mermaid_label(label)}{closing}"
+            )
 
         edge_lines = []
         for edge in edges:
-            source = edge.get("source")
-            target = edge.get("target")
+            source = ids.of(edge.get("source"))
+            target = ids.of(edge.get("target"))
             label = edge.get("label", "")
             style = edge.get("style", "solid")
 
-            if style == "dashed":
+            # Mermaid has no separate dotted link; "..." was not one.
+            if style in ("dashed", "dotted"):
                 arrow = "-.->"
-            elif style == "dotted":
-                arrow = "..."
             elif style == "thick":
                 arrow = "==>"
             else:
                 arrow = "-->"
 
             if label:
-                edge_lines.append(f"    {source} {arrow}|{label}| {target}")
+                edge_lines.append(
+                    f"    {source} {arrow}|{mermaid_label(label)}| {target}"
+                )
             else:
                 edge_lines.append(f"    {source} {arrow} {target}")
 
@@ -252,22 +360,25 @@ class DiagramService:
         """Create sequence diagram Mermaid code."""
         participants = data.get("participants", [])
         messages = data.get("messages", [])
+        ids = _Ids("p")
 
         participant_lines = []
         for p in participants:
             if isinstance(p, dict):
-                pid = p.get("id")
-                label = p.get("label", pid)
-                ptype = p.get("type", "participant")
-                participant_lines.append(f"    {ptype} {pid} as {label}")
+                raw = p.get("id")
+                label = p.get("label", raw)
+                ptype = "actor" if p.get("type") == "actor" else "participant"
             else:
-                participant_lines.append(f"    participant {p}")
+                raw, label, ptype = p, p, "participant"
+            participant_lines.append(
+                f"    {ptype} {ids.of(raw)} as {mermaid_text(label)}"
+            )
 
         message_lines = []
         for msg in messages:
-            sender = msg.get("from")
-            receiver = msg.get("to")
-            text = msg.get("text", "")
+            sender = ids.of(msg.get("from"))
+            receiver = ids.of(msg.get("to"))
+            text = mermaid_text(msg.get("text", ""))
             msg_type = msg.get("type", "solid")
 
             if msg_type == "dashed":
@@ -299,28 +410,34 @@ class DiagramService:
 
         class_lines = []
         for cls in classes:
-            name = cls.get("name")
+            name = mermaid_name(cls.get("name"), "Class")
             attributes = cls.get("attributes", [])
             methods = cls.get("methods", [])
 
             class_lines.append(f"    class {name} {{")
             for attr in attributes:
-                visibility = attr.get("visibility", "+")
+                visibility = _choice(attr.get("visibility"), ("+", "-", "#", "~"), "+")
                 class_lines.append(
-                    f"        {visibility}{attr.get('name')}: {attr.get('type', 'any')}"
+                    f"        {visibility}{mermaid_name(attr.get('name'), 'field')}: "
+                    f"{mermaid_name(attr.get('type', 'any'), 'any')}"
                 )
             for method in methods:
-                visibility = method.get("visibility", "+")
-                params = ", ".join(method.get("params", []))
+                visibility = _choice(
+                    method.get("visibility"), ("+", "-", "#", "~"), "+"
+                )
+                params = ", ".join(
+                    mermaid_name(param, "arg") for param in method.get("params", [])
+                )
                 class_lines.append(
-                    f"        {visibility}{method.get('name')}({params})"
+                    f"        {visibility}{mermaid_name(method.get('name'), 'method')}"
+                    f"({params})"
                 )
             class_lines.append("    }")
 
         rel_lines = []
         for rel in relationships:
-            source = rel.get("source")
-            target = rel.get("target")
+            source = mermaid_name(rel.get("source"), "Class")
+            target = mermaid_name(rel.get("target"), "Class")
             rel_type = rel.get("type", "association")
             label = rel.get("label", "")
 
@@ -335,7 +452,9 @@ class DiagramService:
             arrow = arrows.get(rel_type, "--")
 
             if label:
-                rel_lines.append(f"    {source} {arrow} {target} : {label}")
+                rel_lines.append(
+                    f"    {source} {arrow} {target} : {mermaid_text(label)}"
+                )
             else:
                 rel_lines.append(f"    {source} {arrow} {target}")
 
@@ -351,36 +470,31 @@ class DiagramService:
 
         entity_lines = []
         for entity in entities:
-            name = entity.get("name")
+            name = mermaid_name(entity.get("name"), "ENTITY")
             attributes = entity.get("attributes", [])
 
             entity_lines.append(f"    {name} {{")
             for attr in attributes:
-                key_type = attr.get("key", "")
-                if key_type == "pk":
-                    entity_lines.append(
-                        f"        {attr.get('type', 'string')} {attr.get('name')} PK"
-                    )
-                elif key_type == "fk":
-                    entity_lines.append(
-                        f"        {attr.get('type', 'string')} {attr.get('name')} FK"
-                    )
-                else:
-                    entity_lines.append(
-                        f"        {attr.get('type', 'string')} {attr.get('name')}"
-                    )
+                column = (
+                    f"{mermaid_name(attr.get('type', 'string'), 'string')} "
+                    f"{mermaid_name(attr.get('name'), 'column')}"
+                )
+                key = {"pk": " PK", "fk": " FK"}.get(attr.get("key", ""), "")
+                entity_lines.append(f"        {column}{key}")
             entity_lines.append("    }")
 
         rel_lines = []
         for rel in relationships:
-            source = rel.get("source")
-            target = rel.get("target")
-            cardinality = rel.get(
-                "cardinality", "||--||"
-            )  # ||--||, ||--o{, }o--o{, etc.
+            source = mermaid_name(rel.get("source"), "ENTITY")
+            target = mermaid_name(rel.get("target"), "ENTITY")
+            cardinality = rel.get("cardinality", "||--||")
+            if not ER_CARDINALITY.match(str(cardinality)):
+                cardinality = "||--||"
             label = rel.get("label", "has")
 
-            rel_lines.append(f"    {source} {cardinality} {target} : {label}")
+            rel_lines.append(
+                f"    {source} {cardinality} {target} : {mermaid_label(label)}"
+            )
 
         return self.MERMAID_TEMPLATES["er"].format(
             entities="\n".join(entity_lines),
@@ -392,26 +506,34 @@ class DiagramService:
         states = data.get("states", [])
         transitions = data.get("transitions", [])
 
+        def state_text(value: Any) -> str:
+            # A second colon on a state line is a syntax error.
+            return mermaid_text(value).replace(":", " -")
+
+        def state_name(value: Any) -> str:
+            text = _one_line(value)
+            return "[*]" if text in ("", "[*]") else mermaid_name(text, "State")
+
         state_lines = []
         for state in states:
             if isinstance(state, dict):
-                name = state.get("name")
+                name = state_name(state.get("name"))
                 description = state.get("description", "")
                 if description:
-                    state_lines.append(f"    {name} : {description}")
+                    state_lines.append(f"    {name} : {state_text(description)}")
                 else:
                     state_lines.append(f"    state {name}")
             else:
-                state_lines.append(f"    state {state}")
+                state_lines.append(f"    state {state_name(state)}")
 
         trans_lines = []
         for trans in transitions:
-            source = trans.get("from", "[*]")
-            target = trans.get("to", "[*]")
+            source = state_name(trans.get("from", "[*]"))
+            target = state_name(trans.get("to", "[*]"))
             label = trans.get("label", "")
 
             if label:
-                trans_lines.append(f"    {source} --> {target} : {label}")
+                trans_lines.append(f"    {source} --> {target} : {state_text(label)}")
             else:
                 trans_lines.append(f"    {source} --> {target}")
 
@@ -422,28 +544,24 @@ class DiagramService:
 
     def _create_gantt_chart(self, data: Dict, config: Dict) -> str:
         """Create Gantt chart Mermaid code."""
-        title = config.get("title", "Project Schedule")
+        title = _gantt_text(config.get("title") or "Project Schedule")
         sections = data.get("sections", [])
 
         section_lines = []
         for section in sections:
-            section_name = section.get("name", "Tasks")
+            section_name = _gantt_text(section.get("name") or "Tasks")
             tasks = section.get("tasks", [])
 
             section_lines.append(f"    section {section_name}")
             for task in tasks:
-                name = task.get("name")
-                start = task.get("start")
-                duration = task.get("duration")
+                name = _gantt_text(task.get("name") or "Task")
+                start = _gantt_text(task.get("start"))
+                duration = _gantt_text(task.get("duration"))
                 status = task.get("status", "")
 
                 status_prefix = ""
-                if status == "done":
-                    status_prefix = "done, "
-                elif status == "active":
-                    status_prefix = "active, "
-                elif status == "crit":
-                    status_prefix = "crit, "
+                if status in ("done", "active", "crit"):
+                    status_prefix = f"{status}, "
 
                 section_lines.append(f"    {name} : {status_prefix}{start}, {duration}")
 
@@ -454,14 +572,20 @@ class DiagramService:
 
     def _create_pie_chart(self, data: Dict, config: Dict) -> str:
         """Create pie chart Mermaid code."""
-        title = config.get("title", "Distribution")
+        title = _one_line(config.get("title") or "Distribution")
         slices = data.get("slices", [])
 
         slice_lines = []
         for s in slices:
-            label = s.get("label")
-            value = s.get("value")
-            slice_lines.append(f'    "{label}" : {value}')
+            # A pie label is quoted and has no escape for a quote of its own.
+            label = _one_line(s.get("label")).replace('"', "'")
+            try:
+                value = float(s.get("value"))
+            except (TypeError, ValueError):
+                continue
+            if value <= 0:
+                continue  # Mermaid refuses a slice that is not positive
+            slice_lines.append(f'    "{label}" : {value:g}')
 
         return self.MERMAID_TEMPLATES["pie"].format(
             title=title,
@@ -470,19 +594,24 @@ class DiagramService:
 
     def _create_mindmap(self, data: Dict, config: Dict) -> str:
         """Create mindmap Mermaid code."""
-        root = data.get("root", "Root")
+        root = mermaid_label(data.get("root", "Root"))
         branches = data.get("branches", [])
+
+        def node(text: Any) -> str:
+            # Bare text is the default look, but brackets in it are read as a
+            # node shape; then it is written as a quoted square node.
+            plain = _one_line(text)
+            return plain if _PLAIN_TEXT.match(plain) else f"[{mermaid_label(plain)}]"
 
         def format_branch(branch, depth=1):
             indent = "    " * depth
             lines = []
             if isinstance(branch, dict):
-                name = branch.get("name")
-                lines.append(f"{indent}{name}")
+                lines.append(f"{indent}{node(branch.get('name'))}")
                 for child in branch.get("children", []):
                     lines.extend(format_branch(child, depth + 1))
             else:
-                lines.append(f"{indent}{branch}")
+                lines.append(f"{indent}{node(branch)}")
             return lines
 
         branch_lines = []
@@ -496,9 +625,11 @@ class DiagramService:
 
     def _render_mermaid(self, code: str, config: Dict) -> str:
         """Render Mermaid code to image using mmdc CLI."""
-        output_format = config.get("output_format", "svg")
-        theme = config.get("theme", "default")
-        background = config.get("background", "white")
+        output_format = _choice(config.get("output_format"), OUTPUT_FORMATS, "svg")
+        theme = _choice(
+            config.get("theme"), ("default", "dark", "forest", "neutral"), "default"
+        )
+        background = _one_line(config.get("background") or "white")
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".mmd", delete=False) as f:
             f.write(code)
@@ -556,10 +687,13 @@ class DiagramService:
         graph_keyword = "digraph" if graph_type == "digraph" else "graph"
         edge_op = "->" if graph_type == "digraph" else "--"
 
-        name = config.get("name", "G")
-        rankdir = config.get("rankdir", "TB")
-        node_shape = config.get("node_shape", "box")
-        font = config.get("font", "Arial")
+        # Every name and value is written as a DOT string: an id with a
+        # hyphen or a space, or a label with a quote in it, was a syntax
+        # error.
+        name = dot_string(config.get("name", "G"))
+        rankdir = _choice(config.get("rankdir"), ("TB", "BT", "LR", "RL"), "TB")
+        node_shape = dot_string(config.get("node_shape", "box"))
+        font = dot_string(config.get("font", "Arial"))
 
         nodes = data.get("nodes", [])
         edges = data.get("edges", [])
@@ -567,8 +701,8 @@ class DiagramService:
         lines = [
             f"{graph_keyword} {name} {{",
             f"    rankdir={rankdir};",
-            f'    node [shape={node_shape}, fontname="{font}"];',
-            f'    edge [fontname="{font}"];',
+            f"    node [shape={node_shape}, fontname={font}];",
+            f"    edge [fontname={font}];",
             "",
         ]
 
@@ -581,36 +715,36 @@ class DiagramService:
                 shape = node.get("shape", "")
                 style = node.get("style", "")
 
-                attrs = [f'label="{label}"']
+                attrs = [f"label={dot_string(label)}"]
                 if color:
-                    attrs.append(f'fillcolor="{color}"')
+                    attrs.append(f"fillcolor={dot_string(color)}")
                     attrs.append('style="filled"')
                 if shape:
-                    attrs.append(f'shape="{shape}"')
+                    attrs.append(f"shape={dot_string(shape)}")
                 if style:
-                    attrs.append(f'style="{style}"')
+                    attrs.append(f"style={dot_string(style)}")
 
-                lines.append(f'    {node_id} [{", ".join(attrs)}];')
+                lines.append(f'    {dot_string(node_id)} [{", ".join(attrs)}];')
             else:
-                lines.append(f"    {node};")
+                lines.append(f"    {dot_string(node)};")
 
         lines.append("")
 
         # Add edges
         for edge in edges:
-            source = edge.get("source")
-            target = edge.get("target")
+            source = dot_string(edge.get("source"))
+            target = dot_string(edge.get("target"))
             label = edge.get("label", "")
             color = edge.get("color", "")
             style = edge.get("style", "")
 
             attrs = []
             if label:
-                attrs.append(f'label="{label}"')
+                attrs.append(f"label={dot_string(label)}")
             if color:
-                attrs.append(f'color="{color}"')
+                attrs.append(f"color={dot_string(color)}")
             if style:
-                attrs.append(f'style="{style}"')
+                attrs.append(f"style={dot_string(style)}")
 
             attr_str = f' [{", ".join(attrs)}]' if attrs else ""
             lines.append(f"    {source} {edge_op} {target}{attr_str};")
@@ -630,7 +764,9 @@ class DiagramService:
             try:
                 image_data = self._render_graphviz(dot_code, config)
                 result["image_base64"] = image_data
-                result["mime_type"] = f"image/{config.get('output_format', 'svg')}"
+                result["mime_type"] = _MIME_TYPES[
+                    _choice(config.get("output_format"), OUTPUT_FORMATS, "svg")
+                ]
             except Exception as e:
                 logger.warning(f"Failed to render Graphviz diagram: {e}")
                 result["render_error"] = str(e)
@@ -639,8 +775,10 @@ class DiagramService:
 
     def _render_graphviz(self, code: str, config: Dict) -> str:
         """Render Graphviz DOT code to image."""
-        output_format = config.get("output_format", "svg")
-        layout = config.get("layout", "dot")  # dot, neato, fdp, sfdp, circo, twopi
+        # Both become part of a command line: `layout` is the program that
+        # is run and the format is spliced into a file name.
+        output_format = _choice(config.get("output_format"), OUTPUT_FORMATS, "svg")
+        layout = _choice(config.get("layout"), GRAPHVIZ_LAYOUTS, "dot")
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".dot", delete=False) as f:
             f.write(code)

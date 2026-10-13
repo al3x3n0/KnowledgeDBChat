@@ -768,9 +768,20 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   run that is nobody's stage may propose one (a stage planning its own
   pipeline is a plan that grows a plan), a run may replace its own proposal
   but never a chain someone else configured, and it may ask three times.
-  Only a run that ends `completed` offers its plan. **Not run live**: the
-  tests script the model and use the real checker, binding, hold and chain
-  runtime.
+  Only a run that ends `completed` offers its plan. **The drafting half has
+  been run with a real model; the rest has not.** Four ordinary follow-ups
+  were sent through `propose` with the real model and the real checker: two
+  of four produced a plan. The raw drafts showed why, and neither cause was
+  judgement. A stage listed a stage *and* that stage's predecessor in
+  `depends_on` (to say "this uses the paper too"), which the binding reads
+  as a fan-in between stages that are not siblings; and `job_type` and
+  `assumes` were written inside `contract`, where nothing reads them, so a
+  coding stage was planned as research. `agent_pipeline_draft.tidy` now
+  drops an implied dependency and moves those two fields, as it already
+  moved a misplaced goal; after that the same requests attached five of
+  five before the run was cut short. **No job has yet chosen to call the
+  tool, and no approved plan has been run to its end**: those tests script
+  the model and use the real hold and chain runtime.
 - **`spawn_on` is the one place a pipeline edge does not mean "after".** Every
   other dependency waits for a stage to finish, which cannot describe a stage
   that never does -- a continuous monitor is still monitoring, and a successor
@@ -1106,6 +1117,23 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   beside it. The detail endpoint returns the campaign's items, the list does
   not — loading every question of every campaign to render rows that show none
   of them is a query per campaign for nothing.
+  **A campaign follows the plan its own job proposed.** A campaign's job is
+  nobody's stage, so it may call `propose_pipeline`, and the campaign read
+  only that one job: paused for approval it looked "still running" for ever,
+  and once approved the stages did the work while the campaign settled the
+  question from the job that had merely planned it. An item is now settled
+  from its whole run (`_run_of`: the job and every job sharing its root) and
+  only when all of it has ended; the stages' findings count towards the
+  outcome, the next questions and the conclusion; and each stage is a job
+  out of the budget, counted when the run ends. A plan with more stages than
+  the campaign has jobs left is refused when proposed, with the figure.
+  `waiting_on` (`job`, `approval`, `person`) says why nothing moved, on the
+  step and in the summary, and the page says "waiting for a plan to be
+  approved" with a link to Review. A stage that has just completed is given
+  five minutes to start its successor before its run counts as ended,
+  because completing and starting the next are two writes. **A campaign
+  still asks one question at a time and still stops for every plan**: there
+  is no approval a campaign can give itself.
 - **Everything waiting on a person is one page** (`/review`, first in the
   R&D door; `GET /review`, `modules/review/application/review_inbox.py`). The
   decisions a person owes were on five pages under three doors: runs waiting

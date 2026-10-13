@@ -168,6 +168,62 @@ def _extract(completion: Any) -> Dict[str, Any]:
     raise PipelineDraftError("The model did not return a pipeline.")
 
 
+#: Fields of a stage that a model writes inside the stage's contract.
+_STAGE_FIELDS_FOUND_IN_CONTRACTS = ("job_type", "assumes")
+
+
+def _without_implied_dependencies(stages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop a dependency that another dependency of the same stage implies.
+
+    Only where the shape is unambiguous: every id a string, every
+    `depends_on` a list. Anything else is left for the checker to name. Two
+    stages that wait on each other are left as well -- that is a cycle, and
+    removing an edge would hide it.
+    """
+    waits: Dict[str, List[str]] = {}
+    for stage in stages:
+        stage_id, parents = stage.get("id"), stage.get("depends_on")
+        if not isinstance(stage_id, str) or stage_id in waits:
+            return stages
+        if parents is None:
+            parents = []
+        if not isinstance(parents, list) or not all(
+            isinstance(parent, str) for parent in parents
+        ):
+            return stages
+        waits[stage_id] = list(parents)
+
+    def before(stage_id: str) -> set:
+        seen: set = set()
+        pending = list(waits.get(stage_id, []))
+        while pending:
+            current = pending.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            pending.extend(waits.get(current, []))
+        return seen
+
+    earlier = {stage_id: before(stage_id) for stage_id in waits}
+    out = []
+    for stage in stages:
+        parents = waits[stage["id"]]
+        kept = [
+            parent
+            for parent in parents
+            if not any(
+                other != parent
+                and parent in earlier.get(other, ())
+                and other not in earlier.get(parent, ())
+                for other in parents
+            )
+        ]
+        if len(kept) != len(parents):
+            stage = {**stage, "depends_on": kept}
+        out.append(stage)
+    return out
+
+
 def tidy(spec: Dict[str, Any], description: str) -> Dict[str, Any]:
     """Fix the two things models reliably get wrong, before spending a repair.
 
@@ -181,6 +237,17 @@ def tidy(spec: Dict[str, Any], description: str) -> Dict[str, Any]:
       with every stage's goal misplaced and therefore empty.
     * **The pipeline has no name.** Harmless to the checker, which is exactly
       why nothing catches it; it then reaches the library as "None".
+    * **`job_type` and `assumes` end up there too.** Nothing reads them in a
+      contract, so a coding stage was planned as the default `research` and
+      refused for requiring evidence research cannot produce. Seen in a live
+      draft, every stage.
+    * **A stage waits for a stage and for that stage's own predecessor.** A
+      model writes `depends_on: [extract, implement]` to say "this uses the
+      paper too", when `implement` already waits for `extract`. The extra
+      edge orders nothing and evidence carries forward along a chain anyway,
+      but it reads to the binding as a fan-in the runtime cannot build.
+      Measured live: two of four ordinary requests were refused for this
+      alone, and the repair round did not remove it.
     """
     out = dict(spec)
 
@@ -196,6 +263,11 @@ def tidy(spec: Dict[str, Any], description: str) -> Dict[str, Any]:
             misplaced = str(contract.pop("goal", "") or "").strip()
             if not str(stage.get("goal") or "").strip() and misplaced:
                 stage["goal"] = misplaced
+            for key in _STAGE_FIELDS_FOUND_IN_CONTRACTS:
+                if key in contract:
+                    value = contract.pop(key)
+                    if not stage.get(key) and value:
+                        stage[key] = value
             # Written back without the hoisted key: leaving it would keep a
             # second copy of the goal that nothing reads and the author would
             # have to maintain.
@@ -211,7 +283,7 @@ def tidy(spec: Dict[str, Any], description: str) -> Dict[str, Any]:
         # recoverable draft into a 500.
         stages.append(stage)
     if stages:
-        out["stages"] = stages
+        out["stages"] = _without_implied_dependencies(stages)
 
     if not str(out.get("name") or "").strip():
         words = [w for w in str(description or "").lower().split() if w.isalnum()]

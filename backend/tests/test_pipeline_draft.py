@@ -320,3 +320,132 @@ class TestADraftIsUntrustedInput:
             "inventing an empty contract would make a stage nothing can fail "
             "look deliberate"
         )
+
+
+class TestImpliedDependencies:
+    """A stage that waits for a stage and for that stage's predecessor.
+
+    Found by sending real requests to a real model: the extra edge was the
+    only thing wrong with two of four drafts, and the binding read it as a
+    fan-in between stages that are not siblings.
+    """
+
+    @staticmethod
+    def _spec():
+        return {
+            "name": "fastmod",
+            "stages": [
+                {
+                    "id": "extract",
+                    "goal": "Ingest the paper",
+                    "contract": {"required_finding_types": ["papers_ingested"]},
+                },
+                {
+                    "id": "specify",
+                    "goal": "Write the algorithm down",
+                    "depends_on": ["extract"],
+                    "contract": {"required_finding_types": ["algorithm_spec"]},
+                },
+                {
+                    "id": "review",
+                    "goal": "Review the literature around it",
+                    "depends_on": ["extract", "specify"],
+                    "contract": {"required_finding_types": ["related_paper_set"]},
+                },
+            ],
+        }
+
+    def test_the_draft_as_the_model_wrote_it_is_refused(self):
+        problems = draft.problems_with(self._spec())
+
+        assert any("Fan-in" in problem for problem in problems), problems
+
+    def test_the_implied_edge_is_dropped_and_the_draft_passes(self):
+        fixed = draft.tidy(self._spec(), "x")
+
+        assert fixed["stages"][2]["depends_on"] == ["specify"]
+        assert draft.problems_with(fixed) == []
+
+    def test_a_real_fan_in_is_left_alone(self):
+        spec = self._spec()
+        spec["stages"][2]["depends_on"] = ["extract"]
+        spec["stages"].append(
+            {
+                "id": "join",
+                "goal": "Bring both together",
+                "depends_on": ["specify", "review"],
+                "contract": {"required_finding_types": ["literature_review"]},
+            }
+        )
+
+        assert draft.tidy(spec, "x")["stages"][3]["depends_on"] == [
+            "specify",
+            "review",
+        ]
+
+    def test_a_cycle_is_not_hidden(self):
+        spec = self._spec()
+        spec["stages"][0]["depends_on"] = ["specify"]
+
+        fixed = draft.tidy(spec, "x")
+
+        assert fixed["stages"][2]["depends_on"] == ["extract", "specify"]
+
+    def test_a_malformed_dependency_list_is_left_for_the_checker(self):
+        spec = self._spec()
+        spec["stages"][2]["depends_on"] = "extract, specify"
+
+        assert draft.tidy(spec, "x")["stages"][2]["depends_on"] == "extract, specify"
+
+
+class TestStageFieldsWrittenIntoTheContract:
+    """`job_type` and `assumes` inside `contract`, where nothing reads them."""
+
+    @staticmethod
+    def _spec():
+        return {
+            "name": "fix",
+            "stages": [
+                {
+                    "id": "clone",
+                    "goal": "Have the repository",
+                    "contract": {
+                        "required_finding_types": ["repo_workspace"],
+                        "job_type": "coding",
+                        "assumes": [],
+                    },
+                },
+                {
+                    "id": "patch",
+                    "goal": "Propose the fix",
+                    "depends_on": ["clone"],
+                    "contract": {
+                        "required_finding_types": ["code_patch_proposal"],
+                        "job_type": "coding",
+                        "assumes": ["repo_workspace"],
+                    },
+                },
+            ],
+        }
+
+    def test_as_written_the_stage_is_planned_as_research_and_refused(self):
+        problems = draft.problems_with(self._spec())
+
+        assert any("job_type" in p or "job type" in p for p in problems), problems
+
+    def test_they_are_moved_to_the_stage(self):
+        fixed = draft.tidy(self._spec(), "x")
+
+        patch_stage = fixed["stages"][1]
+        assert patch_stage["job_type"] == "coding"
+        assert patch_stage["assumes"] == ["repo_workspace"]
+        assert patch_stage["contract"] == {
+            "required_finding_types": ["code_patch_proposal"]
+        }
+        assert draft.problems_with(fixed) == []
+
+    def test_what_the_stage_says_itself_wins(self):
+        spec = self._spec()
+        spec["stages"][1]["job_type"] = "analysis"
+
+        assert draft.tidy(spec, "x")["stages"][1]["job_type"] == "analysis"

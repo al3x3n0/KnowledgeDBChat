@@ -65,6 +65,35 @@ def _limits() -> Dict[str, int]:
     }
 
 
+def prompt_note(job: Any) -> str:
+    """What a run that may propose a pipeline is told about doing so.
+
+    Two live runs were asked to leave follow-up work for a person to agree to.
+    One called create_handoff, which started the work at once; the other wrote
+    the plan into a finding and stopped. Both had propose_pipeline in their
+    tool list and neither called it: one line among 250 does not say that the
+    other ways of "planning" start work unasked or reach nobody.
+
+    It goes in the stable prompt, so it depends only on what cannot change
+    during a run: the setting, and whether the run is someone's stage.
+    """
+    if not enabled():
+        return ""
+    config = job.config if isinstance(getattr(job, "config", None), dict) else {}
+    if getattr(job, "parent_job_id", None) or config.get("pipeline_stage"):
+        return ""
+    return (
+        "FOLLOW-UP WORK: if this run shows what should be done next, or its "
+        "goal asks for later work to be planned, call propose_pipeline before "
+        "you finish. A plan written into a finding or a report starts nothing "
+        "and reaches nobody's queue; delegate_subtask and create_handoff "
+        "start a child at once and ask nobody. propose_pipeline is the one "
+        "that leaves a checked, priced plan for a person to approve. Not "
+        "every run has follow-up work: do not propose a plan for its own "
+        "sake."
+    )
+
+
 def why_this_run_may_not_plan(job: Any) -> Optional[str]:
     """The reason this run cannot propose a pipeline, or None if it can."""
     if not enabled():

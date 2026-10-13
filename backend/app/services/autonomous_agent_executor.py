@@ -47,6 +47,7 @@ from app.services import (
     agent_plan_normalization,
     agent_prompt_sections,
     agent_repeated_success,
+    agent_self_planned_pipeline,
     agent_tool_scoring,
     agent_unproductive_cycle,
 )
@@ -1735,6 +1736,23 @@ def _repeats_recent_call(
         ):
             return True
     return False
+
+
+def _required_choices(schema: Any, most: int = 8) -> str:
+    """``=a|b|c`` for a parameter that takes one of a few fixed strings.
+
+    The tool list named parameters and not their values, so a required
+    parameter with a closed set was a guess: four live runs out of four lost
+    their first save_research_finding to a category the tool does not have.
+    Only required parameters, and only short lists, so the stable prompt
+    grows by the values a call cannot be made without.
+    """
+    choices = schema.get("enum") if isinstance(schema, dict) else None
+    if not isinstance(choices, list) or not 0 < len(choices) <= most:
+        return ""
+    if not all(isinstance(choice, str) and choice for choice in choices):
+        return ""
+    return "=" + "|".join(choices)
 
 
 def _tools_with_params(tool_names: Sequence[str], limit: int = 6000) -> str:
@@ -5500,6 +5518,9 @@ class AutonomousAgentExecutor:
             "its five iterations trying to follow advice to pass an argument "
             "that did not exist."
         )
+        follow_up_note = agent_self_planned_pipeline.prompt_note(job)
+        if follow_up_note:
+            user_message += "\n" + follow_up_note
 
         try:
             raw = await self.llm_service.generate_response(
@@ -8028,6 +8049,10 @@ what THIS run establishes.
                 "this run's contract says so.\n\n"
             )
 
+        follow_up_note = agent_self_planned_pipeline.prompt_note(job)
+        if follow_up_note:
+            base_prompt += follow_up_note + "\n\n"
+
         missing_producers = agent_evidence_map.unobtainable(required_types)
         if missing_producers:
             base_prompt += (
@@ -8481,7 +8506,10 @@ RESPONSE FORMAT:
                     param_parts = []
                     for pname, pinfo in params.items():
                         req_marker = "*" if pname in required else ""
-                        param_parts.append(f"{pname}{req_marker}")
+                        param_parts.append(
+                            f"{pname}{req_marker}"
+                            + (_required_choices(pinfo) if req_marker else "")
+                        )
                     param_str = f" ({', '.join(param_parts)})"
 
                 role_marker = ""

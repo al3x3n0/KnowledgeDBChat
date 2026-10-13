@@ -189,15 +189,13 @@ async def _decide_swarm_review(
     a no-op when the first one fired, so trying both is safe.
     """
     _clear_pending_checkpoint(results_payload, approval_payload, state, deps=deps)
-    deps.append_approval_event(
+    _record_gate_decision(
         approval_payload,
-        state,
-        {
-            "action": action,
-            "checkpoint_type": SWARM_REVIEW_CHECKPOINT,
-            "note": checkpoint_note,
-            "decided_by": str(getattr(current_user, "id", "") or ""),
-        },
+        pending_checkpoint,
+        action,
+        checkpoint_note,
+        deps=deps,
+        current_user=current_user,
     )
     job.results = results_payload
     job.status = AgentJobStatus.COMPLETED.value
@@ -252,15 +250,13 @@ async def _decide_chain_gate(
     approved, and there is no action here to carry out.
     """
     _clear_pending_checkpoint(results_payload, approval_payload, state, deps=deps)
-    deps.append_approval_event(
+    _record_gate_decision(
         approval_payload,
-        state,
-        {
-            "action": action,
-            "checkpoint_type": CHAIN_GATE_CHECKPOINT,
-            "note": checkpoint_note,
-            "decided_by": str(getattr(current_user, "id", "") or ""),
-        },
+        pending_checkpoint,
+        action,
+        checkpoint_note,
+        deps=deps,
+        current_user=current_user,
     )
     job.results = results_payload
     job.status = AgentJobStatus.COMPLETED.value
@@ -290,6 +286,32 @@ async def _decide_chain_gate(
         db.add(checkpoint_row)
     await db.commit()
     return job
+
+
+def _record_gate_decision(
+    approval_payload: dict,
+    pending_checkpoint: dict,
+    action: str,
+    checkpoint_note: str | None,
+    *,
+    deps: JobActionDependencies,
+    current_user: User,
+) -> None:
+    """Record who decided a gate, in the audit trail every approval uses.
+
+    Both gates called `append_approval_event` with three positional
+    arguments, and it takes two and keywords. Their tests passed a stand-in
+    that accepted anything, so approving a pipeline's checkpoint or a swarm's
+    verdict through the API was a 500 from the day each gate was added, found
+    by the first plan a run proposed and a person approved.
+    """
+    deps.append_approval_event(
+        approval_payload,
+        pending_checkpoint if isinstance(pending_checkpoint, dict) else {},
+        method="approve_action" if action == "approve" else "reject_action",
+        user_id=current_user.id,
+        note=checkpoint_note,
+    )
 
 
 def _clear_pending_checkpoint(

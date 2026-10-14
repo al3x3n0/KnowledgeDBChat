@@ -1717,6 +1717,13 @@ class ApiClient {
     return response.data;
   }
 
+  async syncLdapAccounts(
+    dryRun: boolean
+  ): Promise<components['schemas']['LdapSyncResponse']> {
+    const response = await this.client.post('/api/v1/admin/ldap/sync', { dry_run: dryRun });
+    return response.data;
+  }
+
   async importLdapUsers(
     request: components['schemas']['LdapImportRequest']
   ): Promise<components['schemas']['LdapImportResponse']> {

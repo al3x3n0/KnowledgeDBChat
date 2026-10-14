@@ -287,7 +287,8 @@ export interface paths {
          * Ldap Import Users
          * @description Admin: import (or sync) users from LDAP directory into the local DB.
          *
-         *     This does not import passwords. LDAP users must still authenticate via LDAP login.
+         *     This does not import passwords. LDAP users must still authenticate via LDAP
+         *     login. Existing accounts are matched and linked by the rules login uses.
          */
         post: operations["ldap_import_users_api_v1_admin_ldap_import_post"];
         delete?: never;
@@ -307,6 +308,29 @@ export interface paths {
         get: operations["ldap_status_api_v1_admin_ldap_status_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/ldap/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ldap Sync Accounts
+         * @description Admin: reconcile directory-managed accounts with the directory now.
+         *
+         *     A dry run (the default) says who would be updated, deactivated or
+         *     reactivated, and changes nothing.
+         */
+        post: operations["ldap_sync_accounts_api_v1_admin_ldap_sync_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -21618,6 +21642,11 @@ export interface components {
             /** Errors */
             errors: number;
             /**
+             * Refused
+             * @default 0
+             */
+            refused: number;
+            /**
              * Rows
              * @default []
              */
@@ -21672,6 +21701,7 @@ export interface components {
              * @default false
              */
             insecure_skip_tls_verify: boolean;
+            last_sync?: components["schemas"]["LdapSyncResponse"] | null;
             /**
              * Local Fallback When Unavailable
              * @default false
@@ -21693,10 +21723,17 @@ export interface components {
              */
             start_tls: boolean;
             /**
+             * Sync Interval Minutes
+             * @default 0
+             */
+            sync_interval_minutes: number;
+            /**
              * Transport
              * @default plaintext
              */
             transport: string;
+            /** Unique Id Attribute */
+            unique_id_attribute?: string | null;
             /** Uri */
             uri?: string | null;
             /**
@@ -21704,6 +21741,65 @@ export interface components {
              * @default false
              */
             verifies_certificates: boolean;
+        };
+        /** LdapSyncRequest */
+        LdapSyncRequest: {
+            /**
+             * Dry Run
+             * @default true
+             */
+            dry_run: boolean;
+        };
+        /** LdapSyncResponse */
+        LdapSyncResponse: {
+            /**
+             * Deactivated
+             * @default []
+             */
+            deactivated: string[];
+            /**
+             * Directory Entries
+             * @default 0
+             */
+            directory_entries: number;
+            /** Dry Run */
+            dry_run: boolean;
+            /** Error */
+            error?: string | null;
+            /** Held Back */
+            held_back?: string | null;
+            /**
+             * Managed Accounts
+             * @default 0
+             */
+            managed_accounts: number;
+            /**
+             * Not Found
+             * @default []
+             */
+            not_found: string[];
+            /** Ran At */
+            ran_at: string;
+            /**
+             * Reactivated
+             * @default []
+             */
+            reactivated: string[];
+            /**
+             * Role Changes
+             * @default []
+             */
+            role_changes: string[];
+            /**
+             * Unchanged
+             * @default 0
+             */
+            unchanged: number;
+            /**
+             * Updated
+             * @default []
+             */
+            updated: string[];
         };
         /** LdapTestRequest */
         LdapTestRequest: {
@@ -29749,6 +29845,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LdapStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ldap_sync_accounts_api_v1_admin_ldap_sync_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LdapSyncRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LdapSyncResponse"];
                 };
             };
             /** @description Validation Error */

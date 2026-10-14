@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import re
 import ssl
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
 
@@ -59,6 +60,14 @@ class LdapUser:
     full_name: Optional[str] = None
     groups: list[str] = field(default_factory=list)
     raw: dict[str, Any] | None = None
+    #: What names this entry for good (``LDAP_UNIQUE_ID_ATTRIBUTE``), when the
+    #: directory gave one. A DN changes when the person is moved or renamed.
+    unique_id: Optional[str] = None
+
+    @property
+    def subject(self) -> str:
+        """What an account records as the entry it belongs to."""
+        return self.unique_id or self.dn
 
 
 def _split_csv(value: Optional[str]) -> list[str]:
@@ -91,6 +100,25 @@ def normalize_dn(dn: str) -> str:
     return ",".join(
         "=".join(piece.strip() for piece in part.split("=", 1)) for part in parts
     ).lower()
+
+
+def directory_id(value: Any) -> Optional[str]:
+    """An entry's unique id as text both spellings of it share.
+
+    ``entryUUID`` arrives as text. Active Directory's ``objectGUID`` arrives
+    as 16 bytes when the schema is not read (this module never reads it) and
+    as ``{...}`` when it is; both become the same lower-case UUID.
+    """
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else None
+    if value is None:
+        return None
+    if isinstance(value, (bytes, bytearray)):
+        if len(value) == 16:
+            return str(uuid.UUID(bytes_le=bytes(value)))
+        return bytes(value).hex() or None
+    text = str(value).strip().strip("{}").lower()
+    return text or None
 
 
 def _setting(name: str, default: Any = None) -> Any:
@@ -259,7 +287,11 @@ class LdapService:
 
     def _attrs(self) -> list[str]:
         attrs = _split_csv(_setting("LDAP_USER_ATTRIBUTES", ""))
-        return attrs or ["uid", "mail", "cn", "displayName", "memberOf"]
+        attrs = attrs or ["uid", "mail", "cn", "displayName", "memberOf"]
+        unique = _text("LDAP_UNIQUE_ID_ATTRIBUTE")
+        if unique and unique.lower() not in {a.lower() for a in attrs}:
+            attrs = [*attrs, unique]
+        return attrs
 
     def _extract(
         self,
@@ -302,6 +334,19 @@ class LdapService:
             if domain and username:
                 email = f"{username}@{domain}"
 
+        unique = _text("LDAP_UNIQUE_ID_ATTRIBUTE")
+        unique_id = None
+        if unique:
+            found = next(
+                (
+                    value
+                    for key, value in attrs.items()
+                    if key.lower() == unique.lower()
+                ),
+                None,
+            )
+            unique_id = directory_id(found)
+
         return LdapUser(
             username=username,
             dn=dn,
@@ -309,6 +354,7 @@ class LdapService:
             full_name=full_name,
             groups=groups,
             raw=dict(attrs),
+            unique_id=unique_id,
         )
 
     def _search_user(self, conn, username: str) -> tuple[str, dict[str, Any]] | None:
@@ -474,22 +520,34 @@ class LdapService:
                     paged_size=min(page_size, max(1, limit)),
                     paged_cookie=cookie,
                 )
-                for entry in conn.entries or []:
-                    if len(out) >= limit:
-                        return out
-                    out.append(
-                        self._extract(
-                            dict(entry.entry_attributes_as_dict or {}),
-                            fallback_username="",
-                            dn=str(entry.entry_dn),
-                        )
-                    )
+                # Both read before any other search on this connection, which
+                # replaces conn.entries and conn.result: the group searches
+                # below would otherwise end the paging after the first page.
+                page = [
+                    (str(entry.entry_dn), dict(entry.entry_attributes_as_dict or {}))
+                    for entry in (conn.entries or [])
+                ]
                 cookie = (
                     ((conn.result or {}).get("controls") or {})
                     .get(_PAGED_RESULTS_OID, {})
                     .get("value", {})
                     .get("cookie")
                 )
+                for dn, attrs in page:
+                    if len(out) >= limit:
+                        return out
+                    found = self._extract(attrs, fallback_username="", dn=dn)
+                    # Groups found by member search count here as they do at
+                    # login. Without them an import mapped someone whose admin
+                    # group is visible only that way to "user".
+                    groups = self._group_search(
+                        conn, user_dn=dn, username=found.username
+                    )
+                    if groups:
+                        found = self._extract(
+                            attrs, fallback_username="", dn=dn, extra_groups=groups
+                        )
+                    out.append(found)
                 if not cookie:
                     break
         finally:

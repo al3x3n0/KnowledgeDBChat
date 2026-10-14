@@ -28128,6 +28128,11 @@
             "title": "Errors",
             "type": "integer"
           },
+          "refused": {
+            "default": 0,
+            "title": "Refused",
+            "type": "integer"
+          },
           "rows": {
             "default": [],
             "items": {
@@ -28262,6 +28267,16 @@
             "title": "Insecure Skip Tls Verify",
             "type": "boolean"
           },
+          "last_sync": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LdapSyncResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "local_fallback_when_unavailable": {
             "default": false,
             "title": "Local Fallback When Unavailable",
@@ -28285,10 +28300,26 @@
             "title": "Start Tls",
             "type": "boolean"
           },
+          "sync_interval_minutes": {
+            "default": 0,
+            "title": "Sync Interval Minutes",
+            "type": "integer"
+          },
           "transport": {
             "default": "plaintext",
             "title": "Transport",
             "type": "string"
+          },
+          "unique_id_attribute": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unique Id Attribute"
           },
           "uri": {
             "anyOf": [
@@ -28312,6 +28343,112 @@
           "configured"
         ],
         "title": "LdapStatusResponse",
+        "type": "object"
+      },
+      "LdapSyncRequest": {
+        "properties": {
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "title": "LdapSyncRequest",
+        "type": "object"
+      },
+      "LdapSyncResponse": {
+        "properties": {
+          "deactivated": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Deactivated",
+            "type": "array"
+          },
+          "directory_entries": {
+            "default": 0,
+            "title": "Directory Entries",
+            "type": "integer"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "held_back": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Held Back"
+          },
+          "managed_accounts": {
+            "default": 0,
+            "title": "Managed Accounts",
+            "type": "integer"
+          },
+          "not_found": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Not Found",
+            "type": "array"
+          },
+          "ran_at": {
+            "title": "Ran At",
+            "type": "string"
+          },
+          "reactivated": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Reactivated",
+            "type": "array"
+          },
+          "role_changes": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Role Changes",
+            "type": "array"
+          },
+          "unchanged": {
+            "default": 0,
+            "title": "Unchanged",
+            "type": "integer"
+          },
+          "updated": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Updated",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ran_at",
+          "dry_run"
+        ],
+        "title": "LdapSyncResponse",
         "type": "object"
       },
       "LdapTestRequest": {
@@ -48090,7 +48227,7 @@
     },
     "/api/v1/admin/ldap/import": {
       "post": {
-        "description": "Admin: import (or sync) users from LDAP directory into the local DB.\n\nThis does not import passwords. LDAP users must still authenticate via LDAP login.",
+        "description": "Admin: import (or sync) users from LDAP directory into the local DB.\n\nThis does not import passwords. LDAP users must still authenticate via LDAP\nlogin. Existing accounts are matched and linked by the rules login uses.",
         "operationId": "ldap_import_users_api_v1_admin_ldap_import_post",
         "parameters": [
           {
@@ -48202,6 +48339,71 @@
           }
         ],
         "summary": "Ldap Status",
+        "tags": [
+          "administration"
+        ]
+      }
+    },
+    "/api/v1/admin/ldap/sync": {
+      "post": {
+        "description": "Admin: reconcile directory-managed accounts with the directory now.\n\nA dry run (the default) says who would be updated, deactivated or\nreactivated, and changes nothing.",
+        "operationId": "ldap_sync_accounts_api_v1_admin_ldap_sync_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LdapSyncRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LdapSyncResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Ldap Sync Accounts",
         "tags": [
           "administration"
         ]

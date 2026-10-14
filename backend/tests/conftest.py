@@ -68,6 +68,7 @@ os.environ.setdefault("CELERY_RESULT_BACKEND", "cache+memory://")
 from app.core.database import Base, get_db  # noqa: E402
 from app.models.user import User  # noqa: E402
 from app.services.auth_service import AuthService  # noqa: E402
+from tests.ldap_fixtures import directory, ldap  # noqa: E402, F401
 
 # Stubbed only where the library is absent. It used to be stubbed whenever
 # nothing had imported it yet -- that is, always -- so no test ever built a

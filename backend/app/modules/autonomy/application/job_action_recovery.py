@@ -8,6 +8,7 @@ from app.modules.autonomy.application.job_action_contracts import (
     JobActionDependencies,
     JobActionError,
 )
+from app.modules.autonomy.application.job_action_dispatch import queue_job
 
 RECOVERY_ACTIONS = frozenset({"restart", "relaunch"})
 
@@ -101,7 +102,7 @@ async def perform_recovery_action(
         job.results = results_payload
         job.output_artifacts = None
         job.add_log_entry({"phase": "restarted", "reason": "user_request"})
-        deps.execute_agent_job_task.delay(str(job.id), str(current_user.id))
+        queue_job(db, deps, job.id, current_user.id)
         return job
 
     relaunch_outcome = await deps.quick_start_relaunch_dispatcher.relaunch(

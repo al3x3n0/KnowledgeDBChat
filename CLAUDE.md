@@ -809,6 +809,40 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   tool does not have. Required parameters with at most eight fixed strings
   are listed as `category*=key_insight|methodology|...`, 548 characters over
   the whole catalog.
+- **A stage that fails still stops the plan, but it no longer does so
+  quietly or for the wrong reason.** Found by restarting the stage the first
+  live plan stopped on (2026-10-14), each on the real stack:
+  - **A proposed plan's stages have a stage's budget.** A chained job takes
+    any limit its config does not name from its parent, and a proposed
+    plan's parent is the run that proposed it: a scoping run allowed ten
+    iterations gave ten to a stage that had to clone, write and propose a
+    patch. `_with_a_stage_budget` writes a launched pipeline's limits on the
+    first stage (100 iterations, and the job model's defaults); later stages
+    inherit from it.
+  - **The queue says a plan is stopped.** A `contract_unmet` row for a job
+    whose chain has not fired names the stages behind it
+    (`checkpoint.waiting_stages`, and the summary) and ranks at 80, with a
+    blocked run, instead of 60: somebody is waiting after all.
+  - **An operator action queues its job after it commits**
+    (`job_action_dispatch.queue_job`). Restart, resume, approving a mid-run
+    checkpoint and the swarm relaunches changed the row and called `.delay`
+    with the commit still to come. The worker took the restart 45 ms later,
+    read the row as still `completed`, called it a duplicate delivery and
+    dropped it; the job then sat `pending` with a task id and nothing
+    coming. The dependency's task is still what is called, so stand-ins
+    work as before.
+  - **A restarted run forgets that it was stuck** (`agent_loop_policy.
+    forget_stall`). Restart keeps the run's findings and kept its round
+    counts with them, so the stage was stopped after one round as "3
+    consecutive rounds produced no new findings", two of them from its
+    previous life. A checkpoint ahead of the job's own iteration is what a
+    restart leaves, and is where the counters are dropped.
+  With all four, the restarted stage ran seven iterations and then blocked
+  honestly: it cloned a repository again (a restart does not keep the
+  coding workspace) and read it without writing a file. **No proposed plan
+  has yet run past its first stage.** Not built: a stage retrying itself,
+  or handing back to the run that planned it.
+
 - **`spawn_on` is the one place a pipeline edge does not mean "after".** Every
   other dependency waits for a stage to finish, which cannot describe a stage
   that never does -- a continuous monitor is still monitoring, and a successor

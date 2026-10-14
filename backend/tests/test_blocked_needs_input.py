@@ -290,6 +290,9 @@ class TestACorrectionReachesTheAgent:
         assert resumed.status == AgentJobStatus.PENDING.value
         # And it stops looking like it is waiting for someone.
         assert resumed.current_phase not in WAITING_ON_A_PERSON
+        # Sent when the resume is committed, as the route does: a worker
+        # reading the row before then would see it still paused.
+        await db_session.commit()
         assert started, "resuming must actually restart the run"
 
 

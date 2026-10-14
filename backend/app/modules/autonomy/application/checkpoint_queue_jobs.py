@@ -61,6 +61,38 @@ def _finished_without_meeting_its_contract(job: AgentJob) -> dict[str, Any]:
     return {}
 
 
+def _stages_waiting_behind(job: AgentJob) -> list[str]:
+    """The stages that start only when this job's chain fires, in order.
+
+    Empty when the chain has fired or there is none. A stage that ended with
+    its contract unmet does not fire its chain, so these are the stages that
+    never started: the first plan approved live stopped at its first stage
+    with three behind it, and its queue row said only that one run had not
+    met its contract.
+    """
+    if getattr(job, "chain_triggered", False):
+        return []
+    waiting: list[str] = []
+    seen: set[int] = set()
+    pending = [getattr(job, "chain_config", None)]
+    while pending and len(waiting) < 24:
+        chain = pending.pop(0)
+        if not isinstance(chain, dict) or id(chain) in seen:
+            continue
+        seen.add(id(chain))
+        for child in chain.get("child_jobs") or []:
+            if not isinstance(child, dict):
+                continue
+            config = (
+                child.get("config") if isinstance(child.get("config"), dict) else {}
+            )
+            name = str(config.get("pipeline_stage") or child.get("name") or "").strip()
+            if name and name not in waiting:
+                waiting.append(name)
+            pending.append(child.get("chain_config"))
+    return waiting
+
+
 def _blocked_payload(job: AgentJob) -> dict[str, Any]:
     """What the run recorded about why it gave up, if anything."""
     results = job.results if isinstance(job.results, dict) else {}
@@ -262,6 +294,16 @@ def build_job_checkpoint_queue_items(
             missing = [
                 str(item) for item in (unmet.get("missing") or []) if str(item).strip()
             ]
+            # A stage with others behind it is a different row: the plan
+            # is stopped until someone restarts this stage, so somebody is
+            # waiting after all.
+            waiting = _stages_waiting_behind(job)
+            reason_text = str(unmet.get("reason") or "").strip()
+            if waiting:
+                reason_text = (
+                    f"{len(waiting)} later stage(s) will not start until this "
+                    f"one meets its contract: {', '.join(waiting[:6])}. " + reason_text
+                )
             # restart resets iteration and progress, so the run gets its budget
             # back rather than re-hitting the cap it just hit; relaunch starts a
             # fresh one. Both are valid on a completed job.
@@ -283,9 +325,11 @@ def build_job_checkpoint_queue_items(
                     # Below an approval or a blocked run on purpose: nobody is
                     # waiting on this one. It is a quality signal about work
                     # already reported as done, not a request for a decision.
-                    priority=60,
+                    # Unless a plan is stopped behind it, which ranks with a
+                    # blocked run.
+                    priority=80 if waiting else 60,
                     title=job.name,
-                    summary=str(unmet.get("reason") or "").strip()[:320] or None,
+                    summary=reason_text[:320] or None,
                     evidence_summary=deps.queue_evidence_summary_for_job(job),
                     status=job.status,
                     customer=customer,
@@ -310,6 +354,7 @@ def build_job_checkpoint_queue_items(
                         "kind": "contract_unmet",
                         "reason": unmet.get("reason"),
                         "missing": missing,
+                        "waiting_stages": waiting,
                     },
                     scheduler_state=scheduler_state,
                     actions=action_rows,

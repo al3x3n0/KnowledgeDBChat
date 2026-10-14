@@ -112,3 +112,48 @@ class TestRecordingRounds:
         state = {"loop_finding_counts": "not a list"}
         policy.record_round(state, 3)
         assert state["loop_finding_counts"] == [3]
+
+
+# --- a run restarted by a person ---
+#
+# A stage restarted on the live stack was stopped after one round as "3
+# consecutive rounds produced no new findings": two were from before.
+
+
+def test_a_restarted_run_forgets_that_it_was_stuck_and_keeps_what_it_found():
+    from app.services import agent_loop_policy as policy
+
+    config = {"loop_until": "no_new_findings", "loop_dry_rounds": 3}
+    findings = [{"type": "repo_workspace", "title": "cloned"}]
+    state = {
+        "findings": list(findings),
+        "loop_finding_counts": [1, 1, 1, 1],
+        "loop_policy_stop_reason": "3 consecutive rounds produced no new findings",
+        "stalled_iterations": 3,
+        "repeated_action_iterations": 2,
+    }
+    assert policy.should_stop(config, state)[0] is True
+
+    policy.forget_stall(state)
+
+    assert state["findings"] == findings
+    assert policy.should_stop(config, state)[0] is False
+    # One unproductive round after the restart is one, not four.
+    policy.record_round(state, 1)
+    assert policy.should_stop(config, state)[0] is False
+    assert all(
+        key not in state or key == "loop_finding_counts" for key in policy.STALL_KEYS
+    )
+
+
+def test_the_executor_forgets_the_stall_only_for_a_restart():
+    """A checkpoint ahead of the job's own counter is what a restart leaves."""
+    import inspect
+
+    from app.services import autonomous_agent_executor
+
+    source = inspect.getsource(autonomous_agent_executor)
+    assert (
+        "if checkpoint and int(checkpoint.iteration or 0) > int(job.iteration or 0):\n"
+        "            agent_loop_policy.forget_stall(state)" in source
+    )

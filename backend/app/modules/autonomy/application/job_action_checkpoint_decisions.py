@@ -10,6 +10,7 @@ from app.modules.autonomy.application.job_action_contracts import (
     JobActionDependencies,
     JobActionError,
 )
+from app.modules.autonomy.application.job_action_dispatch import queue_job
 from app.schemas.agent_job import AgentJobActionRequest
 from app.services.agent_runtime_finalizer import (
     CHAIN_GATE_CHECKPOINT,
@@ -156,7 +157,7 @@ async def perform_checkpoint_decision(
         checkpoint_row.state = state
         db.add(checkpoint_row)
     if action != "reject":
-        deps.execute_agent_job_task.delay(str(job.id), str(current_user.id))
+        queue_job(db, deps, job.id, current_user.id)
     return job
 
 

@@ -79,6 +79,15 @@ async def find_account(db: AsyncSession, entry: Any) -> Optional[User]:
     return None
 
 
+#: ``auth_metadata["origin"]`` of an account made from the sign-in page.
+SELF_REGISTRATION = "self_registration"
+
+
+def self_registered(user: User) -> bool:
+    metadata = user.auth_metadata if isinstance(user.auth_metadata, dict) else {}
+    return metadata.get("origin") == SELF_REGISTRATION
+
+
 def may_link(existing: User, entry: Any) -> bool:
     """Whether a directory entry may become this existing account.
 
@@ -90,6 +99,12 @@ def may_link(existing: User, entry: Any) -> bool:
     """
     if getattr(existing, "auth_provider", "local") == DIRECTORY:
         return True
+    if self_registered(existing):
+        # Anyone may register, and nothing checks the email they give: a
+        # stranger could register a directory person's name and email before
+        # that person first signs in, use the account, and have the
+        # directory hand it to them. Not by email, not by name.
+        return False
     if getattr(settings, "LDAP_LINK_LOCAL_USERS_BY_USERNAME", False):
         return True
     ours = (existing.email or "").strip().lower()
@@ -207,6 +222,11 @@ async def account_for(
         if not existing.is_active:
             raise AccountRefused(f"the account '{existing.username}' is deactivated")
         if not may_link(existing, entry):
+            if self_registered(existing):
+                raise AccountRefused(
+                    f"the local account '{existing.username}' was registered from "
+                    "the sign-in page, and the directory never links those"
+                )
             raise AccountRefused(
                 f"the local account '{existing.username}' has the same name but "
                 "a different email; not linked (set "

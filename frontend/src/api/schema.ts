@@ -3574,6 +3574,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Sign In Options
+         * @description What the sign-in page offers. Public: it is read before anyone signs in.
+         */
+        get: operations["sign_in_options_api_v1_auth_options_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/refresh": {
         parameters: {
             query?: never;
@@ -27265,6 +27285,16 @@ export interface components {
             supports_formats: string[];
         };
         /**
+         * SignInOptions
+         * @description What the sign-in page should offer.
+         */
+        SignInOptions: {
+            /** Directory */
+            directory: boolean;
+            /** Self Registration */
+            self_registration: boolean;
+        };
+        /**
          * SlideContent
          * @description Content for a single slide.
          */
@@ -36286,6 +36316,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sign_in_options_api_v1_auth_options_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignInOptions"];
                 };
             };
         };

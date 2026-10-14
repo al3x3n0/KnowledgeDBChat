@@ -65,6 +65,19 @@ def _limits() -> Dict[str, int]:
     }
 
 
+#: Told to the drafter with every proposal. A run asked to leave its work
+#: "for a person to agree to" says so in its description, and the drafter
+#: read that as a checkpoint on the first stage: live, the plan was approved,
+#: its first stage finished, and it stopped again for the same person to
+#: approve the same plan. The proposal itself is that approval.
+ALREADY_APPROVED = (
+    "A person approves this whole plan before its first stage starts, so "
+    "that approval needs no checkpoint: set `checkpoint` on a stage only "
+    "where someone must decide again partway through, on what an earlier "
+    "stage found."
+)
+
+
 def prompt_note(job: Any) -> str:
     """What a run that may propose a pipeline is told about doing so.
 
@@ -223,6 +236,7 @@ async def propose(
             description=(
                 f"{wanted}\n\nThis follows a run whose goal was: "
                 f"{str(getattr(job, 'goal', '') or '').strip()[:600]}"
+                f"\n\n{ALREADY_APPROVED}"
             ),
             llm_service=llm_service,
             user_id=user_id,

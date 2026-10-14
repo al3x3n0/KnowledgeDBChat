@@ -531,3 +531,20 @@ def test_the_launch_route_gives_a_stage_the_same_iterations():
     assert (
         f'root.get("max_iterations") or {planning._LAUNCHED_STAGE_ITERATIONS}' in source
     )
+
+
+# --- the plan is approved once ---
+#
+# Live, a run asked to leave its work "for a person to agree to" got a plan
+# whose first stage was a checkpoint: approved, it ran that stage and then
+# stopped for the same approval again.
+
+
+async def test_the_drafter_is_told_the_plan_is_already_approved(db_session, test_user):
+    job = await _run(db_session, test_user)
+    model = _Model(SPEC)
+
+    await _propose(db_session, job, model)
+
+    assert planning.ALREADY_APPROVED in model.asked[0]
+    assert "needs no checkpoint" in planning.ALREADY_APPROVED

@@ -79,8 +79,11 @@ class AuthService:
         password: str,
         db: AsyncSession,
         full_name: Optional[str] = None,
+        origin: Optional[str] = None,
     ) -> User:
-        """Create a new user."""
+        """Create a new user. ``origin`` is kept in ``auth_metadata``: the
+        directory never links an account someone registered for themselves
+        (``directory_accounts.may_link``)."""
         # Check if username already exists
         existing_user = await self.get_user_by_username(username, db)
         if existing_user:
@@ -101,6 +104,7 @@ class AuthService:
             is_active=True,
             is_verified=False,
             role="user",
+            auth_metadata={"origin": origin} if origin else None,
         )
 
         db.add(user)
@@ -114,6 +118,9 @@ class AuthService:
         self, username: str, password: str, db: AsyncSession
     ) -> Optional[User]:
         """The user these credentials belong to, or None.
+
+        Raises ``LdapUnavailable`` when the answer needed the directory and
+        the directory could not be asked: that is not a wrong password.
 
         Local accounts are checked against the password stored here. With LDAP
         enabled, LDAP-managed accounts and names unknown here are checked
@@ -164,7 +171,9 @@ class AuthService:
                     "while the directory was unreachable"
                 )
                 return user
-            return None
+            # Not "no": nobody could be asked. Returned as None this read to
+            # the person signing in as a wrong password, during an outage.
+            raise
         except LdapError as exc:
             logger.error(f"LDAP is misconfigured; {username} cannot sign in: {exc}")
             return None

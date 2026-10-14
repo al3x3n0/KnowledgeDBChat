@@ -453,6 +453,16 @@ class ApiClient {
   }
 
   // Authentication endpoints
+  /** What the sign-in page offers; null when it cannot be read. */
+  async getSignInOptions(): Promise<components['schemas']['SignInOptions'] | null> {
+    try {
+      const response = await this.client.get('/api/v1/auth/options');
+      return response.data;
+    } catch {
+      return null;
+    }
+  }
+
   async login(username: string, password: string): Promise<LoginResponse> {
     try {
       const response = await this.client.post('/api/v1/auth/login', {

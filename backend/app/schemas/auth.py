@@ -56,3 +56,12 @@ class PasswordChange(BaseModel):
 
     current_password: str = Field(..., min_length=6, max_length=100)
     new_password: str = Field(..., min_length=6, max_length=100)
+
+
+class SignInOptions(BaseModel):
+    """What the sign-in page should offer."""
+
+    #: Whether "Sign up" creates a local account here.
+    self_registration: bool
+    #: Whether a directory (LDAP) is the source of accounts.
+    directory: bool

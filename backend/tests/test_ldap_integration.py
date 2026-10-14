@@ -309,15 +309,16 @@ class TestLogin:
             password="old-local-password",
         )
         directory.down = True
-        assert (
+        # Not None, which the sign-in page reported as a wrong password: the
+        # outage itself, for the route to say so.
+        with pytest.raises(LdapUnavailable):
             await auth.authenticate_user("alice", "old-local-password", db_session)
-            is None
-        )
         monkeypatch.setattr(settings, "LDAP_LOCAL_FALLBACK_WHEN_UNAVAILABLE", True)
         user = await auth.authenticate_user("alice", "old-local-password", db_session)
         assert user is not None and user.username == "alice"
-        # Still only for the right password.
-        assert await auth.authenticate_user("alice", "wrong-one", db_session) is None
+        # Still only for the right password; otherwise it is still an outage.
+        with pytest.raises(LdapUnavailable):
+            await auth.authenticate_user("alice", "wrong-one", db_session)
 
     async def test_a_local_account_signs_in_without_the_directory(
         self, directory, db_session

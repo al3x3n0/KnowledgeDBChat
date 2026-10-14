@@ -353,6 +353,12 @@ class Settings(BaseSettings):
     # someone is moved or renamed, and matching by DN then fell back to the
     # username and the email. "entryUUID" on OpenLDAP and 389, "objectGUID"
     # on Active Directory; empty to match by DN alone.
+    # May anyone create a local account from the sign-in page? Unset means
+    # yes, unless LDAP is on: a deployment whose people come from a directory
+    # should not let a stranger make a second, unchecked kind of account --
+    # nor register a directory person's name and email before they first
+    # sign in, which the link-by-email rule would then hand them.
+    AUTH_SELF_REGISTRATION: Optional[bool] = None
     LDAP_UNIQUE_ID_ATTRIBUTE: str = "entryUUID"
     # Reconcile directory-managed accounts with the directory every this many
     # minutes (0: never). Between logins nothing else notices that someone

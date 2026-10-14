@@ -1,12 +1,18 @@
 /**
  * Login page component
+ *
+ * Asks the server what to offer: a deployment whose accounts come from a
+ * directory has self-registration off by default, and "Sign up" would only
+ * lead to a refusal. If the options cannot be read the page offers what it
+ * always did; the server still refuses a registration it does not allow.
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { Database, Mail, Lock, User } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { apiClient } from '../services/api';
 import Button from '../components/common/Button';
 import Input from '../components/common/Input';
 
@@ -26,6 +32,21 @@ interface RegisterForm {
 const LoginPage: React.FC = () => {
   const [isLogin, setIsLogin] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [canRegister, setCanRegister] = useState(true);
+  const [directory, setDirectory] = useState(false);
+
+  useEffect(() => {
+    let current = true;
+    apiClient.getSignInOptions().then((options) => {
+      if (!current || !options) return;
+      setCanRegister(options.self_registration);
+      setDirectory(options.directory);
+      if (!options.self_registration) setIsLogin(true);
+    });
+    return () => {
+      current = false;
+    };
+  }, []);
   const { login, register } = useAuth();
   const navigate = useNavigate();
 
@@ -83,7 +104,11 @@ const LoginPage: React.FC = () => {
             Knowledge Database
           </h2>
           <p className="mt-2 text-sm text-gray-600">
-            {isLogin ? 'Sign in to your account' : 'Create your account'}
+            {isLogin
+              ? directory
+                ? 'Sign in with your directory account'
+                : 'Sign in to your account'
+              : 'Create your account'}
           </p>
         </div>
 
@@ -203,22 +228,24 @@ const LoginPage: React.FC = () => {
           )}
 
           {/* Toggle between login and register */}
-          <div className="mt-6 text-center">
-            <button
-              type="button"
-              className="text-sm text-primary-600 hover:text-primary-500"
-              onClick={() => {
-                setIsLogin(!isLogin);
-                loginForm.reset();
-                registerForm.reset();
-              }}
-            >
-              {isLogin 
-                ? "Don't have an account? Sign up" 
-                : "Already have an account? Sign in"
-              }
-            </button>
-          </div>
+          {canRegister && (
+            <div className="mt-6 text-center">
+              <button
+                type="button"
+                className="text-sm text-primary-600 hover:text-primary-500"
+                onClick={() => {
+                  setIsLogin(!isLogin);
+                  loginForm.reset();
+                  registerForm.reset();
+                }}
+              >
+                {isLogin 
+                  ? "Don't have an account? Sign up" 
+                  : "Already have an account? Sign in"
+                }
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Footer */}

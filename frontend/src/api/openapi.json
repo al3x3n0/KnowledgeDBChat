@@ -42302,6 +42302,25 @@
         "title": "SectionInfo",
         "type": "object"
       },
+      "SignInOptions": {
+        "description": "What the sign-in page should offer.",
+        "properties": {
+          "directory": {
+            "title": "Directory",
+            "type": "boolean"
+          },
+          "self_registration": {
+            "title": "Self Registration",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "self_registration",
+          "directory"
+        ],
+        "title": "SignInOptions",
+        "type": "object"
+      },
       "SlideContent": {
         "description": "Content for a single slide.",
         "properties": {
@@ -62361,6 +62380,28 @@
           }
         ],
         "summary": "Get Current User Info",
+        "tags": [
+          "authentication"
+        ]
+      }
+    },
+    "/api/v1/auth/options": {
+      "get": {
+        "description": "What the sign-in page offers. Public: it is read before anyone signs in.",
+        "operationId": "sign_in_options_api_v1_auth_options_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignInOptions"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Sign In Options",
         "tags": [
           "authentication"
         ]

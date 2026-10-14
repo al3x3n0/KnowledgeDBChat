@@ -1888,6 +1888,21 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   outage fallback, where it would outlive the account's being disabled in
   the directory. Hashing moved to `core/passwords.py` so provisioning needs
   no import of the auth service.
+  **The sign-in page, where accounts come from a directory.** Anyone could
+  register a local account with an email nothing checks, and linking
+  trusted a matching email: a stranger could register a directory person's
+  name and email before their first sign-in, use the account, and have the
+  directory hand it to them (account pre-hijacking). The register route now
+  records `auth_metadata.origin = "self_registration"`, and `may_link`
+  never links such an account, by email or by name; an account an admin
+  made, or one from before the marker, links as before (nothing marks any
+  account verified, so "verified" could not be the rule).
+  `AUTH_SELF_REGISTRATION` unset means "allowed unless LDAP is on", the
+  page reads `GET /auth/options` and hides "Sign up" when it is off, and
+  says "Sign in with your directory account" when there is one. An
+  unreachable directory answers 503 "could not be reached" with
+  `Retry-After`: `authenticate_user` returned None for it, which the page
+  showed as "Incorrect username or password".
   **A viewer is read-only** (`services/viewer_access.py`, decided
   2026-10-14). The group mapping assigned `viewer` and nothing enforced it,
   so a viewer could upload, delete and start jobs. Each way in is checked

@@ -24,6 +24,7 @@ PUBLIC = {
     ("GET", "/health"): "liveness probe",
     ("POST", "/api/v1/auth/login"): "this is how a caller gets a token",
     ("POST", "/api/v1/auth/register"): "there is no account yet",
+    ("GET", "/api/v1/auth/options"): "read by the sign-in page, before anyone signs in",
     ("POST", "/api/v1/auth/refresh"): "authenticates by the refresh token it carries",
     ("POST", "/api/v1/auth/logout"): "nothing to protect; clears the caller's state",
     ("GET", "/api/v1/mcp/info"): "server identity for MCP discovery",

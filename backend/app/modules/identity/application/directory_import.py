@@ -76,8 +76,11 @@ async def import_entries(
         refusal = None
         if existing is not None and not directory_accounts.may_link(existing, entry):
             refusal = (
-                f"the local account '{existing.username}' has the same name but "
-                "a different email; not linked"
+                f"the local account '{existing.username}' was registered from the "
+                "sign-in page; not linked"
+                if directory_accounts.self_registered(existing)
+                else f"the local account '{existing.username}' has the same name "
+                "but a different email; not linked"
             )
         if refusal:
             result.refused += 1

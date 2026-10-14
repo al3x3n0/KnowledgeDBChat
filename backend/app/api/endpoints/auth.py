@@ -16,8 +16,10 @@ from app.core.database import get_db
 from app.core.rate_limit import AUTH_LIMIT, limiter
 from app.core.tokens import decode_access_token
 from app.models.user import User
-from app.schemas.auth import TokenResponse, UserRegister, UserResponse
+from app.modules.identity.application.directory_accounts import SELF_REGISTRATION
+from app.schemas.auth import SignInOptions, TokenResponse, UserRegister, UserResponse
 from app.services.auth_service import AuthService
+from app.services.ldap_service import LdapUnavailable
 
 router = APIRouter()
 auth_service = AuthService()
@@ -62,12 +64,39 @@ async def get_current_active_user(
     return current_user
 
 
+def self_registration_allowed() -> bool:
+    """``AUTH_SELF_REGISTRATION``, or, unset, "unless LDAP is on"."""
+    from app.core.config import settings
+
+    configured = getattr(settings, "AUTH_SELF_REGISTRATION", None)
+    if configured is not None:
+        return bool(configured)
+    return not bool(getattr(settings, "LDAP_ENABLED", False))
+
+
+@router.get("/options", response_model=SignInOptions)
+async def sign_in_options():
+    """What the sign-in page offers. Public: it is read before anyone signs in."""
+    from app.services.ldap_service import ldap_service
+
+    return SignInOptions(
+        self_registration=self_registration_allowed(),
+        directory=bool(ldap_service.is_configured()),
+    )
+
+
 @router.post("/register", response_model=TokenResponse)
 @limiter.limit(AUTH_LIMIT)
 async def register(
     request: Request, user_data: UserRegister, db: AsyncSession = Depends(get_db)
 ):
     """Register a new user and return an access token."""
+    if not self_registration_allowed():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Accounts here come from the directory: sign in with your "
+            "directory username and password.",
+        )
     try:
         user = await auth_service.create_user(
             username=user_data.username,
@@ -75,6 +104,7 @@ async def register(
             password=user_data.password,
             full_name=user_data.full_name,
             db=db,
+            origin=SELF_REGISTRATION,
         )
         access_token = auth_service.create_access_token(user.id)
         return TokenResponse(
@@ -131,9 +161,20 @@ async def login(request: Request, db: AsyncSession = Depends(get_db)):
                 detail="username and password are required",
             )
 
-        user = await auth_service.authenticate_user(
-            username=username, password=password, db=db
-        )
+        try:
+            user = await auth_service.authenticate_user(
+                username=username, password=password, db=db
+            )
+        except LdapUnavailable:
+            # Said as what it is. This answered "Incorrect username or
+            # password" during an outage, and people reset passwords that
+            # were fine.
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="The directory could not be reached, so your password "
+                "could not be checked. Try again shortly.",
+                headers={"Retry-After": "30"},
+            )
 
         if not user:
             raise HTTPException(

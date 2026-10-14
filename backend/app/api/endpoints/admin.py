@@ -7,7 +7,7 @@ import re
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID, uuid4
 
 from celery.result import AsyncResult
@@ -66,6 +66,8 @@ from app.schemas.ldap import (
     LdapImportResponse,
     LdapImportUserRow,
     LdapStatusResponse,
+    LdapSyncRequest,
+    LdapSyncResponse,
     LdapTestRequest,
     LdapTestResponse,
 )
@@ -174,8 +176,14 @@ async def get_whisper_status(current_user: User = Depends(require_admin)):
 
 @router.get("/ldap/status", response_model=LdapStatusResponse)
 async def ldap_status(current_user: User = Depends(require_admin)):
+    from app.modules.identity.application import sync_status
     from app.services.ldap_service import ldap_service
 
+    last = await asyncio.to_thread(sync_status.last_report)
+    try:
+        last_sync = LdapSyncResponse(**last) if last else None
+    except Exception:  # noqa: BLE001 - a report from an older shape
+        last_sync = None
     return LdapStatusResponse(
         enabled=bool(ldap_service.enabled),
         configured=bool(ldap_service.is_configured()),
@@ -195,6 +203,9 @@ async def ldap_status(current_user: User = Depends(require_admin)):
             getattr(settings, "LDAP_LOCAL_FALLBACK_WHEN_UNAVAILABLE", False)
         ),
         problems=ldap_service.problems(),
+        unique_id_attribute=getattr(settings, "LDAP_UNIQUE_ID_ATTRIBUTE", None) or None,
+        sync_interval_minutes=sync_status.interval_minutes(),
+        last_sync=last_sync,
     )
 
 
@@ -223,11 +234,64 @@ async def ldap_import_users(
     """
     Admin: import (or sync) users from LDAP directory into the local DB.
 
-    This does not import passwords. LDAP users must still authenticate via LDAP login.
+    This does not import passwords. LDAP users must still authenticate via LDAP
+    login. Existing accounts are matched and linked by the rules login uses.
     """
-    from sqlalchemy import select
+    from app.modules.identity.application import directory_import
 
-    from app.services.auth_service import auth_service
+    entries = await _directory_entries(payload.search_filter, int(payload.limit))
+    result = await directory_import.import_entries(
+        db,
+        entries,
+        dry_run=payload.dry_run,
+        default_role=payload.default_role,
+        overwrite_role=payload.overwrite_role,
+    )
+    return LdapImportResponse(
+        created=result.created,
+        updated=result.updated,
+        refused=result.refused,
+        skipped=max(
+            0,
+            len(entries)
+            - result.created
+            - result.updated
+            - result.refused
+            - result.errors,
+        ),
+        errors=result.errors,
+        rows=[LdapImportUserRow(**vars(row)) for row in result.rows],
+    )
+
+
+@router.post("/ldap/sync", response_model=LdapSyncResponse)
+async def ldap_sync_accounts(
+    payload: LdapSyncRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """
+    Admin: reconcile directory-managed accounts with the directory now.
+
+    A dry run (the default) says who would be updated, deactivated or
+    reactivated, and changes nothing.
+    """
+    from app.modules.identity.application import directory_sync, sync_status
+
+    entries = await _directory_entries(
+        None, int(getattr(settings, "LDAP_SYNC_MAX_ENTRIES", 50000) or 50000)
+    )
+    report = (
+        await directory_sync.sync(db, dry_run=payload.dry_run, entries=entries)
+    ).as_dict()
+    if not payload.dry_run:
+        await asyncio.to_thread(sync_status.save_report, report)
+    return LdapSyncResponse(**report)
+
+
+async def _directory_entries(search_filter: Optional[str], limit: int):
+    """The directory's entries for a filter (LDAP_IMPORT_FILTER by default),
+    or the HTTP error saying why they could not be read."""
     from app.services.ldap_service import LdapError, LdapUnavailable, ldap_service
 
     if not ldap_service.enabled or not ldap_service.is_configured():
@@ -235,19 +299,16 @@ async def ldap_import_users(
     problems = ldap_service.problems()
     if problems:
         raise HTTPException(status_code=400, detail=" ".join(problems))
-
     search_filter = (
-        payload.search_filter or getattr(settings, "LDAP_IMPORT_FILTER", "") or ""
+        search_filter or getattr(settings, "LDAP_IMPORT_FILTER", "") or ""
     ).strip()
     if not search_filter:
         raise HTTPException(
             status_code=400,
             detail="search_filter is required (LDAP_IMPORT_FILTER is empty)",
         )
-
-    limit = int(payload.limit)
     try:
-        ldap_users = await ldap_service.search_users_async(
+        return await ldap_service.search_users_async(
             search_filter=search_filter, limit=limit
         )
     except LdapUnavailable as exc:
@@ -256,134 +317,6 @@ async def ldap_import_users(
         )
     except LdapError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-
-    created = updated = skipped = errors = 0
-    rows: list[LdapImportUserRow] = []
-
-    for u in ldap_users:
-        try:
-            role = (
-                ldap_service.map_role(getattr(u, "groups", None))
-                or payload.default_role
-            )
-
-            # Find by username, then email.
-            existing = None
-            if u.username:
-                res = await db.execute(select(User).where(User.username == u.username))
-                existing = res.scalar_one_or_none()
-            if existing is None and u.email:
-                res = await db.execute(select(User).where(User.email == u.email))
-                existing = res.scalar_one_or_none()
-
-            if existing is None:
-                if payload.dry_run:
-                    created += 1
-                    rows.append(
-                        LdapImportUserRow(
-                            username=u.username,
-                            email=u.email,
-                            full_name=u.full_name,
-                            dn=u.dn,
-                            role=role,
-                            action="created",
-                        )
-                    )
-                    continue
-
-                user = await auth_service._upsert_user_from_ldap(
-                    db,
-                    u,
-                    existing=None,
-                    default_role=payload.default_role,
-                )
-                # If role should be overridden (e.g. admin) and differs from mapping, apply.
-                if payload.overwrite_role and payload.default_role:
-                    user.role = payload.default_role
-                    await db.commit()
-                created += 1
-                rows.append(
-                    LdapImportUserRow(
-                        username=user.username,
-                        email=user.email,
-                        full_name=user.full_name,
-                        dn=getattr(u, "dn", None),
-                        role=user.role,
-                        action="created",
-                    )
-                )
-                continue
-
-            # Update existing
-            if payload.dry_run:
-                updated += 1
-                rows.append(
-                    LdapImportUserRow(
-                        username=existing.username,
-                        email=u.email or existing.email,
-                        full_name=u.full_name or existing.full_name,
-                        dn=u.dn,
-                        # As the real run would leave it: the mapped role, or
-                        # the one the account already has when nothing maps.
-                        role=(
-                            payload.default_role
-                            if payload.overwrite_role
-                            else (
-                                ldap_service.map_role(getattr(u, "groups", None))
-                                or existing.role
-                            )
-                        ),
-                        action="updated",
-                    )
-                )
-                continue
-
-            # Upsert sync
-            await auth_service._upsert_user_from_ldap(db, u, existing=existing)
-            if payload.overwrite_role and payload.default_role:
-                existing.role = payload.default_role
-                await db.commit()
-                await db.refresh(existing)
-
-            updated += 1
-            rows.append(
-                LdapImportUserRow(
-                    username=existing.username,
-                    email=existing.email,
-                    full_name=existing.full_name,
-                    dn=existing.auth_subject,
-                    role=existing.role,
-                    action="updated",
-                )
-            )
-        except Exception as e:
-            errors += 1
-            rows.append(
-                LdapImportUserRow(
-                    username=getattr(u, "username", "") or "",
-                    email=getattr(u, "email", None),
-                    full_name=getattr(u, "full_name", None),
-                    dn=getattr(u, "dn", None),
-                    role=payload.default_role,
-                    action="error",
-                    error=str(e),
-                )
-            )
-
-    # Keep response bounded for UI; include at most 200 rows.
-    if len(rows) > 200:
-        rows = rows[:200]
-
-    # Approximate "skipped" (we don't do per-entry skip right now)
-    skipped = max(0, len(ldap_users) - created - updated - errors)
-
-    return LdapImportResponse(
-        created=created,
-        updated=updated,
-        skipped=skipped,
-        errors=errors,
-        rows=rows,
-    )
 
 
 @router.post("/whisper/config")

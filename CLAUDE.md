@@ -1820,6 +1820,39 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   a login would and reports the failing step, without any user's password.
   `tests/test_ldap_integration.py` runs against ldap3's in-memory server, so
   binds, searches and filters are real.
+  **Login, import and sync turn a directory entry into an account by one set
+  of rules** (`modules/identity/application/directory_accounts.py`). The
+  import route carried its own: it matched by username and linked whatever
+  the email, so a directory entry `uid=admin` became the local `admin`,
+  which login refused to do. Accounts are matched by the entry's stable id
+  first (`LDAP_UNIQUE_ID_ATTRIBUTE`: `entryUUID`, or `objectGUID` on AD,
+  whose 16 bytes are read as a UUID), then by DN for rows from before, then
+  by username and email; a move or rename in the directory no longer
+  changes who someone is. Bulk searches now apply member-search groups
+  (`LDAP_GROUP_SEARCH_BASE`) as login does, so an import no longer maps
+  someone whose admin group is visible only that way to "user"; the paging
+  cookie is read before those searches, which replace the connection's
+  result (a test fails if it is not). The import writes each person under a
+  savepoint, so one bad entry does not poison the rest.
+  **Accounts are reconciled between logins** (`directory_sync.py`,
+  `POST /admin/ldap/sync`, the Sync card; on a schedule with
+  `LDAP_SYNC_INTERVAL_MINUTES`, default 0 = off). Before, someone who left
+  or lost the admin group kept the account and the role until they signed
+  in again. Those `LDAP_IMPORT_FILTER` finds are the people who should have
+  access: the rest are deactivated with `deactivated_by: directory_sync`,
+  which is the only deactivation the sync will undo; an admin's never is,
+  and local accounts are not touched. A result that looks like a broken
+  query deactivates nobody and says why: an empty answer, or more than
+  `LDAP_SYNC_MAX_DEACTIVATE_FRACTION` (20%) of managed accounts missing.
+  An unreachable directory changes nothing. The page previews by default;
+  the last report is kept in Redis for the status card.
+  **A directory account cannot set a local password** (`PUT
+  /users/me/password` answers 400): it is never checked except by the
+  outage fallback, where it would outlive the account's being disabled in
+  the directory. Hashing moved to `core/passwords.py` so provisioning needs
+  no import of the auth service. **Not built**: the `viewer` role the group
+  mapping assigns is enforced nowhere, so a viewer is an ordinary user.
+  Not run against a real directory server, only ldap3's in-memory one.
 - MCP API keys are tied to users; tool policies evaluated per user context
 
 ### Service Layer Pattern

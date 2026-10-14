@@ -9,6 +9,11 @@
  * stopped it. It never asks for a user's password.
  *
  * Settings themselves are deployment configuration and are shown, not edited.
+ *
+ * The sync card reconciles directory-managed accounts with the directory:
+ * between sign-ins nothing else notices that someone left or lost a group.
+ * It previews first, and says plainly when it held back from deactivating
+ * because the directory's answer looked like a broken query.
  */
 
 import React, { useState } from 'react';
@@ -25,6 +30,7 @@ import LoadingSpinner from '../common/LoadingSpinner';
 type Status = components['schemas']['LdapStatusResponse'];
 type TestResult = components['schemas']['LdapTestResponse'];
 type ImportResult = components['schemas']['LdapImportResponse'];
+type SyncReport = components['schemas']['LdapSyncResponse'];
 
 const TRANSPORT_LABEL: Record<string, string> = {
   ldaps: 'LDAPS',
@@ -100,6 +106,16 @@ const StatusCard: React.FC<{ status: Status }> = ({ status }) => {
             {status.create_user_on_login
               ? 'Given an account on first sign-in'
               : 'Refused until imported'}
+          </Fact>
+          <Fact label="Accounts matched by">
+            {status.unique_id_attribute
+              ? `${status.unique_id_attribute}, then DN`
+              : 'DN (no unique id attribute)'}
+          </Fact>
+          <Fact label="Scheduled sync">
+            {status.sync_interval_minutes
+              ? `Every ${status.sync_interval_minutes} min`
+              : 'Off (LDAP_SYNC_INTERVAL_MINUTES)'}
           </Fact>
           <Fact label="If the directory is unreachable">
             {status.local_fallback_when_unavailable
@@ -266,6 +282,7 @@ const ImportCard: React.FC = () => {
         <div className="space-y-2">
           <p className="text-sm text-gray-900">
             Would create {preview.created}, update {preview.updated}
+            {preview.refused ? `, refuse ${preview.refused}` : ''}
             {preview.errors > 0 ? `, ${preview.errors} with errors` : ''}.
           </p>
           {preview.rows.length > 0 && (
@@ -305,6 +322,91 @@ const ImportCard: React.FC = () => {
   );
 };
 
+const Names: React.FC<{ label: string; names: string[] }> = ({ label, names }) =>
+  names.length === 0 ? null : (
+    <div>
+      <p className="text-sm font-medium text-gray-900">
+        {label} ({names.length})
+      </p>
+      <p className="text-sm text-gray-600 break-words">{names.join(' · ')}</p>
+    </div>
+  );
+
+const SyncReportView: React.FC<{ report: SyncReport }> = ({ report }) => {
+  const label = (done: string) => (report.dry_run ? `Would be ${done.toLowerCase()}` : done);
+  const entries = report.directory_entries;
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-gray-900">
+        {report.dry_run ? 'Preview' : 'Synced'} {new Date(`${report.ran_at}Z`).toLocaleString()}:{' '}
+        {report.managed_accounts} directory account(s), {entries}{' '}
+        {entries === 1 ? 'entry' : 'entries'} in the directory.
+      </p>
+      {report.error && (
+        <p className="text-sm text-red-700" role="alert">
+          {report.error}
+        </p>
+      )}
+      {report.held_back && (
+        <div className="rounded-md bg-yellow-50 border border-yellow-200 p-3" role="alert">
+          <p className="text-sm text-yellow-800">{report.held_back}</p>
+        </div>
+      )}
+      <Names label={label('Deactivated')} names={report.deactivated || []} />
+      {report.held_back && <Names label="Not found" names={report.not_found || []} />}
+      <Names label={label('Reactivated')} names={report.reactivated || []} />
+      <Names label="Role changes" names={report.role_changes || []} />
+      {!report.dry_run && <Names label="Updated" names={report.updated || []} />}
+    </div>
+  );
+};
+
+const SyncCard: React.FC<{ last?: SyncReport | null }> = ({ last }) => {
+  const [preview, setPreview] = useState<SyncReport | null>(null);
+  const [applied, setApplied] = useState<SyncReport | null>(null);
+  const run = useMutation((dryRun: boolean) => apiClient.syncLdapAccounts(dryRun), {
+    onSuccess: (data, dryRun) => {
+      if (dryRun) {
+        setPreview(data);
+        return;
+      }
+      setPreview(null);
+      setApplied(data);
+      toast.success(
+        `Synced: ${(data.deactivated || []).length} deactivated, ` +
+          `${(data.reactivated || []).length} reactivated`
+      );
+    },
+    onError: (error: any) => {
+      toast.error(errorText(error, 'The sync could not be run'));
+    },
+  });
+  const shown = preview || applied || last || null;
+
+  return (
+    <div className="bg-white rounded-lg shadow p-6 space-y-4">
+      <div>
+        <h3 className="text-base font-semibold text-gray-900">Sync accounts</h3>
+        <p className="text-sm text-gray-600">
+          Brings directory accounts in line with the directory: people the import filter no
+          longer finds are deactivated, roles follow the group mapping, and accounts the sync
+          deactivated come back when the person does. Accounts an admin deactivated, and local
+          accounts, are never touched.
+        </p>
+      </div>
+      <div className="flex items-center space-x-3">
+        <Button variant="secondary" loading={run.isLoading} onClick={() => run.mutate(true)}>
+          Preview sync
+        </Button>
+        <Button disabled={!preview || run.isLoading} onClick={() => run.mutate(false)}>
+          Apply sync
+        </Button>
+      </div>
+      {shown && <SyncReportView report={shown} />}
+    </div>
+  );
+};
+
 const LdapPanel: React.FC = () => {
   const { data: status, isLoading, error } = useQuery(
     ['ldap-status'],
@@ -334,7 +436,10 @@ const LdapPanel: React.FC = () => {
           <StatusCard status={status} />
           {status.enabled && <TestCard />}
           {status.enabled && status.configured && (status.problems || []).length === 0 && (
-            <ImportCard />
+            <>
+              <ImportCard />
+              <SyncCard last={status.last_sync} />
+            </>
           )}
         </>
       )}

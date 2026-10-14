@@ -60,6 +60,7 @@ celery_app = Celery(
         "app.tasks.workflow_tasks",
         "app.tasks.export_tasks",
         "app.tasks.synthesis_tasks",
+        "app.tasks.identity_tasks",
     ],
 )
 
@@ -259,6 +260,12 @@ celery_app.conf.beat_schedule = {
     "cleanup-old-agent-jobs": {
         "task": "app.tasks.agent_job_tasks.cleanup_old_agent_jobs",
         "schedule": crontab(minute=0, hour=4, day_of_week=0),
+    },
+    # Reconcile directory-managed accounts. Fires every 5 minutes and runs
+    # only when LDAP_SYNC_INTERVAL_MINUTES (default 0: never) says it is due.
+    "sync-directory-accounts": {
+        "task": "app.tasks.identity_tasks.sync_directory_accounts",
+        "schedule": crontab(minute="*/5"),
     },
     # Fail stale LaTeX compile jobs (every 5 minutes)
     "fail-stale-latex-compile-jobs": {

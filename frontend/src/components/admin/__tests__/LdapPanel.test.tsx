@@ -10,12 +10,14 @@ jest.mock('../../../services/api', () => ({
     getLdapStatus: jest.fn(),
     testLdap: jest.fn(),
     importLdapUsers: jest.fn(),
+    syncLdapAccounts: jest.fn(),
   },
 }));
 
 const status = apiClient.getLdapStatus as jest.Mock;
 const test = apiClient.testLdap as jest.Mock;
 const importUsers = apiClient.importLdapUsers as jest.Mock;
+const sync = apiClient.syncLdapAccounts as jest.Mock;
 
 const WORKING = {
   enabled: true,
@@ -32,6 +34,24 @@ const WORKING = {
   create_user_on_login: true,
   local_fallback_when_unavailable: false,
   problems: [],
+  unique_id_attribute: 'entryUUID',
+  sync_interval_minutes: 0,
+  last_sync: null,
+};
+
+const REPORT = {
+  ran_at: '2026-10-14T09:00:00',
+  dry_run: true,
+  directory_entries: 41,
+  managed_accounts: 40,
+  unchanged: 38,
+  updated: [],
+  role_changes: ['alice: admin -> user'],
+  not_found: ['bob'],
+  deactivated: ['bob'],
+  reactivated: [],
+  held_back: null,
+  error: null,
 };
 
 function renderPanel() {
@@ -48,6 +68,7 @@ describe('LdapPanel', () => {
     status.mockReset();
     test.mockReset();
     importUsers.mockReset();
+    sync.mockReset();
   });
 
   it('says local accounts only when LDAP is off, and offers nothing to run', async () => {
@@ -149,5 +170,50 @@ describe('LdapPanel', () => {
     await waitFor(() =>
       expect(importUsers).toHaveBeenLastCalledWith(expect.objectContaining({ dry_run: false }))
     );
+  });
+
+  it('says how accounts are matched and that the scheduled sync is off', async () => {
+    status.mockResolvedValue(WORKING);
+    renderPanel();
+
+    expect(await screen.findByText('entryUUID, then DN')).toBeInTheDocument();
+    expect(screen.getByText('Off (LDAP_SYNC_INTERVAL_MINUTES)')).toBeInTheDocument();
+  });
+
+  it('applies a sync only after a preview, and says who would be deactivated', async () => {
+    status.mockResolvedValue(WORKING);
+    sync.mockResolvedValueOnce(REPORT).mockResolvedValueOnce({ ...REPORT, dry_run: false });
+    renderPanel();
+
+    const apply = await screen.findByRole('button', { name: 'Apply sync' });
+    expect(apply).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Preview sync' }));
+    expect(await screen.findByText('Would be deactivated (1)')).toBeInTheDocument();
+    expect(screen.getByText('alice: admin -> user')).toBeInTheDocument();
+    expect(sync).toHaveBeenLastCalledWith(true);
+
+    await waitFor(() => expect(apply).not.toBeDisabled());
+    fireEvent.click(apply);
+    await waitFor(() => expect(sync).toHaveBeenLastCalledWith(false));
+    expect(await screen.findByText('Deactivated (1)')).toBeInTheDocument();
+  });
+
+  it('says plainly when a sync held back, and lists who was missing', async () => {
+    status.mockResolvedValue({
+      ...WORKING,
+      last_sync: {
+        ...REPORT,
+        dry_run: false,
+        deactivated: [],
+        not_found: ['alice', 'bob'],
+        held_back: 'The directory returned nobody for LDAP_IMPORT_FILTER; nobody was deactivated.',
+      },
+    });
+    renderPanel();
+
+    expect(await screen.findByText(/returned nobody/)).toBeInTheDocument();
+    expect(screen.getByText('Not found (2)')).toBeInTheDocument();
+    expect(screen.queryByText(/deactivated \(/i)).not.toBeInTheDocument();
   });
 });

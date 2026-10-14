@@ -349,6 +349,24 @@ class Settings(BaseSettings):
     # same username? Off: the accounts are linked only when their emails
     # match (or by an admin's import).
     LDAP_LINK_LOCAL_USERS_BY_USERNAME: bool = False
+    # The attribute that names a directory entry for good. A DN changes when
+    # someone is moved or renamed, and matching by DN then fell back to the
+    # username and the email. "entryUUID" on OpenLDAP and 389, "objectGUID"
+    # on Active Directory; empty to match by DN alone.
+    LDAP_UNIQUE_ID_ATTRIBUTE: str = "entryUUID"
+    # Reconcile directory-managed accounts with the directory every this many
+    # minutes (0: never). Between logins nothing else notices that someone
+    # left, was disabled, or lost the admin group. The people who should have
+    # access are those LDAP_IMPORT_FILTER finds: on Active Directory, exclude
+    # disabled accounts there with
+    # "(!(userAccountControl:1.2.840.113556.1.4.803:=2))".
+    LDAP_SYNC_INTERVAL_MINUTES: int = 0
+    # A sync that would deactivate more than this share of directory-managed
+    # accounts deactivates none and says so: a wrong base DN or filter looks
+    # exactly like everybody leaving at once.
+    LDAP_SYNC_MAX_DEACTIVATE_FRACTION: float = 0.2
+    # The most entries a sync reads from the directory.
+    LDAP_SYNC_MAX_ENTRIES: int = 50000
 
     # File Upload Limits
     MAX_FILE_SIZE: int = 500 * 1024 * 1024  # 500MB default (videos can be large)

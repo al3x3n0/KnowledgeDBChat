@@ -22,6 +22,12 @@ class LdapStatusResponse(BaseModel):
     local_fallback_when_unavailable: bool = False
     #: Why the settings cannot work, in words; empty when they can.
     problems: list[str] = []
+    #: The attribute accounts are matched by; empty means by DN.
+    unique_id_attribute: Optional[str] = None
+    #: Minutes between scheduled syncs; 0 means they are off.
+    sync_interval_minutes: int = 0
+    #: The last sync's report, scheduled or run from this page.
+    last_sync: Optional["LdapSyncResponse"] = None
 
 
 class LdapTestRequest(BaseModel):
@@ -71,13 +77,40 @@ class LdapImportUserRow(BaseModel):
     full_name: Optional[str] = None
     dn: Optional[str] = None
     role: str
-    action: str  # created, updated, skipped, error
+    #: created, updated, refused or error.
+    action: str
     error: Optional[str] = None
 
 
 class LdapImportResponse(BaseModel):
     created: int
     updated: int
+    #: Entries matching a local account that is not provably the same person.
+    refused: int = 0
     skipped: int
     errors: int
     rows: list[LdapImportUserRow] = []
+
+
+class LdapSyncRequest(BaseModel):
+    #: Say what would change without changing it. On by default: a sync
+    #: deactivates accounts.
+    dry_run: bool = True
+
+
+class LdapSyncResponse(BaseModel):
+    ran_at: str
+    dry_run: bool
+    directory_entries: int = 0
+    managed_accounts: int = 0
+    unchanged: int = 0
+    updated: list[str] = []
+    role_changes: list[str] = []
+    not_found: list[str] = []
+    deactivated: list[str] = []
+    reactivated: list[str] = []
+    held_back: Optional[str] = None
+    error: Optional[str] = None
+
+
+LdapStatusResponse.model_rebuild()

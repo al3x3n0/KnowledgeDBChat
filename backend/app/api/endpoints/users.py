@@ -211,6 +211,16 @@ async def change_password(
     db: AsyncSession = Depends(get_db),
 ):
     """Change current user's password."""
+    if getattr(current_user, "auth_provider", "local") == "ldap":
+        # The password that signs this account in is the directory's. One set
+        # here is never checked, except by the outage fallback
+        # (LDAP_LOCAL_FALLBACK_WHEN_UNAVAILABLE), where it would outlive the
+        # account being disabled in the directory.
+        raise HTTPException(
+            status_code=400,
+            detail="This account's password is managed by the directory; "
+            "change it there.",
+        )
     try:
         success = await auth_service.update_password(
             user=current_user,

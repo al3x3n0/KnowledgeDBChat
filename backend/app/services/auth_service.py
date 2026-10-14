@@ -4,19 +4,17 @@ Authentication service for user management and JWT tokens.
 Supports both JWT token authentication and API key authentication for external tools.
 """
 import asyncio
-import hashlib
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-import bcrypt
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from loguru import logger
-from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import passwords
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.tokens import create_access_token, decode_access_token
@@ -31,7 +29,6 @@ class AuthService:
     API_KEY_HEADER = "X-API-Key"
 
     def __init__(self):
-        self.pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
         self.security = HTTPBearer(
             auto_error=False
         )  # Don't auto-error to allow API key fallback
@@ -39,26 +36,7 @@ class AuthService:
 
     def hash_password(self, password: str) -> str:
         """Hash a password using bcrypt."""
-        # Ensure password is bytes for bcrypt
-        if isinstance(password, str):
-            password_bytes = password.encode("utf-8")
-        else:
-            password_bytes = password
-
-        # Bcrypt has a 72-byte limit - handle long passwords
-        if len(password_bytes) > 72:
-            logger.debug(
-                f"Password exceeds 72 bytes ({len(password_bytes)}), pre-hashing with SHA256"
-            )
-            # Pre-hash with SHA256 to reduce to fixed 64 bytes
-            password_hash = hashlib.sha256(password_bytes).hexdigest()
-            password_bytes = password_hash.encode("utf-8")
-
-        # Use bcrypt directly to avoid passlib validation issues
-        salt = bcrypt.gensalt()
-        hashed = bcrypt.hashpw(password_bytes, salt)
-        # Return as string (bcrypt returns bytes)
-        return hashed.decode("utf-8")
+        return passwords.hash_password(password)
 
     def get_password_hash(self, password: str) -> str:
         """Alias for hash_password for compatibility."""
@@ -66,28 +44,7 @@ class AuthService:
 
     def verify_password(self, plain_password: str, hashed_password: str) -> bool:
         """Verify a password against its hash."""
-        # Ensure password is bytes for bcrypt
-        if isinstance(plain_password, str):
-            password_bytes = plain_password.encode("utf-8")
-        else:
-            password_bytes = plain_password
-
-        # Ensure hashed_password is bytes
-        if isinstance(hashed_password, str):
-            hashed_bytes = hashed_password.encode("utf-8")
-        else:
-            hashed_bytes = hashed_password
-
-        # Try direct verification first
-        if bcrypt.checkpw(password_bytes, hashed_bytes):
-            return True
-
-        # If that fails and password is > 72 bytes, try with pre-hash
-        if len(password_bytes) > 72:
-            password_hash = hashlib.sha256(password_bytes).hexdigest().encode("utf-8")
-            return bcrypt.checkpw(password_hash, hashed_bytes)
-
-        return False
+        return passwords.verify_password(plain_password, hashed_password)
 
     def create_access_token(self, user_id: UUID) -> str:
         """Create a JWT access token."""
@@ -170,7 +127,7 @@ class AuthService:
           it used to be tried after every refusal, so an account disabled in
           the directory kept working with its old local password.
         * A directory login does not take over a local account that merely
-          shares its username; see ``_may_link``.
+          shares its username; see ``directory_accounts.may_link``.
         """
         user = await self.get_user_by_username(username, db)
         if user is not None and not user.is_active:
@@ -214,138 +171,20 @@ class AuthService:
         if ldap_user is None:
             return None
 
-        existing = user
-        if existing is None:
-            existing = await self.get_user_by_username(ldap_user.username, db)
-        if existing is None and ldap_user.email:
-            existing = await self.get_user_by_email(ldap_user.email, db)
-
-        if existing is not None:
-            if not existing.is_active:
-                logger.info(
-                    f"LDAP login for {username} matches a deactivated account; refused"
-                )
-                return None
-            if not self._may_link(existing, ldap_user):
-                logger.warning(
-                    f"LDAP login for {username} matches the local account "
-                    f"'{existing.username}' but their emails differ; not linked. "
-                    "Import the user as an admin, or set "
-                    "LDAP_LINK_LOCAL_USERS_BY_USERNAME."
-                )
-                return None
-        elif not getattr(settings, "LDAP_CREATE_USER_ON_LOGIN", True):
-            return None
+        from app.modules.identity.application import directory_accounts
 
         try:
-            return await self._upsert_user_from_ldap(db, ldap_user, existing=existing)
+            return await directory_accounts.account_for(
+                db,
+                ldap_user,
+                create=bool(getattr(settings, "LDAP_CREATE_USER_ON_LOGIN", True)),
+            )
+        except directory_accounts.AccountRefused as exc:
+            logger.warning(f"LDAP login for {username} refused: {exc}")
+            return None
         except ValueError as exc:
             logger.warning(f"LDAP user {username} could not be provisioned: {exc}")
             return None
-
-    @staticmethod
-    def _may_link(existing: User, ldap_user) -> bool:
-        """Whether a directory login may become this existing account.
-
-        An account already LDAP-managed is the same person by construction.
-        A local one is linked when the directory's email is its email: a
-        shared username alone would let whoever is called "admin" in the
-        directory take over the local "admin".
-        """
-        if getattr(existing, "auth_provider", "local") == "ldap":
-            return True
-        if getattr(settings, "LDAP_LINK_LOCAL_USERS_BY_USERNAME", False):
-            return True
-        ours = (existing.email or "").strip().lower()
-        theirs = (getattr(ldap_user, "email", None) or "").strip().lower()
-        return bool(ours) and ours == theirs
-
-    async def _upsert_user_from_ldap(
-        self,
-        db: AsyncSession,
-        ldap_user,
-        existing: Optional[User] = None,
-        *,
-        default_role: str = "user",
-    ) -> User:
-        """Create or update the local record for a directory user.
-
-        Never reactivates: ``is_active`` belongs to this application's admins.
-        The role follows the group mapping when one is configured and is left
-        alone when none is -- it used to be overwritten with "user" either
-        way, demoting a local admin who signed in through LDAP.
-        """
-        from datetime import datetime
-
-        sync = bool(getattr(settings, "LDAP_SYNC_ON_LOGIN", True))
-        groups = list(getattr(ldap_user, "groups", None) or [])
-        mapped_role = ldap_service.map_role(groups)
-
-        user = existing
-        if user is None and getattr(ldap_user, "email", None):
-            # Avoid a duplicate for someone already known by their email.
-            user = await self.get_user_by_email(ldap_user.email, db)
-
-        if user is None:
-            import secrets
-
-            username = (ldap_user.username or "").strip()
-            email = (ldap_user.email or "").strip()
-            if not username:
-                raise ValueError("LDAP entry has no username attribute")
-            if not email:
-                raise ValueError(
-                    "LDAP user has no email and LDAP_DEFAULT_EMAIL_DOMAIN is not set"
-                )
-
-            user = User(
-                username=username,
-                email=email,
-                full_name=getattr(ldap_user, "full_name", None),
-                # Never used: an LDAP-managed account is checked against the
-                # directory. Random so that it cannot be guessed either.
-                hashed_password=await asyncio.to_thread(
-                    self.hash_password, secrets.token_urlsafe(32)
-                ),
-                is_active=True,
-                is_verified=True,
-                role=mapped_role or default_role,
-                auth_provider="ldap",
-                auth_subject=getattr(ldap_user, "dn", None),
-                auth_metadata={"groups": groups},
-            )
-            db.add(user)
-            await db.commit()
-            await db.refresh(user)
-            return user
-
-        if sync:
-            new_email = (getattr(ldap_user, "email", None) or "").strip()
-            if new_email and new_email.lower() != (user.email or "").lower():
-                # Emails are unique: taking one another account holds would
-                # fail the whole login at commit.
-                holder = await self.get_user_by_email(new_email, db)
-                if holder is None or holder.id == user.id:
-                    user.email = new_email
-                else:
-                    logger.warning(
-                        f"LDAP email {new_email} for {user.username} belongs to "
-                        f"another account ({holder.username}); kept the old one"
-                    )
-            if getattr(ldap_user, "full_name", None):
-                user.full_name = ldap_user.full_name
-
-        user.auth_provider = "ldap"
-        user.auth_subject = getattr(ldap_user, "dn", None)
-        user.auth_metadata = {"groups": groups}
-        if mapped_role is not None:
-            user.role = mapped_role
-        user.is_verified = True
-        user.updated_at = datetime.utcnow()
-
-        await db.commit()
-        await db.refresh(user)
-        return user
 
     async def get_current_user(
         self,

@@ -1918,7 +1918,16 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   loading the owner, which it used to do before.
   `tests/test_viewer_is_read_only.py` sends every write route that needs a
   user as a viewer and requires the refusal unless the route is allowed.
-  Not run against a real directory server, only ldap3's in-memory one.
+  **Run against a real slapd** (`tests/test_ldap_real_server.py`, skipped
+  unless `TEST_LDAP_URI` names one; its docstring has the commands). Over
+  LDAPS and over StartTLS, 10 of 10: the certificate is refused without the
+  CA and for an address it was not issued for, `entryUUID` and the
+  `memberOf` overlay are the server's own, paging works with the real
+  control and member searches between pages, an entry moved to another OU
+  keeps its account, and the sync deactivates a deleted entry and takes a
+  lost admin role. The first run failed on the image's bundled CA, which
+  had expired: the client refusing it is the verification working. Not
+  run against Active Directory; `objectGUID` is tested as bytes only.
 - MCP API keys are tied to users; tool policies evaluated per user context
 
 ### Service Layer Pattern

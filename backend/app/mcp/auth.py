@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.api_key import APIKey, APIKeyUsageLog
 from app.models.user import User
+from app.services import viewer_access
 from app.services.auth_service import is_admin
 
 
@@ -41,7 +42,15 @@ class MCPAuthContext:
         return is_admin(self.user)
 
     def has_scope(self, scope: str) -> bool:
-        """Check if context has a specific scope."""
+        """Check if context has a specific scope.
+
+        A viewer's key keeps only the read and chat scopes, whatever it was
+        granted: the role is the ceiling on what the key can do.
+        """
+        if viewer_access.is_viewer(self.user) and scope not in (
+            viewer_access.VIEWER_SCOPES
+        ):
+            return False
         return self.api_key.has_scope(scope)
 
     def require_scope(self, scope: str) -> None:
@@ -98,17 +107,19 @@ async def validate_api_key(
         logger.warning(f"Expired/invalid API key: {db_key.id}")
         return None
 
-    # Check required scope
-    if required_scope and not db_key.has_scope(required_scope):
-        logger.warning(f"API key {db_key.id} missing scope: {required_scope}")
-        return None
-
     # Load the user
     result = await db.execute(select(User).where(User.id == db_key.user_id))
     user = result.scalar_one_or_none()
 
     if not user or not user.is_active:
         logger.warning(f"API key {db_key.id} belongs to inactive user")
+        return None
+
+    context = MCPAuthContext(user=user, api_key=db_key, scopes=db_key.scopes or [])
+    # Through the context, after the user is known: the scopes a key has
+    # depend on its owner's role, and a viewer's key has fewer than it says.
+    if required_scope and not context.has_scope(required_scope):
+        logger.warning(f"API key {db_key.id} missing scope: {required_scope}")
         return None
 
     # Update last used
@@ -118,11 +129,7 @@ async def validate_api_key(
 
     logger.info(f"API key authenticated: {db_key.name} (user: {user.username})")
 
-    return MCPAuthContext(
-        user=user,
-        api_key=db_key,
-        scopes=db_key.scopes or [],
-    )
+    return context
 
 
 async def log_api_usage(

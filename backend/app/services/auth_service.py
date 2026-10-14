@@ -19,6 +19,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.tokens import create_access_token, decode_access_token
 from app.models.user import User
+from app.services import viewer_access
 from app.services.ldap_service import LdapError, LdapUnavailable, ldap_service
 
 
@@ -201,7 +202,23 @@ class AuthService:
         Supports two authentication methods:
         1. JWT Bearer token: Authorization: Bearer <token>
         2. API Key: X-API-Key: <api_key>
+
+        A viewer is refused any request that would change something
+        (``viewer_access``): this dependency is the one every authenticated
+        route passes through.
         """
+        user = await self.identify(credentials, api_key, db, request)
+        viewer_access.refuse_writes(user, request)
+        return user
+
+    async def identify(
+        self,
+        credentials: Optional[HTTPAuthorizationCredentials],
+        api_key: Optional[str],
+        db: AsyncSession,
+        request: Optional[Request] = None,
+    ) -> User:
+        """Who these credentials belong to; no check of what they may do."""
         credentials_exception = HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
@@ -369,9 +386,12 @@ async def get_current_user_optional(
     Useful for endpoints that work both authenticated and anonymously.
     """
     try:
-        return await auth_service.get_current_user(credentials, api_key, db, request)
+        user = await auth_service.identify(credentials, api_key, db, request)
     except HTTPException:
         return None
+    # Outside the try: a viewer refused is not an anonymous caller.
+    viewer_access.refuse_writes(user, request)
+    return user
 
 
 async def require_admin(current_user: User = Depends(get_current_user)) -> User:
@@ -422,6 +442,7 @@ async def require_scope(scope: str):
                     user_agent=request.headers.get("user-agent"),
                 )
 
+            viewer_access.refuse_writes(user, request)
             return user
 
         # JWT tokens have full access (scopes don't apply)

@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent_core.plugin_specs import NAME_PREFIX
 from app.models.tool_policy import ToolPolicy
 from app.models.user import User
+from app.services import viewer_access
 from app.services.tool_registry import get_tool_metadata
 
 
@@ -229,6 +230,16 @@ async def evaluate_tool_policy(
                 require_approval=False,
                 denied_reason=f"Unknown tool '{tn}'",
             )
+
+    # Before any policy: no policy grants a viewer a tool that changes things.
+    metadata = get_tool_metadata(tn)
+    refusal = viewer_access.tool_refusal(
+        user, tn, getattr(metadata, "effects", None) if metadata else None
+    )
+    if refusal:
+        return ToolDecision(
+            allowed=False, require_approval=False, denied_reason=refusal
+        )
 
     subject_clauses = [ToolPolicy.subject_type == "global"]
     if user is not None:

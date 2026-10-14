@@ -1887,8 +1887,22 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   /users/me/password` answers 400): it is never checked except by the
   outage fallback, where it would outlive the account's being disabled in
   the directory. Hashing moved to `core/passwords.py` so provisioning needs
-  no import of the auth service. **Not built**: the `viewer` role the group
-  mapping assigns is enforced nowhere, so a viewer is an ordinary user.
+  no import of the auth service.
+  **A viewer is read-only** (`services/viewer_access.py`, decided
+  2026-10-14). The group mapping assigned `viewer` and nothing enforced it,
+  so a viewer could upload, delete and start jobs. Each way in is checked
+  where every request passes: the authentication dependency refuses any
+  non-GET request except `VIEWER_MAY` (signing in and out, the viewer's own
+  conversations, settings and notifications, and POST routes that only
+  compute); the tool policy engine (chat, workflow nodes, MCP, custom
+  tools) allows only tools declared `effects: read`, and no user or plugin
+  tool, since the engine cannot see what those do; and a viewer's MCP key
+  keeps only the `read` and `chat` scopes whatever it was granted. The
+  optional-user dependency applies the rule outside its `try`, which turns
+  every HTTP error into "anonymous"; MCP key validation checks scopes after
+  loading the owner, which it used to do before.
+  `tests/test_viewer_is_read_only.py` sends every write route that needs a
+  user as a viewer and requires the refusal unless the route is allowed.
   **Run against a real slapd** (`tests/test_ldap_real_server.py`, skipped
   unless `TEST_LDAP_URI` names one; its docstring has the commands). Over
   LDAPS and over StartTLS, 10 of 10: the certificate is refused without the

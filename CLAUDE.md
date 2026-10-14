@@ -843,6 +843,26 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   has yet run past its first stage.** Not built: a stage retrying itself,
   or handing back to the run that planned it.
 
+- **The pipeline drafter is told what each evidence type is**
+  (`agent_pipeline_draft._what_makes`). Its list gave a name, a duration and
+  job types, so "implement fastmod in C, check it, benchmark it" became a
+  stage requiring `code_patch_proposal`: the live stage cloned
+  lemire/fastmod, found the function already there, and had nothing to
+  change. Each entry now names the tool that makes it, in that tool's own
+  first sentence (10.5k characters for the list), and rule 7 says code
+  belonging to no repository is written inside the stage that requires
+  `implementation_verified`. On the live job's own follow-up: before, every
+  draft began with a repository patch stage; after, three of three were one
+  stage requiring `implementation_verified` and `benchmark_measurement`. A
+  genuine repository fix drafted as a control still required
+  `repo_workspace`, `test_result`, `patch_applied` and
+  `code_patch_proposal`. That control also found three more misplacements
+  for `tidy`: a stage named by `name` with no `id`,
+  `required_finding_types` beside the goal instead of in `contract`, and
+  `loop: true` with `max_iterations` beside it. Before, two of its three
+  drafts were refused even after repair; after, three of three passed on
+  the first call. **Not run through a job and its stages yet.**
+
 - **`spawn_on` is the one place a pipeline edge does not mean "after".** Every
   other dependency waits for a stage to finish, which cannot describe a stage
   that never does -- a continuous monitor is still monitoring, and a successor

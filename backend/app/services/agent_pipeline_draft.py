@@ -25,6 +25,7 @@ Three things make the difference between this and asking a model for JSON:
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from uuid import UUID
 
@@ -105,6 +106,35 @@ DRAFT_SCHEMA: Dict[str, Any] = {
 }
 
 
+def _what_makes(entry: Any, most: int = 140) -> str:
+    """The tool that yields this evidence, in that tool's own first sentence.
+
+    The list gave a name, a duration and the job types, and nothing about
+    what the evidence is. Asked to implement fastmod in C, check it against
+    reference cases and benchmark it, the drafter required
+    `code_patch_proposal` and `patch_applied`, which mean changing a
+    repository: the stage cloned lemire/fastmod, found the function already
+    there, and had nothing to change. `implementation_verified` --
+    "Run an implementation against reference cases with known outputs" --
+    was on the list as a bare word. The sentence is the tool's own
+    description, so it says what the tool says and cannot drift from it.
+    """
+    from app.agent_core import tool_specs
+
+    producers = getattr(entry, "producers", ()) or ()
+    if not producers:
+        return ""
+    spec = tool_specs.spec_for(producers[0])
+    text = " ".join(str(getattr(spec, "description", "") or "").split())
+    if not text:
+        return ""
+    end = re.search(r"[.!?](\s|$)", text)
+    sentence = text[: end.start() + 1] if end else text
+    if len(sentence) > most:
+        sentence = sentence[: most - 3].rstrip() + "..."
+    return f"made by {producers[0]}: {sentence}"
+
+
 def _vocabulary_block(extra_evidence: Sequence[Any] = ()) -> str:
     """The evidence types, as a table a model can only choose from.
 
@@ -124,6 +154,10 @@ def _vocabulary_block(extra_evidence: Sequence[Any] = ()) -> str:
             # A skill's name says nothing about what it does; its description
             # is the only way a model can tell which request it answers.
             bits.append(f"from {entry.consumes}")
+        else:
+            made_by = _what_makes(entry)
+            if made_by:
+                bits.append(made_by)
         lines.append(f"  {entry.name} -- {'; '.join(bits)}")
     return "\n".join(lines)
 
@@ -150,6 +184,12 @@ Rules that decide whether a draft is usable at all:
    from prose, for instance -- and always with `max_iterations`.
 6. Use `checkpoint: true` only where a person must approve before the work
    continues.
+7. Code that belongs to no repository -- an algorithm written from a paper,
+   a spec or a finding -- is written, checked and measured in sandboxes
+   that take the source directly: writing it is part of the stage that
+   requires `implementation_verified`, not a stage of its own. Require
+   `code_patch_proposal`, `patch_applied` or `test_result` only when the
+   work changes a repository it names.
 
 Evidence types you may require:
 {vocabulary}
@@ -224,6 +264,40 @@ def _without_implied_dependencies(stages: List[Dict[str, Any]]) -> List[Dict[str
     return out
 
 
+def _with_stage_fields_in_place(stage: Dict[str, Any]) -> Dict[str, Any]:
+    """Move what a stage says to where it is read, when it is plainly there.
+
+    Only when the right place is empty: a draft that says the same thing in
+    both places is not ambiguous, and one that says different things is left
+    for the checker to name.
+    """
+    name = str(stage.get("name") or "").strip()
+    if not str(stage.get("id") or "").strip() and name:
+        stage["id"] = name
+
+    required = stage.get("required_finding_types")
+    if required is not None:
+        contract = stage.get("contract")
+        if contract is None:
+            stage["contract"] = {"required_finding_types": required}
+            stage.pop("required_finding_types")
+        elif isinstance(contract, Mapping) and not contract.get(
+            "required_finding_types"
+        ):
+            stage["contract"] = {**contract, "required_finding_types": required}
+            stage.pop("required_finding_types")
+
+    loop = stage.get("loop")
+    if isinstance(loop, bool):
+        bound = stage.get("max_iterations")
+        if not loop:
+            stage.pop("loop")
+        elif isinstance(bound, int) and not isinstance(bound, bool) and bound > 0:
+            stage["loop"] = {"max_iterations": bound}
+            stage.pop("max_iterations")
+    return stage
+
+
 def tidy(spec: Dict[str, Any], description: str) -> Dict[str, Any]:
     """Fix the two things models reliably get wrong, before spending a repair.
 
@@ -241,6 +315,13 @@ def tidy(spec: Dict[str, Any], description: str) -> Dict[str, Any]:
       contract, so a coding stage was planned as the default `research` and
       refused for requiring evidence research cannot produce. Seen in a live
       draft, every stage.
+    * **A stage is shaped like a stage with no contract.** Seen in live
+      drafts of an ordinary repository fix (2026-10-14): the stage named by
+      `name` with no `id`, so every `depends_on` named a stage that did not
+      exist; `required_finding_types` beside the goal instead of in
+      `contract`, so the contract required nothing; and `loop: true` with
+      `max_iterations` beside it. The repair round did not fix either of the
+      first two in two drafts of three. See `_with_stage_fields_in_place`.
     * **A stage waits for a stage and for that stage's own predecessor.** A
       model writes `depends_on: [extract, implement]` to say "this uses the
       paper too", when `implement` already waits for `extract`. The extra
@@ -256,7 +337,7 @@ def tidy(spec: Dict[str, Any], description: str) -> Dict[str, Any]:
     for raw in raw_stages if isinstance(raw_stages, list) else []:
         if not isinstance(raw, Mapping):
             continue
-        stage = dict(raw)
+        stage = _with_stage_fields_in_place(dict(raw))
         raw_contract = stage.get("contract")
         if isinstance(raw_contract, Mapping):
             contract = dict(raw_contract)

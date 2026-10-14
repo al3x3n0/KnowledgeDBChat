@@ -843,6 +843,43 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   has yet run past its first stage.** Not built: a stage retrying itself,
   or handing back to the run that planned it.
 
+- **The pipeline drafter is told what each evidence type is**
+  (`agent_pipeline_draft._what_makes`). Its list gave a name, a duration and
+  job types, so "implement fastmod in C, check it, benchmark it" became a
+  stage requiring `code_patch_proposal`: the live stage cloned
+  lemire/fastmod, found the function already there, and had nothing to
+  change. Each entry now names the tool that makes it, in that tool's own
+  first sentence (10.5k characters for the list), and rule 7 says code
+  belonging to no repository is written inside the stage that requires
+  `implementation_verified`. On the live job's own follow-up: before, every
+  draft began with a repository patch stage; after, three of three were one
+  stage requiring `implementation_verified` and `benchmark_measurement`. A
+  genuine repository fix drafted as a control still required
+  `repo_workspace`, `test_result`, `patch_applied` and
+  `code_patch_proposal`. That control also found three more misplacements
+  for `tidy`: a stage named by `name` with no `id`,
+  `required_finding_types` beside the goal instead of in `contract`, and
+  `loop: true` with `max_iterations` beside it. Before, two of its three
+  drafts were refused even after repair; after, three of three passed on
+  the first call. **Then a proposed plan ran to its end** (2026-10-14,
+  real model, the stack's worker, host load ~300): the same scoping job
+  proposed two stages, implement-and-check then benchmark, with the plan
+  approved once. Stage one failed its check twice honestly (no `main`,
+  then a harness that printed PASS whatever its input) and passed 3 of 3
+  reference cases on the third; only that verified finding satisfied its
+  contract. Stage two measured fastmod at 2.25x plain `%` (spread 0.45%
+  over three replications; the Docker VM reported its own load as quiet,
+  which says nothing about the host's). One defect: the run's goal said
+  "once a person agrees", and the drafter made the first stage a
+  checkpoint, so the approved plan stopped again for the same approval.
+  `ALREADY_APPROVED` now tells the drafter the proposal is that approval.
+  A second: **the last stage then started three "Subgoal Follow-up" jobs
+  nobody had approved.** A job with an empty chain builds follow-ups from
+  its subgoals unless `auto_subgoal_child_jobs_enabled` is off, and a
+  pipeline's last stage has an empty chain on purpose. A pipeline stage
+  never gets them now (`_ensure_subgoal_chain_config`), whoever launched
+  the pipeline; its successors are the pipeline's.
+
 - **`spawn_on` is the one place a pipeline edge does not mean "after".** Every
   other dependency waits for a stage to finish, which cannot describe a stage
   that never does -- a continuous monitor is still monitoring, and a successor

@@ -3035,6 +3035,33 @@ def test_ensure_subgoal_chain_config_stops_at_max_chain_depth():
     assert not (job.chain_config or {}).get("child_jobs")
 
 
+def test_a_pipeline_stage_gets_no_follow_up_jobs_of_its_own():
+    """Its successors are the pipeline's, and the last stage has none.
+
+    Live, the last stage of an approved plan started three "Subgoal
+    Follow-up" jobs nobody had approved. The defaults are left as they were
+    (no `auto_subgoal_child_jobs_enabled` in the config), since that is how
+    a bound stage arrives.
+    """
+    executor = AutonomousAgentExecutor()
+    job = _make_job(config={"pipeline": "plan", "pipeline_stage": "benchmark"})
+    state = _make_state()
+    state["subgoals"] = [
+        {"title": "Scope", "status": "in_progress"},
+        {"title": "Collect evidence", "status": "pending"},
+        {"title": "Draft synthesis", "status": "pending"},
+    ]
+
+    executor._ensure_subgoal_chain_config(job, state)
+
+    assert not (job.chain_config or {}).get("child_jobs")
+
+    # The control: the same job outside a pipeline does get them.
+    job = _make_job(config={})
+    executor._ensure_subgoal_chain_config(job, state)
+    assert (job.chain_config or {}).get("child_jobs")
+
+
 def test_ensure_swarm_chain_config_creates_specialized_child_jobs():
     executor = AutonomousAgentExecutor()
     job = _make_job(

@@ -449,3 +449,134 @@ class TestStageFieldsWrittenIntoTheContract:
         spec["stages"][1]["job_type"] = "analysis"
 
         assert draft.tidy(spec, "x")["stages"][1]["job_type"] == "analysis"
+
+
+class TestTheEvidenceListSaysWhatEachTypeIs:
+    """A bare name was all the drafter had to choose by.
+
+    Asked to implement fastmod in C, check it and benchmark it, it required
+    `code_patch_proposal`, which means changing a repository; the stage
+    cloned one that already had the function and had nothing to change.
+    """
+
+    def test_each_type_names_the_tool_that_makes_it_in_that_tools_words(self):
+        from app.services.agent_pipeline_draft import _vocabulary_block
+
+        block = _vocabulary_block()
+        (line,) = [
+            entry
+            for entry in block.splitlines()
+            if entry.strip().startswith("implementation_verified ")
+        ]
+        assert "made by check_implementation: Run an implementation against" in line
+
+    def test_the_repository_kind_reads_as_a_repository_change(self):
+        from app.services.agent_pipeline_draft import _vocabulary_block
+
+        (line,) = [
+            entry
+            for entry in _vocabulary_block().splitlines()
+            if entry.strip().startswith("code_patch_proposal ")
+        ]
+        assert "workspace changes" in line
+
+    def test_a_long_description_is_cut_to_one_short_sentence(self):
+        from types import SimpleNamespace
+
+        from app.services import agent_pipeline_draft
+
+        entry = SimpleNamespace(producers=("benchmark_c_snippet",))
+        made_by = agent_pipeline_draft._what_makes(entry, most=60)
+
+        assert made_by.startswith("made by benchmark_c_snippet: ")
+        assert len(made_by) <= len("made by benchmark_c_snippet: ") + 60
+        assert made_by.endswith("...")
+
+    def test_evidence_nothing_produces_says_nothing(self):
+        from types import SimpleNamespace
+
+        from app.services import agent_pipeline_draft
+
+        assert agent_pipeline_draft._what_makes(SimpleNamespace(producers=())) == ""
+
+
+class TestAStageShapedLikeAStageWithNoContract:
+    """Live drafts of an ordinary repository fix (2026-10-14): `name` for
+    `id`, the evidence beside the goal, and `loop` as a yes or no."""
+
+    @staticmethod
+    def _spec():
+        return {
+            "name": "fix",
+            "stages": [
+                {
+                    "name": "clone",
+                    "goal": "Have the repository",
+                    "required_finding_types": ["repo_workspace"],
+                    "job_type": "coding",
+                    "loop": False,
+                    "max_iterations": 1,
+                },
+                {
+                    "name": "patch",
+                    "goal": "Propose the fix",
+                    "depends_on": ["clone"],
+                    "assumes": ["repo_workspace"],
+                    "required_finding_types": ["code_patch_proposal"],
+                    "job_type": "coding",
+                    "loop": True,
+                    "max_iterations": 2,
+                },
+            ],
+        }
+
+    def test_as_written_it_is_refused(self):
+        problems = draft.problems_with(self._spec())
+
+        assert any("requires no finding types" in p for p in problems), problems
+
+    def test_tidied_it_passes_and_says_the_same_thing(self):
+        fixed = draft.tidy(self._spec(), "x")
+
+        clone, patch = fixed["stages"]
+        assert [clone["id"], patch["id"]] == ["clone", "patch"]
+        assert patch["contract"] == {"required_finding_types": ["code_patch_proposal"]}
+        assert "required_finding_types" not in patch
+        assert "loop" not in clone
+        assert patch["loop"] == {"max_iterations": 2}
+        assert draft.problems_with(fixed) == []
+
+    def test_a_contract_that_already_names_evidence_is_not_overwritten(self):
+        spec = self._spec()
+        spec["stages"][1]["contract"] = {
+            "required_finding_types": ["test_result"],
+        }
+
+        patch = draft.tidy(spec, "x")["stages"][1]
+
+        assert patch["contract"]["required_finding_types"] == ["test_result"]
+        # Left where it was, for the checker to see, not silently dropped.
+        assert patch["required_finding_types"] == ["code_patch_proposal"]
+
+    def test_an_id_is_never_replaced_by_a_name(self):
+        spec = self._spec()
+        spec["stages"][0]["id"] = "clone_repo"
+        spec["stages"][1]["depends_on"] = ["clone_repo"]
+
+        assert draft.tidy(spec, "x")["stages"][0]["id"] == "clone_repo"
+
+    def test_a_loop_with_no_usable_bound_is_left_for_the_checker(self):
+        spec = self._spec()
+        spec["stages"][1]["max_iterations"] = "two"
+
+        assert draft.tidy(spec, "x")["stages"][1]["loop"] is True
+
+
+class TestCodeThatBelongsToNoRepository:
+    def test_the_drafter_is_told_where_writing_such_code_belongs(self):
+        prompt = " ".join(draft.SYSTEM_PROMPT.split())
+
+        assert "Code that belongs to no repository" in prompt
+        assert "not a stage of its own" in prompt
+        for name in ("implementation_verified", "code_patch_proposal"):
+            assert name in prompt

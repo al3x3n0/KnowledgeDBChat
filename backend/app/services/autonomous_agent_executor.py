@@ -5100,6 +5100,14 @@ class AutonomousAgentExecutor:
         cfg = job.config if isinstance(job.config, dict) else {}
         if not bool(cfg.get("auto_subgoal_child_jobs_enabled", True)):
             return
+        # A pipeline's stages are followed by what the pipeline says, and its
+        # last stage by nothing. Its empty chain looked like a job nobody had
+        # planned beyond: the first proposed plan run live ended, and its
+        # last stage then started three "Subgoal Follow-up" jobs that nobody
+        # had approved, after a plan whose promise is that nothing starts
+        # without approval.
+        if cfg.get("pipeline_stage"):
+            return
         if bool(state.get("subgoal_chain_configured")):
             return
         # Same depth ceiling the job-creating tools enforce. Without it a job that

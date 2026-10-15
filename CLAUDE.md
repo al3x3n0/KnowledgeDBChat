@@ -1159,6 +1159,30 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
     at the simulated size (n=300) turned the 2.6% gain into a 6.8% loss, with
     mispredicts +134%.
 
+- **A deterministic sandbox run is replayed rather than repeated**
+  (`services/sandbox_result_cache.py`; adapted from ucb-bar/chia's caching
+  and bypass, and its golden results computed once). The gem5 simulations
+  (`simulate_c_workload`, and `run_configs` under every mechanism study) go
+  through `sandbox_result_cache.run`, keyed on the image's **content id**
+  (a rebuilt image is a different simulator; a tag is not enough), the
+  script, the limits and the hash of every file in the working directory.
+  The files the run wrote come back with it. Only an exit-0 run is stored,
+  since a timeout or a missing daemon replayed would make an outage
+  permanent; inputs over 64 MB or outputs over 256 MB are not cached, nor is
+  anything when the daemon cannot name the image. **Never a wall-clock tool**:
+  a test pins the modules allowed to use it, because two honest timings
+  disagree. An evidence-bundle replay runs under `bypassed()`, since it
+  exists to show the simulator reproduces the number, and
+  `replayed_from_cache` is a volatile field so a replay hashes like the
+  original. Shared through the work volume, trimmed least-recently-used to
+  `SANDBOX_RESULT_CACHE_MAX_MB` (2048; `SANDBOX_RESULT_CACHE_ENABLED` turns
+  it off). Run live on the stack: the same simulation twice gave the same
+  4,114,705 cycles, `replayed_from_cache` true, 27.4 s then 9.1 s -- the rest
+  is preflight outside the simulation, so the saving grows with its length.
+  The mark is on `simulate_c_workload`'s data and on each run `run_configs`
+  returns; the five studies built on `run_configs` do not yet repeat it in
+  their own output. A study whose arms differ shares nothing: the key is the
+  whole script, not each arm.
 - **A mechanism that never engaged is not a measurement of that mechanism.**
   `evaluate_across_kernels` reported `geomean 1.0000x over 4 kernels` and
   recorded it as a `mechanism_evaluation` finding a contract accepted. The

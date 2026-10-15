@@ -50,7 +50,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from app.services import agent_sandbox_runtime
+from app.services import agent_sandbox_runtime, sandbox_result_cache
 
 logger = logging.getLogger(__name__)
 
@@ -1008,7 +1008,14 @@ async def run_configs(
             "done; echo OK"
         )
         try:
-            returncode, _stdout, stderr = await agent_sandbox_runtime.run_in_sandbox(
+            # Every arm's cycles repeat exactly for the same inputs, so a study
+            # repeated whole (a restart, a replayed stage) is read back.
+            (
+                returncode,
+                _stdout,
+                stderr,
+                replayed,
+            ) = await sandbox_result_cache.run(
                 script,
                 workdir,
                 image=image,
@@ -1123,6 +1130,7 @@ async def run_configs(
                 "stats": stats,
                 "manifest": manifest,
                 "mispriced_simd": mispriced_simd_ops(stats) or None,
+                "replayed_from_cache": replayed,
             }
         return runs
 

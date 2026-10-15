@@ -447,6 +447,13 @@ class Settings(BaseSettings):
     # others. 0 turns it off. Soft: after the wait a run proceeds anyway.
     SANDBOX_MAX_CONCURRENT_RUNS: int = 4
     SANDBOX_SLOT_WAIT_SECONDS: float = 900.0
+    # Deterministic sandbox runs (gem5 simulations) replayed from disk when
+    # the image, script, limits and every input file are the same
+    # (services/sandbox_result_cache.py). Never wall-clock benchmarks. Unset
+    # directory: under the temp directory, the shared work volume on the stack.
+    SANDBOX_RESULT_CACHE_ENABLED: bool = True
+    SANDBOX_RESULT_CACHE_DIR: Optional[str] = None
+    SANDBOX_RESULT_CACHE_MAX_MB: int = 2048
     UNSAFE_CODE_EXEC_BACKEND: str = "subprocess"
     # Docker backend settings (only used when UNSAFE_CODE_EXEC_BACKEND='docker')
     UNSAFE_CODE_EXEC_DOCKER_IMAGE: str = "python:3.11-slim"

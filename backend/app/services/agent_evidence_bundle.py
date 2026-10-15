@@ -27,6 +27,8 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
+from app.services import sandbox_result_cache
+
 
 def _bundle_root() -> Path:
     """Where bundles go, from settings rather than from the container layout."""
@@ -659,6 +661,9 @@ VOLATILE_FIELDS = {
     "_journal_invocation_id",
     "url",
     "elapsed_ms",
+    # Whether a simulation was read back from the result cache: the same
+    # number either way, and a replay always recomputes.
+    "replayed_from_cache",
 }
 
 # Tools whose output is not expected to repeat exactly. A benchmark reports
@@ -753,7 +758,10 @@ async def replay_bundle(
             continue
 
         try:
-            result = await execute(tool, params)
+            # Recomputed, never read back: a replay exists to show the
+            # simulator reproduces the number.
+            with sandbox_result_cache.bypassed():
+                result = await execute(tool, params)
         except Exception as exc:  # pragma: no cover - defensive
             errored.append({"sequence": sequence, "tool": tool, "why": str(exc)[:200]})
             continue

@@ -213,4 +213,60 @@ describe('CampaignsPage', () => {
 
     expect(await screen.findByText('Start campaign')).toBeInTheDocument();
   });
+
+  it('says how much a campaign may approve itself', async () => {
+    apiClient.listResearchCampaigns.mockResolvedValue({
+      items: [campaign({ plan_approval: { max_stages: 2, max_minutes: 60 } })],
+      total: 1,
+    });
+    render(<CampaignsPage />);
+
+    expect(
+      await screen.findByText(/approves its own plans up to 2 stages, 60 min/)
+    ).toBeInTheDocument();
+  });
+
+  it('says why the campaign left a plan for you', async () => {
+    const held = campaign({
+      status: 'active',
+      plan_approval: { max_stages: 1, max_minutes: 60 },
+      summary: {
+        waiting_on: 'approval',
+        plan_held: 'the plan has 2 stages and this campaign approves at most 1',
+      },
+    });
+    apiClient.listResearchCampaigns.mockResolvedValue({ items: [held], total: 1 });
+    apiClient.getResearchCampaign.mockResolvedValue(held);
+    render(<CampaignsPage />);
+
+    fireEvent.click(await screen.findByText('Prefetcher study'));
+
+    expect(
+      await screen.findByText(/did not approve it itself: the plan has 2 stages/)
+    ).toBeInTheDocument();
+  });
+
+  it('starts a campaign that approves its own plans only when asked to', async () => {
+    apiClient.createResearchCampaign.mockResolvedValue(campaign({ name: 'n' }));
+    render(<CampaignsPage />);
+    await screen.findByText('Prefetcher study');
+    fireEvent.click(screen.getByRole('button', { name: /New Campaign/ }));
+    const goalField = () => screen.findByPlaceholderText(/stride prefetcher speeds up/);
+    fireEvent.change(await goalField(), { target: { value: 'settle it' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /Start campaign/ }));
+    await waitFor(() => expect(apiClient.createResearchCampaign).toHaveBeenCalled());
+    expect(apiClient.createResearchCampaign.mock.calls[0][0].plan_approval).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /New Campaign/ }));
+    fireEvent.change(await goalField(), { target: { value: 'settle it' } });
+    fireEvent.click(screen.getByLabelText('Approve its own plans'));
+    fireEvent.change(screen.getByLabelText('Up to stages'), { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: /Start campaign/ }));
+    await waitFor(() => expect(apiClient.createResearchCampaign).toHaveBeenCalledTimes(2));
+    expect(apiClient.createResearchCampaign.mock.calls[1][0].plan_approval).toEqual({
+      max_stages: 3,
+      max_minutes: 60,
+    });
+  });
 });

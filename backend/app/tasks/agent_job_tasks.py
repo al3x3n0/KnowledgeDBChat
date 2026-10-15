@@ -1350,9 +1350,12 @@ def advance_research_campaigns(limit: int = 25):
     async def _advance():
         session_factory = create_celery_session()
         async with session_factory() as db:
+            from app.modules.autonomy.application import plan_approval
             from app.services import research_campaign_service
 
-            steps = await research_campaign_service.advance_all(db, limit=limit)
+            steps = await research_campaign_service.advance_all(
+                db, limit=limit, approve=plan_approval.approve_proposed_plan
+            )
             await db.commit()
 
             launched = [s for s in steps if s.get("action") == "launched"]

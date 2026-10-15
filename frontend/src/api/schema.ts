@@ -16853,6 +16853,18 @@ export interface components {
             title: string;
         };
         /**
+         * CampaignPlanApproval
+         * @description The plans a campaign may approve itself: those its own job proposed,
+         *     with no more stages and no longer an estimate than this. Bounded by the
+         *     deployment's CAMPAIGN_PLAN_APPROVAL_* ceilings.
+         */
+        CampaignPlanApproval: {
+            /** Max Minutes */
+            max_minutes: number;
+            /** Max Stages */
+            max_stages: number;
+        };
+        /**
          * CapabilitiesListResponse
          * @description Response schema for listing available capabilities.
          */
@@ -24489,6 +24501,7 @@ export interface components {
             max_jobs: number;
             /** Name */
             name: string;
+            plan_approval?: components["schemas"]["CampaignPlanApproval"] | null;
         };
         /**
          * ResearchCampaignItemCreate
@@ -24558,6 +24571,7 @@ export interface components {
             max_jobs: number;
             /** Name */
             name: string;
+            plan_approval?: components["schemas"]["CampaignPlanApproval"] | null;
             /** Status */
             status: string;
             /** Summary */

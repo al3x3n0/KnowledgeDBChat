@@ -35,6 +35,11 @@ const NewCampaignModal: React.FC<NewCampaignModalProps> = ({ onClose, onCreated 
   const [goal, setGoal] = useState('');
   const [seeds, setSeeds] = useState<string[]>(['']);
   const [budget, setBudget] = useState(8);
+  // Off by default: a campaign that approves its own plans runs work no person
+  // has looked at. The server refuses limits over the deployment's ceiling.
+  const [selfApprove, setSelfApprove] = useState(false);
+  const [maxStages, setMaxStages] = useState(2);
+  const [maxMinutes, setMaxMinutes] = useState(60);
   const [saving, setSaving] = useState(false);
 
   const trimmedSeeds = seeds.map((s) => s.trim()).filter(Boolean);
@@ -52,6 +57,9 @@ const NewCampaignModal: React.FC<NewCampaignModalProps> = ({ onClose, onCreated 
         goal: goal.trim(),
         items: trimmedSeeds.map((title) => ({ title })),
         max_jobs: budget,
+        plan_approval: selfApprove
+          ? { max_stages: maxStages, max_minutes: maxMinutes }
+          : null,
       });
       toast.success(
         `Campaign started: "${campaign.name}". The scheduler picks it up within five minutes and runs one job at a time.`,
@@ -179,6 +187,50 @@ const NewCampaignModal: React.FC<NewCampaignModalProps> = ({ onClose, onCreated 
               The campaign stops here even if the goal is not settled.
             </span>
           </label>
+
+          <div className="text-sm">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={selfApprove}
+                onChange={(e) => setSelfApprove(e.target.checked)}
+              />
+              <span>Approve its own plans</span>
+            </label>
+            <span className="mt-1 block text-xs text-gray-500">
+              When a job proposes a follow-up plan, the campaign may start it without
+              asking you, if it is this small. Anything larger, and any checkpoint the
+              plan declares, still waits for you.
+            </span>
+            {selfApprove && (
+              <div className="mt-2 flex items-end gap-4">
+                <label className="block">
+                  <span className="text-xs text-gray-500">Up to stages</span>
+                  <input
+                    type="number"
+                    aria-label="Up to stages"
+                    min={1}
+                    max={4}
+                    value={maxStages}
+                    onChange={(e) => setMaxStages(Math.max(1, Number(e.target.value) || 1))}
+                    className="mt-1 block w-20 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs text-gray-500">Up to minutes</span>
+                  <input
+                    type="number"
+                    aria-label="Up to minutes"
+                    min={1}
+                    max={120}
+                    value={maxMinutes}
+                    onChange={(e) => setMaxMinutes(Math.max(1, Number(e.target.value) || 1))}
+                    className="mt-1 block w-24 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+                  />
+                </label>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="flex justify-end gap-2 border-t border-gray-200 px-5 py-4">

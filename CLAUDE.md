@@ -794,7 +794,13 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   `append_approval_event` with three positional arguments where it takes
   two and keywords, and their tests passed a stand-in that accepted
   anything, so no checkpoint or swarm verdict could be approved through the
-  API since each gate was added. The tests use the real function now. After
+  API since each gate was added. The tests use the real function now. **And no gate decision was ever recorded on the job**: both gates cleared
+  the checkpoint, which places the approval payload in `job.results`, and
+  then appended the decision to it, but `results` is a `NestedMutableDict`,
+  which stores a converted *copy*, so the event went to a dict nothing
+  saved. Every other decision records first; the gates do too now, and the
+  test reads `job.results` with the real sync instead of a no-op that hid
+  the copy. Found by the campaign self-approval tests. After
   the fix the first stage started, spent its ten iterations orienting
   (findings, spec, cloning a repository, browsing it), wrote no file, and
   ended `completed` with its contract unmet; **the three stages behind it
@@ -1229,9 +1235,27 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   step and in the summary, and the page says "waiting for a plan to be
   approved" with a link to Review. A stage that has just completed is given
   five minutes to start its successor before its run counts as ended,
-  because completing and starting the next are two writes. **A campaign
-  still asks one question at a time and still stops for every plan**: there
-  is no approval a campaign can give itself.
+  because completing and starting the next are two writes. A campaign
+  still asks one question at a time.
+  **A campaign may approve its own plans, within limits it is given**
+  (`plan_approval: {max_stages, max_minutes}` on create, migration `0110`;
+  unset, a person approves every plan, as before). On its tick, an item
+  waiting on approval is passed only when what waits is the gate in front
+  of a plan the run proposed itself (a tool's mid-run approval and a
+  checkpoint the plan declares between its stages are a person's), the plan
+  is within the limits, the budget left covers every stage, and the owner
+  is active. Otherwise the reason is kept on the item and shown as
+  `summary.plan_held`. Limits over `CAMPAIGN_PLAN_APPROVAL_MAX_STAGES` (4)
+  or `..._MAX_MINUTES` (120) are refused at create with the figure, and a
+  ceiling lowered later binds existing campaigns. The approval goes through
+  `perform_checkpoint_decision`, the function a person's approval uses, as
+  the campaign's owner with a note naming the campaign and its limits
+  (`modules/autonomy/application/plan_approval.py` builds what a decision
+  needs without the HTTP layer, which nothing below the API may import).
+  The campaign service is handed that function by the scheduled task
+  (`advance(..., approve=...)`) rather than importing it: the decision
+  machinery reaches the finaliser, the planner and back to the campaign's
+  budget, and importing it closed a 13-module cycle `test_layering` refused.
 - **Everything waiting on a person is one page** (`/review`, first in the
   R&D door; `GET /review`, `modules/review/application/review_inbox.py`). The
   decisions a person owes were on five pages under three doors: runs waiting

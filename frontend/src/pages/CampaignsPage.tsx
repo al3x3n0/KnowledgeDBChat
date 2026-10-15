@@ -81,7 +81,10 @@ const Conclusion: React.FC<{ campaign: ResearchCampaign }> = ({ campaign }) => {
       if (waiting) {
         return (
           <p className="text-sm text-gray-500">
-            Stopped, {waiting}. Nothing more is asked until then.{' '}
+            Stopped, {waiting}.
+            {campaign.summary?.plan_held &&
+              ` The campaign did not approve it itself: ${campaign.summary.plan_held}.`}{' '}
+            Nothing more is asked until then.{' '}
             <a href="/review" className="text-primary-600 hover:underline">
               Open Review
             </a>
@@ -277,6 +280,10 @@ const CampaignsPage: React.FC = () => {
                       {campaign.status === 'active' &&
                         WAITING_ON[campaign.summary?.waiting_on] &&
                         ` · ${WAITING_ON[campaign.summary?.waiting_on]}`}
+                      {campaign.plan_approval &&
+                        ` · approves its own plans up to ${campaign.plan_approval.max_stages} ` +
+                          `stage${campaign.plan_approval.max_stages === 1 ? '' : 's'}, ` +
+                          `${campaign.plan_approval.max_minutes} min`}
                     </p>
                   </div>
                 </button>

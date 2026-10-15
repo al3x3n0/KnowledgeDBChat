@@ -26,7 +26,7 @@ next.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Sequence
 from uuid import UUID
 
 from loguru import logger
@@ -67,12 +67,14 @@ async def create_campaign(
     items: Sequence[Mapping[str, Any]] = (),
     max_jobs: int = DEFAULT_MAX_JOBS,
     job_template: Optional[Mapping[str, Any]] = None,
+    plan_approval: Optional[Mapping[str, Any]] = None,
 ) -> ResearchCampaign:
     """Start a campaign with the work already known about."""
     if not str(goal or "").strip():
         raise ValueError(
             "a campaign needs a goal: it is what completion is judged against"
         )
+    policy = checked_plan_approval(plan_approval)
 
     campaign = ResearchCampaign(
         user_id=user_id,
@@ -81,6 +83,7 @@ async def create_campaign(
         status=CampaignStatus.ACTIVE,
         max_jobs=max(1, min(int(max_jobs or DEFAULT_MAX_JOBS), 500)),
         job_template=dict(job_template or {}),
+        plan_approval=policy,
     )
     db.add(campaign)
     await db.flush()
@@ -210,11 +213,163 @@ def _stage_name(job: AgentJob) -> str:
     return str(config.get("pipeline_stage") or job.name or "")[:120]
 
 
-async def _reconcile(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, Any]:
+def _ceilings() -> Dict[str, int]:
+    from app.core.config import settings
+
+    return {
+        "max_stages": int(getattr(settings, "CAMPAIGN_PLAN_APPROVAL_MAX_STAGES", 4)),
+        "max_minutes": int(
+            getattr(settings, "CAMPAIGN_PLAN_APPROVAL_MAX_MINUTES", 120)
+        ),
+    }
+
+
+def checked_plan_approval(
+    policy: Optional[Mapping[str, Any]],
+) -> Optional[Dict[str, int]]:
+    """The limits under which a campaign approves its own plans, or None.
+
+    None (or an empty mapping) is "a person approves every plan". A limit
+    over the deployment's ceiling is refused with the figure rather than cut
+    down, because the person setting it should know they did not get it.
+    """
+    if not policy:
+        return None
+    ceilings = _ceilings()
+    checked: Dict[str, int] = {}
+    for key, ceiling in ceilings.items():
+        try:
+            value = int(policy.get(key))
+        except (TypeError, ValueError):
+            raise ValueError(f"plan_approval.{key} must be a whole number")
+        if value < 1:
+            raise ValueError(f"plan_approval.{key} must be at least 1")
+        if value > ceiling:
+            raise ValueError(
+                f"plan_approval.{key} is {value}; this deployment allows at most "
+                f"{ceiling} (CAMPAIGN_PLAN_APPROVAL_{key.upper()})"
+            )
+        checked[key] = value
+    return checked
+
+
+def _effective_limits(policy: Any) -> Optional[Dict[str, int]]:
+    """The stored limits under today's ceilings. A ceiling an admin lowered
+    after the campaign was made binds it; a stored value that is not a
+    number is no permission at all."""
+    if not isinstance(policy, dict) or not policy:
+        return None
+    limits: Dict[str, int] = {}
+    for key, ceiling in _ceilings().items():
+        try:
+            value = int(policy.get(key))
+        except (TypeError, ValueError):
+            return None
+        if value < 1:
+            return None
+        limits[key] = min(value, ceiling)
+    return limits
+
+
+def _held(job: AgentJob, reason: str) -> Dict[str, Any]:
+    return {"job": str(job.id), "approved": False, "reason": reason}
+
+
+#: ``approve(job, db, *, approver, note)``: how a campaign approves a plan.
+#: Passed in by the caller (the scheduled task passes
+#: ``plan_approval.approve_proposed_plan``) rather than imported here: the
+#: decision machinery imports the finaliser, which reaches the planner,
+#: which reads this module's budget, and importing it from here closed that
+#: loop through thirteen modules.
+PlanApprover = Callable[..., Awaitable[Any]]
+
+
+async def _approve_own_plan(
+    db: AsyncSession,
+    campaign: ResearchCampaign,
+    run: Sequence[AgentJob],
+    approve: Optional[PlanApprover],
+) -> Optional[Dict[str, Any]]:
+    """Approve the plan this run's job proposed, if the campaign's limits allow.
+
+    None when the campaign has no limits (a person approves, as before) or
+    nothing in the run is waiting for approval. Otherwise what was decided
+    and why. Only the gate in front of a plan the run proposed itself is
+    the campaign's to pass: an approval a tool asked for mid-run, or a
+    checkpoint the plan declares between its own stages, waits for a person.
+    """
+    limits = _effective_limits(campaign.plan_approval)
+    if limits is None or approve is None:
+        return None
+    from app.services import agent_self_planned_pipeline
+    from app.services.agent_runtime_finalizer import CHAIN_GATE_CHECKPOINT
+
+    for job in run:
+        if str(job.status or "") != AgentJobStatus.PAUSED.value:
+            continue
+        if str(job.current_phase or "") != "awaiting_approval":
+            continue
+        results = job.results if isinstance(job.results, dict) else {}
+        checkpoint = results.get("approval_checkpoint")
+        checkpoint = checkpoint if isinstance(checkpoint, dict) else {}
+        proposal = agent_self_planned_pipeline.proposal_of(job)
+        if checkpoint.get("checkpoint_type") != CHAIN_GATE_CHECKPOINT or not proposal:
+            return _held(job, "this approval is not a plan the run proposed")
+
+        stages = len(proposal.get("stages") or [])
+        minutes = -(-int(proposal.get("estimated_seconds") or 0) // 60)
+        room = int(campaign.max_jobs or 0) - int(campaign.jobs_launched or 0)
+        if stages > limits["max_stages"]:
+            return _held(
+                job,
+                f"the plan has {stages} stages and this campaign approves at "
+                f"most {limits['max_stages']}",
+            )
+        if minutes > limits["max_minutes"]:
+            return _held(
+                job,
+                f"the plan is estimated at {minutes} min and this campaign "
+                f"approves at most {limits['max_minutes']}",
+            )
+        if stages > room:
+            return _held(
+                job,
+                f"the plan has {stages} stages and the campaign has {room} "
+                "job(s) left",
+            )
+
+        from app.models.user import User
+
+        approver = await db.get(User, campaign.user_id)
+        if approver is None or not approver.is_active:
+            return _held(job, "the campaign's owner cannot approve anything")
+        note = (
+            f"Approved by campaign '{campaign.name}' within its limits "
+            f"({limits['max_stages']} stages, {limits['max_minutes']} min): "
+            f"{stages} stage(s), about {minutes} min."
+        )
+        await approve(job, db, approver=approver, note=note)
+        logger.info(f"Campaign {campaign.id} approved job {job.id}'s plan: {note}")
+        return {
+            "job": str(job.id),
+            "approved": True,
+            "stages": stages,
+            "minutes": minutes,
+            "reason": note,
+        }
+    return None
+
+
+async def _reconcile(
+    db: AsyncSession,
+    campaign: ResearchCampaign,
+    approve: Optional[PlanApprover] = None,
+) -> Dict[str, Any]:
     """Settle items whose run has finished, and harvest any work it revealed."""
     settled = 0
     discovered = 0
     waiting_on: Optional[str] = None
+    plan_decisions: List[Dict[str, Any]] = []
     template = campaign.job_template if isinstance(campaign.job_template, dict) else {}
     spawn_from = template.get("spawn_items_from")
     spawn_from = (
@@ -237,6 +392,18 @@ async def _reconcile(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, 
             continue
         run = await _run_of(db, job)
         waiting = _waiting_on(run)
+        if waiting == WAITING_ON_APPROVAL:
+            decision = await _approve_own_plan(db, campaign, run, approve)
+            if decision is not None:
+                # Kept on the item, so the page can say who approved what,
+                # or why the campaign left it for a person.
+                item.outcome = {
+                    **(item.outcome if isinstance(item.outcome, dict) else {}),
+                    "plan_approval": decision,
+                }
+                plan_decisions.append(decision)
+                if decision["approved"]:
+                    waiting = _waiting_on(await _run_of(db, job))
         if waiting:
             waiting_on = waiting
             continue
@@ -249,7 +416,13 @@ async def _reconcile(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, 
             if str(job.status) == "completed"
             else CampaignItemStatus.FAILED
         )
+        earlier = item.outcome if isinstance(item.outcome, dict) else {}
         item.outcome = {
+            **(
+                {"plan_approval": earlier["plan_approval"]}
+                if "plan_approval" in earlier
+                else {}
+            ),
             "job_status": str(job.status or ""),
             "iterations": int(job.iteration or 0),
             "contract_satisfied": bool(contract.get("satisfied")),
@@ -274,7 +447,12 @@ async def _reconcile(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, 
         if spawn_from:
             discovered += await _spawn_items(db, campaign, findings, spawn_from, item)
 
-    return {"settled": settled, "discovered": discovered, "waiting_on": waiting_on}
+    return {
+        "settled": settled,
+        "discovered": discovered,
+        "waiting_on": waiting_on,
+        "plan_decisions": plan_decisions,
+    }
 
 
 def _counts(findings: Sequence[Mapping[str, Any]]) -> Dict[str, int]:
@@ -549,7 +727,11 @@ async def conclude_campaign(
     return result
 
 
-async def advance(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, Any]:
+async def advance(
+    db: AsyncSession,
+    campaign: ResearchCampaign,
+    approve: Optional[PlanApprover] = None,
+) -> Dict[str, Any]:
     """Do the next thing this campaign is due, and say what that was.
 
     Safe to call at any time and from anywhere: everything it needs is read
@@ -562,7 +744,7 @@ async def advance(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, Any
             "status": campaign.status,
         }
 
-    reconciled = await _reconcile(db, campaign)
+    reconciled = await _reconcile(db, campaign, approve)
 
     all_items = await _items(db, campaign)
     triage = await _triage(db, campaign, all_items)
@@ -618,6 +800,7 @@ async def advance(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, Any
         "waiting_on": reconciled["waiting_on"] if action == "waiting" else None,
         "settled": reconciled["settled"],
         "discovered": reconciled["discovered"],
+        "plan_decisions": reconciled["plan_decisions"],
         "dropped": triage["dropped"],
         "launched_job": str(launched_job.id) if launched_job else None,
         "chose": (
@@ -681,6 +864,24 @@ async def summarize(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, A
         "status": campaign.status,
         "goal": campaign.goal,
         "waiting_on": await _what_it_waits_on(db, items),
+        # The limits under which it approves its own plans; None means a
+        # person approves every one.
+        "plan_approval": (
+            campaign.plan_approval if isinstance(campaign.plan_approval, dict) else None
+        ),
+        # Why a plan is waiting for a person although the campaign could
+        # approve plans, when one is.
+        "plan_held": next(
+            (
+                item.outcome["plan_approval"]["reason"]
+                for item in items
+                if item.status == CampaignItemStatus.RUNNING
+                and isinstance(item.outcome, dict)
+                and isinstance(item.outcome.get("plan_approval"), dict)
+                and not item.outcome["plan_approval"].get("approved")
+            ),
+            None,
+        ),
         "items": len(items),
         "by_status": by_status,
         "discovered_items": sum(1 for item in items if item.origin == "discovered"),
@@ -720,12 +921,16 @@ async def active_campaigns(db: AsyncSession, limit: int = 50) -> List[ResearchCa
     return list(rows.scalars())
 
 
-async def advance_all(db: AsyncSession, limit: int = 50) -> List[Dict[str, Any]]:
+async def advance_all(
+    db: AsyncSession,
+    limit: int = 50,
+    approve: Optional[PlanApprover] = None,
+) -> List[Dict[str, Any]]:
     """Advance every active campaign one step. One failing must not stop the rest."""
     results: List[Dict[str, Any]] = []
     for campaign in await active_campaigns(db, limit=limit):
         try:
-            results.append(await advance(db, campaign))
+            results.append(await advance(db, campaign, approve))
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(f"Could not advance campaign {campaign.id}: {exc}")
             results.append(

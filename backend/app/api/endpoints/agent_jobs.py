@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.agent_job import AgentJob, AgentJobCheckpoint, AgentJobStatus
+from app.models.agent_job import AgentJob, AgentJobStatus
 from app.models.autonomy_decision_event import AutonomyDecisionEvent
 from app.models.coding_backlog import CodingBacklogItem
 from app.models.domain_research_profile import DomainResearchProfile
@@ -95,6 +95,7 @@ from app.modules.autonomy.application import (
     job_operator_events,
     memory_presenters,
     operator_queue_context,
+    plan_approval,
     portfolio_queue_state,
     quick_start_builders,
     quick_start_relaunch,
@@ -1261,17 +1262,7 @@ _append_operator_intervention = job_action_interventions.append_operator_interve
 _sync_execution_strategy_state = job_action_checkpoints.sync_execution_strategy_state
 
 
-async def _load_latest_job_checkpoint(
-    job_id: UUID,
-    db: AsyncSession,
-) -> Optional[AgentJobCheckpoint]:
-    result = await db.execute(
-        select(AgentJobCheckpoint)
-        .where(AgentJobCheckpoint.job_id == job_id)
-        .order_by(AgentJobCheckpoint.created_at.desc())
-        .limit(1)
-    )
-    return result.scalar_one_or_none()
+_load_latest_job_checkpoint = plan_approval.load_latest_checkpoint
 
 
 _sanitize_tool_names = feedback_presenters.sanitize_tool_names

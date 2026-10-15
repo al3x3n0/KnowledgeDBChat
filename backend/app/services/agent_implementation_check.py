@@ -29,6 +29,19 @@ Floating point gets a tolerance because an algorithm reimplemented from a paper
 will not reproduce the last bits of a reference output, and demanding that it
 does rejects correct implementations. It is a relative tolerance so it means
 the same thing at 10^-9 and 10^9.
+
+A handful of cases is a weak check, and a run left to write its own check
+writes one that passes: a live stage's harness printed PASS whatever its
+input. So a check may also name an **oracle** -- a reference program,
+obviously correct and as slow as it likes (plain ``%`` for a fast remainder,
+a Python loop for a SIMD kernel) -- and a **generator** that prints one input
+per index. Every generated input goes to both programs and the outputs must
+agree. This is chia's rule for its RISC-V flow (ucb-bar/chia: Spike runs
+inside the simulator and "the golden model *is* the check"), adapted: no
+expected output is written by hand, so none can be written to match the
+code. Three ways it could still check nothing are refused: a reference that
+is the candidate itself, a generator that prints one input whatever the
+index, and a reference that fails on every input.
 """
 
 from __future__ import annotations
@@ -54,6 +67,19 @@ DEFAULT_TOLERANCE = 1e-6
 #: wants a thousand cases wants a test suite, not a gate.
 MAX_CASES = 25
 
+#: Generated inputs when the caller names no count, and the most it may ask
+#: for. They all run in the one container the cases use, so the cost is
+#: process starts, not round trips.
+DEFAULT_GENERATED_CASES = 100
+MAX_GENERATED_CASES = 1000
+
+#: What each generated input and each output is cut to before it leaves the
+#: sandbox: a thousand of them have to fit in one captured stdout.
+_ORACLE_OUTPUT_BYTES = 4096
+
+#: Disagreements reported with their inputs; the rest are counted.
+_DISAGREEMENTS_SHOWN = 3
+
 _NUMBER = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
 
 
@@ -71,12 +97,69 @@ class CaseResult:
 
 
 @dataclass
+class OracleProgram:
+    """A program the check builds beside the candidate: a reference or a generator."""
+
+    code: str
+    language: str = agent_toolchains.DEFAULT_LANGUAGE
+
+
+@dataclass
+class OracleResult:
+    """What comparing the candidate with a reference on generated inputs found."""
+
+    requested: int
+    reference_language: str = agent_toolchains.DEFAULT_LANGUAGE
+    #: Inputs the generator printed before it stopped or reached `requested`.
+    generated: int = 0
+    distinct_inputs: int = 0
+    #: Inputs the reference itself failed on. They test nothing about the
+    #: candidate, so they are counted apart rather than against it.
+    reference_failed: int = 0
+    agreed: int = 0
+    disagreed: int = 0
+    disagreements: List[Dict[str, str]] = field(default_factory=list)
+    generator_error: str = ""
+
+    @property
+    def compared(self) -> int:
+        return self.agreed + self.disagreed
+
+    @property
+    def passed(self) -> bool:
+        """Agreement on every input, over inputs that actually vary.
+
+        One distinct input is one case, however many times it was run; a
+        generator that ignores its index would otherwise turn a single
+        example into "100 agreed".
+        """
+        return self.compared > 0 and self.disagreed == 0 and self.distinct_inputs >= 2
+
+    def as_evidence(self) -> Dict[str, Any]:
+        return {
+            "passed": self.passed,
+            "reference_language": self.reference_language,
+            "requested": self.requested,
+            "generated": self.generated,
+            "distinct_inputs": self.distinct_inputs,
+            "compared": self.compared,
+            "agreed": self.agreed,
+            "disagreed": self.disagreed,
+            "reference_failed": self.reference_failed,
+            "disagreements": self.disagreements[:_DISAGREEMENTS_SHOWN],
+            "generator_error": self.generator_error,
+        }
+
+
+@dataclass
 class ImplementationCheck:
     """Whether an implementation may be trusted enough to be worth timing."""
 
     #: Did the code compile and execute at all?
     ran: bool
     cases: List[CaseResult] = field(default_factory=list)
+    #: The comparison with a reference program, when the caller named one.
+    oracle: Optional[OracleResult] = None
     compile_error: str = ""
     note: str = ""
     #: Which kind of not-run this was, so a caller can tell a mistake it made
@@ -109,8 +192,14 @@ class ImplementationCheck:
         both sides, so a set where one case crashed and the rest passed reports
         as fully verified. The two ways this can be vacuously true are the same
         bug wearing different clothes, and this closes both.
+
+        With an oracle the directed cases may be empty, and both halves must
+        hold when both are given: agreeing with the reference does not excuse
+        a worked example from the paper that fails.
         """
-        if not self.ran or not self.cases:
+        if not self.ran or not (self.cases or self.oracle):
+            return False
+        if self.oracle is not None and not self.oracle.passed:
             return False
         return self.cases_run == len(self.cases) and self.cases_passed == len(
             self.cases
@@ -123,6 +212,11 @@ class ImplementationCheck:
             "language": self.language,
             "cases_run": self.cases_run,
             "cases_passed": self.cases_passed,
+            # At the top level so a contract can bound them
+            # (`validity.bounds`: generated_cases >= 100).
+            "oracle_checked": self.oracle is not None,
+            "generated_cases": self.oracle.compared if self.oracle else 0,
+            "oracle": self.oracle.as_evidence() if self.oracle else None,
             "failing": [
                 {
                     "name": c.name,
@@ -293,6 +387,9 @@ async def check_implementation(
     tolerance: float = DEFAULT_TOLERANCE,
     image: Optional[str] = None,
     timeout_seconds: Optional[int] = None,
+    reference: Optional[OracleProgram] = None,
+    generator: Optional[OracleProgram] = None,
+    generated_cases: int = DEFAULT_GENERATED_CASES,
 ) -> ImplementationCheck:
     """Compile a program once and run it against every reference case.
 
@@ -302,6 +399,11 @@ async def check_implementation(
     program. The build recipe comes from `agent_toolchains` for the same
     reason -- the checker and the benchmark have to compile it identically, or
     the binary that was verified is not the binary that was timed.
+
+    With `reference` and `generator`, every generated input is also run
+    through both programs and their outputs compared (see the module
+    docstring). The oracle needs both: a reference with nothing to run on
+    checks nothing, and generated inputs with no reference have no answer.
     """
     from app.services import agent_compiler_sandbox as sandbox
 
@@ -319,8 +421,27 @@ async def check_implementation(
     resolved_image = image or sandbox.DEFAULT_IMAGE
     resolved_timeout = timeout_seconds or sandbox.DEFAULT_TIMEOUT_SECONDS
 
+    oracle_chains = None
+    if reference is not None or generator is not None:
+        refused = _refuse_oracle(code, reference, generator)
+        if refused is not None:
+            refused.language = chain.language
+            return refused
+        oracle_chains = (
+            agent_toolchains.resolve(reference.language),
+            agent_toolchains.resolve(generator.language),
+        )
+        for program, oracle_chain in zip((reference, generator), oracle_chains):
+            if oracle_chain is None:
+                return ImplementationCheck(
+                    ran=False,
+                    language=chain.language,
+                    reason="bad_language",
+                    note=agent_toolchains.unsupported_language(program.language),
+                )
+
     normalized = normalize_cases(cases)
-    if not normalized:
+    if not normalized and oracle_chains is None:
         return ImplementationCheck(
             ran=False,
             language=chain.language,
@@ -330,20 +451,24 @@ async def check_implementation(
                 "with no cases passes vacuously, so this reports as unverified "
                 "rather than letting untested code through. Give at least one "
                 "case with an expected_output, ideally a worked example from "
-                "the paper itself, or a program that asserts the properties "
-                "the paper states and prints one pass line."
+                "the paper itself -- or a reference implementation and a "
+                "generator, which check it on many inputs with no expected "
+                "output written by hand."
                 + (f" {describe_unusable_cases(cases)}" if cases else "")
             ),
         )
 
-    blocked = sandbox._preflight(code, resolved_image)
-    if blocked:
-        return ImplementationCheck(
-            ran=False,
-            language=chain.language,
-            reason="sandbox",
-            note=str(blocked.get("error") or "sandbox unavailable"),
-        )
+    for source in [code] + (
+        [reference.code, generator.code] if oracle_chains is not None else []
+    ):
+        blocked = sandbox._preflight(source, resolved_image)
+        if blocked:
+            return ImplementationCheck(
+                ran=False,
+                language=chain.language,
+                reason="sandbox",
+                note=str(blocked.get("error") or "sandbox unavailable"),
+            )
 
     safe_flags = sandbox._clean_flags(flags or chain.default_flags)
     if safe_flags is None:
@@ -375,6 +500,16 @@ async def check_implementation(
                 f"./prog <case_{index}.in; "
                 f'echo "__case_exit__ {index} $?"'
             )
+        count = max(1, min(int(generated_cases or 0), MAX_GENERATED_CASES))
+        if oracle_chains is not None:
+            for directory, program, oracle_chain in zip(
+                (_REFERENCE_DIR, _GENERATOR_DIR), (reference, generator), oracle_chains
+            ):
+                Path(workdir, directory).mkdir()
+                Path(workdir, directory, oracle_chain.source_file).write_text(
+                    program.code, encoding="utf-8"
+                )
+            script_parts.append(_oracle_script(oracle_chains, count))
         script = "; ".join(script_parts)
 
         try:
@@ -415,6 +550,18 @@ async def check_implementation(
                 "the build before reading anything into the algorithm."
             ),
         )
+    for exit_code, which in ((91, "reference"), (92, "generator")):
+        if returncode == exit_code:
+            return ImplementationCheck(
+                ran=False,
+                language=chain.language,
+                reason=f"{which}_compile_error",
+                compile_error=sandbox.explain_compiler_failure(stderr),
+                note=(
+                    f"The {which} did not compile, so nothing was compared. "
+                    "This is about the check, not the implementation."
+                ),
+            )
 
     outputs = _split_case_output(stdout, len(normalized))
     results: List[CaseResult] = []
@@ -447,7 +594,174 @@ async def check_implementation(
         outcome.name = case["name"]
         results.append(outcome)
 
-    return ImplementationCheck(ran=True, cases=results, language=chain.language)
+    oracle = None
+    if oracle_chains is not None:
+        oracle = _read_oracle(stdout, count, oracle_chains[0].language, tolerance)
+    return ImplementationCheck(
+        ran=True, cases=results, oracle=oracle, language=chain.language
+    )
+
+
+#: Where the reference and the generator are built: each in its own
+#: directory, because every toolchain builds `./prog` from a fixed file name,
+#: and run from there, because the Python shim finds its source relative to
+#: the directory it runs in.
+_REFERENCE_DIR = "oracle_reference"
+_GENERATOR_DIR = "oracle_generator"
+_ORACLE_MARK = "__oracle__"
+
+
+def _same_program(a: str, b: str) -> bool:
+    return " ".join((a or "").split()) == " ".join((b or "").split())
+
+
+def _refuse_oracle(
+    code: str,
+    reference: Optional[OracleProgram],
+    generator: Optional[OracleProgram],
+) -> Optional[ImplementationCheck]:
+    """The oracle calls that could only check nothing, refused before running."""
+    if reference is None or generator is None:
+        missing = "generator" if reference is not None else "reference"
+        return ImplementationCheck(
+            ran=False,
+            reason="oracle_incomplete",
+            note=(
+                f"An oracle needs a reference and a generator; the {missing} is "
+                "missing. A reference with no inputs checks nothing, and "
+                "generated inputs with no reference have no answer to compare."
+            ),
+        )
+    if not str(reference.code or "").strip() or not str(generator.code or "").strip():
+        return ImplementationCheck(
+            ran=False,
+            reason="oracle_incomplete",
+            note="The reference and the generator each need source code.",
+        )
+    if _same_program(code, reference.code):
+        return ImplementationCheck(
+            ran=False,
+            reason="reference_is_candidate",
+            note=(
+                "The reference is the implementation itself, which agrees with "
+                "itself on every input. Write the reference the obvious way "
+                "(plain `%`, a scalar loop, a direct transcription of the "
+                "definition), however slow."
+            ),
+        )
+    return None
+
+
+def _oracle_script(chains, count: int) -> str:
+    """Build the reference and the generator, then compare on `count` inputs.
+
+    Exit 91 and 92 are the two builds failing, as 90 is the candidate's.
+    Each section of the output is marked with what it is and the index and
+    exit status it belongs to, and cut to `_ORACLE_OUTPUT_BYTES`.
+    """
+    reference_chain, generator_chain = chains
+    parts = []
+    for directory, oracle_chain, failed in (
+        (_REFERENCE_DIR, reference_chain, 91),
+        (_GENERATOR_DIR, generator_chain, 92),
+    ):
+        build = agent_toolchains.build_script(
+            oracle_chain,
+            agent_toolchains.enforce(oracle_chain, oracle_chain.default_flags),
+        )
+        parts.append(
+            f"( cd {directory} && {{ {build}; }} ) 2>oracle_err.txt || "
+            f"{{ cat oracle_err.txt >&2; exit {failed}; }}"
+        )
+    cut = _ORACLE_OUTPUT_BYTES
+    mark = _ORACLE_MARK
+    parts.append(
+        f"i=0; while [ $i -lt {count} ]; do "
+        f"echo $i | ( cd {_GENERATOR_DIR} && ./prog ) >oracle.in 2>/dev/null; g=$?; "
+        f'if [ $g -ne 0 ]; then echo "{mark} gen $i $g"; break; fi; '
+        f"( cd {_REFERENCE_DIR} && ./prog ) <oracle.in >oracle.ref 2>/dev/null; r=$?; "
+        "./prog <oracle.in >oracle.out 2>/dev/null; p=$?; "
+        f'echo "{mark} in $i 0"; head -c {cut} oracle.in; echo; '
+        f'echo "{mark} ref $i $r"; head -c {cut} oracle.ref; echo; '
+        f'echo "{mark} out $i $p"; head -c {cut} oracle.out; echo; '
+        "i=$((i+1)); done"
+    )
+    return "; ".join(parts)
+
+
+def _read_oracle(
+    stdout: str, requested: int, reference_language: str, tolerance: float
+) -> OracleResult:
+    """Read the marked sections back and compare each input's two outputs."""
+    sections: Dict[tuple, tuple] = {}
+    current: Optional[tuple] = None
+    buffer: List[str] = []
+    result = OracleResult(requested=requested, reference_language=reference_language)
+
+    def close() -> None:
+        if current is not None:
+            kind, index, code = current
+            sections[(kind, index)] = ("\n".join(buffer), code)
+
+    for line in (stdout or "").splitlines():
+        if line.startswith(_ORACLE_MARK + " "):
+            close()
+            parts = line.split()
+            index, code = _int_or_none(parts[2:3]), _int_or_none(parts[3:4])
+            kind = parts[1] if len(parts) > 1 else ""
+            current = None
+            buffer = []
+            if kind == "gen" and index is not None:
+                result.generator_error = (
+                    f"The generator exited {code} on index {index}, so "
+                    f"{index} of {requested} inputs were generated."
+                )
+                continue
+            if index is not None:
+                current = (kind, index, code)
+            continue
+        if current is not None:
+            buffer.append(line)
+    close()
+
+    inputs = set()
+    for index in range(requested):
+        if ("in", index) not in sections:
+            break
+        given, _ = sections[("in", index)]
+        expected, reference_exit = sections.get(("ref", index), ("", None))
+        actual, candidate_exit = sections.get(("out", index), ("", None))
+        result.generated += 1
+        inputs.add(given)
+        if reference_exit != 0:
+            result.reference_failed += 1
+            continue
+        if candidate_exit != 0:
+            outcome = CaseResult(
+                name="",
+                passed=False,
+                expected=expected[:400],
+                actual=actual[:400],
+                detail=f"The program exited {candidate_exit} on this input",
+            )
+        else:
+            outcome = compare_output(actual, expected, tolerance)
+        if outcome.passed:
+            result.agreed += 1
+            continue
+        result.disagreed += 1
+        if len(result.disagreements) < _DISAGREEMENTS_SHOWN:
+            result.disagreements.append(
+                {
+                    "index": str(index),
+                    "input": given[:400],
+                    "expected": outcome.expected,
+                    "actual": outcome.actual,
+                    "detail": outcome.detail,
+                }
+            )
+    result.distinct_inputs = len(inputs)
+    return result
 
 
 def _split_case_output(stdout: str, expected_cases: int):
@@ -504,6 +818,10 @@ def describe() -> List[str]:
         "vacuously true, so it is reported as unverified. If the paper gives "
         "no worked example, construct one whose answer is known independently "
         "and say where it came from.",
+        "Prefer an oracle to hand-written cases: a plainly correct reference "
+        "(the definition, however slow) and a generator of many inputs, edge "
+        "cases first. A handful of cases chosen by the author of the code "
+        "tends to be the handful it passes.",
         "Code that fails to compile has not produced a wrong answer -- it has "
         "failed earlier, and the fix is to the build, not to the algorithm. "
         "Do not go looking for a bug in the method until it runs.",

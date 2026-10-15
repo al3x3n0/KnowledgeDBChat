@@ -2311,7 +2311,12 @@ SPECS: tuple[ToolSpec, ...] = (
             "source you will hand to benchmark_c_snippet: verifying one "
             "program and timing another proves nothing about the timing. A "
             "check with no cases is reported as unverified rather than "
-            "passing vacuously."
+            "passing vacuously. The strongest check is an ORACLE: give a "
+            "`reference` (the obvious, slow, plainly correct way -- `%`, a "
+            "scalar loop, the definition transcribed) and a `generator` that "
+            "prints one input per index, and every generated input is run "
+            "through both and the outputs compared, with no expected output "
+            "written by hand."
         ),
         parameters={
             "type": "object",
@@ -2398,8 +2403,43 @@ SPECS: tuple[ToolSpec, ...] = (
                         "match a reference bit for bit."
                     ),
                 },
+                "reference": {
+                    "type": "object",
+                    "description": (
+                        "The oracle: a second self-contained program reading "
+                        "the same stdin and printing what a correct answer "
+                        "prints. Write it the obvious way, however slow; it "
+                        "must not be the implementation itself. Needs "
+                        "`generator` too."
+                    ),
+                    "properties": {
+                        "code": {"type": "string"},
+                        "language": {"type": "string", "enum": _LANGUAGES},
+                    },
+                    "required": ["code"],
+                },
+                "generator": {
+                    "type": "object",
+                    "description": (
+                        "A program that reads an index (0, 1, 2, ...) on stdin "
+                        "and prints ONE input, deterministically from that "
+                        "index. Make the first indices the edge cases (0, 1, "
+                        "the largest values, powers of two) and seed a random "
+                        "generator from the index for the rest. It must vary "
+                        "with the index: one input repeated is one case."
+                    ),
+                    "properties": {
+                        "code": {"type": "string"},
+                        "language": {"type": "string", "enum": _LANGUAGES},
+                        "count": {
+                            "type": "integer",
+                            "description": "Inputs to generate (default 100, at most 1000).",
+                        },
+                    },
+                    "required": ["code"],
+                },
             },
-            "required": ["code", "cases"],
+            "required": ["code"],
         },
         effects="write",
         cost_tier="high",
@@ -2414,7 +2454,10 @@ SPECS: tuple[ToolSpec, ...] = (
         # earned before the edit -- a gate that inherits its own answer is not
         # a gate.
         perishable=True,
-        consumes="the source to be timed (C or Rust), and reference cases from the paper.",
+        consumes=(
+            "the source to be timed, and reference cases from the paper or a "
+            "reference program and an input generator."
+        ),
     ),
     ToolSpec(
         name="compare_to_claim",

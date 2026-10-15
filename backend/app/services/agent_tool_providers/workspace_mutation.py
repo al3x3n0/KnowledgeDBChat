@@ -2508,12 +2508,29 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         """Establish that the code about to be timed computes the right answer."""
         from app.services import agent_implementation_check as impl
 
+        def program(value: Any) -> Optional[impl.OracleProgram]:
+            if not isinstance(value, dict):
+                return None
+            return impl.OracleProgram(
+                code=str(value.get("code") or ""),
+                language=str(value.get("language") or ""),
+            )
+
+        generator = params.get("generator")
         outcome = await impl.check_implementation(
             code=str(params.get("code") or ""),
             cases=params.get("cases") or [],
             flags=str(params.get("flags") or ""),
             language=str(params.get("language") or ""),
             tolerance=float(params.get("tolerance") or impl.DEFAULT_TOLERANCE),
+            reference=program(params.get("reference")),
+            generator=program(generator),
+            generated_cases=bounded_int(
+                generator.get("count") if isinstance(generator, dict) else None,
+                impl.DEFAULT_GENERATED_CASES,
+                1,
+                impl.MAX_GENERATED_CASES,
+            ),
         )
         evidence = outcome.as_evidence()
 
@@ -2529,7 +2546,17 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         # verified=false: that is a real result about the implementation, and
         # turning it into an error would hide the thing the gate exists to
         # report.
-        if outcome.reason in ("no_cases", "bad_language", "bad_flags"):
+        # The oracle refusals are the same kind: the reference, the
+        # generator or their pairing is the call's to fix.
+        if outcome.reason in (
+            "no_cases",
+            "bad_language",
+            "bad_flags",
+            "oracle_incomplete",
+            "reference_is_candidate",
+            "reference_compile_error",
+            "generator_compile_error",
+        ):
             return {"error": outcome.note, "data": evidence}
 
         return {

@@ -1022,6 +1022,40 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   checked on the given inputs, not proved, so the invariant a proposal relies
   on is recorded on its finding.
 
+- **A rewrite can be searched for, not only proposed** (`search_restructurings`,
+  `services/agent_restructure_search.py`; adapted from ucb-bar/chia's gem5
+  alignment and AlphaEvolve-style loops). An archive of measured candidates;
+  each child is grown from a parent sampled from the best two, the model
+  shown the parent's source and what everything tried so far measured; a
+  child that fails scores 0 and the search goes on; two rounds without a
+  better candidate end it. Three things differ from chia, each for a reason
+  measured here. **Children are timed one at a time**, since a run timed
+  beside another measures the other. **Noise is not fitness**: an equivalent
+  candidate whose gain did not resolve scores the original's 1.0, so luck is
+  not bred. **The winner must hold on `holdout_inputs`** the search never
+  saw (at least one not among `inputs`), because the proposer's own rule --
+  iterating until something passes selects for whatever slips past these
+  inputs -- is exactly what a search does; only holdout evaluations are
+  recorded as findings. The holdout checks equivalence on the held-out
+  inputs and times the search's own bench input: timed on the first
+  held-out input, the first live run timed a 5-element edge case and read a
+  1.86x win as 0.66x. The archive (the original and the 15 fittest, kernels
+  included) is kept in the run's state per kernel, so a second call
+  continues it. **A search finds the harness.** The first live run's best
+  candidate (4.28x) cached the whole result in a static keyed on the array
+  pointer, because the driver calls the kernel twenty times to time it.
+  "Work repeated across calls" is a fair invariant when the application
+  repeats it and the measurement cannot tell that from the harness, so the
+  search's prompt says the repetition is the harness's, and a candidate that
+  adds mutable `static` state is flagged (`keeps_state_across_calls`, and in
+  the winner's summary) rather than refused, since a lazily built table
+  looks the same. A driver that varies its input between repetitions is the
+  structural answer and is the caller's to write. Also from that run: a
+  child bred from an unresolved 2.43x reciprocal rewrite resolved to a
+  1.86x `faster`. A second run met the provider down: it retried every
+  child for 47 minutes and answered "no candidate beat the original (0
+  judged)" as a success. An unreachable model now ends the search at the
+  first call, and a search that judged nothing is an error naming why.
 - **A winning rewrite can become a pass, and the pass is judged on four
   separate questions** (`services/agent_pass_from_rewrite.py`,
   `synthesize_pass_from_rewrite` and `evaluate_pass_on_kernel`). Does it

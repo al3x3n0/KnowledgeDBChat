@@ -48,6 +48,7 @@ DEFAULT_MAX_JOBS = 10
 # A campaign may not spawn unlimited work from one job's findings. Ten
 # candidates in a report are a reading list, not a plan.
 MAX_ITEMS_FROM_ONE_JOB = 5
+_JOB_NAME_LENGTH = AgentJob.__table__.c.name.type.length
 # A stage that has just completed may not have created the stage after it
 # yet: completing and starting the next are two writes. For this long, a
 # completed job with follow-up work it has not started is not "finished".
@@ -517,7 +518,10 @@ async def _launch(
         f"\n{item.detail}" if item.detail else ""
     )
     job = AgentJob(
-        name=f"{campaign.name}: {item.title}"[:300],
+        # The job's column is narrower than the campaign's name and the item's
+        # title, and SQLite does not enforce a width: on Postgres a long
+        # question failed every tick at launch.
+        name=f"{campaign.name}: {item.title}"[:_JOB_NAME_LENGTH],
         goal=goal,
         job_type=str(template.get("job_type") or "research"),
         user_id=campaign.user_id,
@@ -926,16 +930,31 @@ async def advance_all(
     limit: int = 50,
     approve: Optional[PlanApprover] = None,
 ) -> List[Dict[str, Any]]:
-    """Advance every active campaign one step. One failing must not stop the rest."""
+    """Advance every active campaign one step. One failing must not stop the rest.
+
+    Each step is committed on its own. A failed flush leaves the session
+    unusable until it is rolled back, so the next campaign used to fail too,
+    and so did the handler, reading ``campaign.id`` from the broken session.
+    The rollback expires every loaded object, which is why the ids are read
+    first and each campaign is loaded afresh.
+    """
     results: List[Dict[str, Any]] = []
-    for campaign in await active_campaigns(db, limit=limit):
+    ids = [c.id for c in await active_campaigns(db, limit=limit)]
+    for campaign_id in ids:
         try:
+            campaign = await db.get(
+                ResearchCampaign, campaign_id, populate_existing=True
+            )
+            if campaign is None:
+                continue
             results.append(await advance(db, campaign, approve))
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning(f"Could not advance campaign {campaign.id}: {exc}")
+            await db.commit()
+        except Exception as exc:
+            await db.rollback()
+            logger.warning(f"Could not advance campaign {campaign_id}: {exc}")
             results.append(
                 {
-                    "campaign": str(campaign.id),
+                    "campaign": str(campaign_id),
                     "action": "error",
                     "error": str(exc)[:200],
                 }

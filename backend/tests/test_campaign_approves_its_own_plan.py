@@ -330,3 +330,43 @@ async def test_a_tick_with_no_approver_leaves_the_plan_for_a_person(
     assert step["plan_decisions"] == [] and step["waiting_on"] == "approval"
     await db_session.refresh(job)
     assert job.status == AgentJobStatus.PAUSED.value
+
+
+class TestTheTickOnPostgres:
+    """Found by the first live run, where Postgres enforces what SQLite does not."""
+
+    async def test_a_long_question_names_a_job_the_column_can_hold(
+        self, db_session, test_user
+    ):
+        campaign = await _campaign(
+            db_session, test_user, name="n" * 300, items=[{"title": "t" * 300}]
+        )
+
+        step = await campaigns.advance(db_session, campaign)
+
+        job = await db_session.get(AgentJob, UUID(step["launched_job"]))
+        assert len(job.name) <= AgentJob.__table__.c.name.type.length
+
+    async def test_one_campaign_failing_does_not_stop_the_next(
+        self, db_session, test_user
+    ):
+        broken = await _campaign(db_session, test_user, name="broken")
+        healthy = await _campaign(db_session, test_user, name="healthy")
+        # Read now: the rollback expires both.
+        broken_id, healthy_id = broken.id, healthy.id
+        real_advance = campaigns.advance
+
+        async def advance(db, campaign, approve=None):
+            if campaign.id == broken_id:
+                # A failed flush, as a value too wide for its column is on
+                # Postgres: the session is unusable until rolled back.
+                db.add(AgentJob(name=None, goal="g", user_id=test_user.id))
+                await db.flush()
+            return await real_advance(db, campaign, approve)
+
+        with patch.object(campaigns, "advance", advance):
+            steps = await campaigns.advance_all(db_session)
+
+        by_campaign = {s["campaign"]: s for s in steps}
+        assert by_campaign[str(broken_id)]["action"] == "error"
+        assert by_campaign[str(healthy_id)]["action"] == "launched"

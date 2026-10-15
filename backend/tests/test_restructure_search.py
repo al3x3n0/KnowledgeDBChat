@@ -362,3 +362,35 @@ class TestAnUnreachableModel:
         )
 
         assert "did not parse as JSON" in search_module.as_result(out, "k")["error"]
+
+
+async def test_a_reply_cut_empty_at_the_cap_is_asked_once_more(monkeypatch):
+    """Found live: a reasoning model spent its budget and wrote nothing."""
+    cut = {"_unparsed": "reply of 0 characters ...; it was cut at the output-token cap"}
+    replies = [cut, {"proposals": [{"name": "c", "idea": "i", "kernel": "k2"}]}]
+
+    async def fake_call(*args, **kwargs):
+        return replies.pop(0)
+
+    async def fake_evaluate(**kwargs):
+        return {"data": {"verdict": "unresolved", "timing": {}}}
+
+    async def no_listing(*args):
+        return ""
+
+    monkeypatch.setattr(search_module, "_call", fake_call)
+    monkeypatch.setattr(search_module, "evaluate_restructuring", fake_evaluate)
+    monkeypatch.setattr(search_module, "compiler_listing", no_listing)
+    monkeypatch.setattr(search_module, "sandbox_blocked", lambda image: None)
+
+    result = await search_module.search_restructurings(
+        kernel=ORIGINAL,
+        driver="d",
+        inputs=["1"],
+        holdout_inputs=["2"],
+        generations=1,
+        children=1,
+    )
+
+    assert replies == []
+    assert result["data"]["candidates_judged"] == 1

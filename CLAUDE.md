@@ -1055,7 +1055,11 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   1.86x `faster`. A second run met the provider down: it retried every
   child for 47 minutes and answered "no candidate beat the original (0
   judged)" as a success. An unreachable model now ends the search at the
-  first call, and a search that judged nothing is an error naming why.
+  first call, and a search that judged nothing is an error naming why. A
+  third run lost 3 of 4 children to the reasoning model spending its whole
+  32k budget thinking (`stop_reason=length`, 0 characters); a reply cut
+  empty is asked once more. No layer here exposes a reasoning budget (every
+  tier maps to the same model), so that is mitigated, not fixed.
 - **A winning rewrite can become a pass, and the pass is judged on four
   separate questions** (`services/agent_pass_from_rewrite.py`,
   `synthesize_pass_from_rewrite` and `evaluate_pass_on_kernel`). Does it

@@ -414,6 +414,17 @@ async def search_restructurings(
             _source_system_prompt(), message, SOURCE_SCHEMA, user_id=user_id, db=db
         )
         found = _first_proposal(payload, "kernel")
+        if not found and "output-token cap" in str(payload.get("_unparsed") or ""):
+            # A reasoning model can spend the whole budget thinking and write
+            # nothing. Measured live: 3 of 4 children came back empty at the
+            # cap in one search, 1 of 4 in another, so it is chance, and one
+            # more try is cheaper than losing the round.
+            payload = await _call(
+                _source_system_prompt(), message, SOURCE_SCHEMA, user_id=user_id, db=db
+            )
+            found = _first_proposal(payload, "kernel")
+            if not found and payload.get("_unparsed"):
+                payload = {"_unparsed": f"twice: {payload['_unparsed']}"}
         if found:
             return found
         return {

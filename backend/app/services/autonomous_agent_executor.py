@@ -1505,6 +1505,9 @@ class _AutonomousRuntimeAdapter:
             {
                 "phase": "iteration_complete",
                 "action": action.get("tool") if isinstance(action, dict) else None,
+                # Where the iteration's time went, by phase (the runner
+                # times them); read by agent_run_profile.
+                "phase_ms": action_bundle.get("phase_ms"),
                 # Whether the call worked, and why not. Without these the
                 # entry looked the same for a success and a failure, and the
                 # analytics tools that read this log reported every tool at

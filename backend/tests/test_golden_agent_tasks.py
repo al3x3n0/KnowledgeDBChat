@@ -463,3 +463,24 @@ async def test_golden_a_stop_with_no_contract_is_left_alone(db_session):
     )
 
     assert run.job.iteration == 1, "an ungated run should stop when it says so"
+
+
+@pytest.mark.asyncio
+async def test_golden_each_iteration_records_where_its_time_went(db_session):
+    """The real loop writes the runner's phase times on its log, for the profile."""
+    run = await run_golden_job(
+        db_session,
+        decisions=[
+            decision(tool="search_documents", params={"query": f"q{i}"})
+            for i in range(3)
+        ],
+        tool_results={"search_documents": SEARCH_RESULT},
+        max_iterations=2,
+    )
+
+    entries = [
+        e for e in run.job.execution_log or [] if e.get("phase") == "iteration_complete"
+    ]
+    assert entries
+    for entry in entries:
+        assert set(entry["phase_ms"]) == {"observe", "think", "act", "evaluate"}

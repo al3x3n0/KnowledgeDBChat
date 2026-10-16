@@ -12803,6 +12803,351 @@
         "title": "AgentRoutingPreviewResponse",
         "type": "object"
       },
+      "AgentRunProfile": {
+        "description": "Where a run's time went (services/agent_run_profile.py).",
+        "properties": {
+          "iterations_without_phase_times": {
+            "default": 0,
+            "title": "Iterations Without Phase Times",
+            "type": "integer"
+          },
+          "jobs": {
+            "items": {
+              "$ref": "#/components/schemas/AgentRunProfileJob"
+            },
+            "title": "Jobs",
+            "type": "array"
+          },
+          "root_job_id": {
+            "title": "Root Job Id",
+            "type": "string"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/AgentRunProfileTotals"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "wall_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wall Seconds"
+          }
+        },
+        "required": [
+          "root_job_id",
+          "jobs",
+          "totals"
+        ],
+        "title": "AgentRunProfile",
+        "type": "object"
+      },
+      "AgentRunProfileIteration": {
+        "properties": {
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "iteration": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Iteration"
+          },
+          "phase_ms": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Ms"
+          },
+          "seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seconds"
+          },
+          "success": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Success"
+          },
+          "tool": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool"
+          }
+        },
+        "title": "AgentRunProfileIteration",
+        "type": "object"
+      },
+      "AgentRunProfileJob": {
+        "properties": {
+          "after_parent_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After Parent Seconds"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "iterations": {
+            "items": {
+              "$ref": "#/components/schemas/AgentRunProfileIteration"
+            },
+            "title": "Iterations",
+            "type": "array"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "paused_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paused Seconds"
+          },
+          "phase_ms": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Phase Ms",
+            "type": "object"
+          },
+          "queued_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queued Seconds"
+          },
+          "ran_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ran Seconds"
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/AgentRunProfileTool"
+            },
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "AgentRunProfileJob",
+        "type": "object"
+      },
+      "AgentRunProfileTool": {
+        "description": "One tool's share of a run: calls, failures and act-phase time.",
+        "properties": {
+          "act_ms": {
+            "title": "Act Ms",
+            "type": "integer"
+          },
+          "calls": {
+            "title": "Calls",
+            "type": "integer"
+          },
+          "failures": {
+            "title": "Failures",
+            "type": "integer"
+          },
+          "tool": {
+            "title": "Tool",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool",
+          "calls",
+          "failures",
+          "act_ms"
+        ],
+        "title": "AgentRunProfileTool",
+        "type": "object"
+      },
+      "AgentRunProfileTotals": {
+        "properties": {
+          "after_parent_seconds": {
+            "title": "After Parent Seconds",
+            "type": "number"
+          },
+          "phase_ms": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Phase Ms",
+            "type": "object"
+          },
+          "queued_seconds": {
+            "title": "Queued Seconds",
+            "type": "number"
+          },
+          "ran_seconds": {
+            "title": "Ran Seconds",
+            "type": "number"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/AgentRunProfileTool"
+            },
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "queued_seconds",
+          "ran_seconds",
+          "after_parent_seconds",
+          "phase_ms",
+          "tools"
+        ],
+        "title": "AgentRunProfileTotals",
+        "type": "object"
+      },
       "AgentToolCall": {
         "description": "Schema for a tool call made by the agent.",
         "example": {
@@ -56739,6 +57084,71 @@
           }
         ],
         "summary": "Get Job Memory Graph",
+        "tags": [
+          "agent-jobs"
+        ]
+      }
+    },
+    "/api/v1/agent-jobs/{job_id}/profile": {
+      "get": {
+        "description": "Where the time went in this job's run: every job sharing its root.",
+        "operationId": "get_agent_job_profile_api_v1_agent_jobs__job_id__profile_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRunProfile"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Agent Job Profile",
         "tags": [
           "agent-jobs"
         ]

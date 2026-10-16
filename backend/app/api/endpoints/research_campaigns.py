@@ -83,6 +83,9 @@ async def create_research_campaign(
             items=[item.model_dump() for item in payload.items],
             max_jobs=payload.max_jobs,
             job_template=payload.job_template or {},
+            plan_approval=(
+                payload.plan_approval.model_dump() if payload.plan_approval else None
+            ),
         )
         await db.commit()
         await db.refresh(campaign)

@@ -189,7 +189,10 @@ async def _decide_swarm_review(
     done and nothing to restart them. `chain_triggered` makes the second call
     a no-op when the first one fired, so trying both is safe.
     """
-    _clear_pending_checkpoint(results_payload, approval_payload, state, deps=deps)
+    # Recorded before clearing, as every other decision is: clearing places
+    # approval_payload in job.results, a NestedMutableDict, which stores a
+    # converted copy, so an event appended afterwards went to a dict nothing
+    # saves. No gate decision, a person's or a campaign's, was ever recorded.
     _record_gate_decision(
         approval_payload,
         pending_checkpoint,
@@ -198,6 +201,7 @@ async def _decide_swarm_review(
         deps=deps,
         current_user=current_user,
     )
+    _clear_pending_checkpoint(results_payload, approval_payload, state, deps=deps)
     job.results = results_payload
     job.status = AgentJobStatus.COMPLETED.value
     job.current_phase = "completed"
@@ -250,7 +254,10 @@ async def _decide_chain_gate(
     ordinary checkpoint path re-runs the job to carry out the action that was
     approved, and there is no action here to carry out.
     """
-    _clear_pending_checkpoint(results_payload, approval_payload, state, deps=deps)
+    # Recorded before clearing, as every other decision is: clearing places
+    # approval_payload in job.results, a NestedMutableDict, which stores a
+    # converted copy, so an event appended afterwards went to a dict nothing
+    # saves. No gate decision, a person's or a campaign's, was ever recorded.
     _record_gate_decision(
         approval_payload,
         pending_checkpoint,
@@ -259,6 +266,7 @@ async def _decide_chain_gate(
         deps=deps,
         current_user=current_user,
     )
+    _clear_pending_checkpoint(results_payload, approval_payload, state, deps=deps)
     job.results = results_payload
     job.status = AgentJobStatus.COMPLETED.value
     job.current_phase = "completed"

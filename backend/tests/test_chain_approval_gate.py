@@ -165,7 +165,17 @@ class TestDecidingTheGate:
         assert requeued == [], "a gate must not re-run the job it gates"
 
     @pytest.mark.asyncio
-    async def test_the_decision_is_recorded_with_who_made_it(self, monkeypatch):
+    async def test_the_decision_is_recorded_on_the_job_with_who_made_it(
+        self, monkeypatch
+    ):
+        """In job.results, where it is saved -- not in the dict passed in.
+
+        The first version of this test asserted on the dict it handed the
+        decision, with the sync step stubbed out, and passed while every gate
+        decision was lost: job.results is a NestedMutableDict, which stores a
+        converted copy of what is put in it, and the event was appended to
+        the original after it had been placed there.
+        """
         import app.modules.autonomy.application.job_action_checkpoint_decisions as mod
 
         class _FakeExecutor:
@@ -176,27 +186,34 @@ class TestDecidingTheGate:
             "app.services.autonomous_agent_executor.AutonomousAgentExecutor",
             _FakeExecutor,
         )
+        deps = _deps([])
         for action, key in (("approve", "approvals"), ("reject", "rejections")):
             job = _job()
             _hold_for_chain_approval(job)
-            approval = {}
+            (
+                results,
+                approval,
+                pending,
+            ) = job_action_checkpoints.approval_payload_from_results(job.results)
             await mod._decide_chain_gate(
                 job,
                 action,
-                job.results["approval_checkpoint"],
+                pending,
                 "a note",
-                dict(job.results),
+                results,
                 approval,
                 {},
                 None,
-                deps=_deps([]),
+                deps=deps,
                 db=_FakeDb(),
                 current_user=_FakeUser(),
             )
 
-            (event,) = approval[key]
+            recorded = job.results["execution_strategy"]["approval_checkpoints"]
+            (event,) = recorded[key]
             assert event["approved_by"] == "user-1"
             assert event["note"] == "a note"
+            assert job.results.get("approval_checkpoint") is None
 
     @pytest.mark.asyncio
     async def test_rejecting_stops_the_pipeline_without_starting_anything(self):
@@ -250,9 +267,11 @@ def _deps(requeued):
             job_action_checkpoints.append_approval_event
         )
 
-        @staticmethod
-        def sync_execution_strategy_state(*args, **kwargs):
-            pass
+        # Real too: a no-op here hid that the decision was written to a dict
+        # job.results had already copied.
+        sync_execution_strategy_state = staticmethod(
+            job_action_checkpoints.sync_execution_strategy_state
+        )
 
     return _Deps()
 

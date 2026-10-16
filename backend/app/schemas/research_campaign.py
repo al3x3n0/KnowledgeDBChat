@@ -19,6 +19,15 @@ class ResearchCampaignItemCreate(BaseModel):
     detail: Optional[str] = None
 
 
+class CampaignPlanApproval(BaseModel):
+    """The plans a campaign may approve itself: those its own job proposed,
+    with no more stages and no longer an estimate than this. Bounded by the
+    deployment's CAMPAIGN_PLAN_APPROVAL_* ceilings."""
+
+    max_stages: int = Field(..., ge=1, le=50)
+    max_minutes: int = Field(..., ge=1, le=24 * 60)
+
+
 class ResearchCampaignCreate(BaseModel):
     """A campaign is a goal plus the seeds to pursue it with.
 
@@ -32,6 +41,8 @@ class ResearchCampaignCreate(BaseModel):
     items: List[ResearchCampaignItemCreate] = Field(default_factory=list)
     max_jobs: int = Field(10, ge=1, le=500)
     job_template: Optional[Dict[str, Any]] = None
+    #: Unset: a person approves every plan this campaign's jobs propose.
+    plan_approval: Optional[CampaignPlanApproval] = None
 
 
 class ResearchCampaignItemResponse(BaseModel):
@@ -53,6 +64,7 @@ class ResearchCampaignResponse(BaseModel):
     status: str
     max_jobs: int
     jobs_launched: int
+    plan_approval: Optional[CampaignPlanApproval] = None
     conclusion: Optional[str] = None
     #: The same conclusion with its working -- evidence, gaps, confidence.
     #: An answer with no way to see what it rested on is one nobody should

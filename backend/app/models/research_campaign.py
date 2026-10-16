@@ -84,6 +84,11 @@ class ResearchCampaign(Base):
     # finding types spawn further items.
     job_template = Column(JSON, nullable=True)
 
+    # When this campaign may approve a plan its own job proposed:
+    # {"max_stages": n, "max_minutes": m}. NULL means a person approves every
+    # plan. Bounded by CAMPAIGN_PLAN_APPROVAL_MAX_*.
+    plan_approval = Column(JSON, nullable=True)
+
     # What the campaign concluded, as one line a list can show.
     conclusion = Column(Text, nullable=True)
 

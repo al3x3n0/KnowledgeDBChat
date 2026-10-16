@@ -4951,6 +4951,7 @@ class ApiClient {
     items: { title: string; detail?: string }[];
     max_jobs?: number;
     job_template?: Record<string, any>;
+    plan_approval?: { max_stages: number; max_minutes: number } | null;
   }): Promise<ResearchCampaign> {
     const response = await this.client.post('/api/v1/research/campaigns', payload);
     return response.data;

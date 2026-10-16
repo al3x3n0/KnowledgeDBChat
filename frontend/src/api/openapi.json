@@ -15262,6 +15262,29 @@
         "title": "BroadcastNotificationRequest",
         "type": "object"
       },
+      "CampaignPlanApproval": {
+        "description": "The plans a campaign may approve itself: those its own job proposed,\nwith no more stages and no longer an estimate than this. Bounded by the\ndeployment's CAMPAIGN_PLAN_APPROVAL_* ceilings.",
+        "properties": {
+          "max_minutes": {
+            "maximum": 1440.0,
+            "minimum": 1.0,
+            "title": "Max Minutes",
+            "type": "integer"
+          },
+          "max_stages": {
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Max Stages",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_stages",
+          "max_minutes"
+        ],
+        "title": "CampaignPlanApproval",
+        "type": "object"
+      },
       "CapabilitiesListResponse": {
         "description": "Response schema for listing available capabilities.",
         "properties": {
@@ -34977,6 +35000,16 @@
             "minLength": 1,
             "title": "Name",
             "type": "string"
+          },
+          "plan_approval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CampaignPlanApproval"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -35159,6 +35192,16 @@
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "plan_approval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CampaignPlanApproval"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "status": {
             "title": "Status",

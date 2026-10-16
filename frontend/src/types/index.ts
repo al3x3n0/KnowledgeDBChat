@@ -230,6 +230,11 @@ export interface ResearchCampaignItem {
   job_id?: string | null;
 }
 
+export interface CampaignPlanApproval {
+  max_stages: number;
+  max_minutes: number;
+}
+
 export interface ResearchCampaign {
   id: string;
   name: string;
@@ -237,6 +242,8 @@ export interface ResearchCampaign {
   status: string;
   max_jobs: number;
   jobs_launched: number;
+  /** Limits under which it approves its own plans; null means a person does. */
+  plan_approval?: CampaignPlanApproval | null;
   conclusion?: string | null;
   created_at: string;
   updated_at?: string | null;

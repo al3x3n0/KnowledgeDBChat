@@ -682,6 +682,11 @@ class Settings(BaseSettings):
     AGENT_SELF_PLANNED_PIPELINES_ENABLED: bool = True
     AGENT_SELF_PLANNED_PIPELINE_MAX_STAGES: int = 6
     AGENT_SELF_PLANNED_PIPELINE_MAX_SECONDS: int = 14400
+    # The most a campaign may approve of a plan its own job proposed, without a
+    # person: the ceiling on any campaign's plan_approval. A campaign with no
+    # plan_approval stops for a person at every plan.
+    CAMPAIGN_PLAN_APPROVAL_MAX_STAGES: int = 4
+    CAMPAIGN_PLAN_APPROVAL_MAX_MINUTES: int = 120
 
     # The image a custom Python tool's code runs in. It needs `python3` and
     # must be one of SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES.

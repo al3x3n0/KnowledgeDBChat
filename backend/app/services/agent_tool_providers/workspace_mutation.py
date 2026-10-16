@@ -1274,6 +1274,43 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             **harness,
         )
 
+    async def _search_restructurings(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        """Run or continue a search; its archive is kept in the run's state."""
+        import hashlib
+
+        from app.services import agent_restructure_search
+
+        harness = _harness(params)
+        if "error" in harness:
+            return harness
+        held = params.get("holdout_inputs")
+        if isinstance(held, str):
+            held = [held]
+        kernel = str(params.get("kernel") or "")
+        # One archive per kernel: a second call on the same kernel continues
+        # the search, and a call on an edited kernel starts its own.
+        key = hashlib.sha256(kernel.encode("utf-8")).hexdigest()[:16]
+        state = ctx.state if isinstance(getattr(ctx, "state", None), dict) else {}
+        searches = state.setdefault("restructure_searches", {})
+        result = await agent_restructure_search.search_restructurings(
+            kernel=kernel,
+            holdout_inputs=[str(x) for x in held] if isinstance(held, list) else [],
+            focus=str(params.get("focus") or ""),
+            generations=bounded_int(params.get("generations"), 3, 1, 5),
+            children=bounded_int(params.get("children"), 2, 1, 3),
+            seed=bounded_int(params.get("seed"), 0, 0, 2**31),
+            archive=searches.get(key),
+            user_id=ctx.user_id or getattr(ctx.job, "user_id", None),
+            db=ctx.db,
+            **harness,
+        )
+        archive = result.pop("_archive", None)
+        if archive:
+            searches[key] = archive
+        return result
+
     async def _evaluate_restructuring(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -2859,6 +2896,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "scan_for_optimizations": _scan_for_optimizations,
             "build_llvm_pass": _build_llvm_pass,
             "propose_restructurings": _propose_restructurings,
+            "search_restructurings": _search_restructurings,
             "evaluate_restructuring": _evaluate_restructuring,
             "disassemble_symbol": _disassemble_symbol,
             "propose_binary_rewrites": _propose_binary_rewrites,

@@ -365,6 +365,69 @@ SPECS: tuple[ToolSpec, ...] = (
         consumes="a C kernel, a driver and inputs; returns model-proposed rewrites, each with a measured verdict.",
     ),
     ToolSpec(
+        name="search_restructurings",
+        description=(
+            "An EVOLUTIONARY search for a faster C kernel: keep an archive of "
+            "measured candidates, grow each new one from a parent sampled "
+            "from the best two, and keep going when a child fails (it scores "
+            "0). Where propose_restructurings finds independent ideas, this "
+            "builds on the ones that worked. Every child is judged like any "
+            "rewrite (identical output on every input, timed against the "
+            "original and the -O3 ceiling), one at a time. The winner is "
+            "re-judged on `holdout_inputs` the search never saw, and only a "
+            "candidate that holds there is a result. Call again to continue "
+            "from the archive. Costs up to generations x children model calls "
+            "and timing runs. " + _VERDICTS_HINT
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "kernel": {
+                    "type": "string",
+                    "description": "The C file to optimise, no main; as for propose_restructurings.",
+                },
+                **_HARNESS_PROPS,
+                "holdout_inputs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Driver inputs the search never sees, at least one not "
+                        "among `inputs`. The best candidates are judged again "
+                        "on these; one that diverges here fitted the search "
+                        "inputs. Make them different in kind (sizes, value "
+                        "ranges), not copies."
+                    ),
+                },
+                "focus": {
+                    "type": "string",
+                    "description": "Where to look, e.g. a hot function or a shape from scan_for_optimizations.",
+                },
+                "generations": {
+                    "type": "integer",
+                    "description": "Rounds of the search, 1-5 (default 3). It stops early after 2 rounds without a better candidate.",
+                },
+                "children": {
+                    "type": "integer",
+                    "description": "Candidates per round, 1-3 (default 2).",
+                },
+                "seed": {
+                    "type": "integer",
+                    "description": "Seeds the parent sampling, so a search can be repeated.",
+                },
+            },
+            "required": ["kernel", "driver", "inputs", "holdout_inputs"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("restructuring_result",),
+        typical_seconds=1800,
+        consumes=(
+            "a C kernel, a driver, search inputs and held-out inputs; returns "
+            "the candidate confirmed on the held-out inputs and the archive."
+        ),
+    ),
+    ToolSpec(
         name="evaluate_restructuring",
         description=(
             "Judge YOUR rewrite of a C kernel: same output as the original on "

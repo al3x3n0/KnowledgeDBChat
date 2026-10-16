@@ -2417,13 +2417,16 @@ SPECS: tuple[ToolSpec, ...] = (
                         "algorithm papers give none -- then pass `reference` "
                         "and `generator` instead of cases: a plainly correct "
                         "implementation and a program printing one input per "
-                        "index, compared on every input. Do not write a "
-                        "program that checks itself and prints PASS: it checks "
-                        "only what its author thought to assert, and a live "
-                        "one printed PASS whatever its input. Inventing an "
-                        "input/output pair to match your code checks nothing. "
-                        "An implementation with no way to be checked is one "
-                        "nobody may time."
+                        "index, compared on every input. Where no plainly "
+                        "correct reference exists, check the PROPERTIES the "
+                        "paper states (an output range, an invariant, an "
+                        "equivalence with the baseline it replaces) over many "
+                        "inputs: deriving a property from the paper is reading "
+                        "it. A program that only checks itself and prints PASS "
+                        "is the weakest form -- a live one printed PASS "
+                        "whatever its input -- and a case invented to match "
+                        "your code checks nothing. An implementation with no "
+                        "way to be checked is one nobody may time."
                     ),
                     "items": {
                         "type": "object",

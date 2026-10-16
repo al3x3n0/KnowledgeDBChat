@@ -34,6 +34,7 @@ from loguru import logger
 
 from app.models.agent_job import ChainTriggerCondition
 from app.services import (
+    agent_evidence_standards,
     agent_pipeline_binding,
     agent_pipeline_draft,
     agent_pipeline_spec,
@@ -237,6 +238,7 @@ async def propose(
                 f"{wanted}\n\nThis follows a run whose goal was: "
                 f"{str(getattr(job, 'goal', '') or '').strip()[:600]}"
                 f"\n\n{ALREADY_APPROVED}"
+                f"\n\n{agent_evidence_standards.DRAFTER_NOTE}"
             ),
             llm_service=llm_service,
             user_id=user_id,
@@ -246,6 +248,10 @@ async def propose(
         )
     except agent_pipeline_draft.PipelineDraftError as error:
         return _refused(f"No pipeline could be drafted: {error}")
+
+    # The evidence standard, written in before anything judges or prices the
+    # plan, so the plan that is approved is the plan that is held to it.
+    spec, standards = agent_evidence_standards.apply(spec)
 
     # Judged again here, by everything that would judge it in the studio:
     # the validator, this person's skills, and whether it fits a chain.
@@ -303,6 +309,8 @@ async def propose(
         "stage_goals": {stage.id: stage.goal for stage in pipeline.stages},
         "estimated_seconds": int(compiled.total_seconds),
         "checkpoints": list(compiled.checkpoints),
+        # What the standard added, for whoever (or whatever) approves it.
+        "evidence_standards": standards,
         "spec": spec,
         "proposed_at": datetime.utcnow().isoformat(),
         "iteration": int(getattr(job, "iteration", 0) or 0),
@@ -352,10 +360,16 @@ def approval_message(proposal: Dict[str, Any]) -> str:
     """What the person deciding is told, in one sentence."""
     stages = [str(s) for s in proposal.get("stages") or []]
     minutes = max(1, round(int(proposal.get("estimated_seconds") or 0) / 60))
+    standards = proposal.get("evidence_standards") or []
     return (
         f"This run proposes a follow-up pipeline of {len(stages)} "
         f"stage{'s' if len(stages) != 1 else ''} (about {minutes} min): "
         f"{' → '.join(stages)}. Approving starts it; rejecting ends here."
+        + (
+            " Held to: " + "; ".join(str(n) for n in standards) + "."
+            if standards
+            else ""
+        )
     )
 
 

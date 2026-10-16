@@ -263,12 +263,24 @@ def evaluate(contract: Mapping[str, Any], state: Mapping[str, Any]) -> Dict[str,
             matching = [
                 f for f in findings if str(f.get("type") or "").strip() == type_name
             ]
-            bare = [f for f in matching if not _has_uncertainty(f)]
+            # Each thing measured, as last measured. A run cannot retract a
+            # finding, so judging every occurrence made a first one-trial
+            # probe permanent: a live stage took one trial, then seven, and
+            # was blocked by the one. Grouped by subject, so a comparison
+            # cannot pass with a spread on one side only.
+            latest: Dict[str, Dict[str, Any]] = {}
+            for finding in matching:
+                subject = str(
+                    finding.get("subject") or finding.get("title") or ""
+                ).strip()
+                latest[subject] = finding
+            bare = [subject for subject, f in latest.items() if not _has_uncertainty(f)]
             # A type that never appeared is the counting requirements' problem,
             # not this check's: reporting it here would blame the wrong thing.
             if matching and bare:
                 missing.append(f"validity:uncertainty:{type_name}")
                 details.setdefault("without_uncertainty", {})[type_name] = len(bare)
+                details.setdefault("bare_subjects", {})[type_name] = bare[:5]
 
     bounds = spec.get("bounds")
     if isinstance(bounds, Mapping):
@@ -417,10 +429,17 @@ def explain(missing: Sequence[str], details: Mapping[str, Any]) -> List[str]:
             )
         elif text.startswith("validity:uncertainty:"):
             type_name = text.split(":", 2)[2]
+            subjects = (details.get("bare_subjects") or {}).get(type_name) or []
             lines.append(
-                f"Findings of type {type_name} report a bare number. Repeat the "
-                "measurement and include the spread or sample count: a single "
-                "sample cannot show whether a difference is real."
+                f"Findings of type {type_name} report a bare number"
+                + (
+                    " for: " + ", ".join(str(x) or "(unnamed)" for x in subjects)
+                    if subjects
+                    else ""
+                )
+                + ". Repeat that measurement, under the same label, and include "
+                "the spread or sample count: a single sample cannot show "
+                "whether a difference is real."
             )
         elif text.startswith("validity:bounds:"):
             type_name = text.split(":", 2)[2]

@@ -206,3 +206,38 @@ def test_the_run_is_told_what_the_oracle_bound_counts():
 
     assert "reference" in line and "generator" in line
     assert "Cases you write yourself do not count" in line
+
+
+class TestASpreadIsJudgedOnWhatWasLastMeasured:
+    """Found live: one trial, then seven, and the one blocked the stage."""
+
+    contract = {"validity": {"require_uncertainty": ["benchmark_measurement"]}}
+
+    @staticmethod
+    def bench(subject, trials):
+        return {
+            "type": "benchmark_measurement",
+            "subject": subject,
+            "all_ms": [68 + i for i in range(trials)],
+        }
+
+    def test_measuring_again_with_repeats_recovers(self):
+        state = {"findings": [self.bench("fastmod", 1), self.bench("fastmod", 7)]}
+
+        assert validity.evaluate(self.contract, state)["missing"] == []
+
+    def test_a_comparison_needs_a_spread_on_both_sides(self):
+        state = {"findings": [self.bench("plain", 1), self.bench("fastmod", 7)]}
+
+        result = validity.evaluate(self.contract, state)
+
+        assert result["missing"] == ["validity:uncertainty:benchmark_measurement"]
+        assert result["details"]["bare_subjects"]["benchmark_measurement"] == ["plain"]
+
+    def test_the_run_is_told_which_one_to_measure_again(self):
+        state = {"findings": [self.bench("plain", 1), self.bench("fastmod", 7)]}
+        result = validity.evaluate(self.contract, state)
+
+        (line,) = validity.explain(result["missing"], result["details"])
+
+        assert "for: plain" in line and "same label" in line

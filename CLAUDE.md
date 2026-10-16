@@ -869,7 +869,19 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   field does not count, and stalled. `agent_measurement_validity.
   FIELD_MEANINGS` now explains it where the run reads its contract, and the
   `cases` description no longer recommends a self-checking program that
-  prints PASS.
+  prints PASS. **A spread is judged on what was last measured**:
+  `require_uncertainty` checked every occurrence, and a run cannot retract
+  a finding, so a stage that took one trial and then seven was blocked by
+  the one. It now takes the latest finding per subject (so a comparison
+  cannot pass with a spread on one side only) and names the bare subjects.
+  Run live (2026-10-16, second self-approved campaign): the drafter wrote
+  the oracle into the implement stage's goal; its first oracle call had a
+  generator that ignored its index (100 inputs, 1 distinct) and was not
+  counted; the next compared 100 distinct inputs with 0 disagreements and
+  met the contract. The benchmark stage took 1 trial then 7. Re-measuring
+  the first under its label, it could not find the source it had timed
+  (nothing records it), wrote a harness that did not compile
+  (`CLOCK_MONOTONIC` under `-std=c11`) and stalled -- left there.
 - **A stage can read what it inherited** (`get_research_findings`). It
   served only `executor._job_findings`, the in-memory list
   `save_research_finding` appends to; findings a tool produced and those

@@ -38,6 +38,24 @@ async def perform_resume_action(
         if checkpoint_row and isinstance(checkpoint_row.state, dict)
         else {}
     )
+    # A run that stopped on its own stall rule, resumed with nothing to tell
+    # it, restores the rounds it stopped on and stops again before its first
+    # iteration -- while this action answered 200. Measured on a live stage:
+    # `resumed`, then `loop_policy_stop` six seconds later, nothing between.
+    # Without a correction there is no reason to think it was wrong to stop
+    # (a note clears that state, below), so say so instead of pretending.
+    stops_again, why = agent_loop_policy.should_stop(job.config, state)
+    if stops_again and not str(checkpoint_note or "").strip():
+        raise JobActionError(
+            status_code=409,
+            detail=(
+                f"Resuming as it is would stop it again at once ({why}). Add "
+                "a note saying what changed -- a correction, an answer, or a "
+                "fix to the platform -- and it resumes with that and with its "
+                "stall forgotten."
+            ),
+        )
+
     if (
         isinstance(pending_checkpoint, dict)
         and pending_checkpoint.get("checkpoint_type") == "execution_reconciliation"

@@ -79,6 +79,7 @@ import PluginSlot from '../../plugins/PluginSlot';
 import LoadingSpinner from '../common/LoadingSpinner';
 import AutonomousRndVerificationPanel from './AutonomousRndVerificationPanel';
 import JobExecutionGraphSection from './JobExecutionGraphSection';
+import RunProfileSection from './RunProfileSection';
 import EvidenceSection from './EvidenceSection';
 import SwarmConsensusSection from './SwarmConsensusSection';
 import WorkspaceSection from './WorkspaceSection';
@@ -2197,6 +2198,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
           <WorkspaceSection job={job} />
 
           <JobExecutionGraphSection job={job} />
+          <RunProfileSection jobId={String(job.id)} />
           {/* Swarm summary */}
           {swarmSummary && (
             <div className="mb-4">

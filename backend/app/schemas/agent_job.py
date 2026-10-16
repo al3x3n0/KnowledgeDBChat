@@ -1291,6 +1291,67 @@ class AgentJobDetailResponse(AgentJobResponse):
     execution_log: Optional[List[Dict[str, Any]]]
 
 
+class AgentRunProfileTool(BaseModel):
+    """One tool's share of a run: calls, failures and act-phase time."""
+
+    tool: str
+    calls: int
+    failures: int
+    act_ms: int
+
+
+class AgentRunProfileIteration(BaseModel):
+    iteration: Optional[int] = None
+    tool: Optional[str] = None
+    success: Optional[bool] = None
+    ended_at: Optional[str] = None
+    #: From the previous iteration's end (or the job's start) to this one's.
+    seconds: Optional[float] = None
+    #: observe/think/act/evaluate in ms; absent for iterations logged before
+    #: the runner timed its phases.
+    phase_ms: Optional[Dict[str, int]] = None
+
+
+class AgentRunProfileJob(BaseModel):
+    id: str
+    parent_id: Optional[str] = None
+    name: Optional[str] = None
+    stage: Optional[str] = None
+    status: Optional[str] = None
+    created_at: Optional[str] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    queued_seconds: Optional[float] = None
+    ran_seconds: Optional[float] = None
+    #: A job stopped without completing: from its last log entry to now.
+    paused_seconds: Optional[float] = None
+    #: From the job it follows ending to this one existing, including any
+    #: approval the plan waited for.
+    after_parent_seconds: Optional[float] = None
+    iterations: List[AgentRunProfileIteration] = Field(default_factory=list)
+    phase_ms: Dict[str, int] = Field(default_factory=dict)
+    tools: List[AgentRunProfileTool] = Field(default_factory=list)
+
+
+class AgentRunProfileTotals(BaseModel):
+    queued_seconds: float
+    ran_seconds: float
+    after_parent_seconds: float
+    phase_ms: Dict[str, int]
+    tools: List[AgentRunProfileTool]
+
+
+class AgentRunProfile(BaseModel):
+    """Where a run's time went (services/agent_run_profile.py)."""
+
+    root_job_id: str
+    jobs: List[AgentRunProfileJob]
+    wall_seconds: Optional[float] = None
+    totals: AgentRunProfileTotals
+    iterations_without_phase_times: int = 0
+    truncated: bool = False
+
+
 class AgentJobRelaunchLineageNode(BaseModel):
     """Single node in a relaunch lineage graph."""
 

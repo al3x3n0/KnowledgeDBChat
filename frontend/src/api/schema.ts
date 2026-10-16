@@ -2038,6 +2038,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agent-jobs/{job_id}/profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Agent Job Profile
+         * @description Where the time went in this job's run: every job sharing its root.
+         */
+        get: operations["get_agent_job_profile_api_v1_agent_jobs__job_id__profile_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agent-jobs/{job_id}/promote-domain-research": {
         parameters: {
             query?: never;
@@ -15835,6 +15855,110 @@ export interface components {
             tier_resolution: Record<string, never>;
             /** User Llm */
             user_llm: Record<string, never>;
+        };
+        /**
+         * AgentRunProfile
+         * @description Where a run's time went (services/agent_run_profile.py).
+         */
+        AgentRunProfile: {
+            /**
+             * Iterations Without Phase Times
+             * @default 0
+             */
+            iterations_without_phase_times: number;
+            /** Jobs */
+            jobs: components["schemas"]["AgentRunProfileJob"][];
+            /** Root Job Id */
+            root_job_id: string;
+            totals: components["schemas"]["AgentRunProfileTotals"];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+            /** Wall Seconds */
+            wall_seconds?: number | null;
+        };
+        /** AgentRunProfileIteration */
+        AgentRunProfileIteration: {
+            /** Ended At */
+            ended_at?: string | null;
+            /** Iteration */
+            iteration?: number | null;
+            /** Phase Ms */
+            phase_ms?: {
+                [key: string]: number;
+            } | null;
+            /** Seconds */
+            seconds?: number | null;
+            /** Success */
+            success?: boolean | null;
+            /** Tool */
+            tool?: string | null;
+        };
+        /** AgentRunProfileJob */
+        AgentRunProfileJob: {
+            /** After Parent Seconds */
+            after_parent_seconds?: number | null;
+            /** Completed At */
+            completed_at?: string | null;
+            /** Created At */
+            created_at?: string | null;
+            /** Id */
+            id: string;
+            /** Iterations */
+            iterations?: components["schemas"]["AgentRunProfileIteration"][];
+            /** Name */
+            name?: string | null;
+            /** Parent Id */
+            parent_id?: string | null;
+            /** Paused Seconds */
+            paused_seconds?: number | null;
+            /** Phase Ms */
+            phase_ms?: {
+                [key: string]: number;
+            };
+            /** Queued Seconds */
+            queued_seconds?: number | null;
+            /** Ran Seconds */
+            ran_seconds?: number | null;
+            /** Stage */
+            stage?: string | null;
+            /** Started At */
+            started_at?: string | null;
+            /** Status */
+            status?: string | null;
+            /** Tools */
+            tools?: components["schemas"]["AgentRunProfileTool"][];
+        };
+        /**
+         * AgentRunProfileTool
+         * @description One tool's share of a run: calls, failures and act-phase time.
+         */
+        AgentRunProfileTool: {
+            /** Act Ms */
+            act_ms: number;
+            /** Calls */
+            calls: number;
+            /** Failures */
+            failures: number;
+            /** Tool */
+            tool: string;
+        };
+        /** AgentRunProfileTotals */
+        AgentRunProfileTotals: {
+            /** After Parent Seconds */
+            after_parent_seconds: number;
+            /** Phase Ms */
+            phase_ms: {
+                [key: string]: number;
+            };
+            /** Queued Seconds */
+            queued_seconds: number;
+            /** Ran Seconds */
+            ran_seconds: number;
+            /** Tools */
+            tools: components["schemas"]["AgentRunProfileTool"][];
         };
         /**
          * AgentToolCall
@@ -33522,6 +33646,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentJobMemoryGraphResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_agent_job_profile_api_v1_agent_jobs__job_id__profile_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRunProfile"];
                 };
             };
             /** @description Validation Error */

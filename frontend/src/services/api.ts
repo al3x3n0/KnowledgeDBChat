@@ -3350,6 +3350,14 @@ class ApiClient {
     return response.data;
   }
 
+  /** Where the time went in this job's run (every job sharing its root). */
+  async getAgentJobProfile(jobId: string): Promise<components['schemas']['AgentRunProfile']> {
+    const response = await this.client.get(
+      `/api/v1/agent-jobs/${encodeURIComponent(String(jobId))}/profile`
+    );
+    return response.data;
+  }
+
   async getAutonomousRndJobOutcome(jobId: string): Promise<AutonomousRndJobOutcomeResponse> {
     const response = await this.client.get(
       `/api/v1/autonomous-rnd-evals/jobs/${encodeURIComponent(String(jobId))}/outcome`

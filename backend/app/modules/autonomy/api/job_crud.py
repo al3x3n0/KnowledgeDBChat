@@ -20,7 +20,9 @@ from app.schemas.agent_job import (
     AgentJobFromTemplate,
     AgentJobResponse,
     AgentJobUpdate,
+    AgentRunProfile,
 )
+from app.services import agent_run_profile
 from app.services.agent_job_creation_service import (
     AgentJobCreationError,
     agent_job_creation_service,
@@ -44,6 +46,7 @@ class JobCreationApi:
 class JobRecordApi:
     router: APIRouter
     get_agent_job: Callable[..., Any]
+    get_agent_job_profile: Callable[..., Any]
     update_agent_job: Callable[..., Any]
     delete_agent_job: Callable[..., Any]
 
@@ -169,6 +172,26 @@ def build_job_record_api(
             execution_log=job.execution_log,
         )
 
+    @router.get("/{job_id}/profile", response_model=AgentRunProfile)
+    async def get_agent_job_profile(
+        job_id: UUID,
+        db: AsyncSession = Depends(get_db),
+        current_user: User = Depends(get_current_active_user),
+    ):
+        """Where the time went in this job's run: every job sharing its root."""
+        job = await db.get(AgentJob, job_id)
+        if job is None or not is_job_visible(job, current_user):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Agent job not found",
+            )
+        run = [
+            other
+            for other in await agent_run_profile.load_run(db, job)
+            if is_job_visible(other, current_user)
+        ]
+        return agent_run_profile.build(run, root_id=agent_run_profile.root_of(job))
+
     @router.patch("/{job_id}", response_model=AgentJobResponse)
     async def update_agent_job(
         job_id: UUID,
@@ -245,6 +268,7 @@ def build_job_record_api(
     return JobRecordApi(
         router=router,
         get_agent_job=get_agent_job,
+        get_agent_job_profile=get_agent_job_profile,
         update_agent_job=update_agent_job,
         delete_agent_job=delete_agent_job,
     )

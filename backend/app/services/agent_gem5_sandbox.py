@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from loguru import logger
 
-from app.services import agent_sandbox_runtime, gem5_stats
+from app.services import agent_sandbox_runtime, gem5_stats, sandbox_result_cache
 
 DEFAULT_IMAGE = "ghcr.io/al3x3n0/kdbc-gem5-research:latest"
 GEM5_BINARY = "/opt/gem5/build/ARM/gem5.opt"
@@ -861,7 +861,13 @@ async def simulate_c_workload(
             "tail -5 gem5.log"
         )
         try:
-            returncode, stdout, stderr = await agent_sandbox_runtime.run_in_sandbox(
+            # Simulated cycles repeat exactly, so the same run is replayed.
+            (
+                returncode,
+                stdout,
+                stderr,
+                replayed,
+            ) = await sandbox_result_cache.run(
                 script,
                 workdir,
                 image=image,
@@ -945,6 +951,9 @@ async def simulate_c_workload(
             "flags": safe_flags,
             **summary,
             "measurement_source": source,
+            # The same image, binary and configuration were simulated before
+            # and the result was read back rather than recomputed.
+            "replayed_from_cache": replayed,
             "note": (
                 "Simulated, not run on hardware: these are the modelled core's "
                 "cycles. Compare cycles rather than sim_seconds, which also "

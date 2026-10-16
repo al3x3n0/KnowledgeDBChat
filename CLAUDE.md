@@ -849,6 +849,27 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   has yet run past its first stage.** Not built: a stage retrying itself,
   or handing back to the run that planned it.
 
+- **A plan a run proposed for itself is held to an evidence standard**
+  (`services/agent_evidence_standards.py`). The first self-approved
+  campaign's benchmark stage met a contract asking for one
+  `benchmark_measurement` with one trial of one program, and the campaign
+  rightly concluded nothing. Self-approval checked size and cost; the
+  standard was whatever the drafting model wrote. Before a proposal is
+  checked, priced and shown for approval, its contracts gain
+  `require_uncertainty` on `benchmark_measurement` and a bound of
+  `generated_cases >= 50` on `implementation_verified` (met only by
+  `check_implementation` with a reference and a generator). A stronger
+  rule the plan wrote is kept, a weaker one raised; one on another field
+  is kept and said, since a contract holds one bound per type. The drafter
+  is told the standard first, the proposal records what was added
+  (`evidence_standards`), and the approval message says what the plan is
+  held to. Person-authored pipelines are untouched. **A bound must say what
+  its field counts**: told `generated_cases must lie in [50, None]`, the
+  next live stage wrote 70 cases by hand in `execute_python`, which that
+  field does not count, and stalled. `agent_measurement_validity.
+  FIELD_MEANINGS` now explains it where the run reads its contract, and the
+  `cases` description no longer recommends a self-checking program that
+  prints PASS.
 - **A stage can read what it inherited** (`get_research_findings`). It
   served only `executor._job_findings`, the in-memory list
   `save_research_finding` appends to; findings a tool produced and those

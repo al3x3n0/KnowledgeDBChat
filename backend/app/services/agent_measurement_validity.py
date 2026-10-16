@@ -437,6 +437,20 @@ def explain(missing: Sequence[str], details: Mapping[str, Any]) -> List[str]:
     return lines
 
 
+#: What a bounded field is, where its name alone misleads. Measured: told
+#: `implementation_verified.generated_cases must lie in [50, None]`, a stage
+#: spent its iterations writing 70 cases by hand -- which that field does not
+#: count -- and stalled before checking anything.
+FIELD_MEANINGS = {
+    ("implementation_verified", "generated_cases"): (
+        "the inputs check_implementation's oracle compared: pass `reference` "
+        "(a plainly correct implementation) and `generator` (prints one input "
+        "per index) with count >= the minimum. Cases you write yourself do "
+        "not count toward it"
+    ),
+}
+
+
 def describe(spec: Any) -> Sequence[str]:
     """Human-readable lines for a validity block, for digests and prompts."""
     if not isinstance(spec, Mapping) or not spec:
@@ -476,9 +490,11 @@ def describe(spec: Any) -> Sequence[str]:
         for type_name, rule in bounds.items():
             if not isinstance(rule, Mapping):
                 continue
+            meaning = FIELD_MEANINGS.get((str(type_name), str(rule.get("field"))))
             lines.append(
                 ("at least one " if rule.get("any") else "")
                 + f"{type_name}.{rule.get('field')} must lie in "
                 f"[{rule.get('min')}, {rule.get('max')}]"
+                + (f" -- {meaning}" if meaning else "")
             )
     return lines

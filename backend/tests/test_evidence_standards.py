@@ -196,3 +196,13 @@ async def test_a_proposed_plan_carries_the_standard_to_its_stages(
     (first,) = job.chain_config["child_jobs"]
     contract = (first.get("config") or {}).get("goal_contract") or {}
     assert contract.get("validity", {}).get("bounds", {}).get("implementation_verified")
+
+
+def test_the_run_is_told_what_the_oracle_bound_counts():
+    """Found live: read as "50 cases", it led a stage to write 70 by hand."""
+    contract = contract_of(standards.apply(SPEC)[0], "implement")
+
+    (line,) = validity.describe(contract["validity"])
+
+    assert "reference" in line and "generator" in line
+    assert "Cases you write yourself do not count" in line

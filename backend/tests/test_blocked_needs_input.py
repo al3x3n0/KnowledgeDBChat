@@ -581,11 +581,19 @@ class TestACorrectionUndoesTheGivingUp:
                 def delay(job_id, user_id):
                     pass
 
-        await job_action_checkpoint_resume.perform_resume_action(
-            job, None, deps=_Deps(), db=db_session, current_user=test_user
-        )
+        from app.modules.autonomy.application.job_action_contracts import JobActionError
 
+        # It would stop again at once, so it is refused and says why rather
+        # than answering 200 and doing nothing (measured on a live stage).
+        with pytest.raises(JobActionError) as refused:
+            await job_action_checkpoint_resume.perform_resume_action(
+                job, None, deps=_Deps(), db=db_session, current_user=test_user
+            )
+
+        assert refused.value.status_code == 409
+        assert "Add a note" in refused.value.detail
         assert checkpoint.state["loop_finding_counts"] == [20, 20, 20]
+        assert job.status == AgentJobStatus.PAUSED.value
 
 
 class TestACorrectionOverridesTheGoal:

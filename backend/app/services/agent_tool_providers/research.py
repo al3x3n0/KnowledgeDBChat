@@ -18,6 +18,7 @@ from app.services.agent_tool_providers.common import (
     _load_documents_for_analysis,
     _tool_snapshot_context,
 )
+from app.services.config_values import bounded_int, safe_float
 
 
 def _document_excerpts(documents: list[Any], *, per_doc_chars: int = 4000) -> str:
@@ -248,24 +249,71 @@ def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
     async def _get_research_findings(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
+        """The run's findings: what it saved, what its tools measured, what it inherited.
+
+        It served `executor._job_findings` alone, the in-memory list
+        `save_research_finding` appends to. Evidence a tool produced and
+        findings inherited from earlier stages live in the run's
+        `state["findings"]`, which that list never sees, and the in-memory
+        list is empty after a restart. Measured live: a self-planned
+        pipeline's report stage held both benchmark measurements its parent
+        stage made, was told "no findings" here four times, and blocked
+        rather than write a report on nothing.
+        """
         job = ctx.job
-        findings = list(executor._job_findings.get(str(job.id), []))
+        state = ctx.state if isinstance(getattr(ctx, "state", None), dict) else {}
+        run_findings = state.get("findings")
+        sources = [
+            run_findings if isinstance(run_findings, list) else [],
+            executor._job_findings.get(str(job.id), []),
+        ]
+        findings: List[Dict[str, Any]] = []
+        seen = set()
+        for source in sources:
+            for finding in source:
+                if not isinstance(finding, dict):
+                    continue
+                key = finding.get("id") or repr(sorted(finding.items(), key=str))
+                if key in seen:
+                    continue
+                seen.add(key)
+                findings.append(finding)
+
         category = params.get("category")
         if category:
+            findings = [f for f in findings if f.get("category") == category]
+        finding_type = str(params.get("finding_type") or "").strip()
+        if finding_type:
+            findings = [f for f in findings if f.get("type") == finding_type]
+        tags = [str(t) for t in (params.get("tags") or []) if str(t).strip()]
+        if tags:
             findings = [
-                finding for finding in findings if finding.get("category") == category
+                f for f in findings if set(tags) & {str(t) for t in f.get("tags") or []}
             ]
         min_confidence = params.get("min_confidence")
         if min_confidence:
+            # A tool's measurement states no confidence; it is evidence, not
+            # a judgement, and a confidence floor is not a reason to hide it.
             findings = [
-                finding
-                for finding in findings
-                if finding.get("confidence", 0) >= min_confidence
+                f
+                for f in findings
+                if f.get("confidence") is None
+                or safe_float(f.get("confidence")) >= safe_float(min_confidence)
             ]
-        findings = findings[: params.get("limit", 50)]
+        total = len(findings)
+        by_type: Dict[str, int] = {}
+        for finding in findings:
+            kind = str(finding.get("type") or finding.get("category") or "untyped")
+            by_type[kind] = by_type.get(kind, 0) + 1
+        findings = findings[: bounded_int(params.get("limit"), 50, 1, 200)]
         return {
             "success": True,
-            "data": {"findings": findings, "total": len(findings)},
+            "data": {
+                "findings": findings,
+                "total": total,
+                "by_type": by_type,
+                "inherited": sum(1 for f in findings if f.get("inherited")),
+            },
         }
 
     async def _literature_review_arxiv(

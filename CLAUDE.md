@@ -849,6 +849,27 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   has yet run past its first stage.** Not built: a stage retrying itself,
   or handing back to the run that planned it.
 
+- **A stage can read what it inherited** (`get_research_findings`). It
+  served only `executor._job_findings`, the in-memory list
+  `save_research_finding` appends to; findings a tool produced and those
+  inherited from earlier stages live in the run's `state["findings"]`, and
+  the in-memory list is empty after a restart. The first self-approved
+  campaign's report stage held both measurements its parent made, was told
+  "no findings" four times, and blocked. It now reads the run's findings
+  (saved ones included, once), filters by `finding_type` and the `tags` it
+  declared and ignored, lets a measurement with no stated confidence through
+  a confidence floor, and returns a count by type. **And a resume that would
+  stop at once is refused**: resumed without a note, that stage restored the
+  dry rounds it stopped on and stopped again six seconds later while the
+  action answered 200. A no-note resume is kept as it was decided (no
+  correction, no reason to think the stop was wrong), but when
+  `agent_loop_policy.should_stop` already says the restored state stops, it
+  answers 409 asking for a note -- which clears that state and reaches the
+  run as a clue. Resumed with one, the stage read its findings, wrote the
+  report and met its contract in two iterations, and the campaign concluded
+  on its own (2026-10-16): four jobs, and an honest "the findings do not
+  establish whether fastmod is worth adopting" -- the benchmark stage had
+  taken one trial with no `%` baseline, which its contract allowed.
 - **The pipeline drafter is told what each evidence type is**
   (`agent_pipeline_draft._what_makes`). Its list gave a name, a duration and
   job types, so "implement fastmod in C, check it, benchmark it" became a

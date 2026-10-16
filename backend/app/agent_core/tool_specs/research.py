@@ -360,11 +360,20 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="get_research_findings",
-        description="Retrieve saved research findings. Useful for reviewing what has been discovered so far.",
+        description=(
+            "Retrieve this run's findings: what it saved, what its tools "
+            "measured, and what it inherited from earlier pipeline stages "
+            "(marked inherited). Returns a count by type, so check here before "
+            "measuring something again."
+        ),
         parameters={
             "type": "object",
             "properties": {
                 "category": {"type": "string", "description": "Filter by category"},
+                "finding_type": {
+                    "type": "string",
+                    "description": "Filter by evidence type, e.g. benchmark_measurement",
+                },
                 "tags": {
                     "type": "array",
                     "items": {"type": "string"},

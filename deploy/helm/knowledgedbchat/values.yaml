@@ -385,11 +385,14 @@ gateway:
   replicaCount: 2
   clientMaxBodySize: 2048M
   proxyTimeoutSeconds: 300
-  # DNS server nginx re-resolves Service names against. CoreDNS keeps the
-  # "kube-dns" Service name for compatibility, so this works on stock clusters;
-  # override with the ClusterIP (kubectl -n kube-system get svc kube-dns) if
-  # your cluster runs DNS under a different name.
-  resolver: kube-dns.kube-system.svc.cluster.local
+  # DNS server nginx re-resolves Service names against. Empty defaults to
+  # the stock kube-dns Service; on clusters whose DNS runs elsewhere
+  # (e.g. a node-local DNS cache) set it to that address.
+  resolver: ""
+  # DNS suffix appended to <service>.<namespace>.svc.<suffix> when
+  # resolving in-cluster Service names. Defaults to cluster.local for
+  # stock clusters; override for clusters with a custom domain.
+  clusterDnsDomain: cluster.local
   service:
     type: ClusterIP
     port: 80

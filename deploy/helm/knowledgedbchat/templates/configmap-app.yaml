@@ -44,6 +44,6 @@ data:
   OMP_NUM_THREADS: "4"
   MKL_NUM_THREADS: "4"
   GOTO_NUM_THREADS: "4"
-{{- range $key, $value := .Values.config.extra }}
+ {{- range $key, $value := .Values.config.extra }}
   {{ $key }}: {{ $value | quote }}
 {{- end }}

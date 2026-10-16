@@ -263,12 +263,24 @@ def evaluate(contract: Mapping[str, Any], state: Mapping[str, Any]) -> Dict[str,
             matching = [
                 f for f in findings if str(f.get("type") or "").strip() == type_name
             ]
-            bare = [f for f in matching if not _has_uncertainty(f)]
+            # Each thing measured, as last measured. A run cannot retract a
+            # finding, so judging every occurrence made a first one-trial
+            # probe permanent: a live stage took one trial, then seven, and
+            # was blocked by the one. Grouped by subject, so a comparison
+            # cannot pass with a spread on one side only.
+            latest: Dict[str, Dict[str, Any]] = {}
+            for finding in matching:
+                subject = str(
+                    finding.get("subject") or finding.get("title") or ""
+                ).strip()
+                latest[subject] = finding
+            bare = [subject for subject, f in latest.items() if not _has_uncertainty(f)]
             # A type that never appeared is the counting requirements' problem,
             # not this check's: reporting it here would blame the wrong thing.
             if matching and bare:
                 missing.append(f"validity:uncertainty:{type_name}")
                 details.setdefault("without_uncertainty", {})[type_name] = len(bare)
+                details.setdefault("bare_subjects", {})[type_name] = bare[:5]
 
     bounds = spec.get("bounds")
     if isinstance(bounds, Mapping):
@@ -417,10 +429,17 @@ def explain(missing: Sequence[str], details: Mapping[str, Any]) -> List[str]:
             )
         elif text.startswith("validity:uncertainty:"):
             type_name = text.split(":", 2)[2]
+            subjects = (details.get("bare_subjects") or {}).get(type_name) or []
             lines.append(
-                f"Findings of type {type_name} report a bare number. Repeat the "
-                "measurement and include the spread or sample count: a single "
-                "sample cannot show whether a difference is real."
+                f"Findings of type {type_name} report a bare number"
+                + (
+                    " for: " + ", ".join(str(x) or "(unnamed)" for x in subjects)
+                    if subjects
+                    else ""
+                )
+                + ". Repeat that measurement, under the same label, and include "
+                "the spread or sample count: a single sample cannot show "
+                "whether a difference is real."
             )
         elif text.startswith("validity:bounds:"):
             type_name = text.split(":", 2)[2]
@@ -435,6 +454,20 @@ def explain(missing: Sequence[str], details: Mapping[str, Any]) -> List[str]:
                 "than recording the number."
             )
     return lines
+
+
+#: What a bounded field is, where its name alone misleads. Measured: told
+#: `implementation_verified.generated_cases must lie in [50, None]`, a stage
+#: spent its iterations writing 70 cases by hand -- which that field does not
+#: count -- and stalled before checking anything.
+FIELD_MEANINGS = {
+    ("implementation_verified", "generated_cases"): (
+        "the inputs check_implementation's oracle compared: pass `reference` "
+        "(a plainly correct implementation) and `generator` (prints one input "
+        "per index) with count >= the minimum. Cases you write yourself do "
+        "not count toward it"
+    ),
+}
 
 
 def describe(spec: Any) -> Sequence[str]:
@@ -476,9 +509,11 @@ def describe(spec: Any) -> Sequence[str]:
         for type_name, rule in bounds.items():
             if not isinstance(rule, Mapping):
                 continue
+            meaning = FIELD_MEANINGS.get((str(type_name), str(rule.get("field"))))
             lines.append(
                 ("at least one " if rule.get("any") else "")
                 + f"{type_name}.{rule.get('field')} must lie in "
                 f"[{rule.get('min')}, {rule.get('max')}]"
+                + (f" -- {meaning}" if meaning else "")
             )
     return lines

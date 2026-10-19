@@ -149,6 +149,15 @@ def initialise(reserved_tool_names: Sequence[str]) -> LoadReport:
 
 
 def report() -> LoadReport:
+    """What was loaded, loading it first if nothing has asked yet.
+
+    Programs are loaded when the tool catalog is built, at its import. A
+    process that reaches here before importing the catalog -- a test, a script
+    asking only for the allowed images -- would otherwise see no program at
+    all, and an image or an evidence tool would quietly not count.
+    """
+    if _REPORT is None:
+        from app.agent_core import tool_specs  # noqa: F401  (loads programs)
     return _REPORT if _REPORT is not None else LoadReport()
 
 

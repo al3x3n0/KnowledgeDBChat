@@ -77,15 +77,17 @@ def test_every_built_in_tool_can_be_listed_for_the_editor():
     from app.schemas.workflow import ToolParameterDetail
     from app.services.agent_tools import AGENT_TOOLS
 
-    several = 0
     for tool in AGENT_TOOLS:
         schema = tool.get("parameters") or tool.get("input_schema") or {}
         for name, prop in (schema.get("properties") or {}).items():
             declared = prop.get("type", "any")
-            several += isinstance(declared, list)
             ToolParameterDetail(name=name, type=_parameter_type(declared))
 
-    assert several > 0  # the case this is about really occurs
+    # The case this is about, stated directly: core's own tools no longer
+    # declare a list of types (the research programs' do, and are checked
+    # there), so a loop over them alone would prove nothing.
+    assert _parameter_type(["array", "string"]) == "array"
+    assert _parameter_type(["null", "integer"]) == "integer"
 
 
 # --- ids that are not ids ----------------------------------------------------

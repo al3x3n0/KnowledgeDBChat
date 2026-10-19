@@ -37,9 +37,8 @@ REMOVE_TIMEOUT_SECONDS = 20
 
 
 def allowed_images() -> List[str]:
-    from app.core.config import settings
-
     from app.agent_core import research_programs
+    from app.core.config import settings
 
     raw = getattr(settings, "SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES", "") or ""
     configured = [item.strip() for item in raw.split(",") if item.strip()]

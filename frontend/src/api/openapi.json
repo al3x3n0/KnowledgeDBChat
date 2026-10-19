@@ -40425,6 +40425,94 @@
         "title": "ResearchPortfolioUpdate",
         "type": "object"
       },
+      "ResearchProgramFailure": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "reason"
+        ],
+        "title": "ResearchProgramFailure",
+        "type": "object"
+      },
+      "ResearchProgramInfo": {
+        "properties": {
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "sandbox_images": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Sandbox Images",
+            "type": "array"
+          },
+          "tools": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Tools",
+            "type": "array"
+          },
+          "version": {
+            "default": "",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ResearchProgramInfo",
+        "type": "object"
+      },
+      "ResearchProgramsStatus": {
+        "description": "Installed research programs: loaded, refused, and turned off.",
+        "properties": {
+          "disabled": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Disabled",
+            "type": "array"
+          },
+          "failed": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ResearchProgramFailure"
+            },
+            "title": "Failed",
+            "type": "array"
+          },
+          "loaded": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ResearchProgramInfo"
+            },
+            "title": "Loaded",
+            "type": "array"
+          }
+        },
+        "title": "ResearchProgramsStatus",
+        "type": "object"
+      },
       "ResearcherOutput": {
         "properties": {
           "findings": {
@@ -49296,6 +49384,61 @@
           }
         ],
         "summary": "Get System Logs",
+        "tags": [
+          "administration"
+        ]
+      }
+    },
+    "/api/v1/admin/research-programs": {
+      "get": {
+        "description": "Which research programs this process loaded, and why any were not.",
+        "operationId": "research_programs_status_api_v1_admin_research_programs_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchProgramsStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Research Programs Status",
         "tags": [
           "administration"
         ]

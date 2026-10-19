@@ -710,6 +710,9 @@ class Settings(BaseSettings):
     # Where bundles shipped with this repository are read from, relative to the
     # backend root unless absolute. A plugin contributes tools that a model is
     # offered by name, so the directory is deployment state, not user state.
+    # Installed research programs to leave out, comma-separated by name
+    # (app/agent_core/research_programs.py). Empty loads every one installed.
+    RESEARCH_PROGRAMS_DISABLED: str = ""
     PLUGIN_BUILTIN_DIR: str = "plugins"
     # Whether a user may author and install their own plugins. Contributed
     # tools run under the same policy engine and approval gates as any other

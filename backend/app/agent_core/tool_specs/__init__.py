@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Tuple
 
+from app.agent_core import research_programs
 from app.agent_core.tool_specs import (
     agent_ops,
     authoring,
@@ -58,8 +59,17 @@ _MODULES = (
     skills,
 )
 
-TOOL_SPECS: Tuple[ToolSpec, ...] = tuple(
+_BUILTIN_SPECS: Tuple[ToolSpec, ...] = tuple(
     spec for module in _MODULES for spec in module.SPECS
+)
+
+#: Installed research programs (``app.agent_core.research_programs``). Their
+#: tools are appended after the built-ins and are otherwise indistinguishable
+#: from them: every view below reads ``TOOL_SPECS``.
+_PROGRAMS = research_programs.initialise([spec.name for spec in _BUILTIN_SPECS])
+
+TOOL_SPECS: Tuple[ToolSpec, ...] = _BUILTIN_SPECS + tuple(
+    spec for program in _PROGRAMS.loaded for spec in program.tool_specs
 )
 
 _BY_NAME: Dict[str, ToolSpec] = {spec.name: spec for spec in TOOL_SPECS}
@@ -72,9 +82,17 @@ _BY_NAME: Dict[str, ToolSpec] = {spec.name: spec for spec in TOOL_SPECS}
 #: for every measurement tool, because none of them is named after what it
 #: does to a document. The module a tool is declared in knows without guessing.
 TOOL_DOMAINS: Dict[str, str] = {
-    spec.name: module.__name__.rsplit(".", 1)[-1]
-    for module in _MODULES
-    for spec in module.SPECS
+    **{
+        spec.name: module.__name__.rsplit(".", 1)[-1]
+        for module in _MODULES
+        for spec in module.SPECS
+    },
+    # A program's tools are listed under the program's name.
+    **{
+        spec.name: program.name
+        for program in _PROGRAMS.loaded
+        for spec in program.tool_specs
+    },
 }
 
 if len(_BY_NAME) != len(TOOL_SPECS):

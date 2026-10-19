@@ -1135,7 +1135,10 @@ SPECS: tuple[ToolSpec, ...] = (
         "are no performance counters in the sandbox, and there is no "
         "network. Benchmark the SAME source you passed to "
         "check_implementation -- a timing of code that was never checked "
-        "is an accurate number for work nobody looked at.",
+        "is an accurate number for work nobody looked at. The finding keeps "
+        "the source it timed (`source`, `source_sha256`): to measure the same "
+        "program again, read it back with get_research_findings and pass it "
+        "unchanged under the same `label`.",
         parameters={
             "type": "object",
             "properties": {

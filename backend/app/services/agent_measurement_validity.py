@@ -27,6 +27,10 @@ The vocabulary a contract may use, under `contract["validity"]`:
                             the rule is instead that AT LEAST ONE finding of
                             the type lies in range -- "some proposal won" --
                             and a finding without the field does not count
+    distinct_subjects       per finding type, how many different subjects it
+                            must have measured -- a comparison needs its
+                            baseline timed beside the candidate, and timing
+                            the candidate twice is not that
     records_method          the run must record at least one method, so what
                             it learned about *how* to investigate outlives it
     traces_one_regime       no finding may be measured across a break in the
@@ -148,6 +152,17 @@ def has_uncertainty(finding: Mapping[str, Any]) -> bool:
     contract asking for it.
     """
     return _has_uncertainty(finding)
+
+
+def subjects_of(findings: Sequence[Mapping[str, Any]], type_name: str) -> List[str]:
+    """The different things findings of a type were measured on, in order."""
+    seen: Dict[str, None] = {}
+    for finding in findings:
+        if str(finding.get("type") or "").strip() != type_name:
+            continue
+        subject = str(finding.get("subject") or finding.get("title") or "").strip()
+        seen.setdefault(subject, None)
+    return list(seen)
 
 
 def unsettled_predictions(state: Mapping[str, Any]) -> List[str]:
@@ -281,6 +296,22 @@ def evaluate(contract: Mapping[str, Any], state: Mapping[str, Any]) -> Dict[str,
                 missing.append(f"validity:uncertainty:{type_name}")
                 details.setdefault("without_uncertainty", {})[type_name] = len(bare)
                 details.setdefault("bare_subjects", {})[type_name] = bare[:5]
+
+    distinct = spec.get("distinct_subjects")
+    if isinstance(distinct, Mapping):
+        for type_name, wanted in distinct.items():
+            needed = int(_as_number(wanted) or 0)
+            if needed < 2:
+                continue
+            subjects = subjects_of(findings, str(type_name).strip())
+            # As with uncertainty: a type that never appeared is the counting
+            # requirements' problem.
+            if subjects and len(subjects) < needed:
+                missing.append(f"validity:distinct_subjects:{type_name}")
+                details.setdefault("distinct_subjects", {})[str(type_name)] = {
+                    "needed": needed,
+                    "measured": subjects[:5],
+                }
 
     bounds = spec.get("bounds")
     if isinstance(bounds, Mapping):
@@ -441,6 +472,21 @@ def explain(missing: Sequence[str], details: Mapping[str, Any]) -> List[str]:
                 "the spread or sample count: a single sample cannot show "
                 "whether a difference is real."
             )
+        elif text.startswith("validity:distinct_subjects:"):
+            type_name = text.split(":", 2)[2]
+            entry = (details.get("distinct_subjects") or {}).get(type_name) or {}
+            measured = ", ".join(
+                str(x) or "(unnamed)" for x in entry.get("measured") or []
+            )
+            lines.append(
+                f"Findings of type {type_name} measure "
+                f"{len(entry.get('measured') or [])} subject(s)"
+                + (f" ({measured})" if measured else "")
+                + f"; at least {entry.get('needed')} are required. A number "
+                "means nothing without the baseline it is compared with: "
+                "measure the baseline (the plain implementation it would "
+                "replace) the same way, under its own label."
+            )
         elif text.startswith("validity:bounds:"):
             type_name = text.split(":", 2)[2]
             rule = (details.get("out_of_bounds") or {}).get(type_name) or {}
@@ -504,6 +550,14 @@ def describe(spec: Any) -> Sequence[str]:
             "these findings must report a spread or sample count: "
             + ", ".join(str(x) for x in required)
         )
+    distinct = spec.get("distinct_subjects")
+    if isinstance(distinct, Mapping):
+        for type_name, wanted in distinct.items():
+            lines.append(
+                f"{type_name} must cover at least {wanted} different subjects, "
+                "each under its own label: the candidate and the baseline it "
+                "is compared with, measured the same way"
+            )
     bounds = spec.get("bounds")
     if isinstance(bounds, Mapping):
         for type_name, rule in bounds.items():

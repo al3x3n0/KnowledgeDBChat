@@ -12,7 +12,6 @@ program, which tests them through this same machinery.
 
 from __future__ import annotations
 
-
 from app.services import agent_evidence_map as evidence
 
 

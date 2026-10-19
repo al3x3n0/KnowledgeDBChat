@@ -5,11 +5,18 @@
 # stages below.
 ARG WITH_DOCKER_CLI=false
 
+# Research programs (app/agent_core/research_programs.py) can be installed from
+# a local checkout passed as the named build context `programs`
+# (`--build-context programs=../kdbc-uarch-lab`, or compose's
+# additional_contexts). Without one, this empty stage stands in for it.
+FROM scratch AS programs
+
 # Build stage: compilers and headers live here and never reach the final image.
 FROM python:3.11-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Install into a virtualenv so the runtime stage copies one self-contained
@@ -57,6 +64,25 @@ RUN pip install --no-cache-dir --no-compile -r requirements.txt \
 # PDF ever be routed to unstructured, this is where the ImportError comes from.
 RUN pip uninstall -y numba llvmlite \
     && ! python -c "import numba" 2>/dev/null
+
+# Research programs: pip targets, space-separated. Empty (the default) builds
+# core alone. A pinned git URL for a release build --
+#   RESEARCH_PROGRAMS="git+https://github.com/al3x3n0/kdbc-uarch-lab@v0.1.0"
+# -- or /programs for the checkout passed as the `programs` context. A private
+# repository's token comes in as the BuildKit secret `github_token`, which
+# never reaches a layer. --no-deps: a program runs against this image's core
+# and declares no packages of its own to resolve against it.
+ARG RESEARCH_PROGRAMS=""
+RUN --mount=type=bind,from=programs,target=/programs \
+    --mount=type=secret,id=github_token,required=false \
+    if [ -n "$RESEARCH_PROGRAMS" ]; then \
+      if [ -s /run/secrets/github_token ]; then \
+        git config --global url."https://x-access-token:$(cat /run/secrets/github_token)@github.com/".insteadOf "https://github.com/"; \
+      fi; \
+      pip install --no-cache-dir --no-compile --no-deps $RESEARCH_PROGRAMS; \
+      rm -f /root/.gitconfig; \
+      find /opt/venv -name "__pycache__" -type d -prune -exec rm -rf {} +; \
+    fi
 
 # Docker CLI for Docker-backed tool execution -- off by default in the image.
 #

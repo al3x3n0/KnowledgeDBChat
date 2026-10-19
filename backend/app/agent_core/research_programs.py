@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from importlib import metadata
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from loguru import logger
 
@@ -55,6 +55,18 @@ class ResearchProgram:
     #: ``SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES``: installing the program
     #: is the decision to run them.
     sandbox_images: Tuple[str, ...] = ()
+    #: How to rebuild each image, keyed by a name its reference contains, in
+    #: the shape ``agent_evidence_bundle.IMAGE_ORIGINS`` uses.
+    image_origins: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+    #: Tools whose results are evidence about the machine, archived in a run's
+    #: evidence bundle (``agent_evidence_bundle.evidence_tools``).
+    evidence_tools: Tuple[str, ...] = ()
+    #: ((tool, ...), module path): the module whose ``describe()`` holds the
+    #: methodology for those tools (``agent_evidence_map.method_notes``).
+    method_sources: Tuple[Tuple[Tuple[str, ...], str], ...] = ()
+    #: Per tool, fields taken as alternatives, in the shape
+    #: ``agent_tool_validation.ALTERNATIVE_FIELDS`` uses.
+    alternative_fields: Mapping[str, Tuple[Any, ...]] = field(default_factory=dict)
 
 
 @dataclass
@@ -167,6 +179,26 @@ def build_providers(executor: Any) -> List[Any]:
 
 def sandbox_images() -> List[str]:
     return [image for program in installed() for image in program.sandbox_images]
+
+
+def evidence_tools() -> set[str]:
+    return {name for program in installed() for name in program.evidence_tools}
+
+
+def image_origins() -> Dict[str, Mapping[str, str]]:
+    return {k: v for program in installed() for k, v in program.image_origins.items()}
+
+
+def method_sources() -> List[Tuple[Tuple[str, ...], str]]:
+    return [entry for program in installed() for entry in program.method_sources]
+
+
+def alternative_fields() -> Dict[str, Tuple[Any, ...]]:
+    return {
+        k: tuple(v)
+        for program in installed()
+        for k, v in program.alternative_fields.items()
+    }
 
 
 def status() -> Dict[str, Any]:

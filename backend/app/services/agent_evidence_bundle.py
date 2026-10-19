@@ -50,34 +50,18 @@ EVIDENCE_TOOLS = {
     "compile_c_snippet",
     "benchmark_c_snippet",
     "analyze_snippet_cycles",
-    "profile_c_workload",
-    "simulate_c_workload",
-    # A mechanism comparison is two simulations and a refusal rule; the
-    # bundle has to carry both arms, or a reviewer sees a ratio with
-    # nothing to check it against.
-    "simulate_mechanism",
-    "describe_gem5_mechanisms",
-    # A study is several simulations and a rule for reading them; the
-    # bundle carries every arm, or a reviewer sees a ratio and a curve
-    # with nothing behind them.
-    "explain_bottleneck",
-    "measure_headroom",
-    "sweep_mechanism",
-    "evaluate_across_kernels",
-    "sample_hardware_counters",
-    # The baseline a tuning claim is measured against. A bundle that records
-    # the tuned run but not the model it started from cannot show what the
-    # tuning changed.
-    "describe_model_parameters",
-    "find_fusion_candidates",
-    "cost_fusion_candidate",
-    "axis_check",
-    "axis_emit",
-    "axis_prove",
     "execute_python",
     "run_command",
     "write_and_run_script",
 }
+
+
+def evidence_tools() -> set:
+    """Core's evidence tools and every installed research program's."""
+    from app.agent_core import research_programs
+
+    return EVIDENCE_TOOLS | research_programs.evidence_tools()
+
 
 # Result fields big enough to deserve their own file, so a reviewer can diff an
 # assembly listing or a proof obligation directly instead of extracting it from
@@ -105,29 +89,15 @@ IMAGE_ORIGINS = {
         "dockerfile": "deploy/sandbox-images/microarch-research/Dockerfile",
         "context": "that directory",
     },
-    "kdbc-profiling-research": {
-        "dockerfile": "deploy/sandbox-images/profiling-research/Dockerfile",
-        "context": "that directory",
-    },
-    "kdbc-axis-research": {
-        "dockerfile": "deploy/sandbox-images/axis-research/Dockerfile",
-        "context": "the AXIS repository, not this one",
-    },
-    "kdbc-gem5-research": {
-        "dockerfile": "deploy/sandbox-images/gem5-research/Dockerfile",
-        # The repository root, not that directory, and the platform is not
-        # incidental: gem5 is built for the ARM ISA and the workload is
-        # compiled by the plain gcc inside the image, so the two agree only on
-        # arm64. Rebuilding this on x86_64 yields an image whose every
-        # simulation fails on a binary gem5 cannot execute.
-        "context": "that directory, built --platform linux/arm64",
-    },
 }
 
 
 def image_origin(reference: str) -> Dict[str, str]:
     """How to rebuild an image, when it is one of ours."""
-    for name, origin in IMAGE_ORIGINS.items():
+    from app.agent_core import research_programs
+
+    origins = {**IMAGE_ORIGINS, **research_programs.image_origins()}
+    for name, origin in origins.items():
         if name in (reference or ""):
             return dict(origin)
     return {}

@@ -191,7 +191,7 @@ def _tool_requires_params(tool_name: str) -> bool:
     """
     try:
         from app.agent_core.tool_catalog import get_tool_metadata
-        from app.services.agent_tool_validation import ALTERNATIVE_FIELDS
+        from app.services.agent_tool_validation import alternative_fields
 
         metadata = get_tool_metadata(tool_name)
         schema = getattr(metadata, "input_schema", None) or {}
@@ -199,7 +199,7 @@ def _tool_requires_params(tool_name: str) -> bool:
         # so `required` alone said "no arguments needed" and the critic's
         # pivot called clone_and_index_repo and scan_for_optimizations with
         # {} -- three wasted actions in one live run, each a certain refusal.
-        return bool(schema.get("required")) or tool_name in ALTERNATIVE_FIELDS
+        return bool(schema.get("required")) or bool(alternative_fields(tool_name))
     except Exception:
         return False
 

@@ -12,15 +12,15 @@ from app.agent_core.tool_specs import TOOL_DOMAINS, tool_domain
 from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 
 MEASUREMENT_LED = {
-    "explain_bottleneck": {"success": 2, "failure": 0},
-    "measure_headroom": {"success": 2, "failure": 0},
+    "benchmark_c_snippet": {"success": 2, "failure": 0},
+    "compile_c_snippet": {"success": 2, "failure": 0},
     "search_documents": {"success": 1, "failure": 0},
 }
 
 AVAILABLE = [
-    "sweep_mechanism",
-    "evaluate_across_kernels",
-    "simulate_mechanism",
+    "compare_to_claim",
+    "check_implementation",
+    "analyze_snippet_cycles",
     "search_documents",
     "search_arxiv",
 ]
@@ -28,7 +28,7 @@ AVAILABLE = [
 
 class TestTheDomainATooIBelongsTo:
     def test_a_tool_reports_the_module_that_declared_it(self):
-        assert tool_domain("simulate_mechanism") == "measurement"
+        assert tool_domain("benchmark_c_snippet") == "measurement"
         assert tool_domain("search_arxiv") == "research"
 
     def test_a_tool_with_no_spec_has_no_domain(self):
@@ -51,9 +51,9 @@ class TestAimingExploration:
         )
 
         assert aligned == [
-            "evaluate_across_kernels",
-            "simulate_mechanism",
-            "sweep_mechanism",
+            "analyze_snippet_cycles",
+            "check_implementation",
+            "compare_to_claim",
         ]
 
     def test_a_document_run_still_explores_documents(self):
@@ -72,7 +72,7 @@ class TestAimingExploration:
     def test_a_run_that_has_only_failed_is_not_aimed_at_its_failures(self):
         """Successes say what is working; failures say the opposite."""
         aligned = self.executor._domain_aligned_exploration_tools(
-            {"simulate_mechanism": {"success": 0, "failure": 4}}, AVAILABLE
+            {"benchmark_c_snippet": {"success": 0, "failure": 4}}, AVAILABLE
         )
 
         assert aligned == []

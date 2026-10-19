@@ -116,12 +116,29 @@ def test_recording_never_raises_on_unserializable_input(tmp_path):
 
 
 def test_only_evidence_producing_tools_are_bundled():
-    assert "simulate_c_workload" in bundle.EVIDENCE_TOOLS
-    assert "profile_c_workload" in bundle.EVIDENCE_TOOLS
-    assert "axis_prove" in bundle.EVIDENCE_TOOLS
+    assert "compile_c_snippet" in bundle.evidence_tools()
+    assert "benchmark_c_snippet" in bundle.evidence_tools()
+    assert "analyze_snippet_cycles" in bundle.evidence_tools()
     # A bundle of every search would bury the measurements a reviewer checks.
-    assert "search_arxiv" not in bundle.EVIDENCE_TOOLS
-    assert "write_progress_report" not in bundle.EVIDENCE_TOOLS
+    assert "search_arxiv" not in bundle.evidence_tools()
+    assert "write_progress_report" not in bundle.evidence_tools()
+
+
+def test_a_research_program_s_measurements_are_bundled_too(monkeypatch):
+    """A program's simulator is evidence about the machine like core's own."""
+    from app.agent_core import research_programs as programs
+
+    lab = programs.ResearchProgram(
+        name="lab",
+        evidence_tools=("simulate_thing",),
+        image_origins={"kdbc-thing": {"dockerfile": "images/thing/Dockerfile"}},
+    )
+    monkeypatch.setattr(programs, "_REPORT", programs.LoadReport(loaded=[lab]))
+
+    assert "simulate_thing" in bundle.evidence_tools()
+    assert bundle.image_origin("ghcr.io/x/kdbc-thing:1") == {
+        "dockerfile": "images/thing/Dockerfile"
+    }
 
 
 def test_the_bundle_carries_its_own_verifier_from_the_first_entry(tmp_path):
@@ -309,15 +326,9 @@ class TestImagePortability:
     """A pinned id is only useful if a reader can act on it."""
 
     def test_a_project_image_says_how_to_rebuild_it(self):
-        origin = bundle.image_origin("ghcr.io/al3x3n0/kdbc-profiling-research:latest")
+        origin = bundle.image_origin("ghcr.io/al3x3n0/kdbc-polyglot-slim:latest")
 
-        assert "profiling-research/Dockerfile" in origin["dockerfile"]
-
-    def test_the_axis_image_warns_that_its_context_is_another_repository(self):
-        """Building it against this repo silently produces the wrong image."""
-        origin = bundle.image_origin("ghcr.io/al3x3n0/kdbc-axis-research:latest")
-
-        assert "AXIS repository" in origin["context"]
+        assert "polyglot-slim/Dockerfile" in origin["dockerfile"]
 
     def test_an_unknown_image_claims_no_origin(self):
         assert bundle.image_origin("someone-elses/image:latest") == {}
@@ -327,18 +338,18 @@ class TestImagePortability:
     ):
         monkeypatch.setitem(
             bundle._image_details,
-            "ghcr.io/al3x3n0/kdbc-gem5-research:latest",
+            "ghcr.io/al3x3n0/kdbc-compiler-research:latest",
             {
-                "reference": "ghcr.io/al3x3n0/kdbc-gem5-research:latest",
+                "reference": "ghcr.io/al3x3n0/kdbc-compiler-research:latest",
                 "id": "sha256:aaa",
                 "size_bytes": 574_000_000,
                 "created": "2026-08-18",
-                "origin": bundle.image_origin("kdbc-gem5-research"),
+                "origin": bundle.image_origin("kdbc-compiler-research"),
             },
         )
         _record(
             tmp_path,
-            "simulate_c_workload",
+            "compile_c_snippet",
             {"code": "x"},
             {"success": True},
             image_id="sha256:aaa",

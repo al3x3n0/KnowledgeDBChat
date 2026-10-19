@@ -33,9 +33,9 @@ class TestTheRefusalDoesNotSuggestTheImpossible:
         """The wording was duplicated, so a fix to one left the other lying."""
         import inspect
 
-        from app.services import agent_compiler_sandbox, agent_gem5_sandbox
+        from app.services import agent_compiler_sandbox
 
-        for module in (agent_compiler_sandbox, agent_gem5_sandbox):
+        for module in (agent_compiler_sandbox,):
             source = inspect.getsource(module)
             assert "image_not_allowlisted(" in source, module.__name__
             assert (
@@ -99,10 +99,10 @@ class TestBoundedConclusionsAreActionable:
         assert "'cycles_per_multiply'" in text
 
     def test_a_type_a_tool_emits_is_left_alone(self):
-        """simulate_c_workload produces simulated_measurement; calling it is
+        """benchmark_c_snippet produces benchmark_measurement; calling it is
         the mechanism and repeating that would be noise."""
         assert (
-            self._how({"bounds": {"simulated_measurement": {"field": "instructions"}}})
+            self._how({"bounds": {"benchmark_measurement": {"field": "fastest_ms"}}})
             == ""
         )
 

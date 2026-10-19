@@ -102,7 +102,6 @@ from app.services.agent_tool_providers.workspace_mutation import (  # noqa: F401
     _new_file_diffs,
     _store_patch_proposal,
     build_autonomous_workspace_mutation_provider,
-    hot_blocks_from_findings,
 )
 from app.services.agent_tool_providers.workspace_read import (  # noqa: F401
     build_autonomous_workspace_read_provider,
@@ -157,5 +156,4 @@ __all__ = [
     "build_autonomous_workflow_provider",
     "build_autonomous_workspace_mutation_provider",
     "build_autonomous_workspace_read_provider",
-    "hot_blocks_from_findings",
 ]

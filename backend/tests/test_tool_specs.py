@@ -421,8 +421,6 @@ class TestThePassesAModelIsToldAboutExist:
     )
     #: Tools running in kdbc-compiler-research, which is where the plugins are.
     CAN_LOAD = ("compile_c_snippet", "benchmark_c_snippet", "analyze_snippet_cycles")
-    #: A different image with neither the plugins nor clang's plugin flag.
-    CANNOT_LOAD = ("profile_c_workload",)
 
     def test_every_declared_pass_has_a_source_file_that_builds_it(self):
         """Skipped in the test container, which mounts backend/ as /app and so
@@ -446,15 +444,6 @@ class TestThePassesAModelIsToldAboutExist:
             spec = next(s for s in SPECS if s.name == name)
             desc = spec.parameters["properties"]["flags"]["description"]
             assert "fpass-plugin" in desc, f"{name} never mentions the passes"
-
-    def test_the_tools_that_cannot_load_them_stay_quiet(self):
-        """Naming a flag the runtime would refuse is worse than naming none."""
-        for name in self.CANNOT_LOAD:
-            spec = next(s for s in SPECS if s.name == name)
-            desc = spec.parameters["properties"]["flags"]["description"]
-            assert (
-                "fpass-plugin" not in desc
-            ), f"{name} runs in a different image and would refuse the flag"
 
     def test_a_result_changing_pass_says_so_where_a_model_will_read_it(self):
         from app.services.agent_toolchains import describe_llvm_passes

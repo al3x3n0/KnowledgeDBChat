@@ -323,7 +323,7 @@ class AgentToolRegistry:
 
         from app.services import agent_evidence_bundle as bundle
 
-        if tool_name not in bundle.EVIDENCE_TOOLS:
+        if tool_name not in bundle.evidence_tools():
             return
         # A replay re-runs calls already in the bundle; recording them again
         # appended every one to the bundle being verified.

@@ -30,7 +30,7 @@ def _diamond():
             "stages": [
                 _stage("root", ["codegen_measurement"]),
                 _stage("bench", ["benchmark_measurement"], depends_on=["root"]),
-                _stage("sim", ["simulated_measurement"], depends_on=["root"]),
+                _stage("sim", ["literature_review"], depends_on=["root"]),
                 _stage("compare", ["prediction_recorded"], depends_on=["bench", "sim"]),
             ],
         }
@@ -50,8 +50,8 @@ class TestWhatItEmits:
             {
                 "name": "line",
                 "stages": [
-                    _stage("first", ["counter_trace"]),
-                    _stage("second", ["predictability_ceiling"], depends_on=["first"]),
+                    _stage("first", ["algorithm_spec"]),
+                    _stage("second", ["implementation_verified"], depends_on=["first"]),
                 ],
             }
         )
@@ -78,7 +78,7 @@ class TestWhatItEmits:
                 "stages": [
                     _stage(
                         "a",
-                        ["counter_trace"],
+                        ["algorithm_spec"],
                         loop={"max_iterations": 7, "until": "no_new_findings"},
                     )
                 ]
@@ -93,18 +93,18 @@ class TestWhatItEmits:
         pipeline = ps.normalize(
             {
                 "stages": [
-                    _stage("a", ["counter_trace"]),
+                    _stage("a", ["algorithm_spec"]),
                     _stage(
                         "b",
-                        ["predictability_ceiling"],
+                        ["implementation_verified"],
                         depends_on=["a"],
-                        assumes=["counter_trace"],
+                        assumes=["algorithm_spec"],
                     ),
                 ]
             }
         )
         child = _child_named(pb.bind(pipeline).roots[0], "b")
-        assert child["config"]["pipeline_assumes"] == ["counter_trace"]
+        assert child["config"]["pipeline_assumes"] == ["algorithm_spec"]
 
     def test_every_stage_reaches_the_binding(self):
         assert sorted(pb.bind(_diamond()).stage_ids()) == [
@@ -194,7 +194,7 @@ class TestRefusals:
                 "stages": [
                     _stage("root", ["codegen_measurement"]),
                     _stage("x", ["benchmark_measurement"], depends_on=["root"]),
-                    _stage("y", ["simulated_measurement"], depends_on=["root"]),
+                    _stage("y", ["literature_review"], depends_on=["root"]),
                     _stage("z", ["cycle_model_measurement"], depends_on=["root"]),
                     _stage("join", ["prediction_recorded"], depends_on=["x", "y"]),
                 ]
@@ -224,8 +224,10 @@ class TestCheckpoints:
             {
                 "name": "gated",
                 "stages": [
-                    _stage("measure", ["counter_trace"], checkpoint=True),
-                    _stage("after", ["predictability_ceiling"], depends_on=["measure"]),
+                    _stage("measure", ["algorithm_spec"], checkpoint=True),
+                    _stage(
+                        "after", ["implementation_verified"], depends_on=["measure"]
+                    ),
                 ],
             }
         )
@@ -239,8 +241,8 @@ class TestCheckpoints:
         pipeline = ps.normalize(
             {
                 "stages": [
-                    _stage("a", ["counter_trace"]),
-                    _stage("b", ["predictability_ceiling"], depends_on=["a"]),
+                    _stage("a", ["algorithm_spec"]),
+                    _stage("b", ["implementation_verified"], depends_on=["a"]),
                 ]
             }
         )
@@ -257,14 +259,14 @@ class TestCheckpoints:
         pipeline = ps.normalize(
             {
                 "stages": [
-                    _stage("first", ["counter_trace"]),
+                    _stage("first", ["algorithm_spec"]),
                     _stage(
                         "gate",
-                        ["predictability_ceiling"],
+                        ["implementation_verified"],
                         depends_on=["first"],
                         checkpoint=True,
                     ),
-                    _stage("last", ["counter_tap_selection"], depends_on=["gate"]),
+                    _stage("last", ["prediction_recorded"], depends_on=["gate"]),
                 ]
             }
         )

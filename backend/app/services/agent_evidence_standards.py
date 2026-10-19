@@ -17,6 +17,14 @@ at run time:
   `benchmark_measurement`: one trial is not a measurement, and the tool
   already says so in a warning nobody was obliged to read.
 
+  A BENCHMARK HAS A BASELINE BESIDE IT. `distinct_subjects` of
+  `BASELINE_MIN_SUBJECTS` on `benchmark_measurement`: a time for the
+  candidate alone says nothing about whether to adopt it. The second
+  self-approved campaign timed fastmod and never plain `%`, and concluded,
+  correctly, that it could not say whether fastmod was worth adopting. Timing
+  the candidate twice is not a baseline, which is why this counts subjects
+  rather than findings.
+
   AN IMPLEMENTATION IS CHECKED AGAINST AN ORACLE. A bound of
   `generated_cases >= ORACLE_MIN_CASES` on `implementation_verified`, met only
   by `check_implementation` with a reference and a generator. Hand-written
@@ -38,13 +46,18 @@ from app.services.agent_pipeline_spec import _required_types
 #: Generated inputs an oracle check must have compared.
 ORACLE_MIN_CASES = 50
 
+#: Different subjects a benchmark stage must have timed: the candidate and
+#: what it would replace.
+BASELINE_MIN_SUBJECTS = 2
+
 #: What the drafter is told, so the stages it writes can meet the standard
 #: rather than discover it at run time.
 DRAFTER_NOTE = (
     "Evidence standard for this plan (it will be enforced): a stage that "
     "requires benchmark_measurement must report a spread -- several trials, "
-    "never one; a stage that decides whether one implementation beats another "
-    "measures BOTH, so require two benchmark_measurement findings; a stage "
+    "never one -- and must time the baseline (the plain implementation the "
+    "candidate would replace) beside the candidate, each under its own label, "
+    "so say so in its goal; a stage "
     "that requires implementation_verified must check the code with "
     "check_implementation against a reference implementation (the obvious, "
     f"slow, correct one) and a generator of at least {ORACLE_MIN_CASES} "
@@ -80,6 +93,20 @@ def apply(spec: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
             if "benchmark_measurement" not in wanted:
                 validity["require_uncertainty"] = wanted + ["benchmark_measurement"]
                 notes.append(f"{name}: benchmark_measurement must report a spread")
+            distinct = validity.get("distinct_subjects")
+            if not isinstance(distinct, dict):
+                distinct = {}
+                validity["distinct_subjects"] = distinct
+            try:
+                current = int(distinct.get("benchmark_measurement") or 0)
+            except (TypeError, ValueError):
+                current = 0
+            if current < BASELINE_MIN_SUBJECTS:
+                distinct["benchmark_measurement"] = BASELINE_MIN_SUBJECTS
+                notes.append(
+                    f"{name}: benchmark_measurement must time a baseline "
+                    "beside the candidate"
+                )
 
         if "implementation_verified" in required:
             validity = _validity(contract)

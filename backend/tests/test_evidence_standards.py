@@ -125,7 +125,56 @@ class TestWhatItThenRefuses:
             "validity:uncertainty:benchmark_measurement"
             in validity.evaluate(contract, one)["missing"]
         )
-        assert validity.evaluate(contract, five)["missing"] == []
+        assert "validity:uncertainty:benchmark_measurement" not in (
+            validity.evaluate(contract, five)["missing"]
+        )
+
+    def test_a_candidate_timed_without_its_baseline_does_not_meet_it(self):
+        """Found live: fastmod timed, plain % never, and nothing concluded."""
+        contract = contract_of(standards.apply(SPEC)[0], "benchmark")
+        trials = [68, 69, 70, 68, 71]
+        twice = {
+            "findings": [
+                {"type": "benchmark_measurement", "subject": "fastmod", "all_ms": [68]},
+                {
+                    "type": "benchmark_measurement",
+                    "subject": "fastmod",
+                    "all_ms": trials,
+                },
+            ]
+        }
+        both = {
+            "findings": [
+                {
+                    "type": "benchmark_measurement",
+                    "subject": "fastmod",
+                    "all_ms": trials,
+                },
+                {
+                    "type": "benchmark_measurement",
+                    "subject": "plain %",
+                    "all_ms": trials,
+                },
+            ]
+        }
+
+        missing = validity.evaluate(contract, twice)["missing"]
+        assert missing == ["validity:distinct_subjects:benchmark_measurement"]
+        (remedy,) = validity.explain(
+            missing, validity.evaluate(contract, twice)["details"]
+        )
+        assert "baseline" in remedy and "fastmod" in remedy
+        assert validity.evaluate(contract, both)["missing"] == []
+
+    def test_a_stronger_baseline_rule_is_kept(self):
+        own = copy.deepcopy(SPEC)
+        contract_of(own, "benchmark")["validity"] = {
+            "distinct_subjects": {"benchmark_measurement": 3}
+        }
+
+        raised = contract_of(standards.apply(own)[0], "benchmark")
+
+        assert raised["validity"]["distinct_subjects"] == {"benchmark_measurement": 3}
 
     def test_hand_written_cases_do_not_meet_the_implementation_stage(self):
         contract = contract_of(standards.apply(SPEC)[0], "implement")
@@ -191,7 +240,7 @@ async def test_a_proposed_plan_carries_the_standard_to_its_stages(
     assert result.get("success") is True, result
     assert "Evidence standard for this plan" in model.asked[0]
     proposal = planning.proposal_of(job)
-    assert len(proposal["evidence_standards"]) == 2
+    assert len(proposal["evidence_standards"]) == 3
     assert "Held to:" in planning.approval_message(proposal)
     (first,) = job.chain_config["child_jobs"]
     contract = (first.get("config") or {}).get("goal_contract") or {}

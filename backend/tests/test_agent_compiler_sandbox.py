@@ -190,6 +190,31 @@ async def test_benchmark_reports_a_finding_too(enabled, monkeypatch):
     assert result["findings"][0]["fastest_ms"] == 37
 
 
+@pytest.mark.asyncio
+async def test_a_benchmark_keeps_the_source_it_timed(enabled, monkeypatch):
+    """Found live: asked to re-measure, a stage could not find what it timed."""
+
+    async def _fake_run(script, workdir, *, image, timeout_seconds):
+        return 0, "__elapsed_ms__ 42\n", ""
+
+    monkeypatch.setattr(sandbox, "_run", _fake_run)
+    code = "int main(){return 0;}"
+
+    (finding,) = (await sandbox.benchmark_c_snippet(code=code))["findings"]
+    (long,) = (
+        await sandbox.benchmark_c_snippet(
+            code=code + " " * sandbox.MAX_RECORDED_SOURCE_CHARS
+        )
+    )["findings"]
+
+    assert finding["source"] == code
+    assert len(finding["source_sha256"]) == 64
+    assert "source_truncated" not in finding
+    assert long["source_truncated"] is True
+    assert len(long["source"]) == sandbox.MAX_RECORDED_SOURCE_CHARS
+    assert long["source_sha256"] != finding["source_sha256"]
+
+
 def test_subject_prefers_an_explicit_label():
     assert sandbox.describe_subject(
         "int f(void){return 0;}", "float sum reduction"

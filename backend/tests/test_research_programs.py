@@ -176,6 +176,7 @@ def test_an_installed_distribution_joins_the_catalog(tmp_path):
             PROGRAM = ResearchProgram(
                 name="fake_lab",
                 version="0.1",
+                sandbox_images=("ghcr.io/example/fake-lab:1",),
                 tool_specs=(
                     ToolSpec(
                         name="fake_lab_measure",
@@ -198,6 +199,11 @@ def test_an_installed_distribution_joins_the_catalog(tmp_path):
     )
     probe = textwrap.dedent(
         """
+        # Asked first, before anything has imported the catalog that loads
+        # programs: the answer must not depend on import order.
+        from app.services import agent_sandbox_runtime
+        print("image", "ghcr.io/example/fake-lab:1" in agent_sandbox_runtime.allowed_images())
+
         from app.agent_core import tool_specs
         from app.services import agent_evidence_map
 
@@ -221,6 +227,7 @@ def test_an_installed_distribution_joins_the_catalog(tmp_path):
     )
 
     assert run.returncode == 0, run.stderr[-2000:]
+    assert "image True" in run.stdout
     assert "schema True" in run.stdout
     assert "domain fake_lab" in run.stdout
     assert "evidence True" in run.stdout

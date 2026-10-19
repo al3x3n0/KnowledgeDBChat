@@ -60,7 +60,9 @@ jobs:
   backend-tests:
     name: Backend tests
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # The suite alone took 43m38s on 2026-10-19 (8305 tests), and the job was
+    # cancelled at 45 while running the steps after it.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

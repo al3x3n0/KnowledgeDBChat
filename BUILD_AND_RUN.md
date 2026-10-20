@@ -375,6 +375,21 @@ program removes its contributed tools and allowed sandbox images from that
 process; it does not uninstall the package or delete independently configured
 image allowlist entries.
 
+#### Public compiler APIs for program authors
+
+Use `app.services.agent_compiler_sandbox.clean_flags(flags)` to validate and
+strip compiler flags (`None` means unsupported characters; an empty string is
+valid), and `mca_summary(payload)` to read the first region's `SummaryView` from
+an llvm-mca JSON report (an empty dictionary means no valid summary).
+
+Execute sandbox commands through
+`app.services.agent_sandbox_runtime.run_in_sandbox(script, workdir, image=..., timeout_seconds=...)`.
+It returns `(returncode, stdout, stderr)` and manages timeout/cancellation
+cleanup. Callers must check execution enablement and image allowlisting before
+invoking this low-level runner. The compiler module retains `_clean_flags`,
+`_mca_summary`, and `_run` for compatibility with older installed programs.
+Upgrade core before installing a program version that uses the public helpers.
+
 #### Verify the API and workers
 
 Open **Admin → Research Programs** (or `/admin?tab=research-programs`) to see

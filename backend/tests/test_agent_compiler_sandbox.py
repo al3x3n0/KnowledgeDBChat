@@ -17,17 +17,22 @@ def enabled(monkeypatch):
     )
 
 
-def test_flags_allow_ordinary_compiler_options():
-    assert sandbox._clean_flags("-O3 -ffast-math -march=armv8-a") is not None
-    assert sandbox._clean_flags("") == ""
+@pytest.mark.parametrize("helper", ["clean_flags", "_clean_flags"])
+def test_flags_allow_ordinary_compiler_options(helper):
+    clean = getattr(sandbox, helper)
+    assert (
+        clean("  -O3 -ffast-math -march=armv8-a  ") == "-O3 -ffast-math -march=armv8-a"
+    )
+    assert clean("") == ""
 
 
 @pytest.mark.parametrize(
     "flags",
     ["-O2; rm -rf /", "-O2 && curl evil", "-O2 `id`", "-O2 $(whoami)", "-O2 | sh"],
 )
-def test_flags_reject_shell_metacharacters(flags):
-    assert sandbox._clean_flags(flags) is None
+@pytest.mark.parametrize("helper", ["clean_flags", "_clean_flags"])
+def test_flags_reject_shell_metacharacters(flags, helper):
+    assert getattr(sandbox, helper)(flags) is None
 
 
 @pytest.mark.asyncio
@@ -312,18 +317,30 @@ class TestCycleAnalysis:
 
         assert "target contains unsupported characters" in result["error"]
 
-    def test_the_summary_is_read_from_the_report(self):
+    @pytest.mark.parametrize("helper", ["mca_summary", "_mca_summary"])
+    def test_the_summary_is_read_from_the_report(self, helper):
         payload = {
             "CodeRegions": [
                 {"SummaryView": {"TotalCycles": 2414, "Iterations": 100, "IPC": 2.23}}
             ]
         }
 
-        assert sandbox._mca_summary(payload)["TotalCycles"] == 2414
+        assert getattr(sandbox, helper)(payload)["TotalCycles"] == 2414
 
-    def test_a_report_with_no_region_yields_nothing_rather_than_raising(self):
-        assert sandbox._mca_summary({"CodeRegions": []}) == {}
-        assert sandbox._mca_summary({}) == {}
+    @pytest.mark.parametrize("helper", ["mca_summary", "_mca_summary"])
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {},
+            {"CodeRegions": []},
+            {"CodeRegions": [None]},
+            {"CodeRegions": [{"SummaryView": []}]},
+        ],
+    )
+    def test_a_report_with_no_region_yields_nothing_rather_than_raising(
+        self, helper, payload
+    ):
+        assert getattr(sandbox, helper)(payload) == {}
 
 
 def test_a_whole_function_estimate_is_flagged_as_not_being_a_loop():

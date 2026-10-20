@@ -43,6 +43,7 @@ from app.schemas.admin import (
     IngestionSourceStatusResponse,
     IngestionStatusResponse,
     IngestionVectorStoreStatusResponse,
+    ResearchProgramsStatus,
     SystemStatsResponse,
     TaskTriggerResponse,
 )
@@ -102,6 +103,14 @@ async def _set_download_task(task_id: str, payload: dict, ttl: int = 3600) -> No
 async def _get_download_task(task_id: str) -> dict | None:
     value = await cache_service.get(f"admin:download-task:{task_id}")
     return value if isinstance(value, dict) else None
+
+
+@router.get("/research-programs", response_model=ResearchProgramsStatus)
+async def research_programs_status(current_user: User = Depends(require_admin)):
+    """Which research programs this process loaded, and why any were not."""
+    from app.agent_core import research_programs
+
+    return research_programs.status()
 
 
 @router.get("/whisper/status")

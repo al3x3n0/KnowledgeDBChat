@@ -37,10 +37,15 @@ REMOVE_TIMEOUT_SECONDS = 20
 
 
 def allowed_images() -> List[str]:
+    from app.agent_core import research_programs
     from app.core.config import settings
 
     raw = getattr(settings, "SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES", "") or ""
-    return [item.strip() for item in raw.split(",") if item.strip()]
+    configured = [item.strip() for item in raw.split(",") if item.strip()]
+    # An installed research program's images are allowed: installing the
+    # program is the decision to run them.
+    extra = [i for i in research_programs.sandbox_images() if i not in configured]
+    return configured + extra
 
 
 def execution_enabled() -> bool:

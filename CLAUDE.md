@@ -580,6 +580,27 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   `workflow_engine.NODE_TYPES` rather than restated, and node ids are
   **refused** when longer than the `String(50)` column rather than truncated —
   shortening an identifier changes which node an edge names.
+- **Research programs** — domain research code that lives **outside this
+  repository** (`app/agent_core/research_programs.py`; decided 2026-10-19).
+  Core is the lab: the run loop, contracts, the sandbox, review, the knowledge
+  base. A line of research's own tools (a simulator driver, a binary rewriter,
+  the images they run in) are a *program*: a Python package in its own repo,
+  pip-installed into the backend and worker images, found through the
+  `kdbc.research_programs` entry point. It declares `ToolSpec`s exactly as a
+  built-in does, provider factories for their handlers, and its sandbox
+  images. **Installed means available**: its tools are appended to
+  `TOOL_SPECS` at import, so the model's menu, governance, job-type policy and
+  the evidence map see them unchanged (`TOOL_DOMAINS` lists them under the
+  program's name); the executor registers its providers after the built-ins;
+  its images join `allowed_images()`, since installing the program is the
+  decision to run them. A program that will not import, or that declares a
+  tool a built-in or another program already has, is refused **whole**,
+  logged, and shown by `GET /admin/research-programs` -- it does not stop the
+  API. `RESEARCH_PROGRAMS_DISABLED` leaves one out by name. Plugins and
+  sandbox skills stay the UI-authored, data-only extension points; a program
+  is code and is trusted like the rest of the image. **Core never imports a
+  program.** New domain-specific tools belong in a program, not in
+  `app/services`.
 - **Sandbox skills** — a sandboxed capability written as *data*. Every
   sandbox tool used to be a handler plus a `ToolSpec`, so a new kind of
   sandboxed work was a code change and a pipeline could only require evidence

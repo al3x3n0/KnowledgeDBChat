@@ -491,6 +491,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/research-programs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Research Programs Status
+         * @description Which research programs this process loaded, and why any were not.
+         */
+        get: operations["research_programs_status_api_v1_admin_research_programs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/sources/next-run": {
         parameters: {
             query?: never;
@@ -26633,6 +26653,59 @@ export interface components {
             /** Title */
             title?: string | null;
         };
+        /** ResearchProgramFailure */
+        ResearchProgramFailure: {
+            /** Name */
+            name: string;
+            /** Reason */
+            reason: string;
+        };
+        /** ResearchProgramInfo */
+        ResearchProgramInfo: {
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Name */
+            name: string;
+            /**
+             * Sandbox Images
+             * @default []
+             */
+            sandbox_images: string[];
+            /**
+             * Tools
+             * @default []
+             */
+            tools: string[];
+            /**
+             * Version
+             * @default
+             */
+            version: string;
+        };
+        /**
+         * ResearchProgramsStatus
+         * @description Installed research programs: loaded, refused, and turned off.
+         */
+        ResearchProgramsStatus: {
+            /**
+             * Disabled
+             * @default []
+             */
+            disabled: string[];
+            /**
+             * Failed
+             * @default []
+             */
+            failed: components["schemas"]["ResearchProgramFailure"][];
+            /**
+             * Loaded
+             * @default []
+             */
+            loaded: components["schemas"]["ResearchProgramInfo"][];
+        };
         /** ResearcherOutput */
         ResearcherOutput: {
             /** Findings */
@@ -30314,6 +30387,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    research_programs_status_api_v1_admin_research_programs_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResearchProgramsStatus"];
                 };
             };
             /** @description Validation Error */

@@ -27,6 +27,7 @@ from sqlalchemy import desc, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
+from app.agent_core import research_programs
 from app.agent_core.runtime import AgentRuntimeRunner
 from app.agent_core.tool_specs.spec import ToolSpec
 from app.models.agent_definition import AgentDefinition
@@ -1827,6 +1828,8 @@ class AutonomousAgentExecutor:
                 build_autonomous_snapshot_provider(self),
                 build_autonomous_project_bootstrap_provider(self),
                 build_autonomous_sandbox_skill_provider(self),
+                # Installed research programs, after every built-in.
+                *research_programs.build_providers(self),
                 # Last: it claims the reserved `p_` namespace, which no
                 # built-in may occupy, so ordering cannot matter -- but a
                 # contributed tool should never be ahead of a first-party one

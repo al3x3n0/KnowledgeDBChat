@@ -334,14 +334,16 @@ def method_notes(required: Iterable[str]) -> List[str]:
     lines: List[str] = []
     from app.agent_core import research_programs
 
-    sources = list(_METHOD_SOURCES) + research_programs.method_sources()
-    for owned, module_path in sources:
+    for owned, module_path in _METHOD_SOURCES:
         if not tools.intersection(owned):
             continue
         module = importlib.import_module(module_path)
         for line in module.describe():
             if line not in lines:
                 lines.append(line)
+    for line in research_programs.method_notes(tools):
+        if line not in lines:
+            lines.append(line)
     return lines
 
 

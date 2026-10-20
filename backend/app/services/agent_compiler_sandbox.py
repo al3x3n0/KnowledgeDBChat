@@ -261,10 +261,18 @@ def parse_reported_metrics(output: str) -> Dict[str, List[float]]:
     return metrics
 
 
-def _clean_flags(flags: str) -> Optional[str]:
-    """Return usable flags, or None if they contain shell metacharacters."""
+def clean_flags(flags: str) -> Optional[str]:
+    """Return stripped compiler flags, or None for unsupported shell characters.
+
+    Public utility for research programs that build compiler command lines.
+    Empty input is valid and returns an empty string.
+    """
     candidate = (flags or "").strip()
     return candidate if SAFE_FLAGS.match(candidate) else None
+
+
+# Compatibility for installed programs using the earlier private helper.
+_clean_flags = clean_flags
 
 
 # The confinement posture lives in one module so a second copy cannot drift
@@ -921,12 +929,20 @@ async def benchmark_c_snippet(
     }
 
 
-def _mca_summary(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Pull the per-region summary out of llvm-mca's JSON report."""
+def mca_summary(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the first region's SummaryView from an llvm-mca JSON report.
+
+    Public utility for research programs. Missing or malformed region/summary
+    data returns an empty dictionary, matching the compiler tools' behavior.
+    """
     regions = payload.get("CodeRegions")
     region = regions[0] if isinstance(regions, list) and regions else {}
     summary = region.get("SummaryView") if isinstance(region, dict) else {}
     return summary if isinstance(summary, dict) else {}
+
+
+# Compatibility for installed programs using the earlier private helper.
+_mca_summary = mca_summary
 
 
 async def analyze_snippet_cycles(

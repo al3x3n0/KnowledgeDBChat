@@ -1713,6 +1713,11 @@ class ApiClient {
     return response.data;
   }
 
+  async getResearchPrograms(): Promise<components['schemas']['ResearchProgramsStatus']> {
+    const response = await this.client.get('/api/v1/admin/research-programs');
+    return response.data;
+  }
+
   // Directory (LDAP) integration (admin). Types come from the generated
   // schema: these responses are not mirrored by hand in types/index.ts.
   async getLdapStatus(): Promise<components['schemas']['LdapStatusResponse']> {

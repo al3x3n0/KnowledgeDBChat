@@ -52,7 +52,7 @@ class TestCheckingBeforeAnythingRuns:
                 _stage("measure", ["benchmark_measurement"]),
                 _stage(
                     "explain",
-                    ["bottleneck_attribution"],
+                    ["cycle_model_measurement"],
                     depends_on=["measure"],
                     assumes=["benchmark_measurement"],
                 ),
@@ -81,9 +81,9 @@ class TestCheckingBeforeAnythingRuns:
                 _stage("measure", ["benchmark_measurement"]),
                 _stage(
                     "explain",
-                    ["bottleneck_attribution"],
+                    ["cycle_model_measurement"],
                     depends_on=["measure"],
-                    assumes=["counter_trace"],
+                    assumes=["algorithm_spec"],
                 ),
             )
         }
@@ -97,13 +97,13 @@ class TestCheckingBeforeAnythingRuns:
         # cannot act on it.
         joined = " ".join(body["problems"])
         assert "explain" in joined
-        assert "counter_trace" in joined
+        assert "algorithm_spec" in joined
 
     def test_a_cycle_is_refused(self, client, auth_headers):
         payload = {
             "spec": _spec(
-                _stage("a", ["bottleneck_attribution"], depends_on=["b"]),
-                _stage("b", ["bottleneck_attribution"], depends_on=["a"]),
+                _stage("a", ["cycle_model_measurement"], depends_on=["b"]),
+                _stage("b", ["cycle_model_measurement"], depends_on=["a"]),
             )
         }
         body = (client.post(CHECK, json=payload, headers=auth_headers)).json()
@@ -119,8 +119,8 @@ class TestCheckingBeforeAnythingRuns:
         # discover a spec is unusable.
         payload = {
             "spec": _spec(
-                _stage("a", ["bottleneck_attribution"], depends_on=["missing"]),
-                _stage("b", ["bottleneck_attribution"], assumes=["never_produced"]),
+                _stage("a", ["cycle_model_measurement"], depends_on=["missing"]),
+                _stage("b", ["cycle_model_measurement"], assumes=["never_produced"]),
             )
         }
         body = (client.post(CHECK, json=payload, headers=auth_headers)).json()
@@ -173,7 +173,7 @@ class TestCompilingToAChain:
                 _stage("measure", ["benchmark_measurement"]),
                 _stage(
                     "explain",
-                    ["bottleneck_attribution"],
+                    ["cycle_model_measurement"],
                     depends_on=["measure"],
                     assumes=["benchmark_measurement"],
                 ),
@@ -193,8 +193,8 @@ class TestCompilingToAChain:
     ):
         payload = {
             "spec": _spec(
-                _stage("a", ["bottleneck_attribution"], depends_on=["b"]),
-                _stage("b", ["bottleneck_attribution"], depends_on=["a"]),
+                _stage("a", ["cycle_model_measurement"], depends_on=["b"]),
+                _stage("b", ["cycle_model_measurement"], depends_on=["a"]),
             )
         }
         response = client.post(BIND, json=payload, headers=auth_headers)
@@ -210,7 +210,7 @@ class TestCompilingToAChain:
                 _stage("measure", ["benchmark_measurement"], checkpoint=True),
                 _stage(
                     "explain",
-                    ["bottleneck_attribution"],
+                    ["cycle_model_measurement"],
                     depends_on=["measure"],
                     assumes=["benchmark_measurement"],
                 ),
@@ -239,7 +239,7 @@ class TestLaunchingOne:
             _stage("measure", ["benchmark_measurement"]),
             _stage(
                 "attribute",
-                ["bottleneck_attribution"],
+                ["cycle_model_measurement"],
                 depends_on=["measure"],
                 assumes=["benchmark_measurement"],
             ),
@@ -262,14 +262,14 @@ class TestLaunchingOne:
             "spec": _spec(
                 _stage(
                     "attribute",
-                    ["bottleneck_attribution"],
-                    assumes=["counter_trace"],
+                    ["cycle_model_measurement"],
+                    assumes=["algorithm_spec"],
                 )
             )
         }
         response = client.post(LAUNCH, json=payload, headers=auth_headers)
         assert response.status_code == 422
-        assert "counter_trace" in response.json()["detail"]
+        assert "algorithm_spec" in response.json()["detail"]
 
     def test_a_budget_is_a_refusal_here_rather_than_a_note(self, client, auth_headers):
         # On /check a budget is information. At launch it has to stop the run,
@@ -316,7 +316,7 @@ class TestLaunchingOne:
         payload = {
             "spec": _spec(
                 _stage("one", ["benchmark_measurement"]),
-                _stage("two", ["dynamic_profile"]),
+                _stage("two", ["codegen_measurement"]),
             )
         }
         response = client.post(LAUNCH, json=payload, headers=auth_headers)
@@ -447,7 +447,7 @@ class TestSavingOne:
             _stage("measure", ["benchmark_measurement"]),
             _stage(
                 "attribute",
-                ["bottleneck_attribution"],
+                ["cycle_model_measurement"],
                 depends_on=["measure"],
                 assumes=["benchmark_measurement"],
             ),
@@ -812,7 +812,7 @@ class TestARunBelongsToWhoeverLaunchedIt:
             f"{run}/insert-stage",
             json={
                 "after": "measure",
-                "stage": _stage("extra", ["bottleneck_attribution"]),
+                "stage": _stage("extra", ["cycle_model_measurement"]),
             },
             headers=stranger_headers,
         )

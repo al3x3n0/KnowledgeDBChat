@@ -120,7 +120,11 @@ class TestWhatIsNeverReplayed:
         assert len(sandbox["calls"]) == 2
 
     def test_no_wall_clock_tool_uses_the_cache(self):
-        """Two honest timings disagree; replaying one reports a run nobody made."""
+        """Two honest timings disagree; replaying one reports a run nobody made.
+
+        Core's users only: the gem5 modules that use the cache live in the
+        uarch_lab research program, which pins its own.
+        """
         app = Path(__file__).resolve().parents[1] / "app" / "services"
         users = {
             p.name
@@ -130,8 +134,6 @@ class TestWhatIsNeverReplayed:
 
         assert users == {
             "sandbox_result_cache.py",
-            "agent_gem5_sandbox.py",
-            "agent_gem5_mechanism.py",
             "agent_evidence_bundle.py",
         }
 

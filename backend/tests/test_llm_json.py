@@ -259,13 +259,13 @@ def test_require_raises_with_the_callers_own_message():
 
 
 def test_every_drafter_parses_through_the_shared_helper():
-    """Four drafters each carried a copy of `_payload`. A fix to one -- an
+    """Four drafters each carried a copy of `_payload` (the fourth now lives in
+    the uarch_lab research program and is checked there). A fix to one -- an
     empty `structured`, a reply wrapped in a sentence -- did not reach the
     others."""
     from app.services import (
         agent_campaign_intent,
         agent_definition_author_service,
-        agent_restructure_proposer,
         plugin_author_service,
     )
 
@@ -273,7 +273,6 @@ def test_every_drafter_parses_through_the_shared_helper():
     for module in (
         agent_campaign_intent,
         agent_definition_author_service,
-        agent_restructure_proposer,
         plugin_author_service,
     ):
         assert module._payload(completion) == {"name": "x"}, module.__name__

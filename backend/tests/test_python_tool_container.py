@@ -518,7 +518,8 @@ async def test_a_link_out_of_the_repository_does_not_bring_the_file_with_it(
 
 def test_every_copy_of_a_repository_into_the_sandbox_leaves_links_out():
     """The scan, restructuring and BOLT tools copy a repository the same way,
-    and followed links the same way."""
+    and followed links the same way. Those three now live in the uarch_lab
+    research program, which runs this check over its own code."""
     import ast
 
     backend = Path(__file__).resolve().parents[1]
@@ -534,7 +535,7 @@ def test_every_copy_of_a_repository_into_the_sandbox_leaves_links_out():
                 keywords = {k.arg: ast.unparse(k.value) for k in node.keywords}
                 copies.append((path.name, keywords))
 
-    assert len(copies) >= 5
+    assert len(copies) >= 2
     for name, keywords in copies:
         safe = keywords.get("ignore") == "without_git_or_links" or (
             keywords.get("symlinks") == "True"

@@ -321,45 +321,21 @@ sandbox-polyglot: ## Build the polyglot-slim image (C + Rust + Python, no crates
 	docker build -t $(SANDBOX_REGISTRY)/kdbc-polyglot-slim:latest \
 	  deploy/sandbox-images/polyglot-slim
 
-sandbox-profiling: sandbox-base ## Build the profiling-research image
-	docker build -t $(SANDBOX_REGISTRY)/kdbc-profiling-research:latest \
-	  deploy/sandbox-images/profiling-research
-
 sandbox-microarch: sandbox-base ## Build the microarch-research image
 	docker build -t $(SANDBOX_REGISTRY)/kdbc-microarch-research:latest \
 	  deploy/sandbox-images/microarch-research
 
-sandbox-gem5: ## Build the gem5-research image (arm64 only -- see deploy/sandbox-images/README.md)
-	docker build --platform linux/arm64 \
-	  -t $(SANDBOX_REGISTRY)/kdbc-gem5-research:latest \
-	  deploy/sandbox-images/gem5-research
+sandbox-images: sandbox-compiler sandbox-polyglot sandbox-microarch ## Build every sandbox image this repo can build
+	@echo "Built from this repository. A research program's images (gem5, BOLT,"
+	@echo "pass-dev, profiling, AXIS) are built from the program's repository:"
+	@echo "see its Makefile."
 
-sandbox-pass-dev: sandbox-base ## Build the pass-dev image (LLVM headers, for building plugins)
-	docker build -f deploy/sandbox-images/pass-dev/Dockerfile \
-	  -t $(SANDBOX_REGISTRY)/kdbc-pass-dev:latest .
-
-sandbox-axis: ## Build the axis-research image (needs AXIS_PATH=/path/to/axis)
-	@test -n "$(AXIS_PATH)" || { \
-	  echo "AXIS_PATH is required: AXIS lives in its own repository and is the"; \
-	  echo "build context. e.g. make sandbox-axis AXIS_PATH=/path/to/KevinAI/axis"; \
-	  exit 1; }
-	docker build -f deploy/sandbox-images/axis-research/Dockerfile \
-	  --build-arg AXIS_GIT_REV="$$(git -C $(AXIS_PATH) describe --always --dirty 2>/dev/null || echo unknown)" \
-	  -t $(SANDBOX_REGISTRY)/kdbc-axis-research:latest $(AXIS_PATH)
-
-sandbox-bolt: sandbox-base ## Build the bolt-research image (llvm-bolt 19, for rewriting linked executables)
-	docker build -f deploy/sandbox-images/bolt-research/Dockerfile \
-	  -t $(SANDBOX_REGISTRY)/kdbc-bolt-research:latest .
-
-sandbox-images: sandbox-compiler sandbox-polyglot sandbox-profiling sandbox-microarch sandbox-pass-dev sandbox-bolt ## Build every sandbox image this repo can build
-	@echo "Built from this repository. gem5 (make sandbox-gem5, arm64) and"
-	@echo "axis (make sandbox-axis AXIS_PATH=...) are separate: see"
-	@echo "deploy/sandbox-images/README.md for why."
-
+# A research program adds its own images here, so sandbox-load and
+# sandbox-check cover them: make sandbox-load EXTRA_SANDBOX_IMAGES="..."
+# (the program's Makefile does this for you).
+EXTRA_SANDBOX_IMAGES ?=
 SANDBOX_IMAGE_NAMES := kdbc-sandbox-base kdbc-compiler-research kdbc-polyglot-slim \
-                       kdbc-profiling-research kdbc-microarch-research \
-                       kdbc-gem5-research kdbc-axis-research kdbc-pass-dev \
-                       kdbc-bolt-research
+                       kdbc-microarch-research $(EXTRA_SANDBOX_IMAGES)
 
 SANDBOX_IMAGE_FINGERPRINT := {{.Created}}{{range .RootFS.Layers}} {{.}}{{end}}
 
@@ -416,16 +392,6 @@ sandbox-check: ## Report which sandbox images exist, what they carry, and whethe
 	done
 	@docker image inspect $(SANDBOX_REGISTRY)/kdbc-compiler-research:latest >/dev/null 2>&1 \
 	  || echo "  (compiler-research image not built: run make sandbox-compiler)"
-	@echo ""
-	@echo "What built each image, where it says so. A binary that cannot report"
-	@echo "its own source is one a stale-image failure cannot be attributed to."
-	@for image in kdbc-axis-research; do \
-	  rev=$$(docker image inspect --format \
-	    '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
-	    $(SANDBOX_REGISTRY)/$$image:latest 2>/dev/null); \
-	  test -n "$$rev" || rev="(no revision label: rebuilt via make sandbox-axis to record one)"; \
-	  printf '  %-28s %s\n' "$$image" "$$rev"; \
-	done
 	@echo ""
 	@echo "Whether the app can reach any of this. Everything above is asked of the"
 	@echo "host; the runtime asks from inside backend and celery, of whichever daemon"

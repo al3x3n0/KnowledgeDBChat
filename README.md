@@ -314,6 +314,7 @@ to that configured system.
 
 ## Documentation
 
+- [LDAP / Active Directory configuration](BUILD_AND_RUN.md#ldap--active-directory-configuration-optional)
 - [Architecture](docs/ARCHITECTURE_ASCII.md)
 - [Kubernetes / Helm deployment](deploy/README.md)
 - [Architecture diagrams](docs/ARCHITECTURE_DIAGRAMS.md)

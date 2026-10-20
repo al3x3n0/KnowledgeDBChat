@@ -115,6 +115,11 @@ services:
       args:
         # The CLI that talks to sandbox-docker (see below).
         WITH_DOCKER_CLI: "true"
+        # Research programs to install, and where a local one is checked out
+        # (see backend/Dockerfile). Unset builds core alone.
+        RESEARCH_PROGRAMS: ${RESEARCH_PROGRAMS:-}
+      additional_contexts:
+        programs: ${RESEARCH_PROGRAM_PATH:-./deploy/no-research-program}
     image: knowledge_db_backend:latest  # Tag image so celery can reuse it
     container_name: knowledge_db_backend
     environment:
@@ -365,6 +370,11 @@ services:
       args:
         # The CLI that talks to sandbox-docker (see below).
         WITH_DOCKER_CLI: "true"
+        # Research programs to install, and where a local one is checked out
+        # (see backend/Dockerfile). Unset builds core alone.
+        RESEARCH_PROGRAMS: ${RESEARCH_PROGRAMS:-}
+      additional_contexts:
+        programs: ${RESEARCH_PROGRAM_PATH:-./deploy/no-research-program}
     image: knowledge_db_backend:latest  # Share image with backend to avoid duplicate builds
     container_name: knowledge_db_celery
     environment:
@@ -515,6 +525,10 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        RESEARCH_PROGRAMS: ${RESEARCH_PROGRAMS:-}
+      additional_contexts:
+        programs: ${RESEARCH_PROGRAM_PATH:-./deploy/no-research-program}
     image: knowledge_db_backend:latest
     container_name: knowledge_db_celery_beat
     environment:

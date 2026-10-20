@@ -80,43 +80,362 @@ This guide provides step-by-step instructions for building and running the Knowl
    - API Documentation: http://localhost:28000/docs
    - Ollama: http://localhost:11434
 
-### Active Directory (LDAP) Login + Import (Optional)
+### LDAP / Active Directory configuration (Optional)
 
-If you want to use existing Active Directory users:
+LDAP supports directory password sign-in, account provisioning, group-to-role
+mapping, and reconciliation of existing directory-managed accounts. Configure
+it in `backend/.env`; the Admin page reports settings but does not edit them.
+Keep a working local administrator account for setup and directory outages.
 
-1. Configure LDAP settings in `backend/.env` (copy from `backend/env.example`).
-   Use `ldaps://`, or `ldap://` with `LDAP_START_TLS=true`: an unencrypted
-   connection is refused unless `LDAP_ALLOW_PLAINTEXT=true`, and the server's
-   certificate is verified (`LDAP_CA_CERT_FILE` for an internal CA).
-2. Restart `backend`.
-3. Open **Admin → Directory (LDAP)**. It shows what is configured and anything
-   that cannot work, and **Run test** walks the setup step by step -- settings,
-   transport, the service account, and (with a login name) what the directory
-   holds for that person and the role they would get. No password is needed.
-4. (Optional) Import users from the same screen: preview, then apply.
+#### 1. Choose a directory configuration
 
-The same three operations are admin API routes: `GET /api/v1/admin/ldap/status`,
-`POST /api/v1/admin/ldap/test`, `POST /api/v1/admin/ldap/import`.
+Replace the example host, DNs, and password below. Use a service account that
+can read eligible users, their mapped attributes, and groups. Directory writes
+are not required. The backend and Celery worker must be able to resolve and
+reach the directory host.
 
-How sign-in behaves with LDAP on:
+**Active Directory** (short account name or user principal name sign-in):
 
-- Local accounts sign in as before. LDAP-managed accounts and unknown names
-  are checked against the directory.
-- A user deactivated in this application stays deactivated, whatever the
-  directory says.
-- When the directory rejects a password, that is final. A stored local
-  password is only ever a fallback for when the directory is *unreachable*,
-  and only with `LDAP_LOCAL_FALLBACK_WHEN_UNAVAILABLE=true`.
-- Roles follow `LDAP_ADMIN_GROUP_DNS` / `LDAP_VIEWER_GROUP_DNS` (several DNs
-  separated by `;`). With neither set, the directory never changes a role.
-- A directory login is linked to an existing local account only when their
-  emails match (or `LDAP_LINK_LOCAL_USERS_BY_USERNAME=true`, or by import).
+```dotenv
+LDAP_ENABLED=true
+LDAP_URI=ldaps://dc01.corp.example.com:636
+LDAP_START_TLS=false
+LDAP_ALLOW_PLAINTEXT=false
+LDAP_INSECURE_SKIP_TLS_VERIFY=false
+LDAP_CA_CERT_FILE=/app/certs/corporate-ca.pem
+LDAP_BIND_DN=CN=KnowledgeDB Reader,OU=Service Accounts,DC=corp,DC=example,DC=com
+LDAP_BIND_PASSWORD=replace-with-service-account-password
+LDAP_BASE_DN=DC=corp,DC=example,DC=com
+LDAP_USER_DN_TEMPLATE=
+LDAP_USER_SEARCH_FILTER=(&(objectClass=user)(!(objectClass=computer))(!(userAccountControl:1.2.840.113556.1.4.803:=2))(|(sAMAccountName={username})(userPrincipalName={username})))
+LDAP_IMPORT_FILTER=(&(objectClass=user)(!(objectClass=computer))(!(userAccountControl:1.2.840.113556.1.4.803:=2)))
+LDAP_USERNAME_ATTRIBUTE=sAMAccountName
+LDAP_EMAIL_ATTRIBUTE=mail
+LDAP_FULL_NAME_ATTRIBUTE=displayName
+LDAP_GROUPS_ATTRIBUTE=memberOf
+LDAP_USER_ATTRIBUTES=sAMAccountName,userPrincipalName,mail,displayName,cn,memberOf
+LDAP_UNIQUE_ID_ATTRIBUTE=objectGUID
+LDAP_CREATE_USER_ON_LOGIN=true
+LDAP_SYNC_ON_LOGIN=true
+```
 
-For convenience, you can run the interactive bootstrap script:
+The filters exclude computer and disabled accounts. Narrow the base DN or
+filters further to the people who should have application access.
+`LDAP_IMPORT_FILTER` also determines who retains access during reconciliation.
+`objectGUID` preserves the local account identity when an AD entry moves or
+is renamed. The application requests this attribute automatically.
+
+**OpenLDAP** (search-based sign-in with `uid`):
+
+```dotenv
+LDAP_ENABLED=true
+LDAP_URI=ldaps://ldap.example.com:636
+LDAP_START_TLS=false
+LDAP_ALLOW_PLAINTEXT=false
+LDAP_INSECURE_SKIP_TLS_VERIFY=false
+LDAP_CA_CERT_FILE=/app/certs/corporate-ca.pem
+LDAP_BIND_DN=cn=reader,dc=example,dc=com
+LDAP_BIND_PASSWORD=replace-with-service-account-password
+LDAP_BASE_DN=ou=People,dc=example,dc=com
+LDAP_USER_DN_TEMPLATE=
+LDAP_USER_SEARCH_FILTER=(&(objectClass=inetOrgPerson)(uid={username}))
+LDAP_IMPORT_FILTER=(objectClass=inetOrgPerson)
+LDAP_USERNAME_ATTRIBUTE=uid
+LDAP_EMAIL_ATTRIBUTE=mail
+LDAP_FULL_NAME_ATTRIBUTE=displayName
+LDAP_GROUPS_ATTRIBUTE=memberOf
+LDAP_USER_ATTRIBUTES=uid,mail,displayName,cn,memberOf
+LDAP_UNIQUE_ID_ATTRIBUTE=entryUUID
+LDAP_CREATE_USER_ON_LOGIN=true
+LDAP_SYNC_ON_LOGIN=true
+```
+
+Adapt the OpenLDAP filters to your schema and access policy; the example
+includes every `inetOrgPerson` under the base DN. If entries lack `mail`, set
+`LDAP_DEFAULT_EMAIL_DOMAIN=example.com` to generate `username@example.com`.
+New accounts require an email address.
+
+For direct-DN login instead of service-account lookup, set, for example,
+`LDAP_USER_DN_TEMPLATE=uid={username},ou=People,dc=example,dc=com`. A nonempty
+template takes precedence over search-based login. Import, reconciliation, and
+the password-free user diagnostic still require a service account. Clear the
+template copied from `backend/env.example` when using either search example.
+
+#### 2. Configure TLS and apply settings
+
+For StartTLS, replace the URI with `ldap://directory.example.com:389` and set
+`LDAP_START_TLS=true`. Certificates are verified in both modes. Use a hostname
+covered by the server certificate and keep
+`LDAP_INSECURE_SKIP_TLS_VERIFY=false` and `LDAP_ALLOW_PLAINTEXT=false`.
+
+`LDAP_CA_CERT_FILE` is a path **inside the process/container**, containing the
+trusted CA certificates in PEM format. Leave it empty to use system trust.
+With the development Compose mounts, placing the CA bundle at
+`backend/certs/corporate-ca.pem` makes it available as
+`/app/certs/corporate-ca.pem` in the backend and Celery containers. Other
+deployments must mount the bundle into every process that connects to LDAP.
+Do not commit service-account credentials or private keys.
+
+For the development Compose stack, which mounts `backend/.env`, apply edits
+with:
 
 ```bash
-./scripts/ldap_ad_bootstrap.sh
+docker compose restart backend celery celery_beat
 ```
+
+If your deployment injects settings through container environment variables,
+update that environment and recreate the affected containers instead; a
+restart does not replace injected environment variables. Environment variables
+take precedence over `.env` settings. In manual development, restart the API,
+Celery worker, and Celery beat processes after editing their configuration.
+
+#### 3. Map groups to application roles
+
+```dotenv
+LDAP_ADMIN_GROUP_DNS=CN=KnowledgeDB Admins,OU=Groups,DC=corp,DC=example,DC=com
+LDAP_VIEWER_GROUP_DNS=CN=KnowledgeDB Viewers,OU=Groups,DC=corp,DC=example,DC=com
+```
+
+Separate multiple group DNs with **semicolons**, not commas. Admin membership
+wins over viewer membership. With a mapping configured, unmatched users get
+`user`; with both settings empty, existing roles are preserved and new login
+accounts default to `user`. Viewer accounts have read-only restrictions.
+
+Groups are read from `LDAP_GROUPS_ATTRIBUTE` (default `memberOf`). If OpenLDAP
+has no `memberOf` overlay, configure a membership search:
+
+```dotenv
+LDAP_GROUP_SEARCH_BASE=ou=Groups,dc=example,dc=com
+LDAP_GROUP_SEARCH_FILTER=(|(member={user_dn})(uniqueMember={user_dn})(memberUid={username}))
+```
+
+For AD nested membership, use a group search with AD's recursive member filter:
+
+```dotenv
+LDAP_GROUP_SEARCH_BASE=OU=Groups,DC=corp,DC=example,DC=com
+LDAP_GROUP_SEARCH_FILTER=(member:1.2.840.113556.1.4.1941:={user_dn})
+```
+
+#### 4. Verify sign-in and provision accounts
+
+1. Sign in as a local administrator and open **Admin → Directory (LDAP)**.
+2. Check the configuration problems and transport/certificate status.
+3. Run the connection test, optionally supplying a directory login name. It
+   checks settings, transport, service-account access, user lookup, and role
+   mapping without needing that user's password. It does not validate their
+   password; test an actual directory sign-in separately.
+4. Use the import preview to inspect users and roles, then apply it. Import
+   defaults to 200 entries (API maximum 5,000 per request); adjust its limit
+   and filter for the intended population. Passwords are never imported.
+
+Import is optional when `LDAP_CREATE_USER_ON_LOGIN=true`: eligible users get
+an account on their first successful directory login. Set it to `false` to
+require provisioning by import before sign-in. `LDAP_SYNC_ON_LOGIN` controls
+profile updates (email/name); role mapping is still applied.
+
+Local accounts can still sign in with their local password. When a local
+password does not match, LDAP can be tried if configured. Login and import
+use the same linking safeguards: an existing local account can be linked
+when its email matches, or when `LDAP_LINK_LOCAL_USERS_BY_USERNAME=true`.
+Accounts created through self-registration are never linked, even with that
+override. Inspect refused imports instead of assuming a shared username is
+the same person.
+
+`AUTH_SELF_REGISTRATION` unset allows self-registration only when LDAP is off.
+Set it explicitly to `true` or `false` to override that behavior; the sign-in
+page follows this setting. A directory-managed account cannot set a local
+password. A directory password rejection is final; the optional
+`LDAP_LOCAL_FALLBACK_WHEN_UNAVAILABLE=true` only permits an existing stored
+password during a directory outage, and defaults to `false`.
+
+#### 5. Reconcile accounts between logins
+
+On the same Admin page, preview **Sync**, review role changes and missing
+users, then apply it. Sync updates existing LDAP-managed accounts; use import
+or first login to create new accounts. Local accounts are untouched.
+
+To enable periodic reconciliation, add:
+
+```dotenv
+LDAP_SYNC_INTERVAL_MINUTES=15
+LDAP_SYNC_MAX_DEACTIVATE_FRACTION=0.2
+LDAP_SYNC_MAX_ENTRIES=50000
+LDAP_SEARCH_PAGE_SIZE=200
+```
+
+The default interval is `0` (off). Scheduled sync requires Redis, a Celery
+worker, and Celery beat with the same directory settings and CA access. Beat
+checks every five minutes, so the configured interval is not an exact timer.
+Restart the affected processes after changing it.
+
+Sync deactivates accounts absent from `LDAP_IMPORT_FILTER` and applies group
+role changes. It reactivates accounts only if a previous sync deactivated
+them; an administrator's deactivation is preserved. An unreachable directory
+changes no accounts. Empty results, or missing accounts exceeding the default
+20% of all managed accounts, block deactivation and explain why in the report.
+Check the base DN/filter before raising that threshold for an intentional
+large removal. Set `LDAP_SYNC_MAX_ENTRIES` high enough to read the entire
+eligible population; a truncated search must not be used for reconciliation.
+The latest sync report is stored in Redis and shown on the Admin page.
+
+#### Admin API and troubleshooting
+
+All routes require an administrator bearer token:
+
+| Method and path | Purpose / request body |
+| --- | --- |
+| `GET /api/v1/admin/ldap/status` | Configuration problems, TLS status, and last sync report |
+| `POST /api/v1/admin/ldap/test` | Diagnostic; `{}` or `{"username":"alice"}` |
+| `POST /api/v1/admin/ldap/import` | Preview: `{"dry_run":true,"limit":200}`; apply with `dry_run:false` |
+| `POST /api/v1/admin/ldap/sync` | Preview: `{"dry_run":true}`; apply with `dry_run:false` |
+
+| Symptom | Check |
+| --- | --- |
+| TLS or hostname verification fails | Correct directory hostname, certificate validity, and CA bundle path/trust inside both backend and worker containers |
+| Service-account bind fails | Bind DN/password and the service account's directory status |
+| User is not found or lookup is ambiguous | Base DN, search filter, username attribute, and uniqueness; clear the DN template for search mode |
+| Import cannot create an account | Required username/email, fallback email domain, unique email conflicts, and refused local-account linking |
+| Expected role is missing | Full group DNs separated by `;`, readable `memberOf`, and membership search base/filter |
+| Sync never runs | Nonzero interval, Redis connectivity, Celery worker and beat, and settings loaded by the worker |
+| Deactivation is held back | Read the report; verify the filter, base DN, search cap, and removal fraction |
+| Directory sign-in returns 503 | Directory connectivity, TLS, timeouts, and service-account access; outages are distinct from incorrect credentials |
+
+Connection and receive timeouts default to 8 and 10 seconds
+(`LDAP_CONNECT_TIMEOUT_SECONDS`, `LDAP_RECEIVE_TIMEOUT_SECONDS`).
+
+The optional `./scripts/ldap_ad_bootstrap.sh` helper writes basic AD settings,
+restarts the backend, runs diagnostics, and previews an import by default.
+It does not configure `objectGUID`, scheduled sync, or exclusion of disabled
+accounts by default; complete those settings above before using it for a
+reconciled AD deployment.
+
+LDAP is covered by in-memory integration tests and an opt-in real OpenLDAP
+suite in `backend/tests/test_ldap_real_server.py`. Real Active Directory
+validation remains outstanding.
+
+### Install and inspect research programs
+
+Research programs are trusted Python packages installed into the backend image
+at build time. They contribute domain tools and sandbox image references through
+the `kdbc.research_programs` Python entry point. Installing a program does not
+build its sandbox images; follow that program's instructions to make those
+images available to the sandbox daemon.
+
+#### Install from a local checkout (development Compose)
+
+Set these values in the **repository-root `.env`**, creating it from
+`.env.example` if it does not exist:
+
+```dotenv
+RESEARCH_PROGRAM_PATH=../kdbc-uarch-lab
+RESEARCH_PROGRAMS=/programs
+```
+
+The path identifies the program checkout on the host; `/programs` is its named
+build context inside Docker. Use an absolute host path if the checkout is
+elsewhere. Packages are installed with `--no-deps` against core's dependencies.
+The source mount is temporarily writable so package backends can generate
+metadata and build files; these writes are discarded after the build step and
+do not change the host checkout.
+
+Build the shared image, then recreate the API, general worker, agent worker,
+and scheduler from it:
+
+```bash
+docker compose build backend
+docker compose up -d --no-build backend celery celery_agents celery_beat
+```
+
+A restart alone cannot install or remove packages. These services share
+`knowledge_db_backend:latest` in the development stack. Rebuild any derived
+images separately if they also need the updated package set. In another
+deployment, build and distribute the resulting image to every API and agent
+worker instance.
+
+For a release, `RESEARCH_PROGRAMS` can instead contain space-separated pip
+targets, such as a Git URL pinned to a commit or tag. Leave
+`RESEARCH_PROGRAM_PATH` empty when no local checkout is needed. Leave
+`RESEARCH_PROGRAMS` empty and rebuild to create a core-only image.
+Private Git installs can use the Dockerfile's optional BuildKit secret
+`github_token`; pass it through your build configuration rather than placing a
+token in a package URL or build argument. The default Compose file does not
+wire that secret automatically.
+
+#### Disable without uninstalling
+
+Set the program's name in **`backend/.env`**, for example:
+
+```dotenv
+RESEARCH_PROGRAMS_DISABLED=uarch_lab
+```
+
+Use commas for multiple names. An empty value loads every installed program.
+Restart the API and workers after changing this runtime setting. Disabling a
+program removes its contributed tools and allowed sandbox images from that
+process; it does not uninstall the package or delete independently configured
+image allowlist entries.
+
+#### Verify the API and workers
+
+Open **Admin → Research Programs** (or `/admin?tab=research-programs`) to see
+loaded programs, their versions, tools, and sandbox images. Failed programs
+include the reason they could not load; disabled programs are listed separately.
+Invalid catalog declarations and duplicate tool names refuse the whole program,
+so its tools cannot displace built-in tools or another successfully loaded program.
+Optional evidence-tool lists, image origins, methodology references, and
+alternative-parameter rules are also checked for valid shapes before loading.
+The page reads `GET /api/v1/admin/research-programs` and requires an admin account.
+
+Status describes the API process. Install the same program packages in worker
+images so agents can execute their tools. `RESEARCH_PROGRAMS_DISABLED` is a
+comma-separated list of programs to leave out. Programs load once per process:
+restart the affected services after installation or enablement changes.
+**Refresh** retrieves the current status without reloading programs.
+
+Check the agent worker's own loaded programs after deployment as well:
+
+```bash
+docker compose exec -T celery_agents python -c 'import json; from app.agent_core.research_programs import status; print(json.dumps(status(), indent=2))'
+```
+
+Investigate any failed programs before starting research jobs that depend on
+their tools. Missing imports, malformed declarations, and name collisions are
+reported as failures. If a program is absent from all lists, verify that its
+package and entry point were installed in the image actually running. A failed
+package installation fails the image build; import-time failures are reported
+by the running API or worker.
+
+Provider factories run separately for each executor. If initialization fails,
+or providers do not handle exactly the program's declared tools, that program's
+tools return `research_program_unavailable` for the affected run. Core tools and
+other programs remain usable; partial provider registration is discarded.
+Check worker logs for the program name and reason. A later executor retries
+initialization; these run-specific failures do not change the API's load report.
+
+Methodology modules are loaded only when a plan uses their tools. If a program's
+module is missing, raises an exception, or returns malformed notes, the run's
+methodology notes and worker logs explicitly report that the methodology is
+incomplete. Valid notes from other modules remain available. These runtime
+warnings do not change the API's load report; inspect the run and worker logs.
+
+#### Run the Docker smoke test
+
+With a local backend image already built, run from `backend/` using your test
+Python environment:
+
+```bash
+TEST_RESEARCH_PROGRAM_DOCKER_IMAGE=knowledge_db_backend:latest python -m pytest tests/test_research_program_docker.py -q --no-cov
+```
+
+This opt-in test builds a disposable image using the real program-install
+instruction and current core source, installs a small test program, and checks
+discovery, tool execution, evidence/image registration, and disablement. It also
+checks that installation failure fails the build and that build-time metadata
+does not alter the source checkout. It requires Docker/BuildKit access and may
+download a Python build dependency. The test removes its temporary image and
+does not start or restart the application stack. It skips when the image
+environment variable is unset; this smoke test does not rebuild core's full
+dependency image or run domain simulators.
 
 ### Docker Commands
 

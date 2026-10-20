@@ -111,11 +111,11 @@ def test_an_empty_list_where_a_string_is_wanted_means_nothing():
     was the wrong type. The one-item repair beside this did not cover it."""
     from app.services.agent_tool_validation import coerce_tool_params
 
-    params = {"code": "int main(void){return 0;}", "run_args": []}
-    repaired = coerce_tool_params("simulate_c_workload", params)
+    params = {"code": "int main(void){return 0;}", "label": []}
+    repaired = coerce_tool_params("benchmark_c_snippet", params)
 
-    assert params["run_args"] == ""
-    assert "run_args" in repaired
+    assert params["label"] == ""
+    assert "label" in repaired
 
 
 class TestATypeErrorSaysWhatTheFieldWants:
@@ -129,12 +129,17 @@ class TestATypeErrorSaysWhatTheFieldWants:
         from app.services.agent_tool_validation import validate_tool_params
 
         message = validate_tool_params(
-            "simulate_mechanism",
-            {"code": "int main(void){return 0;}", "variant": "StridePrefetcher"},
+            "compare_to_claim",
+            {
+                "subject": "fastmod",
+                "metric": "speedup",
+                "measurement_source": "benchmark_c_snippet",
+                "claimed_conditions": "Xeon 8280",
+            },
         )
 
         assert "should be object, got str" in message
-        assert '{"caches": {"l2": {"prefetcher"' in message
+        assert "{'hardware': 'Xeon 8280'" in message
 
     def test_a_field_with_no_description_adds_nothing(self):
         from app.services.agent_tool_validation import _shape_hint
@@ -159,9 +164,9 @@ class TestOneItemListWhereANumberIsWanted:
     def _coerced(self, value):
         from app.services.agent_tool_validation import coerce_tool_params
 
-        params = {"code": "int main(void){return 0;}", "top_functions": value}
-        coerce_tool_params("profile_c_workload", params)
-        return params["top_functions"]
+        params = {"code": "int main(void){return 0;}", "repeat": value}
+        coerce_tool_params("benchmark_c_snippet", params)
+        return params["repeat"]
 
     def test_a_single_number_in_a_list_is_that_number(self):
         assert self._coerced([8]) == 8
@@ -228,63 +233,6 @@ class TestAlternativeFields:
             "clone_and_index_repo", params
         )
 
-    def test_sources_as_a_list_beside_paths_is_dropped(self):
-        from app.services.agent_tool_validation import (
-            coerce_tool_params,
-            validate_tool_params,
-        )
-
-        params = {
-            "sources": ["src/rtextures.c"],
-            "paths": ["src/rtextures.c"],
-            "include_dirs": ["src"],
-        }
-        assert "sources" in coerce_tool_params("scan_for_optimizations", params)
-        assert validate_tool_params("scan_for_optimizations", params) is None
-
-
-class TestBenchInputByValue:
-    def _fix(self, params):
-        from app.services.agent_tool_validation import (
-            coerce_tool_params,
-            validate_tool_params,
-        )
-
-        coerce_tool_params("propose_restructurings", params)
-        return params, validate_tool_params("propose_restructurings", params)
-
-    def test_text_that_is_one_of_the_inputs_becomes_its_index(self):
-        p, problem = self._fix(
-            {
-                "kernel": "k",
-                "driver": "d",
-                "inputs": ["1 1", "4096 4096 40"],
-                "bench_input": "4096 4096 40",
-            }
-        )
-        assert p["bench_input"] == 1 and problem is None
-
-    def test_text_in_no_list_is_appended_and_timed(self):
-        p, problem = self._fix(
-            {
-                "kernel": "k",
-                "driver": "d",
-                "inputs": ["1 1"],
-                "bench_input": "12000 9000 77",
-            }
-        )
-        assert (
-            p["inputs"] == ["1 1", "12000 9000 77"]
-            and p["bench_input"] == 1
-            and problem is None
-        )
-
-    def test_a_numeric_string_is_the_index(self):
-        p, _ = self._fix(
-            {"kernel": "k", "driver": "d", "inputs": ["a", "b"], "bench_input": "1"}
-        )
-        assert p["bench_input"] == 1
-
 
 def test_a_tool_needing_one_of_two_fields_is_never_called_with_none():
     """The critic's pivot built `{}` for these because neither field is
@@ -292,7 +240,6 @@ def test_a_tool_needing_one_of_two_fields_is_never_called_with_none():
     from app.services.autonomous_agent_executor import _tool_requires_params
 
     assert _tool_requires_params("clone_and_index_repo")
-    assert _tool_requires_params("scan_for_optimizations")
     assert not _tool_requires_params("definitely_not_a_tool")
 
 
@@ -302,6 +249,6 @@ def test_an_empty_alternative_beside_a_complete_one_is_dropped():
         validate_tool_params,
     )
 
-    params = {"sources": [], "paths": ["src/rtextures.c"], "include_dirs": ["src"]}
-    assert "sources" in coerce_tool_params("scan_for_optimizations", params)
-    assert validate_tool_params("scan_for_optimizations", params) is None
+    params = {"source_id": "", "repo_url": "https://github.com/raysan5/raylib"}
+    assert "source_id" in coerce_tool_params("clone_and_index_repo", params)
+    assert validate_tool_params("clone_and_index_repo", params) is None

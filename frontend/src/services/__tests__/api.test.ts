@@ -38,6 +38,15 @@ describe('API Client', () => {
     expect(localStorage.getItem('access_token')).toBeNull();
   });
 
+  it('fetches research program status from the admin endpoint', async () => {
+    const client = (apiClient as any).client;
+    const status = { loaded: [], failed: [{ name: 'broken', reason: 'missing dependency' }], disabled: ['other'] };
+    client.get.mockResolvedValue({ data: status });
+
+    expect(await apiClient.getResearchPrograms()).toEqual(status);
+    expect(client.get).toHaveBeenCalledWith('/api/v1/admin/research-programs');
+  });
+
   it('loads token from localStorage on initialization', () => {
     localStorage.setItem('access_token', 'saved-token');
     // Re-import to trigger initialization

@@ -73,14 +73,17 @@ RUN pip uninstall -y numba llvmlite \
 # never reaches a layer. --no-deps: a program runs against this image's core
 # and declares no packages of its own to resolve against it.
 ARG RESEARCH_PROGRAMS=""
-RUN --mount=type=bind,from=programs,target=/programs \
+# Package backends write metadata/build files beside their sources. Writes to
+# this build mount are discarded afterwards; the host checkout is not changed.
+RUN --mount=type=bind,from=programs,target=/programs,rw \
     --mount=type=secret,id=github_token,required=false \
+    set -eu; \
     if [ -n "$RESEARCH_PROGRAMS" ]; then \
+      trap 'rm -f /root/.gitconfig' EXIT; \
       if [ -s /run/secrets/github_token ]; then \
         git config --global url."https://x-access-token:$(cat /run/secrets/github_token)@github.com/".insteadOf "https://github.com/"; \
       fi; \
       pip install --no-cache-dir --no-compile --no-deps $RESEARCH_PROGRAMS; \
-      rm -f /root/.gitconfig; \
       find /opt/venv -name "__pycache__" -type d -prune -exec rm -rf {} +; \
     fi
 

@@ -313,6 +313,130 @@ LDAP is covered by in-memory integration tests and an opt-in real OpenLDAP
 suite in `backend/tests/test_ldap_real_server.py`. Real Active Directory
 validation remains outstanding.
 
+### Install and inspect research programs
+
+Research programs are trusted Python packages installed into the backend image
+at build time. They contribute domain tools and sandbox image references through
+the `kdbc.research_programs` Python entry point. Installing a program does not
+build its sandbox images; follow that program's instructions to make those
+images available to the sandbox daemon.
+
+#### Install from a local checkout (development Compose)
+
+Set these values in the **repository-root `.env`**, creating it from
+`.env.example` if it does not exist:
+
+```dotenv
+RESEARCH_PROGRAM_PATH=../kdbc-uarch-lab
+RESEARCH_PROGRAMS=/programs
+```
+
+The path identifies the program checkout on the host; `/programs` is its named
+build context inside Docker. Use an absolute host path if the checkout is
+elsewhere. Packages are installed with `--no-deps` against core's dependencies.
+The source mount is temporarily writable so package backends can generate
+metadata and build files; these writes are discarded after the build step and
+do not change the host checkout.
+
+Build the shared image, then recreate the API, general worker, agent worker,
+and scheduler from it:
+
+```bash
+docker compose build backend
+docker compose up -d --no-build backend celery celery_agents celery_beat
+```
+
+A restart alone cannot install or remove packages. These services share
+`knowledge_db_backend:latest` in the development stack. Rebuild any derived
+images separately if they also need the updated package set. In another
+deployment, build and distribute the resulting image to every API and agent
+worker instance.
+
+For a release, `RESEARCH_PROGRAMS` can instead contain space-separated pip
+targets, such as a Git URL pinned to a commit or tag. Leave
+`RESEARCH_PROGRAM_PATH` empty when no local checkout is needed. Leave
+`RESEARCH_PROGRAMS` empty and rebuild to create a core-only image.
+Private Git installs can use the Dockerfile's optional BuildKit secret
+`github_token`; pass it through your build configuration rather than placing a
+token in a package URL or build argument. The default Compose file does not
+wire that secret automatically.
+
+#### Disable without uninstalling
+
+Set the program's name in **`backend/.env`**, for example:
+
+```dotenv
+RESEARCH_PROGRAMS_DISABLED=uarch_lab
+```
+
+Use commas for multiple names. An empty value loads every installed program.
+Restart the API and workers after changing this runtime setting. Disabling a
+program removes its contributed tools and allowed sandbox images from that
+process; it does not uninstall the package or delete independently configured
+image allowlist entries.
+
+#### Verify the API and workers
+
+Open **Admin → Research Programs** (or `/admin?tab=research-programs`) to see
+loaded programs, their versions, tools, and sandbox images. Failed programs
+include the reason they could not load; disabled programs are listed separately.
+Invalid catalog declarations and duplicate tool names refuse the whole program,
+so its tools cannot displace built-in tools or another successfully loaded program.
+Optional evidence-tool lists, image origins, methodology references, and
+alternative-parameter rules are also checked for valid shapes before loading.
+The page reads `GET /api/v1/admin/research-programs` and requires an admin account.
+
+Status describes the API process. Install the same program packages in worker
+images so agents can execute their tools. `RESEARCH_PROGRAMS_DISABLED` is a
+comma-separated list of programs to leave out. Programs load once per process:
+restart the affected services after installation or enablement changes.
+**Refresh** retrieves the current status without reloading programs.
+
+Check the agent worker's own loaded programs after deployment as well:
+
+```bash
+docker compose exec -T celery_agents python -c 'import json; from app.agent_core.research_programs import status; print(json.dumps(status(), indent=2))'
+```
+
+Investigate any failed programs before starting research jobs that depend on
+their tools. Missing imports, malformed declarations, and name collisions are
+reported as failures. If a program is absent from all lists, verify that its
+package and entry point were installed in the image actually running. A failed
+package installation fails the image build; import-time failures are reported
+by the running API or worker.
+
+Provider factories run separately for each executor. If initialization fails,
+or providers do not handle exactly the program's declared tools, that program's
+tools return `research_program_unavailable` for the affected run. Core tools and
+other programs remain usable; partial provider registration is discarded.
+Check worker logs for the program name and reason. A later executor retries
+initialization; these run-specific failures do not change the API's load report.
+
+Methodology modules are loaded only when a plan uses their tools. If a program's
+module is missing, raises an exception, or returns malformed notes, the run's
+methodology notes and worker logs explicitly report that the methodology is
+incomplete. Valid notes from other modules remain available. These runtime
+warnings do not change the API's load report; inspect the run and worker logs.
+
+#### Run the Docker smoke test
+
+With a local backend image already built, run from `backend/` using your test
+Python environment:
+
+```bash
+TEST_RESEARCH_PROGRAM_DOCKER_IMAGE=knowledge_db_backend:latest python -m pytest tests/test_research_program_docker.py -q --no-cov
+```
+
+This opt-in test builds a disposable image using the real program-install
+instruction and current core source, installs a small test program, and checks
+discovery, tool execution, evidence/image registration, and disablement. It also
+checks that installation failure fails the build and that build-time metadata
+does not alter the source checkout. It requires Docker/BuildKit access and may
+download a Python build dependency. The test removes its temporary image and
+does not start or restart the application stack. It skips when the image
+environment variable is unset; this smoke test does not rebuild core's full
+dependency image or run domain simulators.
+
 ### Docker Commands
 
 ```bash

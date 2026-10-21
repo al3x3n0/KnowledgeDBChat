@@ -3900,6 +3900,15 @@ class AutonomousAgentExecutor:
         # Walk up the chain: a stage may assume evidence from further back than
         # its immediate parent.
         inherited: List[Dict[str, Any]] = []
+        existing = state.get("findings")
+        seen = {
+            (
+                str(f.get("inherited_from_job_id") or ""),
+                agent_loop_policy.finding_identity(f),
+            )
+            for f in (existing if isinstance(existing, list) else [])
+            if isinstance(f, dict) and f.get("inherited") is True
+        }
         flagged_perishable: set = set()
         seen_jobs = 0
         current_id = parent_id
@@ -3923,8 +3932,21 @@ class AutonomousAgentExecutor:
                     # fixed at import -- cannot know one user's skills.
                     flagged_perishable.add(str(finding.get("type")))
                     continue
+                # A parent may already carry a grandparent's evidence. Keep
+                # the original producer, and import a claim only once even
+                # when a checkpoint resumes or the ancestor walk sees it again.
+                origin = str(
+                    finding.get("inherited_from_job_id")
+                    if finding.get("inherited") is True
+                    and finding.get("inherited_from_job_id")
+                    else ancestor.id
+                )
+                identity = (origin, agent_loop_policy.finding_identity(finding))
+                if identity in seen:
+                    continue
+                seen.add(identity)
                 carried = dict(finding)
-                carried["inherited_from_job_id"] = str(ancestor.id)
+                carried["inherited_from_job_id"] = origin
                 carried["inherited"] = True
                 inherited.append(carried)
             current_id = getattr(ancestor, "parent_job_id", None)

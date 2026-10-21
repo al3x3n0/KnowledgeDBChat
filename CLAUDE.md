@@ -599,6 +599,13 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   is code and is trusted like the rest of the image. **Core never imports a
   program.** New domain-specific tools belong in a program, not in
   `app/services`.
+- **Evidence across research stages** — inherited findings keep the original
+  producer's job id, including across intermediate stages and checkpoint
+  resumes. Inheritance is idempotent by producer and the loop policy's claim
+  identity. Campaigns count each stage's own distinct claims; inherited copies
+  remain available to downstream tools but do not inflate campaign summaries,
+  conclusions, or discovery. Independent stages may establish the same claim
+  and both still count.
 - **Sandbox skills** — a sandboxed capability written as *data*. Every
   sandbox tool used to be a handler plus a `ToolSpec`, so a new kind of
   sandboxed work was a code change and a pipeline could only require evidence

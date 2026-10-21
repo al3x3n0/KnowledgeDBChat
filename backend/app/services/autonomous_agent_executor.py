@@ -254,6 +254,7 @@ class _AutonomousRuntimeAdapter:
         # no longer what the loop trusts.
         self._iterations_started = 0
         self._errors_seen = 0
+        self._loop_round_recorded = False
         # A resumed job continues from its checkpoint, so the budget is
         # counted from where it actually started rather than from zero.
         self._start_iteration = int(getattr(job, "iteration", 0) or 0)
@@ -334,13 +335,16 @@ class _AutonomousRuntimeAdapter:
         # ever. This makes the job's number a report of what the loop did.
         self.job.iteration = self._start_iteration + self._iterations_started
         self.job.last_activity_at = datetime.utcnow()
-        # Snapshot what the run had established before this round, so a policy
-        # looking back over several rounds can tell a productive one from a
-        # round that only re-read what it already knew.
-        findings = self.state.get("findings")
-        agent_loop_policy.record_round(
-            self.state, len(findings) if isinstance(findings, list) else 0
-        )
+        # Keep a baseline, then count completed rounds. Recording only at the
+        # start leaves the last round invisible to can_continue and spends an
+        # extra iteration after the configured dry-round limit.
+        history = self.state.get("loop_finding_counts")
+        if not isinstance(history, list) or not history:
+            findings = self.state.get("findings")
+            agent_loop_policy.record_round(
+                self.state, len(findings) if isinstance(findings, list) else 0
+            )
+        self._loop_round_recorded = False
         warning = agent_loop_policy.policy_warning(self.job.config)
         if warning and not self.state.get("loop_policy_warned"):
             self.state["loop_policy_warned"] = True
@@ -1486,6 +1490,16 @@ class _AutonomousRuntimeAdapter:
 
         return {"progress": progress, "should_stop": False}
 
+    def _record_loop_round(self) -> None:
+        # Completion can fail after recording (for example during a commit).
+        # The error path must not count that same round a second time.
+        if not self._loop_round_recorded:
+            findings = self.state.get("findings")
+            agent_loop_policy.record_round(
+                self.state, len(findings) if isinstance(findings, list) else 0
+            )
+            self._loop_round_recorded = True
+
     async def on_iteration_complete(
         self,
         observation: Dict[str, Any],
@@ -1502,6 +1516,7 @@ class _AutonomousRuntimeAdapter:
         progress = int((evaluation or {}).get("progress", 0) or 0)
 
         findings_count = len(self.state["findings"])
+        self._record_loop_round()
         self.job.add_log_entry(
             {
                 "phase": "iteration_complete",
@@ -1586,6 +1601,7 @@ class _AutonomousRuntimeAdapter:
         await self.db.commit()
 
     async def on_iteration_error(self, exc: Exception) -> bool:
+        self._record_loop_round()
         self._errors_seen += 1
         logger.error(
             f"Error in iteration {self.job.iteration} "

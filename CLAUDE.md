@@ -929,6 +929,12 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   on its own (2026-10-16): four jobs, and an honest "the findings do not
   establish whether fastmod is worth adopting" -- the benchmark stage had
   taken one trial with no `%` baseline, which its contract allowed.
+- **Dry-round limits count completed iterations.** The runtime keeps one
+  initial finding-count baseline and records each round after its work, before
+  checkpointing. Recording only at iteration start hid the latest round from
+  the stop check and spent one extra action. A completion that fails after
+  recording is not counted again by the error path. The runtime regression
+  tests cover empty rounds, repeated claims, and failed finalization.
 - **The pipeline drafter is told what each evidence type is**
   (`agent_pipeline_draft._what_makes`). Its list gave a name, a duration and
   job types, so "implement fastmod in C, check it, benchmark it" became a

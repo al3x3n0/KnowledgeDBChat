@@ -11,6 +11,48 @@ deploy/
   minikube/bootstrap.sh          # start cluster -> build images -> install
 ```
 
+## OpenAI-compatible LLM
+
+Any OpenAI-compatible endpoint (OpenAI, DeepSeek, Qwen, Kimi, GLM, a local vLLM/Ollama-compatible server, …) is configured through `config.llmProvider: openai` plus the three settings below. The key is stored live in the cluster so nothing sensitive lands in git or in the values file; the base URL and model name are live config, kept out of the chart the same way:
+
+- `OPENAI_API_KEY` → key in the chart-managed `Opaque` Secret `<fullname>-secrets`.
+- `OPENAI_API_BASE` → entry in the chart-managed ConfigMap `<fullname>-config`.
+- `DEFAULT_MODEL` → entry in the chart-managed ConfigMap `<fullname>-config`.
+
+`<fullname>` is what the chart actually renders (see `_helpers.tpl`, `kdbc.fullname`): release `kdbc` plus chart name `knowledgedbchat` is **`kdbc-knowledgedbchat`**, so the objects are `kdbc-knowledgedbchat-secrets` / `-config`. Derive them dynamically rather than typing them, so a release rename can't break the patch:
+
+```bash
+NS=knowledgedbchat               # adjust to your namespace
+REL=kdbc                         # the helm release name
+FULL=$(kubectl -n $NS get secret --sort-by=.metadata.name \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
+  | grep -E "^${REL}-.*-secrets$" | head -1 | sed -E "s/-secrets$//")
+# -> kdbc-knowledgedbchat
+
+# 1) the key, into the chart-managed Secret (idempotent: --type merge upserts the key)
+kubectl -n $NS patch secret "${FULL}-secrets" --type merge \
+  -p '{"stringData":{"OPENAI_API_KEY":"sk-...your-key..."}}'
+# 2) the base URL and model, into the chart-managed ConfigMap
+kubectl -n $NS patch configmap "${FULL}-config" \
+  --type merge -p '{"data":{"OPENAI_API_BASE":"<endpoint>/v1","DEFAULT_MODEL":"<model-name>"}}'
+# 3) restart so the running pods pick up the new env (the chart's checksum
+#    annotation only covers the chart-rendered secret, not a live patch)
+kubectl -n $NS rollout restart deployment "${FULL}-backend"
+kubectl -n $NS rollout restart deployment "${FULL}-celery"
+```
+
+Both objects exist only **after** `helm install`/`upgrade`, so run the patch after the release is up. `helm upgrade --reuse-values` does not touch these, because the values file leaves `openaiApiKey` empty and `config.extra` unset — the patch is out-of-band.
+
+Verify:
+
+```bash
+kubectl -n $NS get secret "${FULL}-secrets" -o jsonpath='{.data.OPENAI_API_KEY}' | base64 -d; echo
+kubectl -n $NS get configmap "${FULL}-config" -o jsonpath='{.data.OPENAI_API_BASE}'; echo
+kubectl -n $NS get configmap "${FULL}-config" -o jsonpath='{.data.DEFAULT_MODEL}'; echo
+```
+
+All three are out-of-band; `config.defaultModel` in the values file only supplies a fallback for non-OpenAI providers.
+
 ## Quick start (minikube)
 
 ```bash

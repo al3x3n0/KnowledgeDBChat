@@ -20,6 +20,25 @@ env:
   NODE_VERSION: "18"
 
 jobs:
+  backend-image:
+    name: Backend image (core only, ${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # Exercise the default build without an optional programs context. The
+      # companion program's CI supplies one and cannot cover this path.
+      - name: Build the default backend image
+        run: docker build --progress=plain -t kdbc-backend:ci backend
+
   backend-lint:
     name: Backend lint and format
     runs-on: ubuntu-latest

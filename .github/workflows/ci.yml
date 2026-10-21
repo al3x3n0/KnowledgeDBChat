@@ -20,6 +20,17 @@ env:
   NODE_VERSION: "18"
 
 jobs:
+  backend-image:
+    name: Backend image (core only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # Exercise the default build without an optional programs context. The
+      # companion program's CI supplies one and cannot cover this path.
+      - name: Build the default backend image
+        run: docker build --progress=plain -t kdbc-backend:ci backend
+
   backend-lint:
     name: Backend lint and format
     runs-on: ubuntu-latest

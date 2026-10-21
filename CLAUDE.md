@@ -935,6 +935,13 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   the stop check and spent one extra action. A completion that fails after
   recording is not counted again by the error path. The runtime regression
   tests cover empty rounds, repeated claims, and failed finalization.
+- **Contract finding counts mean distinct eligible claims.** Both
+  `min_findings` and per-type thresholds use the loop policy's finding
+  identity. Repeating a tool result cannot satisfy a multi-result contract;
+  recalled evidence, reports of absence, and malformed entries cannot fill
+  the minimum. Filtering happens before deduplication so a recalled copy
+  cannot hide a fresh result. Raw findings stay intact for review and validity
+  checks, including checks that deliberately inspect successive measurements.
 - **The pipeline drafter is told what each evidence type is**
   (`agent_pipeline_draft._what_makes`). Its list gave a name, a duration and
   job types, so "implement fastmod in C, check it, benchmark it" became a

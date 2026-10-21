@@ -21,8 +21,16 @@ env:
 
 jobs:
   backend-image:
-    name: Backend image (core only)
-    runs-on: ubuntu-latest
+    name: Backend image (core only, ${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4

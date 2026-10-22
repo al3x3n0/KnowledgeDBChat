@@ -1893,6 +1893,13 @@ async def finalize_job(
     hold_for_chain_approval(job)
 
     if job.status == AgentJobStatus.PAUSED.value:
+        if getattr(job, "current_phase", None) == "blocked_needs_input":
+            # Tool checkpoints precede evaluation, and the periodic checkpoint
+            # may not have run yet. A resumable pause must preserve its final
+            # evidence and stop history, not restore an earlier tool boundary.
+            await executor.checkpoint_service.save_checkpoint(
+                job=job, state=state, db=db, reason="blocked_needs_input"
+            )
         return {
             "status": job.status,
             "progress": job.progress,

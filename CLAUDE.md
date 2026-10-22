@@ -935,6 +935,11 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   the stop check and spent one extra action. A completion that fails after
   recording is not counted again by the error path. The runtime regression
   tests cover empty rounds, repeated claims, and failed finalization.
+- **A resumable blocked pause checkpoints its final state.** Tool-boundary
+  checkpoints precede evaluation, and a loop can stop before the five-round
+  periodic checkpoint. Finalization saves the findings and stop history at
+  `blocked_needs_input`, so a no-note resume can detect that it would stop
+  again, while an operator correction clears the stall and retains the work.
 - **Contract finding counts mean distinct eligible claims.** Both
   `min_findings` and per-type thresholds use the loop policy's finding
   identity. Repeating a tool result cannot satisfy a multi-result contract;

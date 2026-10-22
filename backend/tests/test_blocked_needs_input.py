@@ -473,6 +473,94 @@ class TestABlockedRunStartsNothingDownstream:
 
 @pytest.mark.asyncio
 class TestACorrectionUndoesTheGivingUp:
+    @pytest.mark.parametrize("stale_checkpoint", [False, True])
+    async def test_early_pause_checkpoints_the_state_a_corrected_resume_reads(
+        self, db_session, test_user, stale_checkpoint
+    ):
+        from app.modules.autonomy.application import job_action_checkpoint_resume
+        from app.modules.autonomy.application.job_action_contracts import JobActionError
+        from app.services import agent_loop_policy
+        from app.services.agent_checkpoint_service import AgentCheckpointService
+
+        job = _job(
+            user_id=test_user.id,
+            enable_memory=False,
+            config={"loop_until": "no_new_findings", "loop_dry_rounds": 2},
+        )
+        db_session.add(job)
+        await db_session.commit()
+        if stale_checkpoint:
+            db_session.add(
+                AgentJobCheckpoint(
+                    job_id=job.id,
+                    iteration=1,
+                    state={"findings": [], "loop_finding_counts": [0]},
+                    created_at=datetime.utcnow() - timedelta(minutes=5),
+                )
+            )
+            await db_session.commit()
+        state = {
+            "goal_progress": 40,
+            "findings": [{"type": "dynamic_profile", "title": "original measurement"}],
+            "loop_finding_counts": [0, 1, 1, 1],
+            "loop_policy_stop_reason": "2 consecutive rounds produced no new findings",
+        }
+        await agent_runtime_finalizer.finalize_job(
+            _executor(CONTRACT_UNMET), job, state, db_session
+        )
+        service = AgentCheckpointService()
+        checkpoint = await service.load_latest_checkpoint(job_id=job.id, db=db_session)
+        assert checkpoint is not None
+        assert checkpoint.iteration == 3
+        assert checkpoint.phase == "blocked_needs_input"
+        assert checkpoint.state["findings"] == state["findings"]
+        assert checkpoint.state["loop_finding_counts"] == [0, 1, 1, 1]
+        assert checkpoint.context["reason"] == "blocked_needs_input"
+        queued = []
+
+        class _Deps:
+            @staticmethod
+            def approval_payload_from_results(results):
+                return (dict(results or {}), {}, None)
+
+            @staticmethod
+            async def load_latest_checkpoint(job_id, db):
+                return await service.load_latest_checkpoint(job_id=job_id, db=db)
+
+            @staticmethod
+            def append_operator_intervention(payload, **kw):
+                from app.modules.autonomy.application.job_action_interventions import (
+                    append_operator_intervention,
+                )
+
+                append_operator_intervention(payload, **kw)
+
+            class execute_agent_job_task:
+                @staticmethod
+                def delay(job_id, user_id):
+                    queued.append(job_id)
+
+        with pytest.raises(JobActionError) as refused:
+            await job_action_checkpoint_resume.perform_resume_action(
+                job, None, deps=_Deps(), db=db_session, current_user=test_user
+            )
+        assert refused.value.status_code == 409
+        assert queued == []
+        await job_action_checkpoint_resume.perform_resume_action(
+            job,
+            "A second workload is now available; keep the original measurement.",
+            deps=_Deps(),
+            db=db_session,
+            current_user=test_user,
+        )
+        await db_session.commit()
+        checkpoint = await service.load_latest_checkpoint(job_id=job.id, db=db_session)
+        assert checkpoint.state["findings"] == state["findings"]
+        assert not agent_loop_policy.should_stop(job.config, checkpoint.state)[0]
+        assert "second workload" in checkpoint.state["operator_clues"][-1]["note"]
+        assert job.status == "pending" and job.current_phase == "resuming"
+        assert queued == [str(job.id)]
+
     async def test_resuming_with_a_note_clears_the_state_that_stopped_it(
         self, db_session, test_user
     ):

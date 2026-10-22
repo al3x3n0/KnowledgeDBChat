@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -48,6 +49,7 @@ class _DummyExecutor:
         self._data_analysis_tools = {}
         self.persist_tool_priors_calls = 0
         self.trigger_calls = []
+        self.checkpoint_service = SimpleNamespace(save_checkpoint=AsyncMock())
 
     def _evaluate_goal_contract(self, job, state):
         return {

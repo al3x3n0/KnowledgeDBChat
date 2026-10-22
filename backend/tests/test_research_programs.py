@@ -80,6 +80,25 @@ def installed(monkeypatch):
 
 
 class TestLoading:
+    def test_tool_identity_only_comes_from_loaded_programs(
+        self, installed, monkeypatch
+    ):
+        report = installed(
+            _EntryPoint("disabled", replace(FAKE, name="disabled")),
+            _EntryPoint("broken", ImportError("unavailable")),
+            _EntryPoint("fake_lab", FAKE),
+            disabled="disabled",
+        )
+        monkeypatch.setattr(programs, "_REPORT", report)
+        identity = programs.tool_program("fake_lab_measure")
+        assert identity == {"name": "fake_lab", "version": "0.1"}
+        identity["version"] = "changed-by-caller"
+        assert programs.tool_program("fake_lab_measure")["version"] == "0.1"
+        assert programs.tool_program("search_documents") is None
+        assert programs.tool_program("missing") is None
+        monkeypatch.setattr(programs, "_REPORT", programs.LoadReport())
+        assert programs.tool_program("fake_lab_measure") is None
+
     def test_a_program_is_loaded_with_its_tools(self, installed):
         report = installed(_EntryPoint("fake_lab", FAKE))
 
@@ -558,6 +577,9 @@ def test_an_installed_distribution_joins_the_catalog(tmp_path, disabled):
         from app.agent_core import tool_specs
         from app.agent_core import research_programs
         from app.services import agent_evidence_map
+        from app.services import agent_evidence_bundle
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
 
         names = [s["name"] for s in tool_specs.schemas()]
         print("schema", "fake_lab_measure" in names)
@@ -565,6 +587,12 @@ def test_an_installed_distribution_joins_the_catalog(tmp_path, disabled):
         print("evidence", "fake_lab_measurement" in agent_evidence_map._PRODUCERS)
         failures = research_programs.status()["failed"]
         print("broken reported", any(f["name"] == "broken_lab" and "ToolSpec" in f["reason"] for f in failures))
+        with TemporaryDirectory() as directory:
+            entry = agent_evidence_bundle.record_entry(
+                job_id="installed-program-probe", tool="fake_lab_measure",
+                params={}, result={"success": True}, root=Path(directory),
+            )
+            print("recorded program", entry.get("research_program"))
         """
     )
 
@@ -588,3 +616,5 @@ def test_an_installed_distribution_joins_the_catalog(tmp_path, disabled):
     assert f"domain {'None' if disabled else 'fake_lab'}" in run.stdout
     assert f"evidence {expected}" in run.stdout
     assert "broken reported True" in run.stdout
+    identity = "None" if disabled else "{'name': 'fake_lab', 'version': '0.1'}"
+    assert f"recorded program {identity}" in run.stdout

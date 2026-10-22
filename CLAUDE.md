@@ -599,6 +599,14 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   is code and is trusted like the rest of the image. **Core never imports a
   program.** New domain-specific tools belong in a program, not in
   `app/services`.
+- **Program identity travels with evidence** — each evidence manifest entry
+  from a loaded program records `research_program` (name and declared version)
+  at call time, including failed calls. Resuming after an upgrade appends the
+  new version without rewriting old entries. Bundle summaries and their README
+  read recorded versions rather than the current catalog, so disabling a
+  program cannot erase its history. Core tools and legacy entries omit this
+  field. Declared versions do not pin Python code bytes; sandbox image IDs and
+  artifact hashes retain their separate roles.
 - **Evidence across research stages** — inherited findings keep the original
   producer's job id, including across intermediate stages and checkpoint
   resumes. Inheritance is idempotent by producer and the loop policy's claim

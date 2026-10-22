@@ -132,16 +132,32 @@ class TestRecalledEvidenceCannotSatisfyAContract:
     def test_two_recalled_findings_do_not_satisfy_a_contract_for_two(self):
         recalled = [
             dict(MECHANISM, recalled=True),
-            dict(MECHANISM, recalled=True),
+            dict(MECHANISM, title="A second mechanism study", recalled=True),
         ]
 
         assert self._counts(recalled)["satisfied"] is False
 
-    def test_two_measured_findings_do(self):
-        assert self._counts([dict(MECHANISM), dict(MECHANISM)])["satisfied"] is True
+    def test_two_distinct_measured_findings_do(self):
+        findings = [
+            dict(MECHANISM),
+            dict(
+                MECHANISM,
+                title="L2 TaggedPrefetcher on a second kernel",
+                subject="second kernel",
+            ),
+        ]
+        assert self._counts(findings)["satisfied"] is True
+
+    def test_two_copies_of_one_measurement_are_still_one(self):
+        result = self._counts([dict(MECHANISM), dict(MECHANISM)])
+        assert result["satisfied"] is False
+        assert result["metrics"]["finding_types"] == {"mechanism_comparison": 1}
 
     def test_one_measured_plus_one_recalled_is_still_short(self):
-        mixed = [dict(MECHANISM), dict(MECHANISM, recalled=True)]
+        mixed = [
+            dict(MECHANISM),
+            dict(MECHANISM, title="A second mechanism study", recalled=True),
+        ]
 
         assert self._counts(mixed)["satisfied"] is False
 

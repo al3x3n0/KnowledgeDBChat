@@ -177,6 +177,36 @@ async def test_finalize_job_completed_path_updates_results(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["running", "paused"])
+async def test_finalization_retains_operator_resume_audit(monkeypatch, status):
+    from app.modules.autonomy.application.job_action_interventions import (
+        append_operator_intervention,
+    )
+
+    monkeypatch.setattr(
+        agent_runtime_finalizer.agent_job_memory_service,
+        "extract_memories_from_job",
+        AsyncMock(return_value=[]),
+    )
+    job = _DummyJob(status=status)
+    event = append_operator_intervention(
+        job.results,
+        action="resume",
+        actor_user_id=job.user_id,
+        note="A second workload is available",
+        job_status_before="paused",
+        job_status_after="pending",
+    )
+    job.results["execution_strategy"]["execution_mode"] = "stale-mode"
+    state = _state_with(100)
+    for _ in range(2):
+        await finalize_job(_DummyExecutor(), job, state, _DummyDb())
+        execution = job.results["execution_strategy"]
+        assert execution["operator_interventions"] == [event]
+        assert execution["execution_mode"] == "adaptive"
+
+
+@pytest.mark.asyncio
 async def test_recorded_methods_reach_the_results_the_run_record_reads(monkeypatch):
     """`_record_what_the_run_established` lists results["methods"]; nothing
     wrote that key, so a run's methods never appeared in its own record."""

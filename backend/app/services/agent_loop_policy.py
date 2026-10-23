@@ -79,10 +79,10 @@ def finding_identity(finding: Any) -> tuple:
     """
     if not isinstance(finding, dict):
         return ("", "")
-    if finding.get("type") == "bundle_verified" and str(
+    if finding.get("type") in {"bundle_verified", "bundle_reproduced"} and str(
         finding.get("id") or ""
     ).startswith("bundle-verification:"):
-        return ("bundle_verified", str(finding["id"]))
+        return (str(finding["type"]), str(finding["id"]))
     return (
         str(finding.get("type") or ""),
         str(finding.get("title") or finding.get("subject") or finding.get("id") or ""),

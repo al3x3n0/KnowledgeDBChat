@@ -488,7 +488,10 @@ SPECS: tuple[ToolSpec, ...] = (
         "call and reports whether the same results come back, judging "
         "nothing that reports wall clock, since two honest runs of a "
         "benchmark disagree. Use it before claiming a result is "
-        "reproducible.",
+        "reproducible. For a bundle_reproduced contract, set replay=true. "
+        "That finding requires intact artifacts and a successful replay covering "
+        "every eligible comparison, with at least one result compared. "
+        "Skipped calls remain reported.",
         parameters={
             "type": "object",
             "properties": {
@@ -513,6 +516,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": [],
         },
+        produces=("bundle_verified", "bundle_reproduced"),
         effects="write",
         cost_tier="high",
         pii_risk="medium",

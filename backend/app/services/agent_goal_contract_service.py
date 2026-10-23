@@ -57,14 +57,24 @@ _SELF_DECLARED_FAILURE_FIELDS = ("verified", "succeeded", "passed")
 
 
 def _is_a_report_of_absence(finding: Dict[str, Any], ftype: str) -> bool:
-    """True when a finding says the thing it is typed as could not be produced.
+    """True when a finding does not establish the evidence it is typed as.
 
-    Deliberately narrow: it fires on the finding's own self-declaration, never
-    on the prose. A run that measures something and calls the result
+    Outside core bundle verification types, it fires only on the finding's
+    own self-declaration, never on the prose. A run that measures something and calls the result
     disappointing still measured it.
     """
     if str(finding.get("category") or "").strip().lower() in _ABSENCE_CATEGORIES:
         return True
+    # Core verification types require their runtime proof, not an editable
+    # label on a saved research note. Historical integrity reports carry the
+    # intact flag even when they predate the generic verified flag.
+    if ftype == "bundle_verified" and finding.get("intact") is not True:
+        return True
+    if ftype == "bundle_reproduced":
+        from app.services import agent_evidence_bundle
+
+        if not agent_evidence_bundle.reproduction_established(finding):
+            return True
     # An explicitly null metric under its own type name: the finding declared
     # the number it exists to carry and then carried nothing.
     metrics = finding.get("metrics")

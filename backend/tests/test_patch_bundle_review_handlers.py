@@ -627,6 +627,186 @@ async def test_verify_with_replay_reproduces_a_deterministic_run(
     }
 
 
+@pytest.mark.parametrize("finding_type", ["bundle_verified", "bundle_reproduced"])
+async def test_saved_verification_labels_cannot_satisfy_runtime_proof_contracts(
+    db_session, test_user, finding_type
+):
+    from app.services.agent_goal_contract_service import AgentGoalContractService
+    from app.services.agent_tool_providers.research import (
+        build_autonomous_research_provider,
+    )
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    job = await _job(
+        db_session,
+        test_user,
+        job_type="analysis",
+        config={
+            "goal_contract": {
+                "enabled": True,
+                "required_finding_types": [finding_type],
+            }
+        },
+    )
+    save = build_autonomous_research_provider(
+        SimpleNamespace(_job_findings={})
+    )._handlers["save_research_finding"]
+    result = await save(
+        {
+            "title": "A claimed verification",
+            "finding_type": finding_type,
+            "metrics": {
+                "intact": True,
+                "verified": True,
+                "replay_verdict": "reproduced",
+            },
+        },
+        _ctx(db_session, job),
+    )
+    evaluation = AgentGoalContractService().evaluate_goal_contract(
+        AutonomousAgentExecutor.__new__(AutonomousAgentExecutor),
+        job,
+        {"goal_progress": 100, "findings": result["findings"]},
+    )
+    assert evaluation["satisfied"] is False
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "integrity_only",
+        "matched",
+        "different",
+        "failed",
+        "empty",
+        "missing",
+        "tampered",
+        "timing_only",
+        "legacy_unhashed",
+        "partial_legacy",
+        "mixed_timing",
+        "original_failure",
+    ],
+)
+async def test_reproduction_contract_requires_intact_nonempty_successful_replay(
+    bundles, db_session, test_user, monkeypatch, mode
+):
+    from app.services.agent_goal_contract_service import AgentGoalContractService
+    from app.services.agent_tool_providers.research import (
+        build_autonomous_research_provider,
+    )
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    job = await _job(db_session, test_user, job_type="analysis")
+    if mode == "timing_only":
+        bundle.record_entry(
+            job_id=str(job.id),
+            tool="benchmark_c_snippet",
+            params={},
+            result={"success": True, "data": {"fastest_ms": 1}},
+        )
+    else:
+        await bundles.measure(db_session, job, "int f(void){return 1;}")
+    if mode == "partial_legacy":
+        await bundles.measure(db_session, job, "int g(void){return 2;}")
+    if mode in {"mixed_timing", "original_failure"}:
+        bundle.record_entry(
+            job_id=str(job.id),
+            tool="benchmark_c_snippet"
+            if mode == "mixed_timing"
+            else "compile_c_snippet",
+            params={},
+            result={"success": mode == "mixed_timing"},
+        )
+    if mode == "different":
+        bundles.compiler.assembly = "sub x0, x0, x1"
+    if mode in {"failed", "empty", "missing"}:
+
+        async def fail(params, ctx):
+            return (
+                None
+                if mode == "empty"
+                else {"success": False, "error": "sandbox unavailable"}
+            )
+
+        providers = (
+            []
+            if mode == "missing"
+            else [
+                FunctionToolProvider(
+                    name="failed",
+                    modes={"autonomous"},
+                    handlers={"compile_c_snippet": fail},
+                )
+            ]
+        )
+        monkeypatch.setattr(bundles.registry, "_providers", providers)
+    if mode == "tampered":
+        entry = bundle.read_manifest(str(job.id))[0]
+        path = bundle.bundle_dir(str(job.id)) / entry["artifact_dir"] / "result.json"
+        payload = json.loads(path.read_text())
+        payload["data"]["assembly"] = "corrupted"
+        path.write_text(json.dumps(payload))
+    if mode in {"legacy_unhashed", "partial_legacy"}:
+        entries = bundle.read_manifest(str(job.id))
+        entries[0].pop("canonical_sha256")
+        (bundle.bundle_dir(str(job.id)) / bundle.MANIFEST_NAME).write_text(
+            "".join(json.dumps(entry) + "\n" for entry in entries)
+        )
+    result = await bundles.handler(
+        {"replay": mode != "integrity_only"}, _ctx(db_session, job)
+    )
+    findings = result["findings"]
+    assert findings[0]["type"] == "bundle_verified"
+    assert findings[0]["verified"] is (mode != "tampered")
+    proofs = [f for f in findings if f["type"] == "bundle_reproduced"]
+    replay_passes = mode in {"matched", "mixed_timing", "original_failure"}
+    assert bool(proofs) is replay_passes
+    executor = AutonomousAgentExecutor.__new__(AutonomousAgentExecutor)
+    for finding_type, expected in (
+        ("bundle_verified", mode != "tampered"),
+        ("bundle_reproduced", replay_passes),
+    ):
+        job.config = {
+            "goal_contract": {"enabled": True, "required_finding_types": [finding_type]}
+        }
+        evaluation = AgentGoalContractService().evaluate_goal_contract(
+            executor, job, {"goal_progress": 100, "findings": findings}
+        )
+        assert evaluation["satisfied"] is expected, evaluation
+    if mode == "partial_legacy":
+        assert result["data"]["replay"]["verdict"] == "reproduced"
+        assert result["data"]["replay"]["judged"] == 1
+        assert result["data"]["replay"]["expected_comparisons"] == 2
+    if mode == "matched":
+        proof = proofs[0]
+        assert proof["id"] != findings[0]["id"]
+        assert proof["replay_summary"]["judged"] == 1
+        job.results = {"findings": findings}
+        job.status = "completed"
+        await db_session.commit()
+        child = await _job(
+            db_session,
+            test_user,
+            name="Consumer",
+            job_type="analysis",
+            parent_job_id=job.id,
+            config={"pipeline_assumes": ["bundle_reproduced"]},
+        )
+        state = {"findings": []}
+        await AutonomousAgentExecutor._inherit_assumed_findings(
+            None, child, state, db_session
+        )
+        reader = build_autonomous_research_provider(
+            SimpleNamespace(_job_findings={})
+        )._handlers["get_research_findings"]
+        read = await reader({}, _ctx(db_session, child, state))
+        (inherited,) = read["data"]["findings"]
+        assert inherited["type"] == "bundle_reproduced"
+        assert inherited["verified_job_id"] == str(job.id)
+        assert inherited["id"] == proof["id"]
+
+
 async def test_verify_with_replay_reports_a_result_that_changed(
     bundles, db_session, test_user
 ):
@@ -745,7 +925,7 @@ async def test_unsampled_program_changes_survive_while_identical_replays_dedupli
         result = await bundles.handler(
             {"job_id": str(source.id), "replay": True}, _ctx(db_session, verifier)
         )
-        findings.extend(result["findings"])
+        findings.extend(f for f in result["findings"] if f["type"] == "bundle_verified")
     first, second, repeat = findings
     assert first["title"] == second["title"] == repeat["title"]
     assert (
@@ -925,6 +1105,11 @@ async def test_replay_context_survives_persistence_inheritance_and_research_read
     finding = result["findings"][0]
     replay = result["data"]["replay"]
     summary = finding["replay_summary"]
+    proofs = [f for f in result["findings"] if f["type"] == "bundle_reproduced"]
+    assert bool(proofs) is (mode != "unavailable")
+    if proofs:
+        assert proofs[0]["replay_summary"] == summary
+        assert proofs[0]["id"] != finding["id"]
     expected_status = {
         "matched": "match",
         "upgraded": "version_mismatch",

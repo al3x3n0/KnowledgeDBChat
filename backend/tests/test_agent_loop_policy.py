@@ -33,6 +33,12 @@ def _state(counts):
             "bundle-verification:" + "b" * 64,
             2,
         ),
+        (
+            "bundle_reproduced",
+            "bundle-verification:" + "a" * 64 + ":reproduced",
+            "bundle-verification:" + "b" * 64 + ":reproduced",
+            2,
+        ),
         ("bundle_verified", "legacy-a", "legacy-b", 1),
         (
             "document",

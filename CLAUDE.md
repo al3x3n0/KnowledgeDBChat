@@ -611,6 +611,9 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   currently loaded owners, including missing programs and undeclared/legacy
   versions. These diagnostics do not change the result-hash verdict or rewrite
   the bundle: a changed implementation may reproduce the recorded result.
+  Missing replay handlers, failed tool results, and empty results are execution
+  errors, excluded from judged measurements. Without a differing successful
+  result, any such error makes the replay inconclusive.
 - **Evidence across research stages** — inherited findings keep the original
   producer's job id, including across intermediate stages and checkpoint
   resumes. Inheritance is idempotent by producer and the loop policy's claim

@@ -580,6 +580,10 @@ has no loaded owner for that tool; legacy calls never acquire a guessed historic
 version. Diagnostics include skipped calls too. The replay verdict still judges
 result hashes: identical results can reproduce under a different program version.
 Matching declared versions do not establish identical Python code bytes.
+Missing handlers, unsuccessful tool results, and empty replay results are listed
+under `errored` and excluded from `judged`. They are execution failures, not
+changed measurements. A replay with errors and no differing successful results
+is `inconclusive`, even if its other calls reproduced.
 
 ## Summary at time of writing
 
@@ -799,8 +803,20 @@ async def replay_bundle(
             # simulator reproduces the number.
             with sandbox_result_cache.bypassed():
                 result = await execute(tool, params)
-        except Exception as exc:  # pragma: no cover - defensive
+        except Exception as exc:
             errored.append({"sequence": sequence, "tool": tool, "why": str(exc)[:200]})
+            continue
+
+        if result is None or (
+            isinstance(result, dict)
+            and (result.get("success") is False or result.get("error"))
+        ):
+            reason = (
+                str(result.get("error") or "tool returned an unsuccessful result")
+                if isinstance(result, dict)
+                else "tool returned no result"
+            )
+            errored.append({"sequence": sequence, "tool": tool, "why": reason[:200]})
             continue
 
         expected = entry.get("canonical_sha256")

@@ -641,6 +641,45 @@ async def test_verify_with_replay_reports_a_result_that_changed(
     assert result["findings"][0]["replay_verdict"] == "differed"
 
 
+@pytest.mark.parametrize("mode", ["missing", "failed", "empty"])
+async def test_verify_replay_reports_execution_failure_without_a_changed_measurement(
+    bundles, db_session, test_user, monkeypatch, mode
+):
+    job = await _job(db_session, test_user, job_type="analysis")
+    await bundles.measure(db_session, job, "int f(void){return 1;}")
+    manifest = bundle.bundle_dir(str(job.id)) / bundle.MANIFEST_NAME
+    before = manifest.read_bytes()
+
+    async def fail(params, ctx):
+        return (
+            None
+            if mode == "empty"
+            else {"success": False, "error": "sandbox is unavailable"}
+        )
+
+    providers = (
+        []
+        if mode == "missing"
+        else [
+            FunctionToolProvider(
+                name="failing_compiler",
+                modes={"autonomous"},
+                handlers={"compile_c_snippet": fail},
+            )
+        ]
+    )
+    monkeypatch.setattr(bundles.registry, "_providers", providers)
+    result = await bundles.handler({"replay": True}, _ctx(db_session, job))
+    replay = result["data"]["replay"]
+    assert replay["verdict"] == "inconclusive"
+    assert replay["judged"] == 0 and replay["differed"] == []
+    assert len(replay["errored"]) == 1
+    assert "unavailable" in replay["errored"][0]["why"] or mode == "empty"
+    assert result["findings"][0]["replay_verdict"] == "inconclusive"
+    assert result["data"]["integrity"]["intact"]
+    assert manifest.read_bytes() == before
+
+
 async def test_replaying_this_run_does_not_add_to_its_bundle(
     bundles, db_session, test_user
 ):

@@ -34,7 +34,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from app.core.config import settings
+from app.core.config import parse_llm_extra_headers, settings
 from app.models.llm_usage import LLMUsageEvent
 from app.services import llm_truncation
 from app.services.llm_concurrency import llm_slot
@@ -1600,6 +1600,9 @@ Citation format:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
+        # Gateway config headers (e.g. Portkey's x-portkey-config). Merged
+        # under the caller's own, so Authorization above still wins.
+        headers.update(parse_llm_extra_headers(settings.LLM_EXTRA_HEADERS))
 
         try:
             response = await self.client.post(
@@ -1734,6 +1737,9 @@ Citation format:
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
+        # Gateway config headers (e.g. Portkey's x-portkey-config). Merged
+        # under the caller's own, so Authorization above still wins.
+        headers.update(parse_llm_extra_headers(settings.LLM_EXTRA_HEADERS))
 
         try:
             response = await self.client.post(
@@ -1833,9 +1839,13 @@ Citation format:
         try:
             if self.provider in openai_compatible:
                 base, key = openai_compatible[self.provider]
+                headers = {"Authorization": f"Bearer {key or ''}"}
+                # Gateways like Portkey need their config header even on the
+                # models probe, or the check reports the provider down.
+                headers.update(parse_llm_extra_headers(settings.LLM_EXTRA_HEADERS))
                 response = await self.client.get(
                     f"{base.rstrip('/')}/models",
-                    headers={"Authorization": f"Bearer {key}"},
+                    headers=headers,
                 )
                 return response.status_code == 200
             if self.provider == "anthropic":

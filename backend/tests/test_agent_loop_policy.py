@@ -24,6 +24,32 @@ def _state(counts):
     return state
 
 
+@pytest.mark.parametrize(
+    "kind,first_id,second_id,expected",
+    [
+        (
+            "bundle_verified",
+            "bundle-verification:" + "a" * 64,
+            "bundle-verification:" + "b" * 64,
+            2,
+        ),
+        ("bundle_verified", "legacy-a", "legacy-b", 1),
+        (
+            "document",
+            "bundle-verification:" + "a" * 64,
+            "bundle-verification:" + "b" * 64,
+            1,
+        ),
+    ],
+)
+def test_verification_context_ids_preserve_distinct_claims_without_changing_legacy_identity(
+    kind, first_id, second_id, expected
+):
+    first = {"type": kind, "title": "same summary", "id": first_id}
+    second = {**first, "id": second_id}
+    assert policy.distinct_findings([first, dict(first), second]) == expected
+
+
 class TestNoNewFindings:
     def test_a_productive_loop_keeps_going(self):
         # Each round established something: 2, then 4, then 5.

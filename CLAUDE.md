@@ -621,6 +621,11 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   tool response; no requested replay is represented by a null summary.
   Finding titles include the source job id so identical verification summaries
   for different bundles remain distinct claims during inheritance.
+  Producer-defined `bundle-verification:` finding IDs fingerprint the full
+  verification context, including diagnostics beyond the ten-item sample.
+  Finding identity honors these IDs for bundle verifications; other finding
+  types and legacy bundle findings keep their title-based identity. Repeated
+  contexts reuse an ID, and transient error wording is not new progress.
 - **Evidence across research stages** — inherited findings keep the original
   producer's job id, including across intermediate stages and checkpoint
   resumes. Inheritance is idempotent by producer and the loop policy's claim

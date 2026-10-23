@@ -1325,6 +1325,9 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "findings": [
                 {
                     "type": "bundle_verified",
+                    "id": bundle.verification_context_id(
+                        str(job_id), integrity, replay
+                    ),
                     "title": (
                         f"Evidence bundle {job_id}: {summary['entries']} calls recorded, "
                         f"integrity {'intact' if integrity['intact'] else 'BROKEN'}, "

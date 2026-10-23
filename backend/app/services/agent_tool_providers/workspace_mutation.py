@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections import Counter
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -20,6 +22,28 @@ from app.services.agent_tool_providers.base import (
 )
 from app.services.config_values import bounded_int
 from app.utils.tree_copy import without_git_or_links
+
+
+def _replay_finding_summary(replay: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Bound details carried by findings, retaining full counts for long runs."""
+    if not replay:
+        return None
+    diagnostics = replay.get("program_diagnostics") or []
+    issues = [row for row in diagnostics if row.get("status") != "match"]
+    errors = replay.get("errored") or []
+    return {
+        "judged": int(replay.get("judged") or 0),
+        "reproduced": int(replay.get("reproduced") or 0),
+        "differed": len(replay.get("differed") or []),
+        "skipped": len(replay.get("skipped") or []),
+        "error_count": len(errors),
+        "errors": deepcopy(errors[:10]),
+        "program_status_counts": dict(
+            sorted(Counter(row["status"] for row in diagnostics).items())
+        ),
+        "program_issue_count": len(issues),
+        "program_issues": deepcopy(issues[:10]),
+    }
 
 
 def _as_float(value: Any) -> Optional[float]:
@@ -1269,6 +1293,15 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             replay = await bundle.replay_bundle(str(job_id), execute)
 
         verdict = replay.get("verdict") if replay else "not replayed"
+        replay_summary = _replay_finding_summary(replay)
+        warnings = ""
+        if replay_summary and (
+            replay_summary["error_count"] or replay_summary["program_issue_count"]
+        ):
+            warnings = (
+                f", replay errors: {replay_summary['error_count']}, "
+                f"program issues: {replay_summary['program_issue_count']}"
+            )
         return {
             "success": True,
             "verified_job_id": str(job_id),
@@ -1293,12 +1326,14 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 {
                     "type": "bundle_verified",
                     "title": (
-                        f"Evidence bundle: {summary['entries']} calls recorded, "
+                        f"Evidence bundle {job_id}: {summary['entries']} calls recorded, "
                         f"integrity {'intact' if integrity['intact'] else 'BROKEN'}, "
-                        f"replay {verdict}"
+                        f"replay {verdict}{warnings}"
                     ),
                     "intact": integrity["intact"],
                     "replay_verdict": verdict,
+                    "verified_job_id": str(job_id),
+                    "replay_summary": replay_summary,
                     "entries": summary["entries"],
                 }
             ],

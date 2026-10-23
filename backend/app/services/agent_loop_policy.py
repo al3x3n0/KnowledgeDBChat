@@ -72,11 +72,17 @@ def finding_identity(finding: Any) -> tuple:
 
     Factored out so everything asking "is this new?" asks it the same way.
     Deliberately coarse: two findings of one type with the same title are the
-    same claim however their bodies differ, and a run that genuinely
+    same claim however their bodies differ. Bundle verification findings use
+    their producer-defined context IDs, so changed program versions survive even
+    when verdicts and sampled details coincide. A run that genuinely
     re-measures something gives its finding a different title or subject.
     """
     if not isinstance(finding, dict):
         return ("", "")
+    if finding.get("type") == "bundle_verified" and str(
+        finding.get("id") or ""
+    ).startswith("bundle-verification:"):
+        return ("bundle_verified", str(finding["id"]))
     return (
         str(finding.get("type") or ""),
         str(finding.get("title") or finding.get("subject") or finding.get("id") or ""),

@@ -585,6 +585,11 @@ The `verify_run_bundle` finding also records `verified_job_id` and a
 errors. This context can travel to downstream research stages. Complete replay
 details remain in the tool result's `data.replay`; a missing summary means no
 replay was requested.
+Verification findings also have stable context IDs. They include the full
+program diagnostics before sampling, so different versions remain distinct even
+when the title and summary coincide. Identical contexts reuse the same ID;
+changing only error wording or skip explanations does not create new progress.
+These IDs identify verification observations, not independent measurements.
 Missing handlers, unsuccessful tool results, and empty replay results are listed
 under `errored` and excluded from `judged`. They are execution failures, not
 changed measurements. A replay with errors and no differing successful results
@@ -714,6 +719,30 @@ def canonical_digest(result: Any) -> str:
     return _digest(
         json.dumps(canonicalize(payload), sort_keys=True, default=str).encode()
     )
+
+
+def verification_context_id(
+    job_id: str, integrity: Dict[str, Any], replay: Dict[str, Any]
+) -> str:
+    """Identity of an observed verification context, including unsampled versions.
+
+    Error wording and skip explanations are not new evidence. Keep the affected
+    calls, but do not let transient paths/messages make a stalled replay novel.
+    """
+    stable_replay = dict(replay)
+    for field in ("errored", "skipped"):
+        stable_replay[field] = [
+            {"sequence": row.get("sequence"), "tool": row.get("tool")}
+            for row in replay.get(field) or []
+        ]
+    digest = canonical_digest(
+        {
+            "verified_job_id": str(job_id),
+            "integrity": integrity,
+            "replay": stable_replay if replay else None,
+        }
+    )
+    return f"bundle-verification:{digest}"
 
 
 async def replay_bundle(

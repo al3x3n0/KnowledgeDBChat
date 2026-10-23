@@ -614,6 +614,13 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   Missing replay handlers, failed tool results, and empty results are execution
   errors, excluded from judged measurements. Without a differing successful
   result, any such error makes the replay inconclusive.
+  `bundle_verified` findings retain the verified source job id and a bounded
+  replay summary (full counts, at most ten program issues and ten errors).
+  Counts are included in warning titles, and the context survives persisted
+  findings, inheritance, and `get_research_findings`. Full details stay in the
+  tool response; no requested replay is represented by a null summary.
+  Finding titles include the source job id so identical verification summaries
+  for different bundles remain distinct claims during inheritance.
 - **Evidence across research stages** — inherited findings keep the original
   producer's job id, including across intermediate stages and checkpoint
   resumes. Inheritance is idempotent by producer and the loop policy's claim

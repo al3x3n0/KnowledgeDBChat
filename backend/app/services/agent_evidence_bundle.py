@@ -580,6 +580,11 @@ has no loaded owner for that tool; legacy calls never acquire a guessed historic
 version. Diagnostics include skipped calls too. The replay verdict still judges
 result hashes: identical results can reproduce under a different program version.
 Matching declared versions do not establish identical Python code bytes.
+The `verify_run_bundle` finding also records `verified_job_id` and a
+`replay_summary`: full counts plus up to ten program issues and ten execution
+errors. This context can travel to downstream research stages. Complete replay
+details remain in the tool result's `data.replay`; a missing summary means no
+replay was requested.
 Missing handlers, unsuccessful tool results, and empty replay results are listed
 under `errored` and excluded from `judged`. They are execution failures, not
 changed measurements. A replay with errors and no differing successful results

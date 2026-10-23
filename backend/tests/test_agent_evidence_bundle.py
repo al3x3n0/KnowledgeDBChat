@@ -270,6 +270,117 @@ class TestReplay:
         return execute
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "recorded_version,current_name,current_version,status",
+        [
+            ("1.0", "lab", "1.0", "match"),
+            ("1.0", "lab", "2.0", "version_mismatch"),
+            ("1.0", "replacement", "1.0", "program_mismatch"),
+            ("1.0", None, None, "program_unavailable"),
+            ("", "lab", "1.0", "version_unknown"),
+            ("1.0", "lab", "", "version_unknown"),
+        ],
+    )
+    @pytest.mark.parametrize("replay_cycles", [42, 43])
+    async def test_replay_reports_program_identity_separately_from_results(
+        self,
+        tmp_path,
+        monkeypatch,
+        recorded_version,
+        current_name,
+        current_version,
+        status,
+        replay_cycles,
+    ):
+        from app.agent_core import research_programs as programs
+        from app.agent_core.tool_specs.spec import ToolSpec
+
+        lab = programs.ResearchProgram(
+            name="lab",
+            version=recorded_version,
+            tool_specs=(
+                ToolSpec(name="measure", description="Measure", parameters={}),
+            ),
+        )
+        monkeypatch.setattr(programs, "_REPORT", programs.LoadReport(loaded=[lab]))
+        original = {"success": True, "data": {"cycles": 42}}
+        _record(tmp_path, "measure", {}, original)
+        directory = bundle.bundle_dir("job-1", tmp_path)
+        manifest = (directory / bundle.MANIFEST_NAME).read_bytes()
+        current = (
+            replace(lab, name=current_name, version=current_version)
+            if current_name is not None
+            else None
+        )
+        monkeypatch.setattr(
+            programs,
+            "_REPORT",
+            programs.LoadReport(loaded=[current] if current else []),
+        )
+        calls = []
+
+        async def execute(tool, params):
+            calls.append(tool)
+            return {"success": True, "data": {"cycles": replay_cycles}}
+
+        report = await bundle.replay_bundle("job-1", execute, root=tmp_path)
+        assert calls == ["measure"]
+        assert report["verdict"] == (
+            "reproduced" if replay_cycles == 42 else "differed"
+        )
+        assert report["program_diagnostics"] == [
+            {
+                "sequence": 1,
+                "tool": "measure",
+                "status": status,
+                "recorded": {"name": "lab", "version": recorded_version},
+                "current": {"name": current_name, "version": current_version}
+                if current
+                else None,
+            }
+        ]
+        assert (directory / bundle.MANIFEST_NAME).read_bytes() == manifest
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "tool,succeeded", [("measure", False), ("benchmark_c_snippet", True)]
+    )
+    async def test_skipped_calls_still_report_changed_program_versions(
+        self, tmp_path, monkeypatch, tool, succeeded
+    ):
+        from app.agent_core import research_programs as programs
+
+        monkeypatch.setattr(
+            programs, "tool_program", lambda _: {"name": "lab", "version": "1.0"}
+        )
+        _record(tmp_path, tool, {}, {"success": succeeded})
+        monkeypatch.setattr(
+            programs, "tool_program", lambda _: {"name": "lab", "version": "2.0"}
+        )
+        # An empty executor queue fails if a skipped tool is unexpectedly run.
+        report = await bundle.replay_bundle("job-1", self._executor([]), root=tmp_path)
+        assert report["judged"] == 0
+        assert report["skipped"][0]["tool"] == tool
+        assert report["program_diagnostics"][0]["status"] == "version_mismatch"
+
+    @pytest.mark.asyncio
+    async def test_legacy_program_calls_report_unknown_provenance(
+        self, tmp_path, monkeypatch
+    ):
+        from app.agent_core import research_programs as programs
+
+        monkeypatch.setattr(programs, "tool_program", lambda _: None)
+        _record(tmp_path, "legacy_measure", {}, {"success": True})
+        monkeypatch.setattr(
+            programs, "tool_program", lambda _: {"name": "lab", "version": "2.0"}
+        )
+        report = await bundle.replay_bundle(
+            "job-1", self._executor([{"success": True}]), root=tmp_path
+        )
+        assert report["program_diagnostics"][0]["status"] == "unrecorded"
+        assert report["program_diagnostics"][0]["recorded"] is None
+
+    @pytest.mark.asyncio
     async def test_an_identical_result_counts_as_reproduced(self, tmp_path):
         original = {"success": True, "data": {"cycles_per_iteration": 59.05}}
         _record(tmp_path, "analyze_snippet_cycles", {"cpu": "neoverse-n1"}, original)

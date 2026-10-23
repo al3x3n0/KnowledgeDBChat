@@ -572,6 +572,15 @@ anything, so it does not prove they can be produced again. Re-execution needs
 the pinned images and the tools that made the calls -- the manifest records
 which image id each call used, and the hash any repeat run has to match.
 
+Replay reports include `program_diagnostics` for calls with recorded or current
+program ownership. Each row includes the call sequence, tool, recorded identity,
+current identity, and a status: `match`, `version_mismatch`, `program_mismatch`,
+`program_unavailable`, `version_unknown`, or `unrecorded`. An unavailable program
+has no loaded owner for that tool; legacy calls never acquire a guessed historical
+version. Diagnostics include skipped calls too. The replay verdict still judges
+result hashes: identical results can reproduce under a different program version.
+Matching declared versions do not establish identical Python code bytes.
+
 ## Summary at time of writing
 
 - calls recorded: {entries} ({succeeded} succeeded, {failed} failed)
@@ -722,10 +731,38 @@ async def replay_bundle(
     differed: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []
     errored: List[Dict[str, Any]] = []
+    program_diagnostics: List[Dict[str, Any]] = []
+
+    from app.agent_core import research_programs
 
     for entry in entries:
         sequence = int(entry.get("sequence") or 0)
         tool = str(entry.get("tool") or "")
+        recorded = entry.get("research_program")
+        recorded = recorded if isinstance(recorded, dict) else None
+        current = research_programs.tool_program(tool)
+        if recorded is not None or current is not None:
+            if recorded is None:
+                status = "unrecorded"
+            elif current is None:
+                status = "program_unavailable"
+            elif recorded.get("name") != current["name"]:
+                status = "program_mismatch"
+            elif not recorded.get("version") or not current["version"]:
+                status = "version_unknown"
+            elif recorded["version"] != current["version"]:
+                status = "version_mismatch"
+            else:
+                status = "match"
+            program_diagnostics.append(
+                {
+                    "sequence": sequence,
+                    "tool": tool,
+                    "status": status,
+                    "recorded": recorded,
+                    "current": current,
+                }
+            )
         if not entry.get("succeeded"):
             # Replaying a failure proves nothing about the evidence, and a
             # preflight rejection would just be rejected again.
@@ -799,6 +836,9 @@ async def replay_bundle(
         # calls should not read as a bundle that reproduced.
         "skipped": skipped,
         "errored": errored,
+        # Provenance compatibility and result reproduction answer separate
+        # questions: a changed implementation can produce identical results.
+        "program_diagnostics": program_diagnostics,
         "verdict": (
             "reproduced"
             if judged and not differed and not errored

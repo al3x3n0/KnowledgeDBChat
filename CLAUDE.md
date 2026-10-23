@@ -607,6 +607,10 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   program cannot erase its history. Core tools and legacy entries omit this
   field. Declared versions do not pin Python code bytes; sandbox image IDs and
   artifact hashes retain their separate roles.
+  Replay reports include per-call `program_diagnostics` comparing recorded and
+  currently loaded owners, including missing programs and undeclared/legacy
+  versions. These diagnostics do not change the result-hash verdict or rewrite
+  the bundle: a changed implementation may reproduce the recorded result.
 - **Evidence across research stages** — inherited findings keep the original
   producer's job id, including across intermediate stages and checkpoint
   resumes. Inheritance is idempotent by producer and the loop policy's claim

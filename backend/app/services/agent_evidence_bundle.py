@@ -319,6 +319,9 @@ def record_entry(
 ) -> Optional[Dict[str, Any]]:
     """Append one call to the bundle. Never raises; a bundle is not the run."""
     try:
+        from app.agent_core import research_programs
+
+        program = research_programs.tool_program(tool)
         directory = bundle_dir(job_id, root)
         artifacts = directory / "artifacts"
         artifacts.mkdir(parents=True, exist_ok=True)
@@ -370,6 +373,8 @@ def record_entry(
             "artifact_dir": str(entry_dir.relative_to(directory)),
             "spilled_files": spilled,
         }
+        if program is not None:
+            entry["research_program"] = program
         with (directory / MANIFEST_NAME).open("a") as handle:
             handle.write(json.dumps(entry, sort_keys=True) + "\n")
         # Refreshed per entry so a run that dies partway still leaves a bundle
@@ -410,6 +415,13 @@ def summarize(job_id: str, root: Optional[Path] = None) -> Dict[str, Any]:
     images = sorted(
         {str(e.get("image_id") or "") for e in entries if e.get("image_id")}
     )
+    programs = {
+        (p["name"], p.get("version", ""))
+        for entry in entries
+        if isinstance(p := entry.get("research_program"), dict)
+        and isinstance(p.get("name"), str)
+        and isinstance(p.get("version", ""), str)
+    }
     return {
         "job_id": str(job_id),
         "path": str(bundle_dir(job_id, root)),
@@ -420,6 +432,9 @@ def summarize(job_id: str, root: Optional[Path] = None) -> Dict[str, Any]:
         "failed": len(failed),
         "tools": dict(sorted(tools.items())),
         "image_ids": images,
+        "research_programs": [
+            {"name": name, "version": version} for name, version in sorted(programs)
+        ],
         "unpinned_entries": sum(1 for e in entries if not e.get("image_id")),
     }
 
@@ -508,7 +523,9 @@ this describes what actually ran rather than what was reconstructed afterwards.
 
 - `manifest.jsonl` — one line per call, in order: the tool, whether it
   succeeded, the image it ran in (pinned by id, since a tag moves), and the
-  sha256 of its recorded parameters and result.
+  sha256 of its recorded parameters and result. Program tools also record
+  `research_program` with the supplying program's name and declared version
+  at call time. Resuming with a newer program leaves earlier entries intact.
 - `artifacts/NNNN-<tool>/params.json` — exactly what the call was given.
 - `artifacts/NNNN-<tool>/result.json` — exactly what it returned.
 - `artifacts/NNNN-<tool>/*.txt` — large outputs given their own file, such as
@@ -536,6 +553,13 @@ carrying them would be too heavy to keep. Two ways to obtain them:
 Without either, this bundle can still be checked for integrity. It cannot be
 replayed, and it says so rather than implying otherwise.
 
+The program version identifies the tool implementation separately from its
+sandbox image. It is declared metadata, not a hash of the installed Python
+code; two development builds may declare the same version. Older entries and
+tools with no loaded program owner omit it, so absence does not establish
+that a historical call was a core tool. Bundle summaries read only the
+recorded versions, even if the current program is disabled or upgraded.
+
 ## Checking it
 
 ```
@@ -553,6 +577,7 @@ which image id each call used, and the hash any repeat run has to match.
 - calls recorded: {entries} ({succeeded} succeeded, {failed} failed)
 - tools: {tools}
 - images: {images}
+- research programs: {programs}
 - entries with no image pin: {unpinned}
 """
 
@@ -583,6 +608,11 @@ def write_verifier(job_id: str, root: Optional[Path] = None) -> Optional[Path]:
                 tools=", ".join(f"{k} x{v}" for k, v in summary["tools"].items())
                 or "none",
                 images=", ".join(summary["image_ids"]) or "none pinned",
+                programs=", ".join(
+                    f"{p['name']} {p['version'] or '(version undeclared)'}"
+                    for p in summary["research_programs"]
+                )
+                or "none recorded",
                 unpinned=summary["unpinned_entries"],
             ),
             encoding="utf-8",

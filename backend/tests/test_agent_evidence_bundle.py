@@ -7,6 +7,7 @@ hashed, and the image is pinned by id rather than tag.
 """
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -89,6 +90,63 @@ def test_entries_accumulate_in_order_as_the_run_goes(tmp_path):
 
     assert [e["sequence"] for e in entries] == [1, 2, 3]
     assert all(e["tool"] == "simulate_c_workload" for e in entries)
+
+
+def test_program_versions_survive_resume_upgrade_and_catalog_removal(
+    tmp_path, monkeypatch
+):
+    from app.agent_core import research_programs as programs
+    from app.agent_core.tool_specs.spec import ToolSpec
+
+    lab = programs.ResearchProgram(
+        name="test_lab",
+        version="1.0",
+        tool_specs=(
+            ToolSpec(name="measure_thing", description="Measure", parameters={}),
+        ),
+    )
+    monkeypatch.setattr(programs, "_REPORT", programs.LoadReport(loaded=[lab]))
+    first = _record(tmp_path, "measure_thing", {}, {"success": True})
+    original_manifest = (
+        bundle.bundle_dir("job-1", tmp_path) / bundle.MANIFEST_NAME
+    ).read_bytes()
+    monkeypatch.setattr(
+        programs, "_REPORT", programs.LoadReport(loaded=[replace(lab, version="2.0")])
+    )
+    second = _record(
+        tmp_path, "measure_thing", {}, {"success": False, "error": "failed"}
+    )
+    assert first["research_program"] == {"name": "test_lab", "version": "1.0"}
+    assert second["research_program"] == {"name": "test_lab", "version": "2.0"}
+    assert (
+        (bundle.bundle_dir("job-1", tmp_path) / bundle.MANIFEST_NAME)
+        .read_bytes()
+        .startswith(original_manifest)
+    )
+
+    # A different process with no program must still report historical versions.
+    monkeypatch.setattr(programs, "_REPORT", programs.LoadReport(disabled=["test_lab"]))
+    core = _record(tmp_path, "compile_c_snippet", {}, {"success": True})
+    assert "research_program" not in core
+    assert bundle.read_manifest("job-1", tmp_path) == [first, second, core]
+    summary = bundle.summarize("job-1", tmp_path)
+    assert summary["research_programs"] == [
+        {"name": "test_lab", "version": "1.0"},
+        {"name": "test_lab", "version": "2.0"},
+    ]
+    assert summary["failed"] == 1
+    assert bundle.verify_integrity("job-1", tmp_path)["intact"]
+    readme = (bundle.bundle_dir("job-1", tmp_path) / bundle.README_NAME).read_text()
+    assert "test_lab 1.0, test_lab 2.0" in readme
+
+
+def test_legacy_entries_do_not_infer_program_versions_from_current_catalog(tmp_path):
+    directory = bundle.bundle_dir("job-1", tmp_path)
+    directory.mkdir(parents=True)
+    (directory / bundle.MANIFEST_NAME).write_text(
+        json.dumps({"tool": "legacy_program_tool", "succeeded": True}) + "\n"
+    )
+    assert bundle.summarize("job-1", tmp_path)["research_programs"] == []
 
 
 def test_an_unpinned_entry_is_counted_rather_than_hidden(tmp_path):

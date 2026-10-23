@@ -344,6 +344,18 @@ def evidence_tools() -> set[str]:
     return {name for program in installed() for name in program.evidence_tools}
 
 
+def tool_program(tool_name: str) -> Optional[Dict[str, str]]:
+    """The loaded program supplying a tool, or None for an unowned name.
+
+    Return a fresh snapshot: callers persist it as the identity at execution
+    time, rather than deriving old calls from a later process's catalog.
+    """
+    for program in installed():
+        if any(spec.name == tool_name for spec in program.tool_specs):
+            return {"name": program.name, "version": program.version}
+    return None
+
+
 def image_origins() -> Dict[str, Mapping[str, str]]:
     return {k: v for program in installed() for k, v in program.image_origins.items()}
 

@@ -26,7 +26,7 @@ the codebase already calls -- `encode`, `get_sentence_embedding_dimension`,
 
 import os
 import threading
-from typing import Any, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 from loguru import logger
@@ -233,9 +233,144 @@ def _sentence_transformers_missing(kind: str, exc: Exception) -> RuntimeError:
     )
 
 
-def load_text_embedder(model_id: str) -> Any:
-    """The embedding model, on whichever backend this deployment asked for."""
+class ApiTextEmbedder:
+    """Sentence embeddings from an external OpenAI-compatible ``/embeddings`` API.
+
+    Mirrors the local embedder contract the rest of the codebase calls --
+    ``encode`` and ``get_sentence_embedding_dimension`` -- so a call site does
+    not have to know whether the vectors come from a local ONNX model or a
+    remote service. ``encode("query")`` returns a single vector; a sequence
+    returns a matrix, the same as :class:`OnnxTextEmbedder`.
+
+    The endpoint is the base URL ``EMBEDDING_API_BASE`` with ``/embeddings``
+    appended. ``EMBEDDING_MODEL`` names the model the API must serve and is
+    sent as the ``model`` field. When ``EMBEDDING_API_KEY`` is set it is sent
+    as a Bearer token.
+    """
+
+    def __init__(
+        self,
+        model_id: str,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        timeout_seconds: float = 60.0,
+    ):
+        from app.core.config import settings
+
+        self.model_id = model_id
+        self._base_url = (base_url or settings.EMBEDDING_API_BASE or "").rstrip("/")
+        self._api_key = api_key if api_key is not None else settings.EMBEDDING_API_KEY
+        self._timeout_seconds = float(
+            timeout_seconds or settings.EMBEDDING_API_TIMEOUT_SECONDS
+        )
+        self._url = f"{self._base_url}/embeddings"
+        self._dimension: Optional[int] = None
+        if not self._base_url:
+            raise RuntimeError(
+                "EMBEDDING_API_BASE is empty; the external embedding API cannot "
+                "be used. Set it to the base URL up to the version segment, e.g. "
+                "http://<embedding-service>:10999/api/v1."
+            )
+
+    def _headers(self) -> Dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        return headers
+
+    def _post(self, payload: Dict[str, Any]) -> Any:
+        import httpx
+
+        logger.debug(f"Requesting embeddings from {self._url} (model={self.model_id})")
+        try:
+            response = httpx.post(
+                self._url,
+                json=payload,
+                headers=self._headers(),
+                timeout=self._timeout_seconds,
+            )
+        except httpx.HTTPError as exc:
+            raise RuntimeError(
+                f"External embedding API {self._url} is unreachable: {exc}"
+            ) from exc
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"External embedding API {self._url} returned "
+                f"HTTP {response.status_code}: {response.text[:500]}"
+            )
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise RuntimeError(
+                f"External embedding API {self._url} returned a non-JSON body"
+            ) from exc
+
+    def _vectors(self, data: Any, expected: int) -> List[List[float]]:
+        vectors: List[List[float]] = []
+        for item in data:
+            embedding = item.get("embedding") if isinstance(item, dict) else None
+            if not isinstance(embedding, list):
+                raise RuntimeError(
+                    f"External embedding API {self._url} returned an item without "
+                    f"an 'embedding' list: {item!r}"
+                )
+            vectors.append([float(v) for v in embedding])
+        if len(vectors) != expected:
+            raise RuntimeError(
+                f"External embedding API {self._url} returned {len(vectors)} "
+                f"vectors for {expected} inputs"
+            )
+        return vectors
+
+    def encode(
+        self,
+        sentences: Union[str, Sequence[str]],
+        batch_size: int = 32,
+        show_progress_bar: bool = False,  # noqa: ARG002 - API compatibility
+        convert_to_numpy: bool = True,  # noqa: ARG002 - API compatibility
+        **_: Any,
+    ) -> np.ndarray:
+        single = isinstance(sentences, str)
+        texts = [sentences] if single else [str(s) for s in sentences]
+        if not texts:
+            # No round-trip for an empty batch: callers handle the empty case,
+            # and probing the API just to learn the dimension would spend a
+            # request on nothing.
+            return np.zeros((0, self._dimension or 0), dtype=np.float32)
+
+        vectors = self._post({"model": self.model_id, "input": texts})
+        data = vectors.get("data") if isinstance(vectors, dict) else None
+        if not isinstance(data, list):
+            raise RuntimeError(
+                f"External embedding API {self._url} returned no 'data' list: "
+                f"{vectors!r}"
+            )
+        rows = self._vectors(data, len(texts))
+        stacked = np.array(rows, dtype=np.float32)
+        self._dimension = int(stacked.shape[1])
+        return stacked[0] if single else stacked
+
+    def get_sentence_embedding_dimension(self) -> int:
+        if self._dimension is None:
+            self.encode("dimension probe")
+        return int(self._dimension or 0)
+
+
+def resolve_embedder(model_id: str) -> Any:
+    """The embedding model for this deployment.
+
+    Returns an external :class:`ApiTextEmbedder` when ``EMBEDDING_API_BASE``
+    is configured (embeddings come from the remote API), otherwise the local
+    model on whichever backend ``EMBEDDING_BACKEND`` names.
+    """
     from app.core.config import settings
+
+    if (getattr(settings, "EMBEDDING_API_BASE", None) or "").strip():
+        logger.info(
+            f"Using external embedding API {settings.EMBEDDING_API_BASE} "
+            f"(model={model_id})"
+        )
+        return ApiTextEmbedder(model_id)
 
     if getattr(settings, "EMBEDDING_BACKEND", "onnx") == "sentence-transformers":
         try:
@@ -246,6 +381,11 @@ def load_text_embedder(model_id: str) -> Any:
 
     logger.info(f"Loading embedding model {model_id} under ONNX Runtime")
     return OnnxTextEmbedder(model_id)
+
+
+def load_text_embedder(model_id: str) -> Any:
+    """The embedding model, on whichever backend this deployment asked for."""
+    return resolve_embedder(model_id)
 
 
 def load_cross_encoder(model_id: str) -> Any:

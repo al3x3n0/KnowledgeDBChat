@@ -211,9 +211,9 @@ class VectorStoreService:
         try:
 
             def _load_embedding():
-                from app.services.onnx_embeddings import load_text_embedder
+                from app.services.onnx_embeddings import resolve_embedder
 
-                return load_text_embedder(model_name)
+                return resolve_embedder(model_name)
 
             self.embedding_model = await asyncio.to_thread(_load_embedding)
             self.current_model_name = model_name
@@ -479,9 +479,9 @@ class VectorStoreService:
         try:
 
             def _load_embedding():
-                from app.services.onnx_embeddings import load_text_embedder
+                from app.services.onnx_embeddings import resolve_embedder
 
-                return load_text_embedder(new_model)
+                return resolve_embedder(new_model)
 
             new_embedding_model = await asyncio.to_thread(_load_embedding)
 

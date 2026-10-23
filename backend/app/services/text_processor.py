@@ -42,10 +42,10 @@ class TextProcessor:
 
         self._semantic_model_load_attempted = True
         try:
-            from app.services.onnx_embeddings import load_text_embedder
+            from app.services.onnx_embeddings import resolve_embedder
 
             self.semantic_model = await asyncio.to_thread(
-                load_text_embedder, settings.EMBEDDING_MODEL
+                resolve_embedder, settings.EMBEDDING_MODEL
             )
             logger.info(
                 f"Initialized semantic chunking model: {settings.EMBEDDING_MODEL}"

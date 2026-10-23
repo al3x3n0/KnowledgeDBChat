@@ -17,6 +17,29 @@ DEFAULT_SECRET_KEY = "your-secret-key-change-in-production"
 PLACEHOLDER_SECRET_KEYS = frozenset({DEFAULT_SECRET_KEY, "your-secret-key-here"})
 
 
+def parse_llm_extra_headers(raw: Optional[str]) -> dict:
+    """Parse ``LLM_EXTRA_HEADERS`` (a JSON object string) into a header dict.
+
+    Returns an empty dict when unset, empty, or not a JSON object, so a
+    misconfigured value degrades to "no extra headers" rather than raising at
+    request time. Values are coerced to strings; a header that is not a
+    string there is sent as its ``str()``.
+    """
+    if not raw:
+        return {}
+    try:
+        import json
+
+        parsed = json.loads(raw)
+    except Exception:
+        logger.warning(f"LLM_EXTRA_HEADERS is not valid JSON; ignoring: {raw[:120]!r}")
+        return {}
+    if not isinstance(parsed, dict):
+        logger.warning("LLM_EXTRA_HEADERS must be a JSON object; ignoring")
+        return {}
+    return {str(k): str(v) for k, v in parsed.items()}
+
+
 class Settings(BaseSettings):
     """Application settings."""
 
@@ -96,6 +119,19 @@ class Settings(BaseSettings):
         "all-mpnet-base-v2",
         "multilingual-mpnet-base-v2",
     ]
+    # External (OpenAI-compatible) embedding API. When EMBEDDING_API_BASE is
+    # set, embeddings are produced by POSTing {model, input} to
+    # {EMBEDDING_API_BASE}/embeddings instead of running a local ONNX model.
+    # The base URL is the path up to (and including) the version segment,
+    # e.g. "http://<embedding-service>:10999/api/v1"; the embedder
+    # appends "/embeddings" to it. EMBEDDING_MODEL still names the model the
+    # API must serve. Leave EMBEDDING_API_BASE empty to keep the local model.
+    EMBEDDING_API_BASE: Optional[str] = None
+    # API key for the external embedding endpoint (optional). Sent as a
+    # Bearer token when set.
+    EMBEDDING_API_KEY: Optional[str] = None
+    # Seconds a single embedding request may wait for a reply.
+    EMBEDDING_API_TIMEOUT_SECONDS: int = 60
 
     # DeepSeek (external) — optional
     DEEPSEEK_API_BASE: str = "https://api.deepseek.com/v1"
@@ -133,6 +169,15 @@ class Settings(BaseSettings):
     OPENAI_API_BASE: str = "https://api.openai.com/v1"
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4o"
+
+    # Extra HTTP headers sent with every OpenAI-compatible LLM request
+    # (the openai provider, the per-call custom endpoint, and the DeepSeek
+    # chat path). A JSON object of header name -> value, e.g.
+    # `{"x-portkey-config": "{...}"}` for a Portkey gateway that needs a
+    # config header per request. Empty sends no extra headers. The values are
+    # merged under the caller's own headers, so an explicit Authorization set
+    # by the SDK wins over anything put here.
+    LLM_EXTRA_HEADERS: str = ""
 
     # Anthropic (external, official SDK) — optional
     ANTHROPIC_API_KEY: Optional[str] = None

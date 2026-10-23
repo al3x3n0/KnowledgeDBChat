@@ -381,6 +381,40 @@ class TestReplay:
         assert report["program_diagnostics"][0]["recorded"] is None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            {"success": False, "data": {"cycles": 42}},
+            {"error": "sandbox is unavailable"},
+            None,
+            {"success": False, "error": "x" * 500},
+        ],
+    )
+    @pytest.mark.parametrize("partial", [False, True])
+    async def test_failed_replays_are_errors_instead_of_changed_measurements(
+        self, tmp_path, failure, partial
+    ):
+        original = {"success": True, "data": {"cycles": 42}}
+        _record(tmp_path, "analyze_snippet_cycles", {"cpu": "test"}, original)
+        results = [failure]
+        if partial:
+            _record(tmp_path, "analyze_snippet_cycles", {"cpu": "other"}, original)
+            results.append(original)
+        manifest = bundle.bundle_dir("job-1", tmp_path) / bundle.MANIFEST_NAME
+        before = manifest.read_bytes()
+        report = await bundle.replay_bundle(
+            "job-1", self._executor(results), root=tmp_path
+        )
+        assert report["verdict"] == "inconclusive"
+        assert report["judged"] == int(partial)
+        assert report["reproduced"] == int(partial)
+        assert report["differed"] == []
+        assert len(report["errored"]) == 1
+        assert report["errored"][0]["sequence"] == 1
+        assert 0 < len(report["errored"][0]["why"]) <= 200
+        assert manifest.read_bytes() == before
+
+    @pytest.mark.asyncio
     async def test_an_identical_result_counts_as_reproduced(self, tmp_path):
         original = {"success": True, "data": {"cycles_per_iteration": 59.05}}
         _record(tmp_path, "analyze_snippet_cycles", {"cpu": "neoverse-n1"}, original)

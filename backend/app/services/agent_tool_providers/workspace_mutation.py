@@ -1259,9 +1259,11 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             )
 
             async def execute(tool: str, tool_params: Dict[str, Any]) -> Any:
-                _, result = await executor.tool_registry.try_execute(
+                handled, result = await executor.tool_registry.try_execute(
                     tool, tool_params, replay_ctx
                 )
+                if not handled:
+                    raise RuntimeError(f"Tool '{tool}' is unavailable for replay")
                 return result
 
             replay = await bundle.replay_bundle(str(job_id), execute)

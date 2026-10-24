@@ -627,6 +627,13 @@ Run the evaluation regression gate with:
 make test-rnd-evals
 ```
 
+## Model-call accounting
+
+Progress scoring is deterministic and does not consume `max_llm_calls` or
+increment `llm_calls_used`. This also applies when scoring inherited findings or
+completing a contract after the last available model call. Historical stored
+usage totals are retained; they are not recalculated by this change.
+
 ## Evidence bundle completion contracts
 
 For a readable evidence bundle, `verify_run_bundle` returns a

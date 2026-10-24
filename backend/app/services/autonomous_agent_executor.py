@@ -1293,7 +1293,9 @@ class _AutonomousRuntimeAdapter:
         )
         self.state["goal_progress"] = progress
         self.job.progress = progress
-        self.job.llm_calls_used += 1
+        # Progress scoring is deterministic for every job type. Charging it
+        # as a model call inflates usage and can exhaust a resumed loop's
+        # remaining budget before its next thinking phase.
         self.executor._advance_execution_plan_state(
             state=self.state,
             action=action,

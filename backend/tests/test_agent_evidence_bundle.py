@@ -425,6 +425,7 @@ class TestReplay:
 
         assert report["verdict"] == "reproduced"
         assert report["reproduced"] == 1
+        assert report["expected_comparisons"] == 1
         assert report["differed"] == []
 
     @pytest.mark.asyncio
@@ -475,7 +476,7 @@ class TestReplay:
         assert report["verdict"] == "reproduced"
 
     @pytest.mark.asyncio
-    async def test_a_benchmark_is_replayed_but_never_judged(self, tmp_path):
+    async def test_a_benchmark_is_skipped_and_never_judged(self, tmp_path):
         """Two honest runs of a wall-clock benchmark disagree."""
         _record(
             tmp_path,
@@ -631,3 +632,18 @@ def test_the_images_a_bundle_needs_are_readable_without_the_run(tmp_path, monkey
     known = bundle._images_known_to_bundle("job-1", tmp_path)
 
     assert [d["reference"] for d in known] == ["gem5-research:latest"]
+
+
+def test_bundle_verification_and_reproduction_have_a_runnable_producer():
+    from app.agent_core.tool_specs import spec_for
+    from app.services import agent_evidence_map
+
+    assert set(spec_for("verify_run_bundle").produces) == {
+        "bundle_verified",
+        "bundle_reproduced",
+    }
+    for finding_type in ("bundle_verified", "bundle_reproduced"):
+        assert agent_evidence_map.producer_of(finding_type) == "verify_run_bundle"
+        assert agent_evidence_map.chain_for([finding_type], job_type="analysis") == [
+            "verify_run_bundle"
+        ]

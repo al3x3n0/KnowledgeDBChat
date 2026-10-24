@@ -626,6 +626,14 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   Finding identity honors these IDs for bundle verifications; other finding
   types and legacy bundle findings keep their title-based identity. Repeated
   contexts reuse an ID, and transient error wording is not new progress.
+  `verify_run_bundle` declares both integrity and reproduction outputs to the
+  evidence planner. Broken integrity reports do not satisfy type requirements,
+  including legacy `intact: false` findings. A separate `bundle_reproduced`
+  finding is emitted only for intact artifacts with a successful, nonempty
+  replay covering all expected eligible comparisons; its ID is distinct from the integrity report but retains context
+  identity across stages. Skipped calls are reported, not claimed reproduced.
+  Core bundle contract types require their runtime proof fields; editable
+  labels on saved research notes cannot satisfy them.
 - **Evidence across research stages** — inherited findings keep the original
   producer's job id, including across intermediate stages and checkpoint
   resumes. Inheritance is idempotent by producer and the loop policy's claim

@@ -32,6 +32,7 @@ def _replay_finding_summary(replay: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     issues = [row for row in diagnostics if row.get("status") != "match"]
     errors = replay.get("errored") or []
     return {
+        "expected_comparisons": int(replay.get("expected_comparisons") or 0),
         "judged": int(replay.get("judged") or 0),
         "reproduced": int(replay.get("reproduced") or 0),
         "differed": len(replay.get("differed") or []),
@@ -1302,6 +1303,34 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 f", replay errors: {replay_summary['error_count']}, "
                 f"program issues: {replay_summary['program_issue_count']}"
             )
+        finding = {
+            "type": "bundle_verified",
+            "id": bundle.verification_context_id(str(job_id), integrity, replay),
+            "title": (
+                f"Evidence bundle {job_id}: {summary['entries']} calls recorded, "
+                f"integrity {'intact' if integrity['intact'] else 'BROKEN'}, "
+                f"replay {verdict}{warnings}"
+            ),
+            "verified": bool(integrity["intact"]),
+            "intact": integrity["intact"],
+            "replay_verdict": verdict,
+            "verified_job_id": str(job_id),
+            "replay_summary": replay_summary,
+            "entries": summary["entries"],
+        }
+        findings = [finding]
+        if bundle.reproduction_established(finding):
+            findings.append(
+                {
+                    **deepcopy(finding),
+                    "type": "bundle_reproduced",
+                    "id": finding["id"] + ":reproduced",
+                    "title": (
+                        f"Reproduced bundle {job_id}: "
+                        f"{replay_summary['reproduced']} compared results matched{warnings}"
+                    ),
+                }
+            )
         return {
             "success": True,
             "verified_job_id": str(job_id),
@@ -1322,24 +1351,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                     "and it judges nothing that reports wall clock."
                 ),
             },
-            "findings": [
-                {
-                    "type": "bundle_verified",
-                    "id": bundle.verification_context_id(
-                        str(job_id), integrity, replay
-                    ),
-                    "title": (
-                        f"Evidence bundle {job_id}: {summary['entries']} calls recorded, "
-                        f"integrity {'intact' if integrity['intact'] else 'BROKEN'}, "
-                        f"replay {verdict}{warnings}"
-                    ),
-                    "intact": integrity["intact"],
-                    "replay_verdict": verdict,
-                    "verified_job_id": str(job_id),
-                    "replay_summary": replay_summary,
-                    "entries": summary["entries"],
-                }
-            ],
+            "findings": findings,
         }
 
     async def _record_prediction(

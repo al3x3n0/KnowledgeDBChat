@@ -322,19 +322,33 @@ class TestDeclaredEvidenceIsActuallyProduced:
         # three reach the executor identically, so all three count here --
         # a check that only recognised one spelling would report a tool as
         # emitting nothing while it emitted correctly.
-        for match in re.finditer(r'"findings"\s*(?::|\]\s*=|,)\s*\[', body):
-            depth, index = 0, match.end() - 1
-            while index < len(body):
-                if body[index] == "[":
-                    depth += 1
-                elif body[index] == "]":
-                    depth -= 1
-                    if depth == 0:
-                        break
-                index += 1
-            block = body[match.end() : index]
-            has_block = True
-            types.update(re.findall(r'"type"\s*:\s*"([a-z_0-9]+)"', block))
+        containers = [(r'"findings"\s*(?::|\]\s*=|,)\s*\[', "[", "]")]
+        # A handler may build a named list, append conditional findings, then
+        # return it. Follow only variables attached to the findings key so an
+        # unrelated artifacts list still cannot satisfy this guard.
+        for name in set(re.findall(r'"findings"\s*:\s*([a-z_]\w*)\b', body)):
+            name = re.escape(name)
+            containers.extend(
+                [
+                    (rf"\b{name}\s*=\s*\[", "[", "]"),
+                    (rf"\b{name}\.extend\(\s*\[", "[", "]"),
+                    (rf"\b{name}\.append\(\s*\{{", "{", "}"),
+                ]
+            )
+        for pattern, opening, closing in containers:
+            for match in re.finditer(pattern, body):
+                depth, index = 0, match.end() - 1
+                while index < len(body):
+                    if body[index] == opening:
+                        depth += 1
+                    elif body[index] == closing:
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    index += 1
+                block = body[match.end() : index]
+                has_block = True
+                types.update(re.findall(r'"type"\s*:\s*"([a-z_0-9]+)"', block))
         # The flag matters separately from the types. A handler may append a
         # finding it built in a variable ("findings": [finding]), where the
         # type is set at runtime and no static read can see it. That is not
@@ -342,6 +356,34 @@ class TestDeclaredEvidenceIsActuallyProduced:
         # reported as "emits findings, type not statically visible" rather
         # than as emitting nothing.
         return types, has_block
+
+    @pytest.mark.parametrize(
+        "body, expected",
+        [
+            ('return {"findings": [{"type": "inline"}]}', ({"inline"}, True)),
+            (
+                'reports = [{"type": "base"}]\n'
+                'reports.append({"type": "conditional"})\n'
+                'reports.extend([{"type": "extended"}])\n'
+                'artifacts = [{"type": "artifact"}]\n'
+                'return {"findings": reports, "artifacts": artifacts}',
+                ({"base", "conditional", "extended"}, True),
+            ),
+            (
+                'reports = [finding]\nreturn {"findings": reports}',
+                (set(), True),
+            ),
+            (
+                'artifacts = [{"type": "artifact"}]\n'
+                'return {"artifacts": artifacts}',
+                (set(), False),
+            ),
+        ],
+    )
+    def test_finding_containers_are_recognized_without_counting_artifacts(
+        self, body, expected
+    ):
+        assert self._emitted_finding_types(body) == expected
 
     def test_every_declared_evidence_type_is_emitted_somewhere(self):
         import re

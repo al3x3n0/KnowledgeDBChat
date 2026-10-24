@@ -590,6 +590,12 @@ program diagnostics before sampling, so different versions remain distinct even
 when the title and summary coincide. Identical contexts reuse the same ID;
 changing only error wording or skip explanations does not create new progress.
 These IDs identify verification observations, not independent measurements.
+For a completion contract requiring replay, request `bundle_reproduced` and call
+`verify_run_bundle` with `replay: true`. This additional finding requires intact
+artifacts and a successful replay covering all eligible comparisons, with at
+least one result compared. A plain
+`bundle_verified` finding reports integrity; broken reports do not count toward
+completion contracts. Skipped calls remain reported and are not measurements.
 Missing handlers, unsuccessful tool results, and empty replay results are listed
 under `errored` and excluded from `judged`. They are execution failures, not
 changed measurements. A replay with errors and no differing successful results
@@ -691,7 +697,7 @@ VOLATILE_FIELDS = {
 
 # Tools whose output is not expected to repeat exactly. A benchmark reports
 # wall clock; two honest runs of it disagree, and calling that a reproduction
-# failure would train a reader to ignore the report. Their entries are replayed
+# failure would train a reader to ignore the report. Their entries are skipped
 # and reported, but not judged by hash.
 TIMING_DEPENDENT_TOOLS = {
     "benchmark_c_snippet",
@@ -745,6 +751,34 @@ def verification_context_id(
     return f"bundle-verification:{digest}"
 
 
+def reproduction_established(finding: Dict[str, Any]) -> bool:
+    """Whether runtime verification data establishes a complete eligible replay.
+
+    A manually saved note with a verification type label is not this proof.
+    """
+    summary = finding.get("replay_summary")
+    if (
+        finding.get("verified") is not True
+        or finding.get("intact") is not True
+        or finding.get("replay_verdict") != "reproduced"
+        or not isinstance(summary, dict)
+    ):
+        return False
+    expected = summary.get("expected_comparisons")
+    return (
+        type(expected) is int
+        and expected > 0
+        and all(
+            type(summary.get(key)) is int and summary[key] == expected
+            for key in ("judged", "reproduced")
+        )
+        and all(
+            type(summary.get(key)) is int and summary[key] == 0
+            for key in ("error_count", "differed")
+        )
+    )
+
+
 async def replay_bundle(
     job_id: str,
     execute,
@@ -759,7 +793,7 @@ async def replay_bundle(
 
     Reproduction is judged on the canonical result -- the recorded one with
     volatile fields removed -- because a timestamp differing is not a failure
-    to reproduce. Timing-dependent tools are replayed and reported but never
+    to reproduce. Timing-dependent tools are skipped and reported rather than
     judged: two honest runs of a benchmark disagree, and a report that called
     that a failure would teach a reader to ignore it.
     """
@@ -875,10 +909,17 @@ async def replay_bundle(
                 }
             )
 
+    expected_comparisons = sum(
+        1
+        for entry in entries
+        if entry.get("succeeded")
+        and str(entry.get("tool") or "") not in TIMING_DEPENDENT_TOOLS
+    )
     judged = len(reproduced) + len(differed)
     return {
         "job_id": str(job_id),
         "entries": len(entries),
+        "expected_comparisons": expected_comparisons,
         "judged": judged,
         "reproduced": len(reproduced),
         "differed": differed,

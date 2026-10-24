@@ -634,6 +634,15 @@ increment `llm_calls_used`. This also applies when scoring inherited findings or
 completing a contract after the last available model call. Historical stored
 usage totals are retained; they are not recalculated by this change.
 
+For the optional native tool loop, `native_tool_loop.max_llm_calls` includes
+the final schema-formatting request. That request runs only if a slot remains,
+and a failed formatting request still counts as an attempt. If the native loop
+uses its allowance without producing a valid decision, it returns a budget-stop
+decision instead of making a prompted fallback or parse-repair request. Already
+gathered findings remain in the run state; this stop does not claim that the
+goal was achieved. Planning that spends the job's final slot also prevents a
+subsequent thinking request in the same iteration.
+
 ## Evidence bundle completion contracts
 
 For a readable evidence bundle, `verify_run_bundle` returns a

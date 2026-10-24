@@ -120,3 +120,30 @@ async def test_contract_completion_still_runs_at_the_model_budget_limit():
     assert adapter.state["goal_contract_last"]["satisfied"]
     assert adapter.job.progress == 100
     assert adapter.job.llm_calls_used == 3
+
+
+async def test_observation_spending_the_last_slot_prevents_a_thinking_request():
+    adapter = _adapter(used=2)
+
+    async def observe():
+        # A planning request consumes the slot after can_continue has passed.
+        adapter.job.llm_calls_used += 1
+        return {}
+
+    adapter.observe_phase = observe
+    thinking = AsyncMock(side_effect=AssertionError("No model budget remains"))
+    adapter.executor.thinking_service.think = thinking
+    adapter.act_phase = AsyncMock(side_effect=AssertionError("The run must stop"))
+    adapter.executor._finalize_job = AsyncMock(return_value={"finalized": True})
+
+    result = await AgentRuntimeRunner().run(adapter)
+
+    assert result == {"finalized": True}
+    thinking.assert_not_awaited()
+    adapter.act_phase.assert_not_awaited()
+    assert adapter.job.llm_calls_used == 3
+    assert adapter.state["findings"][0]["type"] == "dynamic_profile"
+    assert any(
+        e["phase"] == "limit_reached" and e["reason"] == "max_llm_calls"
+        for e in adapter.job.execution_log
+    )

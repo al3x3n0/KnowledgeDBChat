@@ -649,6 +649,12 @@ deterministic plan or yields no critic note still consumes its attempted call;
 disabled or already-completed planning does not. Existing plans and findings
 remain available when later model steps are skipped for lack of allowance.
 
+Reloading job control state keeps the higher of the in-memory and persisted
+model/tool usage counts. A refresh cannot refund calls already made, while
+higher stored usage, tightened limits, and cancellation still take effect before
+the next iteration. This preserves usage across refreshes; it does not reconstruct
+calls lost before the refresh boundary.
+
 ## Evidence bundle completion contracts
 
 For a readable evidence bundle, `verify_run_bundle` returns a

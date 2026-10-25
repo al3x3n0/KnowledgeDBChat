@@ -319,9 +319,19 @@ class _AutonomousRuntimeAdapter:
         preserved_iteration = self.job.iteration
         preserved_errors = self.job.error_count
         preserved_log = self.job.execution_log
+        preserved_llm_calls = int(self.job.llm_calls_used or 0)
+        preserved_tool_calls = int(self.job.tool_calls_used or 0)
         await self.db.refresh(self.job)
         self.job.iteration = preserved_iteration
         self.job.error_count = preserved_errors
+        # Reload control state without refunding requests already made. A
+        # higher persisted count is authoritative too, so retain the maximum.
+        self.job.llm_calls_used = max(
+            preserved_llm_calls, int(self.job.llm_calls_used or 0)
+        )
+        self.job.tool_calls_used = max(
+            preserved_tool_calls, int(self.job.tool_calls_used or 0)
+        )
         if preserved_log is not None and len(preserved_log or []) > len(
             self.job.execution_log or []
         ):
@@ -329,7 +339,8 @@ class _AutonomousRuntimeAdapter:
         if self.job.status not in [AgentJobStatus.RUNNING.value]:
             logger.info(f"Job {self.job.id} status changed to {self.job.status}")
             return False
-        return True
+        # The reload may also reveal a tighter limit or a now-exhausted count.
+        return self.job.can_continue()
 
     async def on_iteration_start(self) -> None:
         self._iterations_started += 1

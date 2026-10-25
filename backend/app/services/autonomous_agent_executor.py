@@ -511,6 +511,18 @@ class _AutonomousRuntimeAdapter:
         await controls.close_bracket(self.executor, self.job, self.db, self.state)
 
     async def think_phase(self, observation: Dict[str, Any]) -> Dict[str, Any]:
+        # Observation/planning may have consumed the final slot since the
+        # iteration-start check. Stop before asking for another decision.
+        if int(self.job.llm_calls_used or 0) >= int(self.job.max_llm_calls or 0):
+            self.job.add_log_entry(
+                {"phase": "limit_reached", "reason": "max_llm_calls"}
+            )
+            return {
+                "goal_achieved": False,
+                "should_stop": True,
+                "stop_reason": "max_llm_calls",
+                "action": None,
+            }
         decision = await self.executor.thinking_service.think(
             self.executor,
             self.job,

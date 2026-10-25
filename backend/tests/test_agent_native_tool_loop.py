@@ -3,6 +3,9 @@
 import asyncio
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
 
 from app.services.agent_native_tool_loop import (
     NativeToolLoopService,
@@ -21,7 +24,10 @@ class FakeLLM:
 
     async def generate_structured(self, **kwargs):
         self.calls.append(kwargs)
-        return self.completions.pop(0)
+        completion = self.completions.pop(0)
+        if isinstance(completion, Exception):
+            raise completion
+        return completion
 
 
 def _tool_call(name="search_documents", arguments=None, call_id="tc1"):
@@ -214,6 +220,67 @@ class TestNativeToolLoopService:
         assert result.stop_reason == "max_llm_calls"
         assert result.llm_calls_used == 2
 
+    @pytest.mark.parametrize("limit", [0, 1, 2])
+    def test_schema_finalization_shares_the_hard_model_call_limit(self, limit):
+        llm = FakeLLM(
+            [
+                _completion(tool_calls=[_tool_call(call_id="a", arguments={"q": "1"})]),
+                _completion(tool_calls=[_tool_call(call_id="b", arguments={"q": "2"})]),
+                _completion(structured=DECISION),
+            ]
+        )
+        executed = []
+
+        async def execute_tool(name, params):
+            executed.append(params)
+            return {"success": True}
+
+        result = run(
+            native_tool_loop_service.run(
+                llm_service=llm,
+                messages=[],
+                tools=SAMPLE_TOOLS,
+                execute_tool=execute_tool,
+                final_response_schema={"type": "object"},
+                max_llm_calls=limit,
+            )
+        )
+
+        assert len(llm.calls) == result.llm_calls_used == limit
+        assert len(executed) == limit
+        assert result.stop_reason == "max_llm_calls"
+        assert result.structured is None
+
+    @pytest.mark.parametrize("fails", [False, True])
+    def test_finalization_uses_and_counts_an_available_slot(self, fails):
+        llm = FakeLLM(
+            [
+                _completion(text="A free-text answer"),
+                RuntimeError("schema request failed")
+                if fails
+                else _completion(structured=DECISION),
+            ]
+        )
+
+        async def execute_tool(name, params):
+            raise AssertionError("No tool was requested")
+
+        result = run(
+            native_tool_loop_service.run(
+                llm_service=llm,
+                messages=[],
+                tools=SAMPLE_TOOLS,
+                execute_tool=execute_tool,
+                final_response_schema={"type": "object"},
+                max_llm_calls=2,
+            )
+        )
+
+        assert len(llm.calls) == result.llm_calls_used == 2
+        assert result.structured == (None if fails else DECISION)
+        assert llm.calls[1]["tools"] is None
+        assert llm.calls[1]["response_schema"] == {"type": "object"}
+
     def test_result_truncation(self):
         payload = NativeToolLoopService._serialize_result({"data": "x" * 10000}, 100)
         assert len(payload) <= 120
@@ -256,6 +323,114 @@ def _fake_job(**overrides):
 
 
 class TestThinkingServiceNativeGlue:
+    @pytest.mark.parametrize("remaining", [0, 1, 2])
+    def test_exhausted_budget_returns_a_decision_without_prompted_fallback(
+        self, remaining
+    ):
+        llm = FakeLLM(
+            [
+                _completion(tool_calls=[_tool_call(call_id="a", arguments={"q": "1"})]),
+                _completion(tool_calls=[_tool_call(call_id="b", arguments={"q": "2"})]),
+                _completion(structured=DECISION),
+            ]
+        )
+        executor = _fake_executor(llm)
+        job = _fake_job(max_llm_calls=5, llm_calls_used=5 - remaining)
+        state = {"actions_taken": [], "findings": []}
+        response = run(
+            AgentThinkingService()._maybe_run_native_tool_loop(
+                executor,
+                job,
+                state,
+                system_prompt="s",
+                user_message="u",
+                available_tools=["search_documents"],
+                user_settings=None,
+                routing=None,
+                db=None,
+            )
+        )
+
+        decision = json.loads(response)
+        assert decision["should_stop"] is True and decision["goal_achieved"] is False
+        assert decision["action"] is None and "budget" in decision["stop_reason"]
+        assert len(llm.calls) == remaining
+        assert len(state["findings"]) == remaining
+        assert state["native_tool_loop_last"]["llm_calls"] == remaining
+        # The adapter accounts for one call only when it actually enters think.
+        assert job.llm_calls_used == (4 if remaining else 5)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "not JSON",
+            json.dumps(DECISION),
+            "```json\n" + json.dumps(DECISION) + "\n```",
+        ],
+    )
+    def test_final_text_at_the_cap_is_validated_without_a_repair_call(self, text):
+        llm = FakeLLM([_completion(text=text)])
+        job = _fake_job(max_llm_calls=1)
+        response = run(
+            AgentThinkingService()._maybe_run_native_tool_loop(
+                _fake_executor(llm),
+                job,
+                {},
+                system_prompt="s",
+                user_message="u",
+                available_tools=["search_documents"],
+                user_settings=None,
+                routing=None,
+                db=None,
+            )
+        )
+
+        from app.services.agent_decision_parser import extract_first_json_object
+
+        decision = extract_first_json_object(response)
+        assert len(llm.calls) == 1
+        if text == "not JSON":
+            assert decision["should_stop"] and "budget" in decision["stop_reason"]
+        else:
+            assert decision == DECISION
+
+    @pytest.mark.parametrize("malformed_structured", [False, True])
+    def test_think_does_not_generate_or_repair_after_native_budget_exhaustion(
+        self, malformed_structured
+    ):
+        from app.services.agent_decision_parser import AgentDecisionParser
+
+        llm = FakeLLM(
+            [
+                _completion(structured={"action": {"tool": []}})
+                if malformed_structured
+                else _completion(tool_calls=[_tool_call()])
+            ]
+        )
+        executor = _fake_executor(llm)
+        executor._resolve_agent_skill_profile = lambda job, state=None: {}
+        executor._build_thinking_prompt = lambda *args, **kwargs: "system"
+        executor._get_tools_for_job_type = lambda *args, **kwargs: ["search_documents"]
+        executor._llm_routing_from_job_config = lambda config: None
+        executor.decision_parser = AgentDecisionParser(llm)
+        job = _fake_job(max_llm_calls=5, llm_calls_used=4)
+        job.goal, job.job_type, job.max_iterations = "Read evidence", "analysis", 10
+        state = {"actions_taken": [], "findings": []}
+        service = AgentThinkingService()
+        service._generate_decision_text = AsyncMock(
+            side_effect=AssertionError("The native loop spent the final slot")
+        )
+
+        decision = run(service.think(executor, job, None, state, {}, None, None))
+
+        assert decision["should_stop"] and not decision["goal_achieved"]
+        assert "budget" in decision["stop_reason"]
+        assert len(llm.calls) == 1
+        service._generate_decision_text.assert_not_awaited()
+        assert executor.decision_parser.metrics["parse_retry"] == 0
+        assert executor.decision_parser.metrics["parse_repair"] == 0
+        assert state["findings"] == ([] if malformed_structured else [{"f": 1}])
+
     def test_disabled_returns_none(self):
         service = AgentThinkingService()
         job = _fake_job(config={})

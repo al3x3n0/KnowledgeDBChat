@@ -297,8 +297,10 @@ Respond in JSON format:
     ) -> Optional[str]:
         """Run the native tool-calling loop if enabled; return decision text.
 
-        Returns ``None`` when the loop is disabled, has no budget/tools, or
-        produced nothing — the caller then uses the standard prompted path.
+        Returns ``None`` when disabled, without usable tools/tool allowance,
+        or without a result while model budget remains. The caller then uses
+        the standard prompted path. Exhausted model budget yields a valid
+        stop decision instead of another request.
         Gated tools (approval checkpoints, dangerous tools) are not executed
         here; they come back as the decision's action so the act phase applies
         its normal approval machinery.
@@ -311,7 +313,7 @@ Respond in JSON format:
         remaining_llm = int(job.max_llm_calls or 0) - int(job.llm_calls_used or 0)
         # Leave one tool slot for the act phase and cap by remaining budgets.
         max_tool_calls = min(cfg["max_tool_calls"], remaining_tools - 1)
-        max_llm_calls = min(cfg["max_llm_calls"], max(1, remaining_llm))
+        max_llm_calls = min(cfg["max_llm_calls"], max(0, remaining_llm))
         if max_tool_calls <= 0:
             return None
 
@@ -365,7 +367,10 @@ Respond in JSON format:
                 state.setdefault("artifacts", []).extend(result["artifacts"])
             return result
 
-        from app.services.agent_decision_parser import AgentDecision
+        from app.services.agent_decision_parser import (
+            AgentDecision,
+            extract_first_json_object,
+        )
         from app.services.agent_native_tool_loop import native_tool_loop_service
 
         native_user_message = (
@@ -429,9 +434,31 @@ Respond in JSON format:
                 default=str,
             )
 
-        if loop_result.structured is not None:
-            return json.dumps(loop_result.structured, default=str)
-        return loop_result.final_text or None
+        response = (
+            json.dumps(loop_result.structured, default=str)
+            if loop_result.structured is not None
+            else loop_result.final_text
+        )
+        if loop_result.llm_calls_used >= max_llm_calls:
+            # Do not turn an exhausted native budget into another prompted
+            # request or a model-assisted parse repair. Preserve a usable final
+            # decision if one exists; otherwise report the budget stop honestly.
+            try:
+                AgentDecision.model_validate(extract_first_json_object(response))
+            except Exception:
+                return json.dumps(
+                    {
+                        "goal_achieved": False,
+                        "should_stop": True,
+                        "stop_reason": "Native tool loop model-call budget exhausted",
+                        "reasoning": (
+                            "No model-call budget remains for a final decision. "
+                            "Tool results already gathered remain in the run state."
+                        ),
+                        "action": None,
+                    }
+                )
+        return response or None
 
     async def _generate_decision_text(
         self,

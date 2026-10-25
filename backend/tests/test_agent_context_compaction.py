@@ -1,12 +1,25 @@
 """Tests for automatic context compaction (agent_context_compaction)."""
 
 import asyncio
+import json
+from datetime import datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from uuid import uuid4
 
+import pytest
+
+from app.agent_core.runtime import AgentRuntimeRunner
+from app.models.agent_job import AgentJob
 from app.services.agent_context_compaction import (
     AgentContextCompactionService,
     context_compaction_service,
 )
+from app.services.autonomous_agent_executor import (
+    AutonomousAgentExecutor,
+    _AutonomousRuntimeAdapter,
+)
+from app.services.llm_providers.base import LLMCompletion
 
 
 def run(coro):
@@ -44,6 +57,8 @@ def _job(iteration=10, config=None):
         iteration=iteration,
         config=config or {},
         user_id=None,
+        llm_calls_used=0,
+        max_llm_calls=20,
         add_log_entry=lambda entry: log.append(entry),
     )
     job.log = log
@@ -88,11 +103,13 @@ class TestMaybeCompact:
     def test_below_threshold_skips(self):
         executor = _executor()
         state = _big_state(action_count=12, result_size=10)  # tiny
+        job = _job()
         compacted = run(
-            context_compaction_service.maybe_compact(executor, _job(), state, None)
+            context_compaction_service.maybe_compact(executor, job, state, None)
         )
         assert compacted is False
         assert "compressed_history" not in state
+        assert job.llm_calls_used == 0 and executor.llm_service.calls == []
 
     def test_too_few_actions_skips(self):
         executor = _executor()
@@ -128,6 +145,7 @@ class TestMaybeCompact:
             context_compaction_service.maybe_compact(executor, job, state, None)
         )
         assert compacted is False
+        assert job.llm_calls_used == 0 and executor.llm_service.calls == []
 
     def test_llm_failure_falls_back_to_digest(self):
         executor = _executor(FakeLLM(fail=True))
@@ -195,3 +213,117 @@ class TestEstimate:
 
     def test_empty_state(self):
         assert AgentContextCompactionService.estimate_context_chars({}) == 0
+
+
+class TestCompactionModelBudget:
+    @pytest.mark.parametrize("failure", ["empty_response", "preparation"])
+    async def test_digest_usage_counts_only_attempted_requests(
+        self, failure, monkeypatch
+    ):
+        llm = FakeLLM(response="")
+        job, state = _job(), _big_state()
+        if failure == "preparation":
+            monkeypatch.setattr(
+                "app.services.llm_service.load_user_llm_settings",
+                AsyncMock(side_effect=RuntimeError("fixture preference lookup failed")),
+            )
+
+        assert await context_compaction_service.maybe_compact(
+            _executor(llm), job, state, None
+        )
+
+        expected = int(failure == "empty_response")
+        assert job.llm_calls_used == len(llm.calls) == expected
+        assert "search_documents" in state["compressed_history"]
+
+    @pytest.mark.parametrize("remaining", [0, 1, 2])
+    @pytest.mark.parametrize("fail", [False, True])
+    async def test_summary_attempts_are_counted_and_keep_one_slot_for_thinking(
+        self, remaining, fail
+    ):
+        llm = FakeLLM(fail=fail)
+        job = _job()
+        job.llm_calls_used = 3
+        job.max_llm_calls = 3 + remaining
+        state = _big_state()
+        state["compressed_history"] = "Earlier evidence"
+
+        assert await context_compaction_service.maybe_compact(
+            _executor(llm), job, state, None
+        )
+
+        expected_calls = int(remaining > 1)
+        assert len(llm.calls) == expected_calls
+        assert job.llm_calls_used == 3 + expected_calls
+        assert len(state["actions_taken"]) == 5
+        if remaining <= 1 or fail:
+            assert "Earlier evidence" in state["compressed_history"]
+            assert "search_documents" in state["compressed_history"]
+
+    @pytest.mark.parametrize("limit,fail", [(1, False), (2, False), (2, True)])
+    async def test_real_thinking_phase_shares_its_budget_with_compaction(
+        self, limit, fail
+    ):
+        calls = []
+
+        class Model:
+            async def generate_response(self, **kwargs):
+                calls.append("compaction")
+                if fail:
+                    raise RuntimeError("fixture summary failure")
+                return "Compacted history"
+
+            async def generate_structured(self, **kwargs):
+                calls.append("decision")
+                decision = {"goal_achieved": True, "should_stop": False, "action": None}
+                return LLMCompletion(text=json.dumps(decision), structured=decision)
+
+        executor = AutonomousAgentExecutor()
+        executor.llm_service = Model()
+        executor.user_settings = SimpleNamespace()
+        job = AgentJob(
+            id=uuid4(),
+            user_id=uuid4(),
+            name="Compaction budget",
+            goal="Read evidence",
+            job_type="analysis",
+            status="running",
+            iteration=0,
+            tool_calls_used=0,
+            llm_calls_used=0,
+            error_count=0,
+            max_llm_calls=limit,
+            max_tool_calls=5,
+            max_iterations=5,
+            max_runtime_minutes=5,
+            config={
+                "native_tool_loop": True,
+                "allowed_tools": ["get_research_findings"],
+                "goal_contract": {"enabled": False},
+            },
+        )
+        state = _big_state()
+        state["observations"] = []
+        state["findings"] = [{"type": "dynamic_profile", "title": "retained"}]
+        adapter = _AutonomousRuntimeAdapter(
+            executor=executor,
+            job=job,
+            agent_def=None,
+            user_settings=None,
+            state=state,
+            db=AsyncMock(),
+            start_time=datetime.utcnow(),
+            max_runtime=timedelta(minutes=5),
+            progress_callback=None,
+        )
+        adapter.observe_phase = AsyncMock(return_value={})
+        adapter._close_instrument_bracket = AsyncMock()
+        executor._finalize_job = AsyncMock(return_value={"finalized": True})
+
+        assert await AgentRuntimeRunner().run(adapter) == {"finalized": True}
+
+        assert calls == (["decision"] if limit == 1 else ["compaction", "decision"])
+        assert job.llm_calls_used == len(calls) == limit
+        assert state["goal_progress"] == 100
+        assert state["findings"] == [{"type": "dynamic_profile", "title": "retained"}]
+        assert len(state["actions_taken"]) == 5

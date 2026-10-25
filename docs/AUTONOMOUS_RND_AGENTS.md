@@ -655,6 +655,11 @@ higher stored usage, tightened limits, and cancellation still take effect before
 the next iteration. This preserves usage across refreshes; it does not reconstruct
 calls lost before the refresh boundary.
 
+Automatic history compaction counts its summary request against the same job
+allowance, including failed requests. When only the decision's last slot remains,
+compaction uses its deterministic digest without a model request. Disabled,
+below-threshold, and digest-only compaction do not consume model-call allowance.
+
 ## Evidence bundle completion contracts
 
 For a readable evidence bundle, `verify_run_bundle` returns a

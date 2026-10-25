@@ -264,6 +264,9 @@ class _AutonomousRuntimeAdapter:
     #: the same way.
     MAX_ITERATION_ERRORS = 5
 
+    def _has_model_budget(self) -> bool:
+        return int(self.job.llm_calls_used or 0) < int(self.job.max_llm_calls or 0)
+
     async def can_continue(self) -> bool:
         # Checked before the job's own limits, because this one cannot be
         # rolled back. Without it a reverted job.iteration lets the loop run
@@ -395,36 +398,42 @@ class _AutonomousRuntimeAdapter:
             },
         )
 
-        used_causal_llm = await self.executor._ensure_causal_experiment_plan(
-            job=self.job,
-            state=self.state,
-            observation=observation,
-            user_settings=self.user_settings,
-            db=self.db,
-        )
-        if used_causal_llm:
-            self.job.llm_calls_used += 1
+        if self._has_model_budget():
+            used_causal_llm = await self.executor._ensure_causal_experiment_plan(
+                job=self.job,
+                state=self.state,
+                observation=observation,
+                user_settings=self.user_settings,
+                db=self.db,
+            )
+            if used_causal_llm:
+                self.job.llm_calls_used += 1
 
-        if self.executor._resolve_execution_mode(
-            self.job, state=self.state
-        ) == "plan_and_execute" and not self.state.get("execution_plan"):
-            self.job.current_phase = "planning"
-            self.job.phase_details = "Generating execution plan"
-        used_plan_llm = await self.executor._ensure_execution_plan(
-            self.job,
-            self.agent_def,
-            self.state,
-            observation,
-            self.user_settings,
-            db=self.db,
-        )
-        if used_plan_llm:
-            self.job.llm_calls_used += 1
+        if self._has_model_budget():
+            if self.executor._resolve_execution_mode(
+                self.job, state=self.state
+            ) == "plan_and_execute" and not self.state.get("execution_plan"):
+                self.job.current_phase = "planning"
+                self.job.phase_details = "Generating execution plan"
+            used_plan_llm = await self.executor._ensure_execution_plan(
+                self.job,
+                self.agent_def,
+                self.state,
+                observation,
+                self.user_settings,
+                db=self.db,
+            )
+            if used_plan_llm:
+                self.job.llm_calls_used += 1
         self.executor._ensure_subgoals(self.job, self.state)
         self.executor._ensure_swarm_chain_config(self.job, self.state)
         self.executor._ensure_subgoal_chain_config(self.job, self.state)
 
-        if self.executor._should_run_critic(self.job, self.state):
+        if self._has_model_budget() and self.executor._should_run_critic(
+            self.job, self.state
+        ):
+            # A request still spends its slot when no usable note comes back.
+            self.job.llm_calls_used += 1
             critic_note = await self.executor._run_critic_pass(
                 self.job, self.state, observation, self.user_settings, db=self.db
             )
@@ -438,7 +447,6 @@ class _AutonomousRuntimeAdapter:
                 )
                 self.state["critic_notes"] = notes[-max(1, max_notes) :]
                 self.state["last_critic_iteration"] = int(self.job.iteration or 0)
-                self.job.llm_calls_used += 1
                 trigger_info = (
                     self.state.get("critic_last_trigger")
                     if isinstance(self.state.get("critic_last_trigger"), dict)
@@ -469,7 +477,11 @@ class _AutonomousRuntimeAdapter:
                     }
                 )
 
-        if self.state.get("execution_plan") and not self.state.get("plan_completed"):
+        if (
+            self._has_model_budget()
+            and self.state.get("execution_plan")
+            and not self.state.get("plan_completed")
+        ):
             replan_trigger = self.executor.planner.evaluate_replan_triggers(
                 self.job,
                 self.state,
@@ -483,6 +495,7 @@ class _AutonomousRuntimeAdapter:
                     if isinstance(self.state.get("skill_profile"), dict)
                     else None,
                 )
+                self.job.llm_calls_used += 1
                 revised = await self.executor.planner.replan(
                     job=self.job,
                     state=self.state,
@@ -493,7 +506,6 @@ class _AutonomousRuntimeAdapter:
                     trigger_reason=replan_trigger,
                 )
                 self.executor._apply_revised_plan(self.state, revised)
-                self.job.llm_calls_used += 1
                 self.job.add_log_entry(
                     {
                         "phase": "replan",
@@ -513,7 +525,7 @@ class _AutonomousRuntimeAdapter:
     async def think_phase(self, observation: Dict[str, Any]) -> Dict[str, Any]:
         # Observation/planning may have consumed the final slot since the
         # iteration-start check. Stop before asking for another decision.
-        if int(self.job.llm_calls_used or 0) >= int(self.job.max_llm_calls or 0):
+        if not self._has_model_budget():
             self.job.add_log_entry(
                 {"phase": "limit_reached", "reason": "max_llm_calls"}
             )
@@ -4794,7 +4806,8 @@ class AutonomousAgentExecutor:
         """
         Generate causal hypotheses + minimal experiments once for research jobs.
 
-        Returns True when an LLM call was used.
+        Returns True when an LLM request was attempted, even if its response
+        required a deterministic fallback plan.
         """
         cfg = job.config if isinstance(job.config, dict) else {}
         if str(job.job_type or "").strip().lower() != "research":
@@ -4901,7 +4914,8 @@ class AutonomousAgentExecutor:
                 max_hypotheses=max_hyp,
                 max_experiments=max_exp,
             )
-            used_llm = False
+            if hypotheses:
+                hypotheses["source"] = "fallback"
 
         if hypotheses:
             hypotheses["generated_at"] = datetime.utcnow().isoformat()

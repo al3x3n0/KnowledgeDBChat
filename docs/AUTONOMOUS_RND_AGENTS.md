@@ -643,6 +643,12 @@ gathered findings remain in the run state; this stop does not claim that the
 goal was achieved. Planning that spends the job's final slot also prevents a
 subsequent thinking request in the same iteration.
 
+Observation rechecks the remaining job allowance before causal planning,
+execution planning, criticism, and replanning. A request that falls back to a
+deterministic plan or yields no critic note still consumes its attempted call;
+disabled or already-completed planning does not. Existing plans and findings
+remain available when later model steps are skipped for lack of allowance.
+
 ## Evidence bundle completion contracts
 
 For a readable evidence bundle, `verify_run_bundle` returns a

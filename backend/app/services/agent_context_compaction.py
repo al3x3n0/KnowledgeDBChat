@@ -180,6 +180,18 @@ class AgentContextCompactionService:
         existing: str,
     ) -> str:
         """LLM summary on the fast tier; deterministic digest on failure."""
+        fallback = actions_digest
+        if existing:
+            fallback = f"{existing}\n\nEarlier actions (digest):\n{actions_digest}"
+
+        remaining = int(getattr(job, "max_llm_calls", 0) or 0) - int(
+            getattr(job, "llm_calls_used", 0) or 0
+        )
+        # Automatic compaction must leave a slot for the decision it prepares.
+        # The digest still reduces context without spending a model request.
+        if remaining <= 1:
+            return fallback
+
         prompt = (
             "Summarize the following agent action history into a concise "
             "narrative (max 500 words).\n"
@@ -216,6 +228,9 @@ class AgentContextCompactionService:
             routing = dict(routing) if isinstance(routing, dict) else {}
             routing["llm_tier"] = "fast"
 
+            # Count attempted summaries even when the provider fails and we
+            # use the deterministic digest below.
+            job.llm_calls_used = int(job.llm_calls_used or 0) + 1
             response = await executor.llm_service.generate_response(
                 system_prompt=_SUMMARY_SYSTEM_PROMPT,
                 user_message=prompt,
@@ -238,9 +253,6 @@ class AgentContextCompactionService:
 
         # Deterministic fallback: keep the digest itself (with prior summary)
         # so information survives even without an LLM summary.
-        fallback = actions_digest
-        if existing:
-            fallback = f"{existing}\n\nEarlier actions (digest):\n{actions_digest}"
         return fallback
 
 

@@ -76,6 +76,8 @@ def _job(**fields):
     fields.setdefault("user_id", None)
     fields.setdefault("config", {})
     fields.setdefault("iteration", 9)
+    fields.setdefault("llm_calls_used", 0)
+    fields.setdefault("max_llm_calls", 20)
     fields.setdefault("add_log_entry", lambda entry: None)
     return SimpleNamespace(**fields)
 

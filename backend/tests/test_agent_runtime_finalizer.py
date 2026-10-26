@@ -21,6 +21,7 @@ class _DummyJob:
         self.iteration = 3
         self.tool_calls_used = 4
         self.llm_calls_used = 2
+        self.max_llm_calls = 20
         self.memory_injection_count = 0
         self.memories_created_count = 0
         self.results = {}
@@ -272,6 +273,31 @@ async def test_finalize_job_paused_path_preserves_paused_status(monkeypatch):
     assert result["status"] == AgentJobStatus.PAUSED.value
     assert job.status == AgentJobStatus.PAUSED.value
     assert executor.trigger_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remaining", [0, 1])
+async def test_conclusion_budget_stop_preserves_findings_and_chain(remaining):
+    executor = _DummyExecutor()
+    executor.llm_service = SimpleNamespace(
+        generate_structured=AsyncMock(return_value=None),
+        generate_response=AsyncMock(
+            side_effect=AssertionError("No fallback slot remains")
+        ),
+    )
+    job = _DummyJob()
+    job.max_llm_calls = job.llm_calls_used + remaining
+    findings = [{"type": "dynamic_profile", "title": "Measured kernel"}]
+    state = _state_with(100, findings)
+
+    result = await finalize_job(executor, job, state, _DummyDb())
+
+    assert result["status"] == "completed" and executor.trigger_calls == ["complete"]
+    assert result["llm_calls"] == job.llm_calls_used == job.max_llm_calls
+    assert job.results["findings"] == findings
+    assert job.results["conclusion"]["generated_by"] == "budget_exhausted"
+    assert executor.llm_service.generate_structured.await_count == remaining
+    executor.llm_service.generate_response.assert_not_awaited()
 
 
 class _ExpiringJob(_DummyJob):

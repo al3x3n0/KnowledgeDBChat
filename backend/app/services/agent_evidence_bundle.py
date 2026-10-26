@@ -701,6 +701,7 @@ VOLATILE_FIELDS = {
 # and reported, but not judged by hash.
 TIMING_DEPENDENT_TOOLS = {
     "benchmark_c_snippet",
+    "evaluate_restructuring",
     "execute_python",
     "run_command",
     "write_and_run_script",

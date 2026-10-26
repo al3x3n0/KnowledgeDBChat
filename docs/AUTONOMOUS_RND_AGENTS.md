@@ -660,6 +660,13 @@ allowance, including failed requests. When only the decision's last slot remains
 compaction uses its deterministic digest without a model request. Disabled,
 below-threshold, and digest-only compaction do not consume model-call allowance.
 
+Final conclusion synthesis also shares the job allowance. Structured output and
+its prompted JSON fallback each count as a request, including failures; fallback
+runs only if another slot remains. If no allowance remains, the optional
+conclusion has `generated_by: budget_exhausted` and no invented answer. Findings
+and normal chain completion remain available. Campaign-level synthesis, which
+has no single job allowance, is unchanged.
+
 ## Evidence bundle completion contracts
 
 For a readable evidence bundle, `verify_run_bundle` returns a

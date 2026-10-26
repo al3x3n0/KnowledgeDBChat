@@ -246,6 +246,46 @@ async def conclude(
     }
 
 
+def _budget_exhausted_conclusion() -> Dict[str, Any]:
+    return {
+        "answer": None,
+        "confidence": "low",
+        "evidence": [],
+        "gaps": [
+            "Model-call budget exhausted before conclusion generation could finish."
+        ],
+        "generated_by": "budget_exhausted",
+    }
+
+
+class _BudgetedConclusionLLM:
+    """Share the job allowance across structured and prompted JSON requests."""
+
+    def __init__(self, service: Any, job: Any) -> None:
+        self.service = service
+        self.job = job
+        self.exhausted = False
+
+    async def _call(self, name: str, **kwargs: Any) -> Any:
+        method = getattr(self.service, name, None)
+        if not callable(method):
+            # Missing schema support is not an attempted provider request.
+            raise AttributeError(f"Model service has no {name}")
+        used = int(getattr(self.job, "llm_calls_used", 0) or 0)
+        limit = int(getattr(self.job, "max_llm_calls", 0) or 0)
+        if used >= limit:
+            self.exhausted = True
+            raise RuntimeError("Conclusion model-call budget exhausted")
+        self.job.llm_calls_used = used + 1
+        return await method(**kwargs)
+
+    async def generate_structured(self, **kwargs: Any) -> Any:
+        return await self._call("generate_structured", **kwargs)
+
+    async def generate_response(self, **kwargs: Any) -> Any:
+        return await self._call("generate_response", **kwargs)
+
+
 async def synthesize_conclusion(
     executor: Any,
     job: Any,
@@ -260,8 +300,14 @@ async def synthesize_conclusion(
         # have recorded plenty.
         return conclusion_without_evidence("The run recorded no findings.")
 
-    return await conclude(
-        executor.llm_service,
+    if int(getattr(job, "llm_calls_used", 0) or 0) >= int(
+        getattr(job, "max_llm_calls", 0) or 0
+    ):
+        return _budget_exhausted_conclusion()
+
+    model = _BudgetedConclusionLLM(executor.llm_service, job)
+    result = await conclude(
+        model,
         goal=getattr(job, "goal", ""),
         findings=findings,
         db=db,
@@ -271,6 +317,7 @@ async def synthesize_conclusion(
             "phase": "conclusion",
         },
     )
+    return _budget_exhausted_conclusion() if model.exhausted else result
 
 
 def conclusion_line(conclusion: Optional[Dict[str, Any]]) -> str:

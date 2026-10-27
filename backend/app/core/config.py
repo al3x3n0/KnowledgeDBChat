@@ -406,12 +406,14 @@ class Settings(BaseSettings):
     AUTH_SELF_REGISTRATION: Optional[bool] = None
     LDAP_UNIQUE_ID_ATTRIBUTE: str = "entryUUID"
     # Reconcile directory-managed accounts with the directory every this many
-    # minutes (0: never). Between logins nothing else notices that someone
-    # left, was disabled, or lost the admin group. The people who should have
+    # minutes (0: never; unset: hourly when LDAP is on). Between logins
+    # nothing else notices that someone left, was disabled, or lost the admin
+    # group, so a deployment that turns LDAP on gets it without asking; the
+    # sync's own safeguards keep a broken query from deactivating anyone. The people who should have
     # access are those LDAP_IMPORT_FILTER finds: on Active Directory, exclude
     # disabled accounts there with
     # "(!(userAccountControl:1.2.840.113556.1.4.803:=2))".
-    LDAP_SYNC_INTERVAL_MINUTES: int = 0
+    LDAP_SYNC_INTERVAL_MINUTES: Optional[int] = None
     # A sync that would deactivate more than this share of directory-managed
     # accounts deactivates none and says so: a wrong base DN or filter looks
     # exactly like everybody leaving at once.

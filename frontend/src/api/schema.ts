@@ -359,6 +359,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/ldap/vouch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ldap Vouch For Account
+         * @description Admin: vouch for a local account's email, or withdraw the vouch.
+         *
+         *     Nothing sends mail, so no address a person typed at sign-up is checked.
+         *     The directory links a self-registered account only by an email an admin
+         *     has vouched for here; the vouch names the address, so a later change of
+         *     email is not covered by it.
+         */
+        post: operations["ldap_vouch_for_account_api_v1_admin_ldap_vouch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/llm/models": {
         parameters: {
             query?: never;
@@ -22166,6 +22191,27 @@ export interface components {
             /** Username */
             username: string;
         };
+        /** LdapVouchRequest */
+        LdapVouchRequest: {
+            /** Username */
+            username: string;
+            /**
+             * Verified
+             * @default true
+             */
+            verified: boolean;
+        };
+        /** LdapVouchResponse */
+        LdapVouchResponse: {
+            /** Email */
+            email: string;
+            /** Is Verified */
+            is_verified: boolean;
+            /** Self Registered */
+            self_registered: boolean;
+            /** Username */
+            username: string;
+        };
         /**
          * MCPKeyConfigResponse
          * @description Full MCP configuration for an API key.
@@ -30340,6 +30386,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LdapTestResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ldap_vouch_for_account_api_v1_admin_ldap_vouch_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LdapVouchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LdapVouchResponse"];
                 };
             };
             /** @description Validation Error */

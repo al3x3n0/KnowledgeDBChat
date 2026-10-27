@@ -82,8 +82,8 @@ class AuthService:
         origin: Optional[str] = None,
     ) -> User:
         """Create a new user. ``origin`` is kept in ``auth_metadata``: the
-        directory never links an account someone registered for themselves
-        (``directory_accounts.may_link``)."""
+        directory links an account someone registered for themselves only
+        once an admin has vouched for its email (``directory_accounts.may_link``)."""
         # Check if username already exists
         existing_user = await self.get_user_by_username(username, db)
         if existing_user:

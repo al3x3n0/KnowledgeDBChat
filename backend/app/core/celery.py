@@ -262,7 +262,8 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(minute=0, hour=4, day_of_week=0),
     },
     # Reconcile directory-managed accounts. Fires every 5 minutes and runs
-    # only when LDAP_SYNC_INTERVAL_MINUTES (default 0: never) says it is due.
+    # only when LDAP_SYNC_INTERVAL_MINUTES (unset: hourly with LDAP on; 0:
+    # never) says it is due.
     "sync-directory-accounts": {
         "task": "app.tasks.identity_tasks.sync_directory_accounts",
         "schedule": crontab(minute="*/5"),

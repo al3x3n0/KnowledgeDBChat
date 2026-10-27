@@ -11,6 +11,7 @@ jest.mock('../../../services/api', () => ({
     testLdap: jest.fn(),
     importLdapUsers: jest.fn(),
     syncLdapAccounts: jest.fn(),
+    vouchForAccount: jest.fn(),
   },
 }));
 
@@ -18,6 +19,7 @@ const status = apiClient.getLdapStatus as jest.Mock;
 const test = apiClient.testLdap as jest.Mock;
 const importUsers = apiClient.importLdapUsers as jest.Mock;
 const sync = apiClient.syncLdapAccounts as jest.Mock;
+const vouch = apiClient.vouchForAccount as jest.Mock;
 
 const WORKING = {
   enabled: true,
@@ -69,6 +71,7 @@ describe('LdapPanel', () => {
     test.mockReset();
     importUsers.mockReset();
     sync.mockReset();
+    vouch.mockReset();
   });
 
   it('says local accounts only when LDAP is off, and offers nothing to run', async () => {
@@ -177,7 +180,45 @@ describe('LdapPanel', () => {
     renderPanel();
 
     expect(await screen.findByText('entryUUID, then DN')).toBeInTheDocument();
-    expect(screen.getByText('Off (LDAP_SYNC_INTERVAL_MINUTES)')).toBeInTheDocument();
+    expect(screen.getByText('Off (LDAP_SYNC_INTERVAL_MINUTES=0)')).toBeInTheDocument();
+  });
+
+  it('says how often the scheduled sync runs', async () => {
+    status.mockResolvedValue({ ...WORKING, sync_interval_minutes: 60 });
+    renderPanel();
+
+    expect(await screen.findByText('Every 60 min')).toBeInTheDocument();
+  });
+
+  it('vouches for an account by name, and can withdraw it', async () => {
+    status.mockResolvedValue(WORKING);
+    vouch
+      .mockResolvedValueOnce({
+        username: 'dora',
+        email: 'dora@example.com',
+        is_verified: true,
+        self_registered: true,
+      })
+      .mockResolvedValueOnce({
+        username: 'dora',
+        email: 'dora@example.com',
+        is_verified: false,
+        self_registered: true,
+      });
+    renderPanel();
+
+    const button = await screen.findByRole('button', { name: 'Vouch' });
+    expect(button).toBeDisabled();
+    const inputs = screen.getAllByLabelText('Login name');
+    fireEvent.change(inputs[inputs.length - 1], { target: { value: ' dora ' } });
+    fireEvent.click(button);
+
+    expect(await screen.findByText('Vouched for dora (dora@example.com).')).toBeInTheDocument();
+    expect(vouch).toHaveBeenLastCalledWith('dora', true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Withdraw' }));
+    expect(await screen.findByText('No vouch for dora.')).toBeInTheDocument();
+    expect(vouch).toHaveBeenLastCalledWith('dora', false);
   });
 
   it('applies a sync only after a preview, and says who would be deactivated', async () => {

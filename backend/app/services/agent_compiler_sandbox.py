@@ -16,6 +16,7 @@ code.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import tempfile
@@ -295,6 +296,24 @@ _RUST_FN = re.compile(
     r"(?:extern\s+\"[^\"]*\"\s+)?fn\s+([A-Za-z_]\w*)",
     re.MULTILINE,
 )
+
+
+#: Source kept on a benchmark finding. Findings live in the run's state and
+#: are inherited by later stages, so this is bounded; a program longer than
+#: this is kept in part and says so, and its hash still identifies it.
+MAX_RECORDED_SOURCE_CHARS = 16_000
+
+
+def recorded_source(code: str) -> Dict[str, Any]:
+    """The fields a measurement carries to say which program it measured."""
+    text = code or ""
+    recorded: Dict[str, Any] = {
+        "source_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "source": text[:MAX_RECORDED_SOURCE_CHARS],
+    }
+    if len(text) > MAX_RECORDED_SOURCE_CHARS:
+        recorded["source_truncated"] = True
+    return recorded
 
 
 def describe_subject(code: str, label: str = "") -> str:
@@ -916,6 +935,12 @@ async def benchmark_c_snippet(
                 # same way.
                 "language": chain.language,
                 "flags": flags,
+                # What was timed, so it can be timed again. A stage asked to
+                # re-measure its one-trial finding under the same label could
+                # not find the source -- nothing had kept it -- wrote a new
+                # harness that did not compile, and stalled. The hash says
+                # whether a later measurement is of the same program.
+                **recorded_source(code),
                 "fastest_ms": min(timings) if timings else None,
                 "all_ms": timings,
                 "reported_metrics": reported_metrics,

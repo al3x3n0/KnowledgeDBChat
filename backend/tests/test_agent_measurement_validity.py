@@ -287,6 +287,23 @@ def test_validity_block_survives_contract_normalization():
     assert contract["validity"]["bounds"]["anchor_check"]["min"] == 0.95
 
 
+def test_distinct_subjects_survives_contract_normalization():
+    job = _Job(
+        {
+            "goal_contract": {
+                "enabled": True,
+                "validity": {
+                    "distinct_subjects": {"benchmark_measurement": 2, " ": 4},
+                },
+            }
+        }
+    )
+
+    contract = _executor()._get_goal_contract_config(job)
+
+    assert contract["validity"]["distinct_subjects"] == {"benchmark_measurement": 2}
+
+
 def test_malformed_validity_rules_are_dropped_not_guessed():
     job = _Job(
         {

@@ -8706,6 +8706,15 @@ RESPONSE FORMAT:
             uncertainty = _as_str_list(value.get("require_uncertainty"))
             if uncertainty:
                 spec["require_uncertainty"] = uncertainty[:24]
+            distinct_raw = value.get("distinct_subjects")
+            if isinstance(distinct_raw, dict):
+                distinct = {
+                    str(name).strip()[:80]: bounded_int(count, 2, 2, 100)
+                    for name, count in list(distinct_raw.items())[:24]
+                    if str(name).strip()
+                }
+                if distinct:
+                    spec["distinct_subjects"] = distinct
             bounds_raw = value.get("bounds")
             if isinstance(bounds_raw, dict):
                 bounds: Dict[str, Any] = {}

@@ -19,17 +19,16 @@ import {
   Download,
   Loader2,
   Eye,
-  Sparkles,
   Network,
   ChevronDown,
   ChevronUp,
   PanelLeftClose,
   PanelLeftOpen,
-  X
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import ReactMarkdown from 'react-markdown';
 import CampaignDraftWidget from '../components/chat/CampaignDraftWidget';
+import ChatModelPicker from '../components/chat/ChatModelPicker';
 import remarkGfm from 'remark-gfm';
 
 import { apiClient } from '../services/api';
@@ -327,29 +326,6 @@ const ChatPage: React.FC = () => {
     }
   };
 
-  const pinned = (() => {
-    const meta = (currentSession as any)?.extra_metadata || {};
-    const chatModel = meta?.llm_task_models?.chat;
-    const chatProvider = meta?.llm_task_providers?.chat;
-    const adapterId = meta?.ai_hub?.adapter_id;
-    const parts: string[] = [];
-    if (chatProvider) parts.push(String(chatProvider));
-    if (chatModel) parts.push(String(chatModel));
-    if (!chatModel && adapterId) parts.push(`adapter:${String(adapterId).slice(0, 8)}`);
-    return { isPinned: Boolean(chatModel || adapterId), label: parts.join(' • '), meta };
-  })();
-
-  const clearPinned = () => {
-    if (!sessionId || !pinned.isPinned) return;
-    const next = { ...(pinned.meta || {}) };
-    delete (next as any).ai_hub;
-    delete (next as any).llm_task_models;
-    delete (next as any).llm_task_providers;
-    delete (next as any).llm_provider;
-    delete (next as any).llm_model;
-    updateSessionMutation.mutate({ sessionId, payload: { extra_metadata: next } });
-  };
-
   if (sessionsLoading) {
     return <LoadingSpinner className="h-full" text="Loading chat sessions..." />;
   }
@@ -489,22 +465,14 @@ const ChatPage: React.FC = () => {
                   <h1 className="text-lg font-semibold text-gray-900">
                     {currentSession?.title || 'Chat Session'}
                   </h1>
-                  {pinned.isPinned && (
-                    <div className="mt-2 inline-flex items-center gap-2 text-xs bg-indigo-50 text-indigo-700 border border-indigo-100 rounded-full px-3 py-1">
-                      <Sparkles className="w-3 h-3" />
-                      <span className="font-medium">AI Hub pinned</span>
-                      <span className="text-indigo-600">{pinned.label}</span>
-                      <button
-                        className="ml-1 text-indigo-600 hover:text-indigo-800"
-                        onClick={clearPinned}
-                        disabled={updateSessionMutation.isLoading}
-                        title="Clear pinned AI Hub model for this session"
-                        aria-label="Clear pinned model"
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
-                    </div>
-                  )}
+                  <ChatModelPicker
+                    meta={(currentSession as any)?.extra_metadata || {}}
+                    saving={updateSessionMutation.isLoading}
+                    onApply={(next) =>
+                      sessionId &&
+                      updateSessionMutation.mutate({ sessionId, payload: { extra_metadata: next } })
+                    }
+                  />
                 </div>
                 <div className="flex items-center space-x-2">
                   {wsConnection && (

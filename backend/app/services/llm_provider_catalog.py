@@ -155,6 +155,16 @@ def builtin_providers() -> List[Dict[str, Any]]:
 BUILTIN_IDS = frozenset(p["id"] for p in builtin_providers())
 
 
+def default_model_for(provider: Optional[str]) -> Optional[str]:
+    """The model a built-in provider falls back to when no call names one
+    (``ollama`` falls back to DEFAULT_MODEL), or None for anything else."""
+    name = (provider or "").strip().lower()
+    for p in builtin_providers():
+        if p["id"] == name:
+            return p["default_model"]
+    return None
+
+
 #: Starting points for a custom provider. Only a template: everything is
 #: editable, and nothing here is reachable until a person saves it.
 TEMPLATES: List[Dict[str, Any]] = [

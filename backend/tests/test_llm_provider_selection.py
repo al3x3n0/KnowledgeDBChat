@@ -404,3 +404,61 @@ def test_the_preferences_response_does_not_return_the_key(client, auth_headers):
         assert "sk-very-secret" not in r.text
         assert "llm_api_key" not in r.json()
         assert r.json()["llm_api_key_set"] is True
+
+
+# --------------------------------------------------------------------------
+# Recording the model that ran
+
+
+async def test_last_call_names_what_the_call_ran_on(sent):
+    from app.services.llm_service import last_call
+
+    await _service("openai").generate_response(query="hi")
+    # The fake provider reports no model, so the provider's own default.
+    assert last_call() == ("openai", "qwen3-32b")
+
+    user = UserLLMSettings(provider="custom:gpu", custom_providers=_saved())
+    await _service("deepseek").generate_response(query="hi", user_settings=user)
+    assert last_call() == ("openai_compatible", "qwen3-32b")
+
+
+async def test_a_failed_call_leaves_no_last_call(sent, monkeypatch):
+    from app.services.llm_service import last_call
+
+    await _service("openai").generate_response(query="hi")
+    assert last_call() is not None
+
+    async def broken(self, **kw):
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(LLMService, "_make_deepseek_chat_request", broken)
+    with pytest.raises(Exception):
+        await _service("deepseek").generate_response(query="hi")
+    assert last_call() is None
+
+
+def test_active_model_is_the_providers_own(monkeypatch):
+    monkeypatch.setattr(settings, "OPENAI_MODEL", "gpt-4o")
+    monkeypatch.setattr(settings, "DEFAULT_MODEL", "llama3.2")
+    assert _service("openai").get_active_model() == "gpt-4o"
+    svc = _service("ollama")
+    assert catalog.default_model_for("ollama") == "llama3.2"
+    assert svc.get_active_model() == "llama3.2"
+    assert catalog.default_model_for("openai_compatible") is None
+
+
+async def test_a_summary_records_the_model_its_call_ran_on(sent, db_session):
+    """It recorded DEFAULT_MODEL (deepseek-v4-pro) whatever the call was
+    routed to; routed to a saved provider, that was a model never used."""
+    from app.services.document_service import DocumentService
+    from tests.factories import create_test_document, create_test_document_source
+
+    source = await create_test_document_source(db_session)
+    doc = await create_test_document(db_session, source, content="Some text. " * 20)
+    service = DocumentService()
+    service.llm = _service("deepseek")
+
+    user = UserLLMSettings(provider="custom:gpu", custom_providers=_saved())
+    await service.summarize_document(doc.id, db_session, user_settings=user)
+    await db_session.refresh(doc)
+    assert doc.summary_model == "qwen3-32b"

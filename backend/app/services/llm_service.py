@@ -1318,10 +1318,25 @@ class LLMService:
                         system_prompt=system_prompt,
                     )
                     input_chars = sum(len(m.get("content") or "") for m in messages)
-                    api_key = effective_api_key or settings.DEEPSEEK_API_KEY
-                    api_base = effective_api_url or settings.DEEPSEEK_API_BASE
+                    # The "openai" provider is the OpenAI-compatible path
+                    # (including the in-cluster AI Gateway, which is what the test
+                    # deployment routes through via OPENAI_API_BASE). It must use
+                    # the OpenAI credentials/base, not the DeepSeek ones -- with
+                    # LLM_PROVIDER=openai and only OPENAI_API_BASE set, seeding
+                    # from the DeepSeek settings raised "DEEPSEEK_API_KEY is not
+                    # set" because DEEPSEEK_API_KEY/BASE are empty here.
+                    if effective_provider == "openai":
+                        default_key = settings.OPENAI_API_KEY
+                        default_base = settings.OPENAI_API_BASE
+                        default_model = settings.OPENAI_MODEL
+                    else:
+                        default_key = settings.DEEPSEEK_API_KEY
+                        default_base = settings.DEEPSEEK_API_BASE
+                        default_model = settings.DEEPSEEK_MODEL
+                    api_key = effective_api_key or default_key
+                    api_base = effective_api_url or default_base
 
-                    model_used = model or settings.DEEPSEEK_MODEL
+                    model_used = model or default_model
                     result, meta = await self._make_deepseek_chat_request(
                         model=model_used,
                         messages=messages,
@@ -1630,10 +1645,27 @@ Citation format:
         response, so a second truncation reports rather than recursing.
         """
         api_key = api_key_override or settings.DEEPSEEK_API_KEY
-        if not api_key:
-            raise LLMServiceError("DEEPSEEK_API_KEY is not set")
-
         api_base = api_base_override or settings.DEEPSEEK_API_BASE
+        # A key is only mandatory when the base is not an AI Gateway that
+        # authenticates targets via x-portkey-config (merged into headers below)
+        # and takes no Authorization of its own. With LLM_PROVIDER=openai the test
+        # deployment routes through such a gateway with OPENAI_API_KEY empty, so
+        # requiring a key here raised "DEEPSEEK_API_KEY is not set" even though
+        # the request was destined for the gateway. When LLM_EXTRA_HEADERS is
+        # configured we treat the call as gateway-authenticated and proceed
+        # keyless; otherwise a direct provider call without a key is an error.
+        if not api_key and not (settings.LLM_EXTRA_HEADERS or "").strip():
+            raise LLMServiceError(
+                "DEEPSEEK_API_KEY is not set"
+                if (settings.LLM_PROVIDER or "deepseek").lower() == "deepseek"
+                else "OPENAI_API_KEY is not set"
+            )
+        if not api_base:
+            raise LLMServiceError(
+                "DEEPSEEK_API_BASE is not set"
+                if (settings.LLM_PROVIDER or "deepseek").lower() == "deepseek"
+                else "OPENAI_API_BASE is not set"
+            )
         url = f"{api_base.rstrip('/')}/chat/completions"
         timeout = (
             int(timeout_seconds)
@@ -1659,10 +1691,12 @@ Citation format:
             "top_p": settings.TOP_P,
         }
 
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
+        # Only send Authorization when a key exists. A keyless AI Gateway
+        # (authenticates targets via x-portkey-config) takes no Bearer token;
+        # sending "Bearer None" would be wrong.
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
         # Gateway config headers (e.g. Portkey's x-portkey-config). Merged
         # under the caller's own, so Authorization above still wins.
         headers.update(parse_llm_extra_headers(settings.LLM_EXTRA_HEADERS))

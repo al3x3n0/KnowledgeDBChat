@@ -196,6 +196,9 @@ class UserPreferences(Base):
     llm_task_models = Column(JSON, nullable=True)
     # Per-task provider overrides (JSON: {"summarization": "deepseek", "chat": "ollama", ...})
     llm_task_providers = Column(JSON, nullable=True)
+    # Saved connections, named in the two fields above as "custom:<id>"
+    # (services/llm_provider_catalog.py; keys encrypted, never returned).
+    llm_providers = Column(JSON, nullable=True)
 
     # How this user has shaped their own interface: which navigation entries
     # they hid, reordered, renamed or pinned, and where "/" lands.

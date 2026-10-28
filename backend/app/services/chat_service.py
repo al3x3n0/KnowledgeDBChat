@@ -2,6 +2,7 @@
 Chat service for handling chat sessions and messages.
 """
 
+import dataclasses
 import re
 import time
 from datetime import datetime
@@ -325,13 +326,10 @@ class ChatService:
                             {k: v for k, v in llm_task_providers.items() if v}
                         )
 
-                    effective_user_settings = UserLLMSettings(
+                    effective_user_settings = dataclasses.replace(
+                        effective_user_settings,
                         provider=(llm_provider or effective_user_settings.provider),
                         model=(llm_model or effective_user_settings.model),
-                        api_url=effective_user_settings.api_url,
-                        api_key=effective_user_settings.api_key,
-                        temperature=effective_user_settings.temperature,
-                        max_tokens=effective_user_settings.max_tokens,
                         task_models=merged_task_models or None,
                         task_providers=merged_task_providers or None,
                     )

@@ -1011,9 +1011,23 @@ class DocumentService:
         heavy_threshold = getattr(
             _settings, "SUMMARIZATION_HEAVY_THRESHOLD_CHARS", 30000
         )
-        prefer_deepseek = (
-            bool(getattr(_settings, "DEEPSEEK_API_KEY", None))
-            and len(text) > heavy_threshold
+        # Asked for only where the call would honour it, so the model
+        # recorded below is the one that ran: a person's chosen provider,
+        # or any deployment provider but Ollama, is never overridden.
+        from app.services.llm_routing import prefers_deepseek as _prefers_deepseek
+
+        _conn = (
+            user_settings.connection_for_task("summarization")
+            if user_settings and user_settings.has_custom_settings()
+            else None
+        )
+        prefer_deepseek = len(text) > heavy_threshold and _prefers_deepseek(
+            True,
+            effective_provider=(
+                (_conn.provider if _conn and _conn.provider else None)
+                or self.llm.provider
+            ),
+            provider_chosen=bool(_conn and _conn.chosen_by_user),
         )
 
         chunk_size = getattr(_settings, "SUMMARIZATION_CHUNK_SIZE_CHARS", 12000)

@@ -10758,6 +10758,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/users/me/llm-providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Llm Provider Catalog
+         * @description What can be chosen: the built-in providers (and whether the
+         *     deployment holds a key for each) and templates for a custom one.
+         */
+        get: operations["get_llm_provider_catalog_api_v1_users_me_llm_providers_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/me/llm-providers/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test Llm Provider
+         * @description Ask an endpoint which models it serves, before or after saving it.
+         *
+         *     Only model names come back, never the server's reply.
+         */
+        post: operations["test_llm_provider_api_v1_users_me_llm_providers_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/users/me/llm-settings": {
         parameters: {
             query?: never;
@@ -16996,6 +17039,29 @@ export interface components {
             /** Title */
             title: string;
         };
+        /** BuiltinProviderOut */
+        BuiltinProviderOut: {
+            /** Api Url */
+            api_url?: string | null;
+            /** Default Model */
+            default_model?: string | null;
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Models */
+            models?: string[];
+            /**
+             * Requires Api Key
+             * @default true
+             */
+            requires_api_key: boolean;
+            /**
+             * System Configured
+             * @default false
+             */
+            system_configured: boolean;
+        };
         /**
          * CampaignPlanApproval
          * @description The plans a campaign may approve itself: those its own job proposed,
@@ -18158,6 +18224,55 @@ export interface components {
             plugin_type: string;
             /** Warnings */
             warnings?: string[] | null;
+        };
+        /**
+         * CustomProviderIn
+         * @description A saved provider as the page sends it. ``api_key`` is sent only to
+         *     set or replace the key; leaving it out keeps the one already saved.
+         */
+        CustomProviderIn: {
+            /** Api Key */
+            api_key?: string | null;
+            /** Api Url */
+            api_url: string;
+            /**
+             * Clear Api Key
+             * @default false
+             */
+            clear_api_key: boolean;
+            /** Default Model */
+            default_model?: string | null;
+            /** Id */
+            id?: string | null;
+            /**
+             * Kind
+             * @default openai_compatible
+             */
+            kind: string;
+            /** Models */
+            models?: string[];
+            /** Name */
+            name: string;
+        };
+        /** CustomProviderOut */
+        CustomProviderOut: {
+            /**
+             * Api Key Set
+             * @default false
+             */
+            api_key_set: boolean;
+            /** Api Url */
+            api_url: string;
+            /** Default Model */
+            default_model?: string | null;
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Models */
+            models?: string[];
+            /** Name */
+            name: string;
         };
         /** CustomerProfile */
         CustomerProfile: {
@@ -20836,6 +20951,19 @@ export interface components {
             /** Provider */
             provider: string;
         };
+        /** LLMProviderCatalogResponse */
+        LLMProviderCatalogResponse: {
+            /** Builtin */
+            builtin: components["schemas"]["BuiltinProviderOut"][];
+            /** Kinds */
+            kinds: string[];
+            /** System Model */
+            system_model?: string | null;
+            /** System Provider */
+            system_provider: string;
+            /** Templates */
+            templates: components["schemas"]["ProviderTemplateOut"][];
+        };
         /** LLMRoutingExperimentListItem */
         LLMRoutingExperimentListItem: {
             /** Agent Display Name */
@@ -20977,10 +21105,16 @@ export interface components {
             llm_model?: string | null;
             /** Llm Provider */
             llm_provider?: string | null;
+            /** Llm Providers */
+            llm_providers?: components["schemas"]["CustomProviderOut"][];
             /** Llm Task Models */
-            llm_task_models?: Record<string, never> | null;
+            llm_task_models?: {
+                [key: string]: string;
+            } | null;
             /** Llm Task Providers */
-            llm_task_providers?: Record<string, never> | null;
+            llm_task_providers?: {
+                [key: string]: string;
+            } | null;
             /** Llm Temperature */
             llm_temperature?: number | null;
         };
@@ -21015,15 +21149,24 @@ export interface components {
              */
             llm_provider?: string | null;
             /**
+             * Llm Providers
+             * @description Saved custom providers, named elsewhere as custom:<id>
+             */
+            llm_providers?: components["schemas"]["CustomProviderIn"][] | null;
+            /**
              * Llm Task Models
              * @description Per-task model overrides: {task_type: model_name}
              */
-            llm_task_models?: Record<string, never> | null;
+            llm_task_models?: {
+                [key: string]: string;
+            } | null;
             /**
              * Llm Task Providers
              * @description Per-task provider overrides: {task_type: provider}
              */
-            llm_task_providers?: Record<string, never> | null;
+            llm_task_providers?: {
+                [key: string]: string;
+            } | null;
             /**
              * Llm Temperature
              * @description Temperature (0.0-2.0)
@@ -24142,6 +24285,50 @@ export interface components {
             documents_last_7_days: Record<string, never>[];
             /** Total Documents Last 7 Days */
             total_documents_last_7_days: number;
+        };
+        /** ProviderTemplateOut */
+        ProviderTemplateOut: {
+            /** Api Url */
+            api_url: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Label */
+            label: string;
+            /**
+             * Requires Api Key
+             * @default false
+             */
+            requires_api_key: boolean;
+        };
+        /** ProviderTestRequest */
+        ProviderTestRequest: {
+            /** Api Key */
+            api_key?: string | null;
+            /** Api Url */
+            api_url: string;
+            /** Id */
+            id?: string | null;
+            /**
+             * Kind
+             * @default openai_compatible
+             */
+            kind: string;
+        };
+        /** ProviderTestResponse */
+        ProviderTestResponse: {
+            /** Error */
+            error?: string | null;
+            /** Models */
+            models?: string[];
+            /** Ok */
+            ok: boolean;
         };
         /**
          * PullRequestInfo
@@ -28511,11 +28698,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
-            /**
-             * Llm Api Key
-             * @description User's own API key for external providers
-             */
-            llm_api_key?: string | null;
+            /** Llm Api Key Set */
+            readonly llm_api_key_set: boolean;
             /**
              * Llm Api Url
              * @description Custom API URL override
@@ -51580,6 +51764,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LLMModelsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_llm_provider_catalog_api_v1_users_me_llm_providers_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LLMProviderCatalogResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_llm_provider_api_v1_users_me_llm_providers_test_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProviderTestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderTestResponse"];
                 };
             };
             /** @description Validation Error */

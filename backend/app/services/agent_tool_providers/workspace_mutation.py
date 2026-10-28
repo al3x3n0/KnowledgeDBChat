@@ -1566,6 +1566,24 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             kwargs["repeat"] = int(params["repeat"])
         return await agent_compiler_sandbox.benchmark_c_snippet(**kwargs)
 
+    async def _compare_c_snippets(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_compiler_sandbox
+
+        kwargs: Dict[str, Any] = {
+            "code": str(params.get("code") or ""),
+            "baseline_code": str(params.get("baseline_code") or ""),
+            "label": str(params.get("label") or ""),
+            "baseline_label": str(params.get("baseline_label") or ""),
+            "flags": str(params.get("flags") or ""),
+            "language": str(params.get("language") or ""),
+        }
+        # Forwarded only when chosen, so the default lives in one place.
+        if params.get("rounds"):
+            kwargs["rounds"] = int(params["rounds"])
+        return await agent_compiler_sandbox.compare_c_snippets(**kwargs)
+
     async def _check_implementation(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -1946,6 +1964,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "record_prediction": _record_prediction,
             "record_measurement": _record_measurement,
             "benchmark_c_snippet": _benchmark_c_snippet,
+            "compare_c_snippets": _compare_c_snippets,
             "check_implementation": _check_implementation,
             "compare_to_claim": _compare_to_claim,
             "execute_data_pipeline": _execute_data_pipeline,

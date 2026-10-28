@@ -110,13 +110,21 @@ async def _check_llm() -> HealthCheckServiceResponse:
             return HealthCheckServiceResponse(
                 status="degraded", error="No LLM provider configured"
             )
-        if _llm_api_key(provider) is None:
+        # A gateway configured through LLM_EXTRA_HEADERS (e.g. Portkey's
+        # x-portkey-config) carries its own target credentials, so no
+        # per-provider API key is required on the app side.
+        from app.core.config import parse_llm_extra_headers
+
+        has_gateway = bool(parse_llm_extra_headers(settings.LLM_EXTRA_HEADERS))
+        if _llm_api_key(provider) is None and not has_gateway:
             key_name = f"{provider.upper()}_API_KEY"
             return HealthCheckServiceResponse(
                 status="degraded", error=f"{key_name} not set"
             )
         return HealthCheckServiceResponse(
-            status="healthy", message=f"{provider} configured"
+            status="healthy",
+            message=f"{provider} configured"
+            + (" (via gateway)" if has_gateway else ""),
         )
     except Exception as exc:
         return HealthCheckServiceResponse(status="unhealthy", error=str(exc))

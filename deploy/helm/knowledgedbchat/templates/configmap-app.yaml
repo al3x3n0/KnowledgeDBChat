@@ -10,7 +10,18 @@ data:
 
   LLM_PROVIDER: {{ .Values.config.llmProvider | quote }}
   DEFAULT_MODEL: {{ .Values.config.defaultModel | quote }}
+  {{- with .Values.config.llmExtraHeaders }}
+  # Extra headers sent with every OpenAI-compatible LLM request (JSON object).
+  # For a gateway such as Portkey this carries x-portkey-config per request.
+  LLM_EXTRA_HEADERS: {{ . | quote }}
+  {{- end }}
   EMBEDDING_MODEL: {{ .Values.config.embeddingModel | quote }}
+  {{- with .Values.config.embeddingApiBase }}
+  # External OpenAI-compatible embedding API. When set, embeddings are produced
+  # by this service instead of the local ONNX model; the key comes from the
+  # app Secret (secrets.embeddingApiKey).
+  EMBEDDING_API_BASE: {{ . | quote }}
+  {{- end }}
 
   VECTOR_STORE_PROVIDER: {{ .Values.config.vectorStoreProvider | quote }}
   QDRANT_COLLECTION_NAME: {{ .Values.config.qdrantCollectionName | quote }}

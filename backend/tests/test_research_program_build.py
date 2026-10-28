@@ -18,14 +18,32 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def _install(tmp_path, targets, pip_exit=0, private=False):
     dockerfile = (ROOT / "backend/Dockerfile").read_text()
-    start = dockerfile.index("RUN --mount=type=bind,from=programs")
-    instruction = dockerfile[start:].split("\n\n", 1)[0].replace("\\\n", " ")
-    command = re.sub(r"\ARUN(?:\s+--mount=\S+)+\s+", "", instruction)
-    # The build secret is disposable test data, even if the runner has secrets.
+    lines = dockerfile.split("\n")
+    # The program-install step is the first `RUN` instruction after the
+    # RESEARCH_PROGRAMS ARG. Comments are skipped (the Dockerfile documents the
+    # BuildKit `--mount` trade-off in prose, so a naive substring match would
+    # land on a comment). A plain RUN keeps the step buildable on pre-BuildKit
+    # toolchains (Podman < 4.x), where `--mount=type=bind/secret` is unknown.
+    in_block = False
+    run_line = None
+    for line in lines:
+        if line.strip().startswith("ARG RESEARCH_PROGRAMS"):
+            in_block = True
+            continue
+        if in_block and line.lstrip().startswith("RUN"):
+            run_line = line
+            break
+    assert run_line is not None, "research-programs RUN step not found in Dockerfile"
+    rest = "\n".join(lines[lines.index(run_line) :])
+    instruction = rest.split("\n\n", 1)[0].replace("\\\n", " ")
+    command = re.sub(r"\ARUN(?:\s+--mount=\S+)*\s*", "", instruction)
+    # The token is disposable test data, even if the runner has a build ARG.
     secret = tmp_path / "github_token"
     if private:
         secret.write_text("test-build-token")
-    command = command.replace("/run/secrets/github_token", str(secret))
+        command = command.replace("$GITHUB_TOKEN", secret.read_text())
+    else:
+        command = command.replace("$GITHUB_TOKEN", "")
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -87,19 +105,10 @@ def test_successful_install_still_cleans_up(tmp_path):
 def test_local_checkout_builds_and_its_entry_point_loads(tmp_path):
     """A real source build, then discovery in a fresh interpreter.
 
-    The mount must permit the metadata writes exercised here. This checks the
-    declared mount configuration and packaging without needing a Docker daemon.
+    A pinned local checkout is installed into the venv; the metadata the
+    package backend writes during the build must survive the install and the
+    entry point must be discoverable. No Docker daemon is needed.
     """
-    dockerfile = (ROOT / "backend/Dockerfile").read_text()
-    mount = re.search(
-        r"--mount=(type=bind,from=programs,target=/programs[^\s]*)", dockerfile
-    )
-    assert mount is not None
-    options = mount.group(1).split(",")
-    assert (
-        "rw" in options or "readwrite" in options
-    ), "Local package builds need writable sources"
-
     source = tmp_path / "source"
     source.mkdir()
     (source / "pyproject.toml").write_text(

@@ -65,23 +65,38 @@ RUN pip install --no-cache-dir --no-compile -r requirements.txt \
 RUN pip uninstall -y numba llvmlite \
     && ! python -c "import numba" 2>/dev/null
 
-# Research programs: pip targets, space-separated. Empty (the default) builds
-# core alone. A pinned git URL for a release build --
+# Research programs: a space-separated list of pip targets. Empty (the
+# default) builds core alone. Set it to a pinned git URL for a release build --
 #   RESEARCH_PROGRAMS="git+https://github.com/al3x3n0/kdbc-uarch-lab@v0.1.0"
-# -- or /programs for the checkout passed as the `programs` context. A private
-# repository's token comes in as the BuildKit secret `github_token`, which
-# never reaches a layer. --no-deps: a program runs against this image's core
-# and declares no packages of its own to resolve against it.
+# -- which pip clones at install time, so no separate checkout is required.
+# A private repository's token, when needed, comes in as the GITHUB_TOKEN
+# build ARG (a `RUN --mount=type=secret` would be the BuildKit way).
+# --no-deps: a program runs against this image's core and declares no packages
+# of its own to resolve against it.
 ARG RESEARCH_PROGRAMS=""
-# Package backends write metadata/build files beside their sources. Writes to
-# this build mount are discarded afterwards; the host checkout is not changed.
-RUN --mount=type=bind,from=programs,target=/programs,rw \
-    --mount=type=secret,id=github_token,required=false \
-    set -eu; \
+# Install the research program named by RESEARCH_PROGRAMS into the venv.
+#
+# Written as a plain RUN, not a `RUN --mount=...` step, so it builds on
+# pre-BuildKit toolchains (Podman < 4.x): `--mount=type=bind/secret` there is
+# an unknown mount type and aborts the whole build. The trade-off: with
+# --no-cache-dir pip fetches the target into a temp dir, so a pinned
+# `git+https://...@tag` is cloned and installed without a persistent
+# /programs checkout, and a private repo's token comes in as a build ARG
+# (GITHUB_TOKEN) rather than a `--mount=type=secret` file. The empty-default
+# `ARG GITHUB_TOKEN=""` line is the placeholder a `--build-arg
+# GITHUB_TOKEN=...` needs in a non-BuildKit build; it is unset by default.
+#
+# The `FROM scratch AS programs` stage and the compose `additional_contexts:`
+# that fed it are no longer consumed by this Dockerfile. A BuildKit-era build
+# can still pass `--build-context programs=...` and it is simply ignored
+# rather than rejected, so the compose file's `additional_contexts` entry is
+# left in place for forward compatibility (it is a no-op here).
+ARG GITHUB_TOKEN=""
+RUN set -eu; \
     if [ -n "$RESEARCH_PROGRAMS" ]; then \
       trap 'rm -f /root/.gitconfig' EXIT; \
-      if [ -s /run/secrets/github_token ]; then \
-        git config --global url."https://x-access-token:$(cat /run/secrets/github_token)@github.com/".insteadOf "https://github.com/"; \
+      if [ -n "$GITHUB_TOKEN" ]; then \
+        git config --global url."https://x-access-token:$GITHUB_TOKEN@github.com/".insteadOf "https://github.com/"; \
       fi; \
       pip install --no-cache-dir --no-compile --no-deps $RESEARCH_PROGRAMS; \
       find /opt/venv -name "__pycache__" -type d -prune -exec rm -rf {} +; \

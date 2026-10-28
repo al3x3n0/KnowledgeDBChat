@@ -36,7 +36,7 @@ That's it! The application will be available at:
 
 ```bash
 # 1. Navigate to project directory
-cd /Users/al3x3n0/huawei/KnowledgeDBChat
+cd /path/to/your/KnowledgeDBChat
 
 # 2. Run initial setup
 make setup

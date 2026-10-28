@@ -29218,6 +29218,54 @@
         "title": "LdapTestUser",
         "type": "object"
       },
+      "LdapVouchRequest": {
+        "properties": {
+          "username": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Username",
+            "type": "string"
+          },
+          "verified": {
+            "default": true,
+            "title": "Verified",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "username"
+        ],
+        "title": "LdapVouchRequest",
+        "type": "object"
+      },
+      "LdapVouchResponse": {
+        "properties": {
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "is_verified": {
+            "title": "Is Verified",
+            "type": "boolean"
+          },
+          "self_registered": {
+            "title": "Self Registered",
+            "type": "boolean"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "email",
+          "is_verified",
+          "self_registered"
+        ],
+        "title": "LdapVouchResponse",
+        "type": "object"
+      },
       "MCPKeyConfigResponse": {
         "description": "Full MCP configuration for an API key.",
         "properties": {
@@ -49338,6 +49386,71 @@
           }
         ],
         "summary": "Ldap Test",
+        "tags": [
+          "administration"
+        ]
+      }
+    },
+    "/api/v1/admin/ldap/vouch": {
+      "post": {
+        "description": "Admin: vouch for a local account's email, or withdraw the vouch.\n\nNothing sends mail, so no address a person typed at sign-up is checked.\nThe directory links a self-registered account only by an email an admin\nhas vouched for here; the vouch names the address, so a later change of\nemail is not covered by it.",
+        "operationId": "ldap_vouch_for_account_api_v1_admin_ldap_vouch_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LdapVouchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LdapVouchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Ldap Vouch For Account",
         "tags": [
           "administration"
         ]

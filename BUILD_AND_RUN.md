@@ -237,8 +237,9 @@ Local accounts can still sign in with their local password. When a local
 password does not match, LDAP can be tried if configured. Login and import
 use the same linking safeguards: an existing local account can be linked
 when its email matches, or when `LDAP_LINK_LOCAL_USERS_BY_USERNAME=true`.
-Accounts created through self-registration are never linked, even with that
-override. Inspect refused imports instead of assuming a shared username is
+Accounts created through self-registration are linked only by a matching
+email an administrator has vouched for (Admin → Directory (LDAP) → Vouch for
+an account), never by name, even with that override. Inspect refused imports instead of assuming a shared username is
 the same person.
 
 `AUTH_SELF_REGISTRATION` unset allows self-registration only when LDAP is off.
@@ -254,7 +255,8 @@ On the same Admin page, preview **Sync**, review role changes and missing
 users, then apply it. Sync updates existing LDAP-managed accounts; use import
 or first login to create new accounts. Local accounts are untouched.
 
-To enable periodic reconciliation, add:
+Periodic reconciliation runs hourly once `LDAP_ENABLED` is on. To change the
+interval, or set `0` to turn it off:
 
 ```dotenv
 LDAP_SYNC_INTERVAL_MINUTES=15
@@ -263,7 +265,7 @@ LDAP_SYNC_MAX_ENTRIES=50000
 LDAP_SEARCH_PAGE_SIZE=200
 ```
 
-The default interval is `0` (off). Scheduled sync requires Redis, a Celery
+Unset, the interval is 60 minutes with LDAP on. Scheduled sync requires Redis, a Celery
 worker, and Celery beat with the same directory settings and CA access. Beat
 checks every five minutes, so the configured interval is not an exact timer.
 Restart the affected processes after changing it.

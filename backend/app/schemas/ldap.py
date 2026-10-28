@@ -113,4 +113,19 @@ class LdapSyncResponse(BaseModel):
     error: Optional[str] = None
 
 
+class LdapVouchRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=255)
+    #: False withdraws an earlier vouch.
+    verified: bool = True
+
+
+class LdapVouchResponse(BaseModel):
+    username: str
+    email: str
+    is_verified: bool
+    #: Whether the account was made from the sign-in page: the vouch is what
+    #: lets the directory link such an account by its email.
+    self_registered: bool
+
+
 LdapStatusResponse.model_rebuild()

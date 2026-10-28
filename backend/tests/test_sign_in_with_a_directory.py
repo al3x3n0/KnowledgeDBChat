@@ -8,6 +8,9 @@ Three things a directory deployment got wrong at the sign-in page:
   account, and have the directory hand it to them;
 * "Sign up" was offered regardless;
 * an unreachable directory answered "Incorrect username or password".
+
+There is no mail to verify an address with, so a self-registered account
+links only by an email an admin has vouched for (``POST /admin/ldap/vouch``).
 """
 
 import pytest
@@ -30,7 +33,7 @@ async def _registered(db, username, email, *, origin="self_registration"):
     )
 
 
-class TestASelfRegisteredAccountIsNeverLinked:
+class TestASelfRegisteredAccountIsNotLinkedUnvouched:
     async def test_not_by_the_matching_email_a_stranger_typed(
         self, directory, db_session
     ):
@@ -90,6 +93,121 @@ class TestASelfRegisteredAccountIsNeverLinked:
 
         assert directory_accounts.self_registered(user)
         assert not directory_accounts.self_registered(User(auth_metadata=None))
+
+
+async def _vouched(db, user, *, by):
+    return await directory_accounts.vouch(db, user.username, by=by)
+
+
+class TestAVouchedForAccountLinksByItsEmail:
+    async def test_it_links_once_an_admin_vouches(
+        self, directory, db_session, admin_user
+    ):
+        registered = await _registered(db_session, "alice", "alice@example.com")
+        await _vouched(db_session, registered, by=admin_user)
+
+        user = await AuthService().authenticate_user(
+            "alice", "alice-secret", db_session
+        )
+
+        assert user is not None and user.id == registered.id
+        assert user.auth_provider == "ldap"
+
+    async def test_never_by_name_alone(
+        self, directory, db_session, admin_user, monkeypatch
+    ):
+        monkeypatch.setattr(
+            settings, "LDAP_LINK_LOCAL_USERS_BY_USERNAME", True, raising=False
+        )
+        registered = await _registered(db_session, "alice", "someone@example.com")
+        await _vouched(db_session, registered, by=admin_user)
+
+        assert (
+            await AuthService().authenticate_user("alice", "alice-secret", db_session)
+            is None
+        )
+
+    async def test_a_vouch_does_not_cover_a_later_email(
+        self, directory, db_session, admin_user
+    ):
+        registered = await _registered(db_session, "alice", "old@example.com")
+        await _vouched(db_session, registered, by=admin_user)
+        registered.email = "alice@example.com"
+        await db_session.commit()
+
+        assert (
+            await AuthService().authenticate_user("alice", "alice-secret", db_session)
+            is None
+        )
+
+    async def test_a_withdrawn_vouch_links_nothing(
+        self, directory, db_session, admin_user
+    ):
+        registered = await _registered(db_session, "alice", "alice@example.com")
+        await _vouched(db_session, registered, by=admin_user)
+        await directory_accounts.vouch(
+            db_session, "alice", by=admin_user, verified=False
+        )
+
+        await db_session.refresh(registered)
+        assert registered.is_verified is False
+        assert "vouched" not in registered.auth_metadata
+        assert (
+            await AuthService().authenticate_user("alice", "alice-secret", db_session)
+            is None
+        )
+
+    async def test_the_vouch_records_who_and_which_address(
+        self, db_session, admin_user
+    ):
+        registered = await _registered(db_session, "dora", "Dora@Example.com")
+
+        user = await _vouched(db_session, registered, by=admin_user)
+
+        vouched = user.auth_metadata["vouched"]
+        assert vouched["email"] == "dora@example.com"
+        assert vouched["by"] == admin_user.username
+        assert user.auth_metadata["origin"] == "self_registration"
+
+    async def test_a_directory_account_is_not_vouched_for(
+        self, directory, db_session, admin_user
+    ):
+        user = await AuthService().authenticate_user(
+            "alice", "alice-secret", db_session
+        )
+
+        with pytest.raises(directory_accounts.AccountRefused):
+            await directory_accounts.vouch(db_session, user.username, by=admin_user)
+
+
+class TestTheVouchRoute:
+    def test_an_admin_vouches(self, client, admin_headers, test_user):
+        response = client.post(
+            "/api/v1/admin/ldap/vouch",
+            headers=admin_headers,
+            json={"username": test_user.username},
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["is_verified"] is True
+
+    def test_nobody_else_may(self, client, auth_headers, test_user):
+        response = client.post(
+            "/api/v1/admin/ldap/vouch",
+            headers=auth_headers,
+            json={"username": test_user.username},
+        )
+
+        assert response.status_code == 403
+
+    def test_an_unknown_name_is_404(self, client, admin_headers):
+        response = client.post(
+            "/api/v1/admin/ldap/vouch",
+            headers=admin_headers,
+            json={"username": "nobody-here"},
+        )
+
+        assert response.status_code == 404
 
 
 class TestRegistration:

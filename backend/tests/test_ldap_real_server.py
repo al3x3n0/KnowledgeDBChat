@@ -5,22 +5,13 @@ operational attributes (``entryUUID`` is whatever a test writes) and no
 overlays (``memberOf`` is whatever a test writes). This file runs the same
 code against a real slapd, and skips unless one is named. It needs a
 certificate for ``localhost``: the image's bundled CA expired years ago, and
-the client rightly refuses it ("certificate has expired")::
+the client rightly refuses it ("certificate has expired").
+``scripts/ldap_test_server.sh`` makes one and starts the server (CI's
+``ldap-real-server`` job runs exactly that)::
 
-    openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.crt \
-      -days 30 -subj /CN=test-ca
-    openssl req -newkey rsa:2048 -nodes -keyout ldap.key -out ldap.csr \
-      -subj /CN=localhost
-    printf 'subjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\n' > ext
-    openssl x509 -req -in ldap.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
-      -out ldap.crt -days 30 -extfile ext && chmod 644 ldap.key
-    docker run -d --name kdbc-ldap --hostname localhost \
-      -p 127.0.0.1:3389:389 -p 127.0.0.1:3636:636 \
-      -e LDAP_DOMAIN=example.com -e LDAP_ADMIN_PASSWORD=admin-secret \
-      -e LDAP_TLS_VERIFY_CLIENT=never -e LDAP_TLS_CRT_FILENAME=ldap.crt \
-      -e LDAP_TLS_KEY_FILENAME=ldap.key -e LDAP_TLS_CA_CRT_FILENAME=ca.crt \
-      -v "$PWD":/container/service/slapd/assets/certs osixia/openldap:1.5.0
-    TEST_LDAP_URI=ldaps://localhost:3636 TEST_LDAP_CA_FILE=ca.crt pytest ...
+    scripts/ldap_test_server.sh /tmp/ldap-certs
+    export TEST_LDAP_CA_FILE=/tmp/ldap-certs/ca.crt
+    TEST_LDAP_URI=ldaps://localhost:3636 pytest tests/test_ldap_real_server.py
 
 ``ldap://localhost:3389`` runs the same tests over StartTLS.
 

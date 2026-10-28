@@ -14,6 +14,10 @@
  * between sign-ins nothing else notices that someone left or lost a group.
  * It previews first, and says plainly when it held back from deactivating
  * because the directory's answer looked like a broken query.
+ *
+ * Nothing sends mail, so an email typed at sign-up is unchecked and the
+ * directory will not link a self-registered account by it. The vouch card is
+ * an admin saying "this address is theirs"; it covers that address only.
  */
 
 import React, { useState } from 'react';
@@ -31,6 +35,7 @@ type Status = components['schemas']['LdapStatusResponse'];
 type TestResult = components['schemas']['LdapTestResponse'];
 type ImportResult = components['schemas']['LdapImportResponse'];
 type SyncReport = components['schemas']['LdapSyncResponse'];
+type VouchResult = components['schemas']['LdapVouchResponse'];
 
 const TRANSPORT_LABEL: Record<string, string> = {
   ldaps: 'LDAPS',
@@ -115,7 +120,7 @@ const StatusCard: React.FC<{ status: Status }> = ({ status }) => {
           <Fact label="Scheduled sync">
             {status.sync_interval_minutes
               ? `Every ${status.sync_interval_minutes} min`
-              : 'Off (LDAP_SYNC_INTERVAL_MINUTES)'}
+              : 'Off (LDAP_SYNC_INTERVAL_MINUTES=0)'}
           </Fact>
           <Fact label="If the directory is unreachable">
             {status.local_fallback_when_unavailable
@@ -407,6 +412,70 @@ const SyncCard: React.FC<{ last?: SyncReport | null }> = ({ last }) => {
   );
 };
 
+const VouchCard: React.FC = () => {
+  const [username, setUsername] = useState('');
+  const vouch = useMutation(
+    ({ name, verified }: { name: string; verified: boolean }) =>
+      apiClient.vouchForAccount(name.trim(), verified),
+    {
+      onError: (error: any) => {
+        toast.error(errorText(error, 'The account could not be updated'));
+      },
+    }
+  );
+  const result: VouchResult | undefined = vouch.data;
+
+  return (
+    <div className="bg-white rounded-lg shadow p-6 space-y-4">
+      <div>
+        <h3 className="text-base font-semibold text-gray-900">Vouch for an account</h3>
+        <p className="text-sm text-gray-600">
+          Nothing checks the email someone types when they register, so the directory never
+          links a self-registered account by it. Vouch for an account whose email you know is
+          theirs, and its next directory sign-in links to it. A vouch covers the email the
+          account has now, not a later one.
+        </p>
+      </div>
+      <form
+        className="flex items-end space-x-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (username.trim()) vouch.mutate({ name: username, verified: true });
+        }}
+      >
+        <Input
+          label="Login name"
+          value={username}
+          onChange={(event) => setUsername(event.target.value)}
+          placeholder="e.g. jsmith"
+          autoComplete="off"
+        />
+        <Button type="submit" loading={vouch.isLoading} disabled={!username.trim()}>
+          Vouch
+        </Button>
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={!username.trim() || vouch.isLoading}
+          onClick={() => vouch.mutate({ name: username, verified: false })}
+        >
+          Withdraw
+        </Button>
+      </form>
+      {result && (
+        <p className="text-sm text-gray-900">
+          {result.is_verified
+            ? `Vouched for ${result.username} (${result.email}).`
+            : `No vouch for ${result.username}.`}
+          {result.is_verified && !result.self_registered
+            ? ' This account was not self-registered, so it already links by a matching email.'
+            : ''}
+        </p>
+      )}
+    </div>
+  );
+};
+
 const LdapPanel: React.FC = () => {
   const { data: status, isLoading, error } = useQuery(
     ['ldap-status'],
@@ -439,6 +508,7 @@ const LdapPanel: React.FC = () => {
             <>
               <ImportCard />
               <SyncCard last={status.last_sync} />
+              <VouchCard />
             </>
           )}
         </>

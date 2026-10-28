@@ -1745,6 +1745,14 @@ class ApiClient {
     return response.data;
   }
 
+  async vouchForAccount(
+    username: string,
+    verified: boolean
+  ): Promise<components['schemas']['LdapVouchResponse']> {
+    const response = await this.client.post('/api/v1/admin/ldap/vouch', { username, verified });
+    return response.data;
+  }
+
   // Everything waiting on the signed-in person, across the doors.
   async getReviewInbox(): Promise<ReviewInbox> {
     const response = await this.client.get('/api/v1/review');

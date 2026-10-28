@@ -1845,7 +1845,9 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   savepoint, so one bad entry does not poison the rest.
   **Accounts are reconciled between logins** (`directory_sync.py`,
   `POST /admin/ldap/sync`, the Sync card; on a schedule with
-  `LDAP_SYNC_INTERVAL_MINUTES`, default 0 = off). Before, someone who left
+  `LDAP_SYNC_INTERVAL_MINUTES`; unset is hourly while LDAP is on, 0 turns
+  it off -- decided 2026-10-27, because off by default meant the only
+  deprovisioning was a sign-in nobody who left makes). Before, someone who left
   or lost the admin group kept the account and the role until they signed
   in again. Those `LDAP_IMPORT_FILTER` finds are the people who should have
   access: the rest are deactivated with `deactivated_by: directory_sync`,
@@ -1866,9 +1868,12 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   name and email before their first sign-in, use the account, and have the
   directory hand it to them (account pre-hijacking). The register route now
   records `auth_metadata.origin = "self_registration"`, and `may_link`
-  never links such an account, by email or by name; an account an admin
-  made, or one from before the marker, links as before (nothing marks any
-  account verified, so "verified" could not be the rule).
+  never links such an account by name, and by email only once an admin
+  has **vouched** for that address (`POST /admin/ldap/vouch`, the Vouch
+  card; decided 2026-10-27 -- there is no mail to verify one with). The
+  vouch is kept as `auth_metadata.vouched.email` with who gave it, so it
+  never covers an email the account did not have when it was given. An
+  account an admin made, or one from before the marker, links as before.
   `AUTH_SELF_REGISTRATION` unset means "allowed unless LDAP is on", the
   page reads `GET /auth/options` and hides "Sign up" when it is off, and
   says "Sign in with your directory account" when there is one. An
@@ -1898,8 +1903,12 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   control and member searches between pages, an entry moved to another OU
   keeps its account, and the sync deactivates a deleted entry and takes a
   lost admin role. The first run failed on the image's bundled CA, which
-  had expired: the client refusing it is the verification working. Not
-  run against Active Directory; `objectGUID` is tested as bytes only.
+  had expired: the client refusing it is the verification working.
+  `backend/scripts/ldap_test_server.sh` starts that server, and CI's
+  `ldap-real-server` job runs the file over both transports; the script
+  waits for LDAPS as well as plain LDAP, because the first local run met
+  LDAPS still dropping handshakes after plain binds worked. Not run
+  against Active Directory; `objectGUID` is tested as bytes only.
 - MCP API keys are tied to users; tool policies evaluated per user context
 
 ### Service Layer Pattern

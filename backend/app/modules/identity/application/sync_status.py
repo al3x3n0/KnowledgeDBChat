@@ -24,9 +24,24 @@ def _client():
     return redis.from_url(settings.REDIS_URL, decode_responses=True)
 
 
+# What an unset LDAP_SYNC_INTERVAL_MINUTES means while LDAP is on.
+DEFAULT_INTERVAL_MINUTES = 60
+
+
 def interval_minutes() -> int:
+    """Minutes between scheduled syncs; 0 means none.
+
+    Unset is hourly when LDAP is on: off by default, the only deprovisioning
+    was someone's next sign-in, which a person who has left never makes. An
+    explicit 0 still turns it off.
+    """
+    configured = getattr(settings, "LDAP_SYNC_INTERVAL_MINUTES", None)
+    if configured is None:
+        if not getattr(settings, "LDAP_ENABLED", False):
+            return 0
+        return DEFAULT_INTERVAL_MINUTES
     try:
-        return max(0, int(getattr(settings, "LDAP_SYNC_INTERVAL_MINUTES", 0) or 0))
+        return max(0, int(configured))
     except (TypeError, ValueError):
         return 0
 

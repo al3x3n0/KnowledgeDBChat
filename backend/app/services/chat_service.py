@@ -19,6 +19,7 @@ from app.models.chat import ChatMessage, ChatSession
 from app.schemas.memory import MemorySearchRequest
 from app.services.context_manager import ContextManager
 from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.llm_service import last_call as llm_last_call
 from app.services.memory_service import MemoryService
 from app.services.query_processor import QueryProcessor
 from app.services.rag_retrieval import record_trace, retrieve
@@ -510,7 +511,9 @@ class ChatService:
                 session_id=session_id,
                 content=response_content,
                 role="assistant",
-                model_used=effective_user_settings.get_model_for_task("chat")
+                # The model the reply was routed to; the settings only guess.
+                model_used=((llm_last_call() or (None, None))[1])
+                or effective_user_settings.connection_for_task("chat").model
                 or self.llm_service.get_active_model(),
                 response_time=response_time,
                 source_documents=source_docs,

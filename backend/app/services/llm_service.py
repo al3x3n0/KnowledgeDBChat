@@ -66,6 +66,20 @@ _LAST_CACHE: ContextVar[Optional[Tuple[Optional[int], Optional[int]]]] = Context
     "llm_last_cache", default=None
 )
 
+#: The provider and model the most recent successful ``generate_response``
+#: in this task ran on. Callers that record "the model used" guessed it from
+#: settings: a summary recorded DEFAULT_MODEL, and a chat reply the system
+#: default, whatever the call had been routed to. Read with :func:`last_call`.
+_LAST_CALL: ContextVar[Optional[Tuple[str, Optional[str]]]] = ContextVar(
+    "llm_last_call", default=None
+)
+
+
+def last_call() -> Optional[Tuple[str, Optional[str]]]:
+    """``(provider, model)`` of this task's last successful text call, or
+    None when it has made none (or its last one failed)."""
+    return _LAST_CALL.get()
+
 
 # Supported task types for per-task model configuration.
 # Keep this list in sync with `backend/app/api/endpoints/users.py`.
@@ -1072,6 +1086,7 @@ class LLMService:
         max_tokens_cap: Optional[int] = None,
     ) -> str:
         start_time = asyncio.get_event_loop().time()
+        _LAST_CALL.set(None)
         provider_used: Optional[str] = None
         model_used: Optional[str] = None
         prompt_tokens: Optional[int] = None
@@ -1387,6 +1402,12 @@ class LLMService:
             logger.error(f"Error generating LLM response: {e}")
             raise LLMServiceError(f"Failed to generate response: {str(e)}")
         finally:
+            if error_text is None and provider_used is not None:
+                from app.services.llm_provider_catalog import default_model_for
+
+                _LAST_CALL.set(
+                    (provider_used, model_used or default_model_for(provider_used))
+                )
             if db is not None and provider_used is not None:
                 try:
                     latency_ms = int(
@@ -1927,10 +1948,12 @@ Citation format:
             return False
 
     def get_active_model(self) -> str:
-        """Return the currently active model name based on provider and settings."""
-        if self.provider == "deepseek":
-            return settings.DEEPSEEK_MODEL
-        return self.default_model
+        """The model the deployment's provider uses when nothing names one:
+        its own ``<PROVIDER>_MODEL``, or DEFAULT_MODEL for Ollama. It was
+        right only for DeepSeek and reported DEFAULT_MODEL for the rest."""
+        from app.services.llm_provider_catalog import default_model_for
+
+        return default_model_for(self.provider) or self.default_model
 
     async def __aenter__(self):
         return self

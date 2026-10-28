@@ -23,6 +23,7 @@ from app.models.persona import DocumentPersonaDetection
 from app.models.user import User
 from app.services.job_dispatch import enqueue, send_now
 from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.llm_service import last_call as llm_last_call
 from app.services.persona_service import persona_service
 from app.services.storage_service import storage_service
 from app.services.text_processor import TextProcessor
@@ -1068,6 +1069,11 @@ class DocumentService:
         # Track which model was actually used
         actual_model_used = None
 
+        def _model_that_ran() -> Optional[str]:
+            # What the call was routed to, not what settings would suggest.
+            ran = llm_last_call()
+            return (ran[1] if ran else None) or model or self.llm.get_active_model()
+
         # Helper function to generate response with fallback to local model
         async def _generate_with_fallback(
             query: str, max_tokens: int, use_deepseek: bool = False
@@ -1086,12 +1092,7 @@ class DocumentService:
                     task_type="summarization",
                     user_settings=user_settings,
                 )
-                if use_deepseek:
-                    actual_model_used = getattr(
-                        _settings, "DEEPSEEK_MODEL", "deepseek-v4-pro"
-                    )
-                else:
-                    actual_model_used = model or self.llm.default_model
+                actual_model_used = _model_that_ran()
                 return result
             except Exception as e:
                 first_error = e
@@ -1111,7 +1112,7 @@ class DocumentService:
                             task_type="summarization",
                             user_settings=user_settings,
                         )
-                        actual_model_used = model or self.llm.default_model
+                        actual_model_used = _model_that_ran()
                         logger.info(
                             "Successfully used local model (Ollama) after DeepSeek failure"
                         )
@@ -1186,11 +1187,7 @@ class DocumentService:
 
         document.summary = summary
         # Set the model that was actually used (may differ from preferred if fallback occurred)
-        document.summary_model = actual_model_used or (
-            getattr(_settings, "DEEPSEEK_MODEL", "deepseek-v4-pro")
-            if prefer_deepseek and bool(getattr(_settings, "DEEPSEEK_API_KEY", None))
-            else (model or self.llm.default_model)
-        )
+        document.summary_model = actual_model_used or _model_that_ran()
         document.summary_generated_at = _dt.utcnow()
         await db.commit()
         return summary

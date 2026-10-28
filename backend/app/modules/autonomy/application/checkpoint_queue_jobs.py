@@ -42,6 +42,11 @@ def _is_blocked_on_a_person(job: AgentJob) -> bool:
 #: Distinct from blocking: the run did not stop to ask, it ran out of road.
 CONTRACT_UNMET_PHASE = "completed_contract_unmet"
 
+#: The phase an attempt ends on when its stage was retried automatically
+#: (``agent_stage_auto_retry.RETRIED_PHASE``, restated: a module here may not
+#: import a service that imports the runtime).
+RETRIED_PHASE = "stage_retried_automatically"
+
 
 def _finished_without_meeting_its_contract(job: AgentJob) -> dict[str, Any]:
     """The entry a completed-but-unsatisfied run left, or {}.
@@ -56,7 +61,13 @@ def _finished_without_meeting_its_contract(job: AgentJob) -> dict[str, Any]:
         return {}
     entries = job.execution_log if isinstance(job.execution_log, list) else []
     for entry in reversed(entries):
-        if isinstance(entry, dict) and entry.get("phase") == CONTRACT_UNMET_PHASE:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("phase") == RETRIED_PHASE:
+            # Retried automatically: the next attempt is running, and nobody
+            # is waiting on this one.
+            return {}
+        if entry.get("phase") == CONTRACT_UNMET_PHASE:
             return entry
     return {}
 

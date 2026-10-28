@@ -907,8 +907,33 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   With all four, the restarted stage ran seven iterations and then blocked
   honestly: it cloned a repository again (a restart does not keep the
   coding workspace) and read it without writing a file. **No proposed plan
-  has yet run past its first stage.** Not built: a stage retrying itself,
-  or handing back to the run that planned it.
+  has yet run past its first stage.** Not built: handing back to the run
+  that planned it.
+
+- **A stage that ends short of its contract is retried once, by itself**
+  (`services/agent_stage_auto_retry.py`, `AGENT_STAGE_AUTO_RETRIES`, 1; a
+  stage's `auto_retries` overrides it). The finaliser calls
+  `agent_pipeline_restart.restart_from_stage` -- the path a person's restart
+  takes -- before the chain decision, with a note built from the run's own
+  record: what is missing, the validity remedies, the tool that produces it
+  (`agent_evidence_map.describe_chain`), why the attempt stopped and the open
+  question. Only the two contract-unmet endings qualify (completed out of
+  iterations, paused as blocked); a platform blocker, an approval hold, a
+  cancel or a failure do not. The retry is marked `auto_retry_of` through
+  `restart_from_stage(extra_config=...)` so the mark is on the job before it
+  is queued, and the limit is counted from the run's jobs. The superseded
+  attempt ends `stage_retried_automatically` and is neither a
+  `contract_unmet` nor a blocked queue row. Each retry spends the stage's
+  budget again. **Not run live yet.**
+- **A run is told when it stops making progress on its contract**
+  (`services/agent_contract_drought.py`). That first stage was never
+  "stalled" by the loop policy: cloning and browsing record findings, so the
+  count grew. After three iterations in which the contract's missing list
+  did not shrink and no required type's count rose, the volatile prompt says
+  so and names the producing tool. `agent_unproductive_cycle` is the other
+  half (calls to tools that produce no evidence at all). The reference is a
+  stall key, cleared on restart and on a corrected resume. **Not run live
+  yet.**
 
 - **A plan a run proposed for itself is held to an evidence standard**
   (`services/agent_evidence_standards.py`). The first self-approved

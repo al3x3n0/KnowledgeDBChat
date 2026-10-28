@@ -119,6 +119,10 @@ STALL_KEYS = (
     "loop_policy_stop_reason",
     "stalled_iterations",
     "repeated_action_iterations",
+    # agent_contract_drought: when the contract last improved. A restart
+    # resets the iteration count, and a reference left from before it would
+    # hold back the note until the new count caught up with the old.
+    "contract_progress",
 )
 
 
@@ -224,6 +228,7 @@ GIVE_UP_STATE_KEYS = (
     "stopped_short_of_contract",
     "stopped_short_reason",
     "stalled_iterations",
+    "contract_progress",
 )
 
 

@@ -119,6 +119,34 @@ module.exports = {
           '100%': { backgroundPosition: '200% 0' },
         },
       },
+      // Markdown (`prose`) in this palette. The typography plugin colours
+      // prose from Tailwind's stock light-theme grays, not from `theme`, so
+      // a model's reply was #374151 text with #111827 headings and bold on
+      // a #0f1516 bubble: dark on dark. These map each prose role onto the
+      // inverted scale above, where a high number is the light end.
+      typography: ({ theme }) => ({
+        DEFAULT: {
+          css: {
+            '--tw-prose-body': theme('colors.gray.800'),
+            '--tw-prose-headings': theme('colors.gray.900'),
+            '--tw-prose-lead': theme('colors.gray.700'),
+            '--tw-prose-links': theme('colors.primary.700'),
+            '--tw-prose-bold': theme('colors.gray.900'),
+            '--tw-prose-counters': theme('colors.gray.600'),
+            '--tw-prose-bullets': theme('colors.gray.500'),
+            '--tw-prose-hr': theme('colors.gray.300'),
+            '--tw-prose-quotes': theme('colors.gray.700'),
+            '--tw-prose-quote-borders': theme('colors.gray.400'),
+            '--tw-prose-captions': theme('colors.gray.600'),
+            '--tw-prose-kbd': theme('colors.gray.900'),
+            '--tw-prose-code': theme('colors.gray.900'),
+            '--tw-prose-pre-code': theme('colors.gray.800'),
+            '--tw-prose-pre-bg': theme('colors.gray.100'),
+            '--tw-prose-th-borders': theme('colors.gray.400'),
+            '--tw-prose-td-borders': theme('colors.gray.300'),
+          },
+        },
+      }),
     },
   },
   plugins: [

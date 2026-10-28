@@ -731,6 +731,11 @@ class Settings(BaseSettings):
     AGENT_SELF_PLANNED_PIPELINES_ENABLED: bool = True
     AGENT_SELF_PLANNED_PIPELINE_MAX_STAGES: int = 6
     AGENT_SELF_PLANNED_PIPELINE_MAX_SECONDS: int = 14400
+    # Automatic attempts a pipeline stage gets after ending short of its
+    # contract, before the plan behind it stops (agent_stage_auto_retry). Each
+    # spends the stage's budget again; 0 turns it off. A stage's own
+    # `auto_retries` overrides it.
+    AGENT_STAGE_AUTO_RETRIES: int = 1
     # The most a campaign may approve of a plan its own job proposed, without a
     # person: the ceiling on any campaign's plan_approval. A campaign with no
     # plan_approval stops for a person at every plan.

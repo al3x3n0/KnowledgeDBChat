@@ -1905,6 +1905,44 @@ async def finalize_job(
     hold_for_swarm_review(job)
     hold_for_chain_approval(job)
 
+    # A pipeline stage that ended short of its contract gets one more attempt
+    # before the plan behind it stops, with a note written from what this
+    # attempt recorded. Neither forward (the chain) nor waiting for a person:
+    # the retry is the next thing to happen, so this attempt ends here.
+    from app.services import agent_stage_auto_retry
+
+    retried = await agent_stage_auto_retry.retry(
+        executor,
+        job,
+        state=state,
+        contract_eval=contract_eval,
+        blocked=blocked_payload,
+        db=db,
+    )
+    if retried is not None:
+        if job.status == AgentJobStatus.PAUSED.value:
+            # Not blocked on anybody any more: the retry is the answer.
+            job.status = AgentJobStatus.COMPLETED.value
+            job.completed_at = datetime.utcnow()
+        job.current_phase = agent_stage_auto_retry.RETRIED_PHASE
+        job.add_log_entry(
+            {
+                "phase": agent_stage_auto_retry.RETRIED_PHASE,
+                "stage": str((job.config or {}).get("pipeline_stage") or ""),
+                "job_id": str(retried.id),
+            }
+        )
+        return {
+            "status": job.status,
+            "progress": job.progress,
+            "results": job.results,
+            "iterations": job.iteration,
+            "tool_calls": job.tool_calls_used,
+            "llm_calls": job.llm_calls_used,
+            "memories_injected": job.memory_injection_count or 0,
+            "memories_created": job.memories_created_count or 0,
+        }
+
     if job.status == AgentJobStatus.PAUSED.value:
         if getattr(job, "current_phase", None) == "blocked_needs_input":
             # Tool checkpoints precede evaluation, and the periodic checkpoint

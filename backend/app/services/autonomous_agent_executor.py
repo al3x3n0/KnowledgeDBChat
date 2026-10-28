@@ -39,6 +39,7 @@ from app.models.agent_job import (
 )
 from app.models.agent_tool_prior import AgentToolPrior
 from app.services import (
+    agent_contract_drought,
     agent_decision_parser,
     agent_evidence_map,
     agent_execution_graph,
@@ -1342,6 +1343,9 @@ class _AutonomousRuntimeAdapter:
 
         contract_after = self.executor._evaluate_goal_contract(self.job, self.state)
         self.state["goal_contract_last"] = contract_after
+        agent_contract_drought.record(
+            self.state, contract_after, int(self.job.iteration or 0)
+        )
         if bool(contract_after.get("enabled")) and bool(
             contract_after.get("satisfied")
         ):
@@ -8452,6 +8456,15 @@ RESPONSE FORMAT:
         contract_text = agent_prompt_sections.format_unmet_contract(state)
         if contract_text:
             parts.append(contract_text)
+        # And how long it has owed it: a run exploring without producing
+        # anything the contract needs is told so, with the tool that would.
+        drought = agent_contract_drought.format_drought(
+            state,
+            iteration=int(job.iteration or 0),
+            job_type=str(job.job_type or "research"),
+        )
+        if drought:
+            parts.append(drought)
 
         compressed_history = state.get("compressed_history", "")
         if compressed_history:

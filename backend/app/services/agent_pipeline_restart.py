@@ -167,7 +167,11 @@ def _attach_correction(child_config: Dict[str, Any], note: str) -> None:
 
 
 async def _rerun_the_head(
-    head: AgentJob, note: str, executor: Any, db: AsyncSession
+    head: AgentJob,
+    note: str,
+    executor: Any,
+    db: AsyncSession,
+    extra_config: Optional[Dict[str, Any]] = None,
 ) -> AgentJob:
     """Run the pipeline's first stage again, with a correction.
 
@@ -177,7 +181,7 @@ async def _rerun_the_head(
     verbatim, so the stages after it re-derive exactly as they did the first
     time.
     """
-    config = dict(head.config or {})
+    config = {**dict(head.config or {}), **dict(extra_config or {})}
     notes = [note.strip()] if note.strip() else []
     notes.extend(clue["note"] for clue in await _disputes_as_clues(head, db))
     if notes:
@@ -267,8 +271,13 @@ async def restart_from_stage(
     executor: Any,
     db: AsyncSession,
     note: str = "",
+    extra_config: Optional[Dict[str, Any]] = None,
 ) -> AgentJob:
-    """Run `stage_id` again on the evidence the stages before it established."""
+    """Run `stage_id` again on the evidence the stages before it established.
+
+    `extra_config` is merged into the new job's config before it is created
+    and queued, so a worker never sees the job without it.
+    """
     stages = await load_run(root_job_id, db)
     if not stages:
         raise PipelineRestartError(
@@ -301,7 +310,7 @@ async def restart_from_stage(
         # So the head is re-run from its own definition. Nothing is inherited
         # because there is nothing upstream to inherit; the correction is the
         # only new input, and the chain re-derives every stage after it.
-        return await _rerun_the_head(target.job, note, executor, db)
+        return await _rerun_the_head(target.job, note, executor, db, extra_config)
 
     parent = next((s for s in stages if s.job.id == parent_id), None)
     if parent is None:
@@ -350,7 +359,13 @@ async def restart_from_stage(
             "next stage in this run."
         )
 
-    child_config = {**child_config, "config": dict(child_config.get("config") or {})}
+    child_config = {
+        **child_config,
+        "config": {
+            **dict(child_config.get("config") or {}),
+            **dict(extra_config or {}),
+        },
+    }
     if note.strip():
         _attach_correction(child_config, note.strip())
     # Rejections recorded against what the previous attempt produced. Attached

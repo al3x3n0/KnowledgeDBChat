@@ -14,6 +14,8 @@ class _Job:
     id = "job-1"
     goal = "Determine whether clang vectorizes a float reduction at -O3"
     iteration = 4
+    llm_calls_used = 0
+    max_llm_calls = 20
 
 
 def _state(findings):

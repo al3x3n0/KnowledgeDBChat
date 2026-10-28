@@ -18,6 +18,25 @@ from app.core.config import settings
 FeatureGetStr = Callable[[str], Awaitable[Any]]
 
 
+def prefers_deepseek(
+    prefer: bool, *, effective_provider: str, provider_chosen: bool
+) -> bool:
+    """Whether a caller's ``prefer_deepseek`` sends this call to DeepSeek.
+
+    Heavy work (long summaries, context compression) asked for DeepSeek
+    whenever a DeepSeek key existed, whatever provider was configured, so a
+    deployment pointed at a local endpoint still sent those calls out. The
+    preference now applies only where it was meant to: the deployment's own
+    Ollama, with nobody having chosen a provider.
+    """
+    return (
+        bool(prefer)
+        and not provider_chosen
+        and effective_provider == "ollama"
+        and bool(getattr(settings, "DEEPSEEK_API_KEY", None))
+    )
+
+
 def _to_str(v: Any) -> Optional[str]:
     if v is None:
         return None
@@ -155,63 +174,60 @@ def resolve_effective_provider_model(
     effective_api_url: Optional[str] = None
     effective_api_key: Optional[str] = None
 
+    provider_chosen = False
+
     # User settings apply first.
     try:
         if user_settings and getattr(user_settings, "has_custom_settings")():
-            task_provider = None
-            try:
-                task_provider = user_settings.get_provider_for_task(task_type)
-            except Exception:
-                task_provider = None
-            if task_provider:
-                effective_provider = str(task_provider).strip().lower()
-
-            task_model = None
-            try:
-                task_model = user_settings.get_model_for_task(task_type)
-            except Exception:
-                task_model = None
-            if task_model:
-                model = str(task_model)
-            elif getattr(user_settings, "model", None):
-                model = getattr(user_settings, "model")
-
-            if getattr(user_settings, "api_url", None):
-                effective_api_url = (
-                    str(getattr(user_settings, "api_url")).strip() or None
-                )
-            if getattr(user_settings, "api_key", None):
-                effective_api_key = str(getattr(user_settings, "api_key"))
+            conn = user_settings.connection_for_task(task_type)
+            if conn.provider:
+                effective_provider = str(conn.provider).strip().lower()
+            provider_chosen = bool(conn.chosen_by_user)
+            if conn.model:
+                model = str(conn.model)
+            if conn.api_url:
+                effective_api_url = str(conn.api_url).strip() or None
+            if conn.api_key:
+                effective_api_key = str(conn.api_key)
     except Exception:
         pass
 
     # Explicit overrides (per-agent routing / per-request).
     if provider_override:
         effective_provider = str(provider_override).strip().lower()
+        provider_chosen = True
     if api_url_override:
         effective_api_url = str(api_url_override).strip() or None
     if api_key_override:
         effective_api_key = str(api_key_override)
 
-    # Fall back to system defaults for model.
-    if not model:
-        model = feature_default_model
-    model = (model or system_default_model or "").strip() or None
+    sdk_names = {"anthropic", "qwen", "kimi", "glm", "openai_compatible"}
+    if effective_provider == "openai" and not effective_api_url:
+        sdk_names.add("openai")
+
+    # The system default model is for Ollama and a bare custom URL; every
+    # other provider falls back to its own <PROVIDER>_MODEL.
+    if not model and (
+        effective_provider == "ollama"
+        or (effective_api_url and effective_provider not in sdk_names)
+    ):
+        model = feature_default_model or system_default_model or None
+    model = (model or "").strip() or None
 
     # Determine which provider branch runtime will use.
-    if effective_api_url:
+    if effective_provider in sdk_names:
+        provider_used = effective_provider
+    elif effective_api_url:
         provider_used = "custom"
-        model_used = model
+    elif effective_provider == "deepseek" or prefers_deepseek(
+        prefer_deepseek,
+        effective_provider=effective_provider,
+        provider_chosen=provider_chosen,
+    ):
+        provider_used = "deepseek"
     else:
-        use_deepseek = effective_provider in {"deepseek", "openai"} or (
-            prefer_deepseek and bool(getattr(settings, "DEEPSEEK_API_KEY", None))
-        )
-        if use_deepseek:
-            provider_used = "deepseek" if effective_provider == "deepseek" else "openai"
-            model_used = model
-        else:
-            provider_used = effective_provider
-            model_used = model
+        provider_used = effective_provider
+    model_used = model
 
     return {
         "effective_provider": effective_provider,

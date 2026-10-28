@@ -36,6 +36,7 @@ from typing import Set
 
 import pytest
 
+from app.agent_core import research_programs
 from app.agent_core.tool_catalog import iter_builtin_tools
 from app.services import agent_evidence_map, agent_job_tool_policy
 from app.services import agent_tool_dispatch as dispatch
@@ -80,6 +81,8 @@ def dispatchable_tools() -> Set[str]:
     assert builders, "no provider builders found; this guard would pass vacuously"
     for builder in builders:
         provider = getattr(dispatch, builder)(_Stub())
+        names |= set(provider.supported_tools)
+    for provider in research_programs.build_providers(_Stub()):
         names |= set(provider.supported_tools)
     return names
 

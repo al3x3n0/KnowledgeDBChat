@@ -552,6 +552,8 @@ async def test_verify_of_this_run_checks_what_the_registry_recorded(
     assert finding["entries"] == 2
     assert finding["intact"] is True
     assert finding["replay_verdict"] == "not replayed"
+    assert finding["verified_job_id"] == str(job.id)
+    assert finding["replay_summary"] is None
     # No replay was asked for, so nothing was run again.
     assert len(bundles.compiler.calls) == 2
 
@@ -625,6 +627,186 @@ async def test_verify_with_replay_reproduces_a_deterministic_run(
     }
 
 
+@pytest.mark.parametrize("finding_type", ["bundle_verified", "bundle_reproduced"])
+async def test_saved_verification_labels_cannot_satisfy_runtime_proof_contracts(
+    db_session, test_user, finding_type
+):
+    from app.services.agent_goal_contract_service import AgentGoalContractService
+    from app.services.agent_tool_providers.research import (
+        build_autonomous_research_provider,
+    )
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    job = await _job(
+        db_session,
+        test_user,
+        job_type="analysis",
+        config={
+            "goal_contract": {
+                "enabled": True,
+                "required_finding_types": [finding_type],
+            }
+        },
+    )
+    save = build_autonomous_research_provider(
+        SimpleNamespace(_job_findings={})
+    )._handlers["save_research_finding"]
+    result = await save(
+        {
+            "title": "A claimed verification",
+            "finding_type": finding_type,
+            "metrics": {
+                "intact": True,
+                "verified": True,
+                "replay_verdict": "reproduced",
+            },
+        },
+        _ctx(db_session, job),
+    )
+    evaluation = AgentGoalContractService().evaluate_goal_contract(
+        AutonomousAgentExecutor.__new__(AutonomousAgentExecutor),
+        job,
+        {"goal_progress": 100, "findings": result["findings"]},
+    )
+    assert evaluation["satisfied"] is False
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "integrity_only",
+        "matched",
+        "different",
+        "failed",
+        "empty",
+        "missing",
+        "tampered",
+        "timing_only",
+        "legacy_unhashed",
+        "partial_legacy",
+        "mixed_timing",
+        "original_failure",
+    ],
+)
+async def test_reproduction_contract_requires_intact_nonempty_successful_replay(
+    bundles, db_session, test_user, monkeypatch, mode
+):
+    from app.services.agent_goal_contract_service import AgentGoalContractService
+    from app.services.agent_tool_providers.research import (
+        build_autonomous_research_provider,
+    )
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    job = await _job(db_session, test_user, job_type="analysis")
+    if mode == "timing_only":
+        bundle.record_entry(
+            job_id=str(job.id),
+            tool="benchmark_c_snippet",
+            params={},
+            result={"success": True, "data": {"fastest_ms": 1}},
+        )
+    else:
+        await bundles.measure(db_session, job, "int f(void){return 1;}")
+    if mode == "partial_legacy":
+        await bundles.measure(db_session, job, "int g(void){return 2;}")
+    if mode in {"mixed_timing", "original_failure"}:
+        bundle.record_entry(
+            job_id=str(job.id),
+            tool="benchmark_c_snippet"
+            if mode == "mixed_timing"
+            else "compile_c_snippet",
+            params={},
+            result={"success": mode == "mixed_timing"},
+        )
+    if mode == "different":
+        bundles.compiler.assembly = "sub x0, x0, x1"
+    if mode in {"failed", "empty", "missing"}:
+
+        async def fail(params, ctx):
+            return (
+                None
+                if mode == "empty"
+                else {"success": False, "error": "sandbox unavailable"}
+            )
+
+        providers = (
+            []
+            if mode == "missing"
+            else [
+                FunctionToolProvider(
+                    name="failed",
+                    modes={"autonomous"},
+                    handlers={"compile_c_snippet": fail},
+                )
+            ]
+        )
+        monkeypatch.setattr(bundles.registry, "_providers", providers)
+    if mode == "tampered":
+        entry = bundle.read_manifest(str(job.id))[0]
+        path = bundle.bundle_dir(str(job.id)) / entry["artifact_dir"] / "result.json"
+        payload = json.loads(path.read_text())
+        payload["data"]["assembly"] = "corrupted"
+        path.write_text(json.dumps(payload))
+    if mode in {"legacy_unhashed", "partial_legacy"}:
+        entries = bundle.read_manifest(str(job.id))
+        entries[0].pop("canonical_sha256")
+        (bundle.bundle_dir(str(job.id)) / bundle.MANIFEST_NAME).write_text(
+            "".join(json.dumps(entry) + "\n" for entry in entries)
+        )
+    result = await bundles.handler(
+        {"replay": mode != "integrity_only"}, _ctx(db_session, job)
+    )
+    findings = result["findings"]
+    assert findings[0]["type"] == "bundle_verified"
+    assert findings[0]["verified"] is (mode != "tampered")
+    proofs = [f for f in findings if f["type"] == "bundle_reproduced"]
+    replay_passes = mode in {"matched", "mixed_timing", "original_failure"}
+    assert bool(proofs) is replay_passes
+    executor = AutonomousAgentExecutor.__new__(AutonomousAgentExecutor)
+    for finding_type, expected in (
+        ("bundle_verified", mode != "tampered"),
+        ("bundle_reproduced", replay_passes),
+    ):
+        job.config = {
+            "goal_contract": {"enabled": True, "required_finding_types": [finding_type]}
+        }
+        evaluation = AgentGoalContractService().evaluate_goal_contract(
+            executor, job, {"goal_progress": 100, "findings": findings}
+        )
+        assert evaluation["satisfied"] is expected, evaluation
+    if mode == "partial_legacy":
+        assert result["data"]["replay"]["verdict"] == "reproduced"
+        assert result["data"]["replay"]["judged"] == 1
+        assert result["data"]["replay"]["expected_comparisons"] == 2
+    if mode == "matched":
+        proof = proofs[0]
+        assert proof["id"] != findings[0]["id"]
+        assert proof["replay_summary"]["judged"] == 1
+        job.results = {"findings": findings}
+        job.status = "completed"
+        await db_session.commit()
+        child = await _job(
+            db_session,
+            test_user,
+            name="Consumer",
+            job_type="analysis",
+            parent_job_id=job.id,
+            config={"pipeline_assumes": ["bundle_reproduced"]},
+        )
+        state = {"findings": []}
+        await AutonomousAgentExecutor._inherit_assumed_findings(
+            None, child, state, db_session
+        )
+        reader = build_autonomous_research_provider(
+            SimpleNamespace(_job_findings={})
+        )._handlers["get_research_findings"]
+        read = await reader({}, _ctx(db_session, child, state))
+        (inherited,) = read["data"]["findings"]
+        assert inherited["type"] == "bundle_reproduced"
+        assert inherited["verified_job_id"] == str(job.id)
+        assert inherited["id"] == proof["id"]
+
+
 async def test_verify_with_replay_reports_a_result_that_changed(
     bundles, db_session, test_user
 ):
@@ -639,6 +821,354 @@ async def test_verify_with_replay_reports_a_result_that_changed(
 
     assert result["data"]["replay"]["verdict"] == "differed"
     assert result["findings"][0]["replay_verdict"] == "differed"
+
+
+@pytest.mark.parametrize("mode", ["missing", "failed", "empty"])
+async def test_verify_replay_reports_execution_failure_without_a_changed_measurement(
+    bundles, db_session, test_user, monkeypatch, mode
+):
+    job = await _job(db_session, test_user, job_type="analysis")
+    await bundles.measure(db_session, job, "int f(void){return 1;}")
+    manifest = bundle.bundle_dir(str(job.id)) / bundle.MANIFEST_NAME
+    before = manifest.read_bytes()
+
+    async def fail(params, ctx):
+        return (
+            None
+            if mode == "empty"
+            else {"success": False, "error": "sandbox is unavailable"}
+        )
+
+    providers = (
+        []
+        if mode == "missing"
+        else [
+            FunctionToolProvider(
+                name="failing_compiler",
+                modes={"autonomous"},
+                handlers={"compile_c_snippet": fail},
+            )
+        ]
+    )
+    monkeypatch.setattr(bundles.registry, "_providers", providers)
+    result = await bundles.handler({"replay": True}, _ctx(db_session, job))
+    replay = result["data"]["replay"]
+    assert replay["verdict"] == "inconclusive"
+    assert replay["judged"] == 0 and replay["differed"] == []
+    summary = result["findings"][0]["replay_summary"]
+    assert summary["judged"] == 0 and summary["error_count"] == 1
+    assert summary["errors"] == replay["errored"]
+    assert len(replay["errored"]) == 1
+    assert "unavailable" in replay["errored"][0]["why"] or mode == "empty"
+    assert result["findings"][0]["replay_verdict"] == "inconclusive"
+    assert result["data"]["integrity"]["intact"]
+    assert manifest.read_bytes() == before
+
+
+async def test_unsampled_program_changes_survive_while_identical_replays_deduplicate(
+    bundles, db_session, test_user, monkeypatch
+):
+    from dataclasses import replace
+
+    from app.agent_core import research_programs as programs
+    from app.agent_core.tool_specs.spec import ToolSpec
+    from app.services import agent_loop_policy
+    from app.services.agent_tool_providers.research import (
+        build_autonomous_research_provider,
+    )
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    def lab(name, tool):
+        return programs.ResearchProgram(
+            name=name,
+            version="1.0",
+            tool_specs=(ToolSpec(name=tool, description="Measure", parameters={}),),
+            evidence_tools=(tool,),
+        )
+
+    alpha = lab("alpha_lab", "fixture_alpha")
+    beta = lab("beta_lab", "fixture_beta")
+    monkeypatch.setattr(programs, "_REPORT", programs.LoadReport(loaded=[alpha, beta]))
+    source = await _job(db_session, test_user, name="Experiment", status="completed")
+    payload = {"success": True, "data": {"cycles": 42}}
+    for index in range(12):
+        bundle.record_entry(
+            job_id=str(source.id),
+            tool="fixture_alpha" if index < 11 else "fixture_beta",
+            params={"case": index},
+            result=payload,
+        )
+
+    async def measure(params, ctx):
+        return dict(payload)
+
+    bundles.registry.register(
+        FunctionToolProvider(
+            name="fixtures",
+            modes={"autonomous"},
+            handlers={"fixture_alpha": measure, "fixture_beta": measure},
+        )
+    )
+    verifier = await _job(db_session, test_user, name="Verifier", job_type="analysis")
+    findings = []
+    for version in ("2.0", "3.0", "3.0"):
+        monkeypatch.setattr(
+            programs,
+            "_REPORT",
+            programs.LoadReport(
+                loaded=[
+                    replace(alpha, version="2.0"),
+                    replace(beta, version=version),
+                ]
+            ),
+        )
+        result = await bundles.handler(
+            {"job_id": str(source.id), "replay": True}, _ctx(db_session, verifier)
+        )
+        findings.extend(f for f in result["findings"] if f["type"] == "bundle_verified")
+    first, second, repeat = findings
+    assert first["title"] == second["title"] == repeat["title"]
+    assert (
+        first["replay_summary"] == second["replay_summary"] == repeat["replay_summary"]
+    )
+    assert first["id"] != second["id"] == repeat["id"]
+    assert first["id"].startswith("bundle-verification:")
+    assert agent_loop_policy.distinct_findings(findings) == 2
+    verifier.results = {"findings": findings}
+    await db_session.commit()
+    await db_session.refresh(verifier)
+    child = await _job(
+        db_session,
+        test_user,
+        name="Consumer",
+        job_type="analysis",
+        parent_job_id=verifier.id,
+        root_job_id=verifier.id,
+        config={"pipeline_assumes": ["bundle_verified"]},
+    )
+    state = {"findings": []}
+    await AutonomousAgentExecutor._inherit_assumed_findings(
+        None, child, state, db_session
+    )
+    inherited = state["findings"]
+    assert {f["id"] for f in inherited} == {first["id"], second["id"]}
+    assert len(inherited) == 2
+    reader = build_autonomous_research_provider(
+        SimpleNamespace(_job_findings={})
+    )._handlers["get_research_findings"]
+    read = await reader({}, _ctx(db_session, child, state))
+    assert len(read["data"]["findings"]) == 2
+    assert all(f["verified_job_id"] == str(source.id) for f in read["data"]["findings"])
+    assert bundle.verify_integrity(str(source.id))["intact"]
+    assert len(bundle.read_manifest(str(source.id))) == 12
+
+
+async def test_changing_only_replay_error_wording_does_not_create_progress(
+    bundles, db_session, test_user, monkeypatch
+):
+    from app.services import agent_loop_policy
+
+    job = await _job(db_session, test_user, job_type="analysis")
+    await bundles.measure(db_session, job, "int f(void){return 1;}")
+    calls = []
+
+    async def fail(params, ctx):
+        calls.append(params)
+        return {
+            "success": False,
+            "error": f"temporary sandbox /tmp/replay-{len(calls)} failed",
+        }
+
+    monkeypatch.setattr(
+        bundles.registry,
+        "_providers",
+        [
+            FunctionToolProvider(
+                name="failing_compiler",
+                modes={"autonomous"},
+                handlers={"compile_c_snippet": fail},
+            )
+        ],
+    )
+    first = (await bundles.handler({"replay": True}, _ctx(db_session, job)))[
+        "findings"
+    ][0]
+    second = (await bundles.handler({"replay": True}, _ctx(db_session, job)))[
+        "findings"
+    ][0]
+    assert first["replay_summary"]["errors"] != second["replay_summary"]["errors"]
+    assert first["id"] == second["id"]
+    assert agent_loop_policy.distinct_findings([first, second]) == 1
+    assert first["replay_verdict"] == second["replay_verdict"] == "inconclusive"
+
+
+async def test_different_bundle_ids_survive_inheritance_with_identical_summaries(
+    bundles, db_session, test_user
+):
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    verifier = await _job(db_session, test_user, name="Verifier", job_type="analysis")
+    findings = []
+    source_ids = set()
+    for index in range(2):
+        source = await _job(
+            db_session, test_user, name=f"Source {index}", status="completed"
+        )
+        await bundles.measure(db_session, source, "int f(void){return 1;}")
+        source_ids.add(str(source.id))
+        result = await bundles.handler(
+            {"job_id": str(source.id)}, _ctx(db_session, verifier)
+        )
+        findings.extend(result["findings"])
+    verifier.results = {"findings": findings}
+    await db_session.commit()
+    child = await _job(
+        db_session,
+        test_user,
+        name="Consumer",
+        job_type="analysis",
+        parent_job_id=verifier.id,
+        root_job_id=verifier.id,
+        config={"pipeline_assumes": ["bundle_verified"]},
+    )
+    state = {"findings": []}
+    await AutonomousAgentExecutor._inherit_assumed_findings(
+        None, child, state, db_session
+    )
+    inherited = state["findings"]
+    assert len(inherited) == 2
+    assert {f["verified_job_id"] for f in inherited} == source_ids
+    assert all(f["inherited_from_job_id"] == str(verifier.id) for f in inherited)
+
+
+@pytest.mark.parametrize("mode", ["matched", "upgraded", "unavailable"])
+async def test_replay_context_survives_persistence_inheritance_and_research_read(
+    bundles, db_session, test_user, monkeypatch, mode
+):
+    from dataclasses import replace
+
+    from app.agent_core import research_programs as programs
+    from app.agent_core.tool_specs.spec import ToolSpec
+    from app.services.agent_tool_providers.research import (
+        build_autonomous_research_provider,
+    )
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    lab = programs.ResearchProgram(
+        name="fixture_lab",
+        version="1.0",
+        tool_specs=(
+            ToolSpec(name="fixture_measure", description="Measure", parameters={}),
+        ),
+        evidence_tools=("fixture_measure",),
+    )
+    monkeypatch.setattr(programs, "_REPORT", programs.LoadReport(loaded=[lab]))
+    earlier = await _job(
+        db_session, test_user, name="Original experiment", status="completed"
+    )
+    payload = {"success": True, "data": {"cycles": 42}}
+    for index in range(12):
+        bundle.record_entry(
+            job_id=str(earlier.id),
+            tool="fixture_measure",
+            params={"case": index},
+            result=payload,
+        )
+    if mode in {"matched", "upgraded"}:
+        monkeypatch.setattr(
+            programs,
+            "_REPORT",
+            programs.LoadReport(
+                loaded=[replace(lab, version="2.0" if mode == "upgraded" else "1.0")]
+            ),
+        )
+
+        async def measure(params, ctx):
+            return dict(payload)
+
+        bundles.registry.register(
+            FunctionToolProvider(
+                name="fixture_lab",
+                modes={"autonomous"},
+                handlers={"fixture_measure": measure},
+            )
+        )
+    else:
+        monkeypatch.setattr(
+            programs, "_REPORT", programs.LoadReport(disabled=[lab.name])
+        )
+
+    verifier = await _job(db_session, test_user, name="Verifier", job_type="analysis")
+    result = await bundles.handler(
+        {"job_id": str(earlier.id), "replay": True}, _ctx(db_session, verifier)
+    )
+    finding = result["findings"][0]
+    replay = result["data"]["replay"]
+    summary = finding["replay_summary"]
+    proofs = [f for f in result["findings"] if f["type"] == "bundle_reproduced"]
+    assert bool(proofs) is (mode != "unavailable")
+    if proofs:
+        assert proofs[0]["replay_summary"] == summary
+        assert proofs[0]["id"] != finding["id"]
+    expected_status = {
+        "matched": "match",
+        "upgraded": "version_mismatch",
+        "unavailable": "program_unavailable",
+    }[mode]
+    issue_count = 0 if mode == "matched" else 12
+    assert finding["verified_job_id"] == str(earlier.id)
+    assert ("program issues: 12" in finding["title"]) == (issue_count > 0)
+    assert summary["program_status_counts"] == {expected_status: 12}
+    assert summary["program_issue_count"] == issue_count
+    assert len(summary["program_issues"]) == min(issue_count, 10)
+    assert len(replay["program_diagnostics"]) == 12
+    assert (
+        summary["judged"]
+        == summary["reproduced"]
+        == (0 if mode == "unavailable" else 12)
+    )
+    assert summary["error_count"] == (12 if mode == "unavailable" else 0)
+    assert len(summary["errors"]) == (10 if mode == "unavailable" else 0)
+    assert finding["replay_verdict"] == (
+        "inconclusive" if mode == "unavailable" else "reproduced"
+    )
+    # The durable finding is independent of transient response normalization.
+    replay["program_diagnostics"][0]["recorded"]["version"] = "transient mutation"
+    if summary["program_issues"]:
+        assert summary["program_issues"][0]["recorded"]["version"] == "1.0"
+    if mode == "unavailable":
+        replay["errored"][0]["why"] = "transient mutation"
+        assert "unavailable" in summary["errors"][0]["why"]
+    verifier.results = {"findings": [finding]}
+    verifier.status = "completed"
+    await db_session.commit()
+    await db_session.refresh(verifier)
+    assert verifier.results["findings"][0]["replay_summary"] == summary
+    child = await _job(
+        db_session,
+        test_user,
+        name="Consumer",
+        job_type="analysis",
+        parent_job_id=verifier.id,
+        root_job_id=verifier.id,
+        config={"pipeline_assumes": ["bundle_verified"]},
+    )
+    state = {"findings": []}
+    await AutonomousAgentExecutor._inherit_assumed_findings(
+        None, child, state, db_session
+    )
+    reader = build_autonomous_research_provider(
+        SimpleNamespace(_job_findings={})
+    )._handlers["get_research_findings"]
+    read = await reader({}, _ctx(db_session, child, state))
+    (inherited,) = read["data"]["findings"]
+    assert inherited["inherited"] is True
+    assert inherited["inherited_from_job_id"] == str(verifier.id)
+    assert inherited["verified_job_id"] == str(earlier.id)
+    assert inherited["replay_summary"] == summary
+    assert bundle.verify_integrity(str(earlier.id))["intact"]
+    assert len(bundle.read_manifest(str(earlier.id))) == 12
+    assert not bundle.read_manifest(str(child.id))
 
 
 async def test_replaying_this_run_does_not_add_to_its_bundle(

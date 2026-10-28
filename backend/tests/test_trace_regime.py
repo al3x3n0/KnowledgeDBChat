@@ -154,35 +154,6 @@ def test_the_predicate_is_reachable_from_the_contract_vocabulary():
 # --- why it matters --------------------------------------------------------
 
 
-def test_a_spliced_trace_inflates_persistence_which_is_the_whole_point():
-    """The claim this predicate rests on, checked rather than asserted.
-
-    Two regimes spliced together are trivially predictable at the join: almost
-    every interval is in the same regime as the one before it, so persistence
-    absorbs the splice and reads as structure the workload does not have. Each
-    regime alone is memoryless here, so the honest answer is near zero.
-    """
-    import random
-
-    from app.services import agent_predictability as pred
-
-    rng = random.Random(17)
-    # Memoryless within each regime, so any persistence found is the splice.
-    quiet = [rng.uniform(0, 10) for _ in range(120)]
-    busy = [rng.uniform(100, 110) for _ in range(120)]
-    noise = [rng.uniform(0, 1) for _ in range(240)]
-
-    # Two bins, so the split lands on the regime boundary and the estimate is
-    # purely "does the trace stay in the regime it was already in". At three
-    # the within-regime spread muddies it to 0.44 -- still most of the effect,
-    # but the point is clearest where the binning is not also being measured.
-    across = pred.ceiling({"t": quiet + busy, "c": noise}, "t", bins=2)
-    after = pred.ceiling({"t": busy, "c": noise[:120]}, "t", bins=2)
-
-    assert across["persistence_information_bits"] > 0.8, "the splice reads as structure"
-    assert after["persistence_information_bits"] < 0.1, "neither regime alone has any"
-
-
 # --- reaching a live run ---------------------------------------------------
 
 

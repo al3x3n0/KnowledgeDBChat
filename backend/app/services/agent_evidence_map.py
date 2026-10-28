@@ -307,11 +307,6 @@ def describe_chain(
 #: when the order is right, which is a different kind of knowledge and belongs
 #: with the module that implements the check.
 _METHOD_SOURCES: Tuple[Tuple[Tuple[str, ...], str], ...] = (
-    (
-        ("sample_hardware_counters", "measure_predictability", "select_counter_taps"),
-        "app.services.agent_predictability",
-    ),
-    (("evaluate_predictor_design",), "app.services.agent_predictor_design"),
     (("check_implementation",), "app.services.agent_implementation_check"),
     (("compare_to_claim",), "app.services.agent_claim_comparison"),
 )
@@ -337,6 +332,8 @@ def method_notes(required: Iterable[str]) -> List[str]:
 
     tools = set(chain_for(required))
     lines: List[str] = []
+    from app.agent_core import research_programs
+
     for owned, module_path in _METHOD_SOURCES:
         if not tools.intersection(owned):
             continue
@@ -344,6 +341,9 @@ def method_notes(required: Iterable[str]) -> List[str]:
         for line in module.describe():
             if line not in lines:
                 lines.append(line)
+    for line in research_programs.method_notes(tools):
+        if line not in lines:
+            lines.append(line)
     return lines
 
 

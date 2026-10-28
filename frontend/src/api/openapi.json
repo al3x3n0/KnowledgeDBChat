@@ -15607,6 +15607,63 @@
         "title": "BroadcastNotificationRequest",
         "type": "object"
       },
+      "BuiltinProviderOut": {
+        "properties": {
+          "api_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Url"
+          },
+          "default_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Model"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "requires_api_key": {
+            "default": true,
+            "title": "Requires Api Key",
+            "type": "boolean"
+          },
+          "system_configured": {
+            "default": false,
+            "title": "System Configured",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "title": "BuiltinProviderOut",
+        "type": "object"
+      },
       "CampaignPlanApproval": {
         "description": "The plans a campaign may approve itself: those its own job proposed,\nwith no more stages and no longer an estimate than this. Bounded by the\ndeployment's CAMPAIGN_PLAN_APPROVAL_* ceilings.",
         "properties": {
@@ -18941,6 +18998,133 @@
           "path"
         ],
         "title": "CreateAIHubPluginResponse",
+        "type": "object"
+      },
+      "CustomProviderIn": {
+        "description": "A saved provider as the page sends it. ``api_key`` is sent only to\nset or replace the key; leaving it out keeps the one already saved.",
+        "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "api_url": {
+            "maxLength": 500,
+            "title": "Api Url",
+            "type": "string"
+          },
+          "clear_api_key": {
+            "default": false,
+            "title": "Clear Api Key",
+            "type": "boolean"
+          },
+          "default_model": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Model"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "kind": {
+            "default": "openai_compatible",
+            "maxLength": 32,
+            "title": "Kind",
+            "type": "string"
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Models",
+            "type": "array"
+          },
+          "name": {
+            "maxLength": 60,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "api_url"
+        ],
+        "title": "CustomProviderIn",
+        "type": "object"
+      },
+      "CustomProviderOut": {
+        "properties": {
+          "api_key_set": {
+            "default": false,
+            "title": "Api Key Set",
+            "type": "boolean"
+          },
+          "api_url": {
+            "title": "Api Url",
+            "type": "string"
+          },
+          "default_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Model"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "api_url"
+        ],
+        "title": "CustomProviderOut",
         "type": "object"
       },
       "CustomerProfile": {
@@ -26003,6 +26187,54 @@
         "title": "LLMModelsResponse",
         "type": "object"
       },
+      "LLMProviderCatalogResponse": {
+        "properties": {
+          "builtin": {
+            "items": {
+              "$ref": "#/components/schemas/BuiltinProviderOut"
+            },
+            "title": "Builtin",
+            "type": "array"
+          },
+          "kinds": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Kinds",
+            "type": "array"
+          },
+          "system_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System Model"
+          },
+          "system_provider": {
+            "title": "System Provider",
+            "type": "string"
+          },
+          "templates": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderTemplateOut"
+            },
+            "title": "Templates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "system_provider",
+          "builtin",
+          "templates",
+          "kinds"
+        ],
+        "title": "LLMProviderCatalogResponse",
+        "type": "object"
+      },
       "LLMRoutingExperimentListItem": {
         "properties": {
           "agent_display_name": {
@@ -26518,9 +26750,19 @@
             ],
             "title": "Llm Provider"
           },
+          "llm_providers": {
+            "items": {
+              "$ref": "#/components/schemas/CustomProviderOut"
+            },
+            "title": "Llm Providers",
+            "type": "array"
+          },
           "llm_task_models": {
             "anyOf": [
               {
+                "additionalProperties": {
+                  "type": "string"
+                },
                 "type": "object"
               },
               {
@@ -26532,6 +26774,9 @@
           "llm_task_providers": {
             "anyOf": [
               {
+                "additionalProperties": {
+                  "type": "string"
+                },
                 "type": "object"
               },
               {
@@ -26620,9 +26865,28 @@
             "description": "LLM provider: ollama, deepseek, openai, or custom URL",
             "title": "Llm Provider"
           },
+          "llm_providers": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/CustomProviderIn"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Saved custom providers, named elsewhere as custom:<id>",
+            "title": "Llm Providers"
+          },
           "llm_task_models": {
             "anyOf": [
               {
+                "additionalProperties": {
+                  "type": "string"
+                },
                 "type": "object"
               },
               {
@@ -26635,6 +26899,9 @@
           "llm_task_providers": {
             "anyOf": [
               {
+                "additionalProperties": {
+                  "type": "string"
+                },
                 "type": "object"
               },
               {
@@ -28949,6 +29216,54 @@
           "dn"
         ],
         "title": "LdapTestUser",
+        "type": "object"
+      },
+      "LdapVouchRequest": {
+        "properties": {
+          "username": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Username",
+            "type": "string"
+          },
+          "verified": {
+            "default": true,
+            "title": "Verified",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "username"
+        ],
+        "title": "LdapVouchRequest",
+        "type": "object"
+      },
+      "LdapVouchResponse": {
+        "properties": {
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "is_verified": {
+            "title": "Is Verified",
+            "type": "boolean"
+          },
+          "self_registered": {
+            "title": "Self Registered",
+            "type": "boolean"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "email",
+          "is_verified",
+          "self_registered"
+        ],
+        "title": "LdapVouchResponse",
         "type": "object"
       },
       "MCPKeyConfigResponse": {
@@ -33997,6 +34312,119 @@
           "total_documents_last_7_days"
         ],
         "title": "ProcessingStatsResponse",
+        "type": "object"
+      },
+      "ProviderTemplateOut": {
+        "properties": {
+          "api_url": {
+            "title": "Api Url",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "requires_api_key": {
+            "default": false,
+            "title": "Requires Api Key",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "kind",
+          "api_url"
+        ],
+        "title": "ProviderTemplateOut",
+        "type": "object"
+      },
+      "ProviderTestRequest": {
+        "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "api_url": {
+            "maxLength": 500,
+            "title": "Api Url",
+            "type": "string"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "kind": {
+            "default": "openai_compatible",
+            "maxLength": 32,
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "api_url"
+        ],
+        "title": "ProviderTestRequest",
+        "type": "object"
+      },
+      "ProviderTestResponse": {
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ProviderTestResponse",
         "type": "object"
       },
       "PullRequestInfo": {
@@ -40425,6 +40853,94 @@
         "title": "ResearchPortfolioUpdate",
         "type": "object"
       },
+      "ResearchProgramFailure": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "reason"
+        ],
+        "title": "ResearchProgramFailure",
+        "type": "object"
+      },
+      "ResearchProgramInfo": {
+        "properties": {
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "sandbox_images": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Sandbox Images",
+            "type": "array"
+          },
+          "tools": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Tools",
+            "type": "array"
+          },
+          "version": {
+            "default": "",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ResearchProgramInfo",
+        "type": "object"
+      },
+      "ResearchProgramsStatus": {
+        "description": "Installed research programs: loaded, refused, and turned off.",
+        "properties": {
+          "disabled": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Disabled",
+            "type": "array"
+          },
+          "failed": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ResearchProgramFailure"
+            },
+            "title": "Failed",
+            "type": "array"
+          },
+          "loaded": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ResearchProgramInfo"
+            },
+            "title": "Loaded",
+            "type": "array"
+          }
+        },
+        "title": "ResearchProgramsStatus",
+        "type": "object"
+      },
       "ResearcherOutput": {
         "properties": {
           "findings": {
@@ -45380,17 +45896,10 @@
             "title": "Id",
             "type": "string"
           },
-          "llm_api_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "User's own API key for external providers",
-            "title": "Llm Api Key"
+          "llm_api_key_set": {
+            "readOnly": true,
+            "title": "Llm Api Key Set",
+            "type": "boolean"
           },
           "llm_api_url": {
             "anyOf": [
@@ -45528,7 +46037,8 @@
           "id",
           "user_id",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "llm_api_key_set"
         ],
         "title": "UserPreferencesResponse",
         "type": "object"
@@ -48881,6 +49391,71 @@
         ]
       }
     },
+    "/api/v1/admin/ldap/vouch": {
+      "post": {
+        "description": "Admin: vouch for a local account's email, or withdraw the vouch.\n\nNothing sends mail, so no address a person typed at sign-up is checked.\nThe directory links a self-registered account only by an email an admin\nhas vouched for here; the vouch names the address, so a later change of\nemail is not covered by it.",
+        "operationId": "ldap_vouch_for_account_api_v1_admin_ldap_vouch_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LdapVouchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LdapVouchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Ldap Vouch For Account",
+        "tags": [
+          "administration"
+        ]
+      }
+    },
     "/api/v1/admin/llm/models": {
       "get": {
         "description": "Models the configured provider offers.\n\n`list_available_models` asks Ollama specifically -- it fetches\n`{OLLAMA_BASE_URL}/api/tags` -- and this route used to call it whatever\nLLM_PROVIDER said. The stack no longer bundles Ollama, so OLLAMA_BASE_URL\npoints at a service name that does not resolve, and every request spent\n~6s waiting out the DNS failure before returning an empty list and logging\nan ERROR. Measured on a DeepSeek-configured stack: 5.8s for `{\"models\":\n[]}`.\n\nOllama remains supported against an instance the operator runs themselves,\nso the query is kept -- just asked only when Ollama is the provider.",
@@ -49296,6 +49871,61 @@
           }
         ],
         "summary": "Get System Logs",
+        "tags": [
+          "administration"
+        ]
+      }
+    },
+    "/api/v1/admin/research-programs": {
+      "get": {
+        "description": "Which research programs this process loaded, and why any were not.",
+        "operationId": "research_programs_status_api_v1_admin_research_programs_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchProgramsStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Research Programs Status",
         "tags": [
           "administration"
         ]
@@ -93483,6 +94113,126 @@
           }
         ],
         "summary": "List My Llm Models",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/users/me/llm-providers": {
+      "get": {
+        "description": "What can be chosen: the built-in providers (and whether the\ndeployment holds a key for each) and templates for a custom one.",
+        "operationId": "get_llm_provider_catalog_api_v1_users_me_llm_providers_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMProviderCatalogResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Llm Provider Catalog",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/users/me/llm-providers/test": {
+      "post": {
+        "description": "Ask an endpoint which models it serves, before or after saving it.\n\nOnly model names come back, never the server's reply.",
+        "operationId": "test_llm_provider_api_v1_users_me_llm_providers_test_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderTestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderTestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Test Llm Provider",
         "tags": [
           "users"
         ]

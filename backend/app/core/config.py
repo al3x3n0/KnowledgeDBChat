@@ -17,6 +17,29 @@ DEFAULT_SECRET_KEY = "your-secret-key-change-in-production"
 PLACEHOLDER_SECRET_KEYS = frozenset({DEFAULT_SECRET_KEY, "your-secret-key-here"})
 
 
+def parse_llm_extra_headers(raw: Optional[str]) -> dict:
+    """Parse ``LLM_EXTRA_HEADERS`` (a JSON object string) into a header dict.
+
+    Returns an empty dict when unset, empty, or not a JSON object, so a
+    misconfigured value degrades to "no extra headers" rather than raising at
+    request time. Values are coerced to strings; a header that is not a
+    string there is sent as its ``str()``.
+    """
+    if not raw:
+        return {}
+    try:
+        import json
+
+        parsed = json.loads(raw)
+    except Exception:
+        logger.warning(f"LLM_EXTRA_HEADERS is not valid JSON; ignoring: {raw[:120]!r}")
+        return {}
+    if not isinstance(parsed, dict):
+        logger.warning("LLM_EXTRA_HEADERS must be a JSON object; ignoring")
+        return {}
+    return {str(k): str(v) for k, v in parsed.items()}
+
+
 class Settings(BaseSettings):
     """Application settings."""
 
@@ -69,10 +92,10 @@ class Settings(BaseSettings):
     # Only used when LLM_PROVIDER is 'ollama'. Point it at an instance you run
     # yourself; nothing in the compose stacks serves this.
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    # Must name a model the configured provider actually serves: it reaches
-    # the request as `model or settings.<PROVIDER>_MODEL`, so an Ollama model
-    # name under LLM_PROVIDER=deepseek is sent to DeepSeek and rejected with a
-    # 400 naming the three it accepts.
+    # The model for Ollama, and for a bare custom API URL with no model.
+    # Every other provider falls back to its own <PROVIDER>_MODEL on both
+    # call paths: this used to reach the prompted-text path whatever the
+    # provider, so LLM_PROVIDER=openai sent deepseek-v4-pro to OpenAI.
     DEFAULT_MODEL: str = "deepseek-v4-pro"
     # For Ollama, models sized for a Mac: "llama3.2:1b" (~1GB, best for 8GB),
     # "llama3.2:3b" (~2GB), "phi3:mini" (~2GB), "gemma:2b" (~1.5GB); on more
@@ -96,6 +119,19 @@ class Settings(BaseSettings):
         "all-mpnet-base-v2",
         "multilingual-mpnet-base-v2",
     ]
+    # External (OpenAI-compatible) embedding API. When EMBEDDING_API_BASE is
+    # set, embeddings are produced by POSTing {model, input} to
+    # {EMBEDDING_API_BASE}/embeddings instead of running a local ONNX model.
+    # The base URL is the path up to (and including) the version segment,
+    # e.g. "http://<embedding-service>:10999/api/v1"; the embedder
+    # appends "/embeddings" to it. EMBEDDING_MODEL still names the model the
+    # API must serve. Leave EMBEDDING_API_BASE empty to keep the local model.
+    EMBEDDING_API_BASE: Optional[str] = None
+    # API key for the external embedding endpoint (optional). Sent as a
+    # Bearer token when set.
+    EMBEDDING_API_KEY: Optional[str] = None
+    # Seconds a single embedding request may wait for a reply.
+    EMBEDDING_API_TIMEOUT_SECONDS: int = 60
 
     # DeepSeek (external) — optional
     DEEPSEEK_API_BASE: str = "https://api.deepseek.com/v1"
@@ -133,6 +169,15 @@ class Settings(BaseSettings):
     OPENAI_API_BASE: str = "https://api.openai.com/v1"
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4o"
+
+    # Extra HTTP headers sent with every OpenAI-compatible LLM request
+    # (the openai provider, the per-call custom endpoint, and the DeepSeek
+    # chat path). A JSON object of header name -> value, e.g.
+    # `{"x-portkey-config": "{...}"}` for a Portkey gateway that needs a
+    # config header per request. Empty sends no extra headers. The values are
+    # merged under the caller's own headers, so an explicit Authorization set
+    # by the SDK wins over anything put here.
+    LLM_EXTRA_HEADERS: str = ""
 
     # Anthropic (external, official SDK) — optional
     ANTHROPIC_API_KEY: Optional[str] = None
@@ -361,12 +406,14 @@ class Settings(BaseSettings):
     AUTH_SELF_REGISTRATION: Optional[bool] = None
     LDAP_UNIQUE_ID_ATTRIBUTE: str = "entryUUID"
     # Reconcile directory-managed accounts with the directory every this many
-    # minutes (0: never). Between logins nothing else notices that someone
-    # left, was disabled, or lost the admin group. The people who should have
+    # minutes (0: never; unset: hourly when LDAP is on). Between logins
+    # nothing else notices that someone left, was disabled, or lost the admin
+    # group, so a deployment that turns LDAP on gets it without asking; the
+    # sync's own safeguards keep a broken query from deactivating anyone. The people who should have
     # access are those LDAP_IMPORT_FILTER finds: on Active Directory, exclude
     # disabled accounts there with
     # "(!(userAccountControl:1.2.840.113556.1.4.803:=2))".
-    LDAP_SYNC_INTERVAL_MINUTES: int = 0
+    LDAP_SYNC_INTERVAL_MINUTES: Optional[int] = None
     # A sync that would deactivate more than this share of directory-managed
     # accounts deactivates none and says so: a wrong base DN or filter looks
     # exactly like everybody leaving at once.
@@ -498,11 +545,6 @@ class Settings(BaseSettings):
         "ghcr.io/al3x3n0/kdbc-compiler-research:latest,"
         "ghcr.io/al3x3n0/kdbc-polyglot-slim:latest,"
         "ghcr.io/al3x3n0/kdbc-microarch-research:latest,"
-        "ghcr.io/al3x3n0/kdbc-axis-research:latest,"
-        "ghcr.io/al3x3n0/kdbc-pass-dev:latest,"
-        "ghcr.io/al3x3n0/kdbc-bolt-research:latest,"
-        "ghcr.io/al3x3n0/kdbc-profiling-research:latest,"
-        "ghcr.io/al3x3n0/kdbc-gem5-research:latest,"
         "python:3.11-slim"
     )
     SCIENTIFIC_VALIDATION_ALLOWED_CAPABILITIES: str = (
@@ -710,6 +752,9 @@ class Settings(BaseSettings):
     # Where bundles shipped with this repository are read from, relative to the
     # backend root unless absolute. A plugin contributes tools that a model is
     # offered by name, so the directory is deployment state, not user state.
+    # Installed research programs to leave out, comma-separated by name
+    # (app/agent_core/research_programs.py). Empty loads every one installed.
+    RESEARCH_PROGRAMS_DISABLED: str = ""
     PLUGIN_BUILTIN_DIR: str = "plugins"
     # Whether a user may author and install their own plugins. Contributed
     # tools run under the same policy engine and approval gates as any other

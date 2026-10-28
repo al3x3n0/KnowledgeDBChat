@@ -11,7 +11,7 @@ in ``llm_service.py`` remains unchanged for existing callers.
 
 from typing import Any, Optional
 
-from app.core.config import settings
+from app.core.config import parse_llm_extra_headers, settings
 
 from .anthropic_sdk import STRUCTURED_OUTPUT_TOOL, AnthropicProvider
 from .base import (
@@ -55,6 +55,7 @@ def build_provider(
     routing); system settings fill the gaps.
     """
     name = (provider or "").strip().lower()
+    extra_headers = parse_llm_extra_headers(settings.LLM_EXTRA_HEADERS)
 
     if name == "anthropic":
         return AnthropicProvider(
@@ -69,6 +70,7 @@ def build_provider(
             schema_mode="json_object",
             provider_label="deepseek",
             timeout_seconds=int(settings.DEEPSEEK_TIMEOUT_SECONDS or 120),
+            extra_headers=extra_headers,
         )
     if name == "openai":
         return OpenAICompatibleProvider(
@@ -76,6 +78,7 @@ def build_provider(
             base_url=api_url or settings.OPENAI_API_BASE,
             default_model=settings.OPENAI_MODEL,
             provider_label="openai",
+            extra_headers=extra_headers,
         )
     if name == "qwen":
         # DashScope compatible mode: native tool calling; JSON output is
@@ -86,6 +89,7 @@ def build_provider(
             default_model=settings.QWEN_MODEL,
             schema_mode="json_object",
             provider_label="qwen",
+            extra_headers=extra_headers,
         )
     if name == "kimi":
         # Moonshot AI: native tool calling; JSON output is json_object only.
@@ -95,6 +99,7 @@ def build_provider(
             default_model=settings.KIMI_MODEL,
             schema_mode="json_object",
             provider_label="kimi",
+            extra_headers=extra_headers,
         )
     if name == "glm":
         # Zhipu AI: native tool calling; JSON output is json_object only.
@@ -104,6 +109,7 @@ def build_provider(
             default_model=settings.GLM_MODEL,
             schema_mode="json_object",
             provider_label="glm",
+            extra_headers=extra_headers,
         )
     if name == "ollama" or (not name and not api_url):
         return OllamaProvider(base_url=api_url, http_client=http_client)
@@ -114,4 +120,5 @@ def build_provider(
         base_url=api_url,
         schema_mode="json_object",
         provider_label="custom",
+        extra_headers=extra_headers,
     )

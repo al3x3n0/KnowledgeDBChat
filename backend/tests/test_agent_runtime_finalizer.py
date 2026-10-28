@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -20,6 +21,7 @@ class _DummyJob:
         self.iteration = 3
         self.tool_calls_used = 4
         self.llm_calls_used = 2
+        self.max_llm_calls = 20
         self.memory_injection_count = 0
         self.memories_created_count = 0
         self.results = {}
@@ -48,6 +50,7 @@ class _DummyExecutor:
         self._data_analysis_tools = {}
         self.persist_tool_priors_calls = 0
         self.trigger_calls = []
+        self.checkpoint_service = SimpleNamespace(save_checkpoint=AsyncMock())
 
     def _evaluate_goal_contract(self, job, state):
         return {
@@ -175,6 +178,36 @@ async def test_finalize_job_completed_path_updates_results(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["running", "paused"])
+async def test_finalization_retains_operator_resume_audit(monkeypatch, status):
+    from app.modules.autonomy.application.job_action_interventions import (
+        append_operator_intervention,
+    )
+
+    monkeypatch.setattr(
+        agent_runtime_finalizer.agent_job_memory_service,
+        "extract_memories_from_job",
+        AsyncMock(return_value=[]),
+    )
+    job = _DummyJob(status=status)
+    event = append_operator_intervention(
+        job.results,
+        action="resume",
+        actor_user_id=job.user_id,
+        note="A second workload is available",
+        job_status_before="paused",
+        job_status_after="pending",
+    )
+    job.results["execution_strategy"]["execution_mode"] = "stale-mode"
+    state = _state_with(100)
+    for _ in range(2):
+        await finalize_job(_DummyExecutor(), job, state, _DummyDb())
+        execution = job.results["execution_strategy"]
+        assert execution["operator_interventions"] == [event]
+        assert execution["execution_mode"] == "adaptive"
+
+
+@pytest.mark.asyncio
 async def test_recorded_methods_reach_the_results_the_run_record_reads(monkeypatch):
     """`_record_what_the_run_established` lists results["methods"]; nothing
     wrote that key, so a run's methods never appeared in its own record."""
@@ -240,6 +273,31 @@ async def test_finalize_job_paused_path_preserves_paused_status(monkeypatch):
     assert result["status"] == AgentJobStatus.PAUSED.value
     assert job.status == AgentJobStatus.PAUSED.value
     assert executor.trigger_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remaining", [0, 1])
+async def test_conclusion_budget_stop_preserves_findings_and_chain(remaining):
+    executor = _DummyExecutor()
+    executor.llm_service = SimpleNamespace(
+        generate_structured=AsyncMock(return_value=None),
+        generate_response=AsyncMock(
+            side_effect=AssertionError("No fallback slot remains")
+        ),
+    )
+    job = _DummyJob()
+    job.max_llm_calls = job.llm_calls_used + remaining
+    findings = [{"type": "dynamic_profile", "title": "Measured kernel"}]
+    state = _state_with(100, findings)
+
+    result = await finalize_job(executor, job, state, _DummyDb())
+
+    assert result["status"] == "completed" and executor.trigger_calls == ["complete"]
+    assert result["llm_calls"] == job.llm_calls_used == job.max_llm_calls
+    assert job.results["findings"] == findings
+    assert job.results["conclusion"]["generated_by"] == "budget_exhausted"
+    assert executor.llm_service.generate_structured.await_count == remaining
+    executor.llm_service.generate_response.assert_not_awaited()
 
 
 class _ExpiringJob(_DummyJob):

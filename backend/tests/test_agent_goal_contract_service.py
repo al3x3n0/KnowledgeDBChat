@@ -2,6 +2,8 @@
 
 from uuid import uuid4
 
+import pytest
+
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.services.agent_goal_contract_service import AgentGoalContractService
 from app.services.autonomous_agent_executor import AutonomousAgentExecutor
@@ -46,6 +48,76 @@ def test_goal_contract_service_evaluates_required_counts_and_types():
     assert "progress>=70" in result["missing"]
     assert "findings>=2" in result["missing"]
     assert "finding_type:paper" in result["missing"]
+
+
+@pytest.mark.parametrize(
+    "requirement,missing",
+    [
+        ({"min_findings": 2}, "findings>=2"),
+        (
+            {"required_finding_type_counts": {"fusion_candidate": 2}},
+            "finding_type:fusion_candidate>=2",
+        ),
+    ],
+)
+def test_repeating_one_claim_cannot_complete_a_multiple_finding_contract(
+    requirement, missing
+):
+    executor = AutonomousAgentExecutor()
+    service = AgentGoalContractService()
+    job = _make_job(
+        {"goal_contract": {"enabled": True, "min_progress": 0, **requirement}}
+    )
+    finding = {"type": "fusion_candidate", "title": "ldr + add + str"}
+    state = {"findings": [dict(finding), dict(finding), dict(finding)]}
+
+    result = service.evaluate_goal_contract(executor, job, state)
+
+    assert result["satisfied"] is False
+    assert missing in result["missing"]
+    assert result["metrics"]["findings_count"] == 1
+    assert result["metrics"]["finding_types"] == {"fusion_candidate": 1}
+
+    state["findings"].append({"type": "fusion_candidate", "title": "fmul + fadd"})
+    assert service.evaluate_goal_contract(executor, job, state)["satisfied"] is True
+    assert len(state["findings"]) == 4  # Evaluation must preserve the evidence log.
+
+
+@pytest.mark.parametrize(
+    "finding",
+    [
+        {"type": "dynamic_profile", "title": "old", "recalled": True},
+        {"type": "dynamic_profile", "title": "unavailable", "category": "gap"},
+        "not a finding",
+    ],
+)
+def test_non_evidence_cannot_fill_a_minimum_finding_count(finding):
+    executor = AutonomousAgentExecutor()
+    service = AgentGoalContractService()
+    job = _make_job(
+        {"goal_contract": {"enabled": True, "min_progress": 0, "min_findings": 1}}
+    )
+
+    result = service.evaluate_goal_contract(executor, job, {"findings": [finding]})
+
+    assert result["satisfied"] is False
+    assert "findings>=1" in result["missing"]
+    assert result["metrics"]["findings_count"] == 0
+
+
+def test_a_fresh_claim_counts_when_a_recalled_copy_appears_first():
+    executor = AutonomousAgentExecutor()
+    service = AgentGoalContractService()
+    job = _make_job(
+        {"goal_contract": {"enabled": True, "required_finding_types": ["test_result"]}}
+    )
+    finding = {"type": "test_result", "title": "current test"}
+    result = service.evaluate_goal_contract(
+        executor, job, {"findings": [{**finding, "recalled": True}, finding]}
+    )
+
+    assert result["satisfied"] is True
+    assert result["metrics"]["findings_count"] == 1
 
 
 def test_goal_contract_service_builds_executive_digest():
@@ -153,9 +225,9 @@ def test_a_contract_can_say_how_many_of_each_finding_type_it_needs():
     state = {
         "goal_progress": 44,
         "findings": [
-            {"type": "codegen_measurement"},
-            {"type": "codegen_measurement"},
-            {"type": "benchmark_measurement"},
+            {"type": "codegen_measurement", "subject": "baseline"},
+            {"type": "codegen_measurement", "subject": "candidate"},
+            {"type": "benchmark_measurement", "subject": "baseline"},
         ],
         "artifacts": [],
     }
@@ -164,7 +236,7 @@ def test_a_contract_can_say_how_many_of_each_finding_type_it_needs():
 
     assert result["missing"] == ["finding_type:benchmark_measurement>=2"]
 
-    state["findings"].append({"type": "benchmark_measurement"})
+    state["findings"].append({"type": "benchmark_measurement", "subject": "candidate"})
     assert service.evaluate_goal_contract(executor, job, state)["satisfied"] is True
 
 
@@ -308,3 +380,113 @@ class TestAContractRequirementTheRunCanSee:
         assert self._present(
             {}, {"formatted_outputs": [{"table": "x"}]}, key="formatted_outputs"
         )
+
+
+@pytest.mark.parametrize(
+    "finding,expected",
+    [
+        ({"type": "bundle_verified", "intact": False}, False),
+        ({"type": "bundle_verified", "intact": True}, True),
+        (
+            {
+                "type": "bundle_reproduced",
+                "intact": True,
+                "replay_verdict": "not replayed",
+            },
+            False,
+        ),
+        (
+            {
+                "type": "bundle_reproduced",
+                "intact": True,
+                "replay_verdict": "inconclusive",
+            },
+            False,
+        ),
+        (
+            {"type": "bundle_reproduced", "intact": True, "replay_verdict": "differed"},
+            False,
+        ),
+        (
+            {
+                "type": "bundle_reproduced",
+                "intact": False,
+                "replay_verdict": "reproduced",
+            },
+            False,
+        ),
+        (
+            {
+                "type": "bundle_reproduced",
+                "verified": True,
+                "intact": True,
+                "replay_verdict": "reproduced",
+                "replay_summary": {
+                    "expected_comparisons": 1,
+                    "judged": 1,
+                    "reproduced": 1,
+                    "error_count": 0,
+                    "differed": 0,
+                },
+            },
+            True,
+        ),
+    ],
+)
+def test_bundle_contracts_reject_explicit_integrity_and_reproduction_failures(
+    finding, expected
+):
+    executor = AutonomousAgentExecutor.__new__(AutonomousAgentExecutor)
+    job = _make_job(
+        {
+            "goal_contract": {
+                "enabled": True,
+                "required_finding_types": [finding["type"]],
+            }
+        }
+    )
+    result = AgentGoalContractService().evaluate_goal_contract(
+        executor, job, {"goal_progress": 100, "findings": [finding]}
+    )
+    assert result["satisfied"] is expected
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"expected_comparisons": 0, "judged": 0, "reproduced": 0},
+        {"expected_comparisons": 2},
+        {"error_count": 1},
+        {"differed": 1},
+        {"expected_comparisons": True},
+    ],
+)
+def test_reproduction_type_requires_complete_nonempty_runtime_counts(change):
+    finding = {
+        "type": "bundle_reproduced",
+        "verified": True,
+        "intact": True,
+        "replay_verdict": "reproduced",
+        "replay_summary": {
+            "expected_comparisons": 1,
+            "judged": 1,
+            "reproduced": 1,
+            "error_count": 0,
+            "differed": 0,
+            **change,
+        },
+    }
+    job = _make_job(
+        {
+            "goal_contract": {
+                "enabled": True,
+                "required_finding_types": ["bundle_reproduced"],
+            }
+        }
+    )
+    result = AgentGoalContractService().evaluate_goal_contract(
+        AutonomousAgentExecutor.__new__(AutonomousAgentExecutor),
+        job,
+        {"goal_progress": 100, "findings": [finding]},
+    )
+    assert result["satisfied"] is False

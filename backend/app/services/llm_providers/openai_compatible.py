@@ -67,6 +67,7 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         schema_mode: str = "json_schema",
         provider_label: str = "openai",
         timeout_seconds: int = 120,
+        extra_headers: Optional[Dict[str, str]] = None,
     ):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/") if base_url else None
@@ -75,6 +76,10 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         self.provider_label = provider_label
         self.name = provider_label
         self.timeout_seconds = timeout_seconds
+        # Per-request headers the SDK must send on every call. Used to carry a
+        # gateway config (e.g. Portkey's x-portkey-config) that the gateway
+        # needs on each request but the OpenAI SDK does not send itself.
+        self.extra_headers = dict(extra_headers or {})
 
     def _get_client(self):
         try:
@@ -84,7 +89,11 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                 "The 'openai' package is required for OpenAI-compatible providers "
                 "(pip install openai)"
             )
-        cache_key = (self.base_url, self.api_key)
+        cache_key = (
+            self.base_url,
+            self.api_key,
+            tuple(sorted(self.extra_headers.items())),
+        )
         clients = _CLIENT_CACHE.get()
         client = clients.get(cache_key)
         if client is None:
@@ -92,6 +101,7 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                 api_key=self.api_key or "not-set",
                 base_url=self.base_url,
                 timeout=float(self.timeout_seconds),
+                **({"extra_headers": self.extra_headers} if self.extra_headers else {}),
             )
             clients[cache_key] = client
         return client

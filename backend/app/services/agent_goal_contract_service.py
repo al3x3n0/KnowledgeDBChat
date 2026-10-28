@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from app.services import agent_measurement_validity
+from app.services import agent_loop_policy, agent_measurement_validity
 
 
 def _required_type_counts(contract: Dict[str, Any], kind: str) -> Dict[str, int]:
@@ -57,14 +57,24 @@ _SELF_DECLARED_FAILURE_FIELDS = ("verified", "succeeded", "passed")
 
 
 def _is_a_report_of_absence(finding: Dict[str, Any], ftype: str) -> bool:
-    """True when a finding says the thing it is typed as could not be produced.
+    """True when a finding does not establish the evidence it is typed as.
 
-    Deliberately narrow: it fires on the finding's own self-declaration, never
-    on the prose. A run that measures something and calls the result
+    Outside core bundle verification types, it fires only on the finding's
+    own self-declaration, never on the prose. A run that measures something and calls the result
     disappointing still measured it.
     """
     if str(finding.get("category") or "").strip().lower() in _ABSENCE_CATEGORIES:
         return True
+    # Core verification types require their runtime proof, not an editable
+    # label on a saved research note. Historical integrity reports carry the
+    # intact flag even when they predate the generic verified flag.
+    if ftype == "bundle_verified" and finding.get("intact") is not True:
+        return True
+    if ftype == "bundle_reproduced":
+        from app.services import agent_evidence_bundle
+
+        if not agent_evidence_bundle.reproduction_established(finding):
+            return True
     # An explicitly null metric under its own type name: the finding declared
     # the number it exists to carry and then carried nothing.
     metrics = finding.get("metrics")
@@ -155,6 +165,7 @@ class AgentGoalContractService:
         progress = int(state.get("goal_progress", 0) or 0)
 
         finding_types: Dict[str, int] = {}
+        counted_findings = set()
         for finding in findings:
             if not isinstance(finding, dict):
                 continue
@@ -165,8 +176,6 @@ class AgentGoalContractService:
             if finding.get("recalled"):
                 continue
             ftype = str(finding.get("type") or "").strip()
-            if not ftype:
-                continue
             # A finding that reports the ABSENCE of the thing is not the thing.
             # A live run asked for a throughput_bound from an actual benchmark,
             # correctly established that the repository did not exist, and
@@ -177,7 +186,16 @@ class AgentGoalContractService:
             # measurement from a note saying no measurement was possible.
             if _is_a_report_of_absence(finding, ftype):
                 continue
-            finding_types[ftype] = int(finding_types.get(ftype, 0) or 0) + 1
+            # A loop cannot turn one claim into several required results by
+            # repeating its tool call. Use the same identity as dry-round
+            # detection, after excluding recalled/absent evidence so an older
+            # unusable copy cannot hide a fresh measurement.
+            identity = agent_loop_policy.finding_identity(finding)
+            if identity in counted_findings:
+                continue
+            counted_findings.add(identity)
+            if ftype:
+                finding_types[ftype] = int(finding_types.get(ftype, 0) or 0) + 1
 
         artifact_types: Dict[str, int] = {}
         for artifact in artifacts:
@@ -201,7 +219,7 @@ class AgentGoalContractService:
 
         if progress < min_progress:
             missing.append(f"progress>={min_progress}")
-        if len(findings) < min_findings:
+        if len(counted_findings) < min_findings:
             missing.append(f"findings>={min_findings}")
         if len(artifacts) < min_artifacts:
             missing.append(f"artifacts>={min_artifacts}")
@@ -247,7 +265,7 @@ class AgentGoalContractService:
             "contract": contract,
             "metrics": {
                 "progress": progress,
-                "findings_count": len(findings),
+                "findings_count": len(counted_findings),
                 "artifacts_count": len(artifacts),
                 "finding_types": finding_types,
                 "artifact_types": artifact_types,

@@ -20,6 +20,25 @@ env:
   NODE_VERSION: "18"
 
 jobs:
+  backend-image:
+    name: Backend image (core only, ${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # Exercise the default build without an optional programs context. The
+      # companion program's CI supplies one and cannot cover this path.
+      - name: Build the default backend image
+        run: docker build --progress=plain -t kdbc-backend:ci backend
+
   backend-lint:
     name: Backend lint and format
     runs-on: ubuntu-latest
@@ -60,7 +79,9 @@ jobs:
   backend-tests:
     name: Backend tests
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # The suite alone took 43m38s on 2026-10-19 (8305 tests), and the job was
+    # cancelled at 45 while running the steps after it.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -214,6 +235,47 @@ jobs:
           TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/pytest
           TEST_REDIS_URL: redis://localhost:6379/15
         run: pytest --no-cov -p no:cacheprovider $(grep -v '^#' tests/postgres_slice.txt)
+
+  ldap-real-server:
+    name: LDAP against a real directory server
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The other LDAP tests run on ldap3's in-memory server, which has no TLS,
+    # no operational attributes and no overlays. These run the same code
+    # against slapd -- certificate verification, entryUUID, memberOf, paging
+    # -- over LDAPS and over StartTLS. They skip without TEST_LDAP_URI, so
+    # until this job existed they ran only when someone remembered to.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Start slapd
+        run: backend/scripts/ldap_test_server.sh "$RUNNER_TEMP/ldap-certs"
+      - name: Over LDAPS
+        working-directory: backend
+        env:
+          TEST_LDAP_URI: ldaps://localhost:3636
+          TEST_LDAP_CA_FILE: ${{ runner.temp }}/ldap-certs/ca.crt
+        # -rs names any test that skipped, so a skip is seen rather than
+        # counted as a pass.
+        run: pytest --no-cov -p no:cacheprovider -rs tests/test_ldap_real_server.py
+      - name: Over StartTLS
+        working-directory: backend
+        env:
+          TEST_LDAP_URI: ldap://localhost:3389
+          TEST_LDAP_CA_FILE: ${{ runner.temp }}/ldap-certs/ca.crt
+        run: pytest --no-cov -p no:cacheprovider -rs tests/test_ldap_real_server.py
+      - name: slapd log
+        if: failure()
+        run: docker logs kdbc-ldap
 
   schema-truth:
     name: Migrations build the schema the models expect

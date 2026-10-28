@@ -41,6 +41,7 @@ from app.models.research_campaign import (
     ResearchCampaignItem,
 )
 from app.services import agent_campaign_priority as priority
+from app.services.agent_loop_policy import finding_identity
 from app.utils.datetimes import age
 
 TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled", "stopped"}
@@ -138,13 +139,19 @@ async def _items(
 
 
 def _findings_of(job: AgentJob) -> List[Dict[str, Any]]:
+    """What this job established, excluding evidence borrowed from its ancestors.
+
+    The campaign walks every stage, so the original producer contributes the
+    finding. Counting downstream copies or repeated calls again would inflate
+    its evidence and feed one measurement back into discovery as several results.
+    """
     results = job.results if isinstance(job.results, dict) else {}
     findings = results.get("findings")
-    return (
-        [f for f in findings if isinstance(f, dict)]
-        if isinstance(findings, list)
-        else []
-    )
+    unique = {}
+    for finding in findings if isinstance(findings, list) else []:
+        if isinstance(finding, dict) and finding.get("inherited") is not True:
+            unique.setdefault(finding_identity(finding), finding)
+    return list(unique.values())
 
 
 def _contract_of(job: AgentJob) -> Dict[str, Any]:

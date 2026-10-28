@@ -7,7 +7,7 @@ These endpoints are safe to call from the UI to determine whether the app is in
 
 import asyncio
 from datetime import datetime
-from typing import Dict
+from typing import Dict, Optional
 
 import httpx
 from fastapi import APIRouter, Depends
@@ -84,25 +84,47 @@ async def _check_vector_store() -> HealthCheckServiceResponse:
         return HealthCheckServiceResponse(status="unhealthy", error=str(exc))
 
 
+def _llm_api_key(provider: str) -> Optional[str]:
+    """The API-key setting for each LLM provider (None for local Ollama)."""
+    return {
+        "deepseek": settings.DEEPSEEK_API_KEY,
+        "openai": settings.OPENAI_API_KEY,
+        "anthropic": settings.ANTHROPIC_API_KEY,
+        "qwen": settings.QWEN_API_KEY,
+        "kimi": settings.KIMI_API_KEY,
+        "glm": settings.GLM_API_KEY,
+    }.get(provider)
+
+
 async def _check_llm() -> HealthCheckServiceResponse:
     try:
-        if settings.LLM_PROVIDER == "ollama":
+        provider = (settings.LLM_PROVIDER or "").strip().lower()
+        if provider == "ollama":
             async with httpx.AsyncClient(timeout=2.0) as client:
                 r = await client.get(f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/tags")
                 r.raise_for_status()
             return HealthCheckServiceResponse(
                 status="healthy", message="Ollama reachable"
             )
-        if settings.LLM_PROVIDER == "deepseek":
-            if settings.DEEPSEEK_API_KEY:
-                return HealthCheckServiceResponse(
-                    status="healthy", message="DeepSeek configured"
-                )
+        if not provider:
             return HealthCheckServiceResponse(
-                status="degraded", error="DeepSeek API key not set"
+                status="degraded", error="No LLM provider configured"
+            )
+        # A gateway configured through LLM_EXTRA_HEADERS (e.g. Portkey's
+        # x-portkey-config) carries its own target credentials, so no
+        # per-provider API key is required on the app side.
+        from app.core.config import parse_llm_extra_headers
+
+        has_gateway = bool(parse_llm_extra_headers(settings.LLM_EXTRA_HEADERS))
+        if _llm_api_key(provider) is None and not has_gateway:
+            key_name = f"{provider.upper()}_API_KEY"
+            return HealthCheckServiceResponse(
+                status="degraded", error=f"{key_name} not set"
             )
         return HealthCheckServiceResponse(
-            status="degraded", error=f"Unknown provider: {settings.LLM_PROVIDER}"
+            status="healthy",
+            message=f"{provider} configured"
+            + (" (via gateway)" if has_gateway else ""),
         )
     except Exception as exc:
         return HealthCheckServiceResponse(status="unhealthy", error=str(exc))

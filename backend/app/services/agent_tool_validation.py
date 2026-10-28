@@ -100,15 +100,19 @@ ALTERNATIVE_FIELDS: Dict[str, Tuple[Tuple[str, str, Callable[[Any], bool]], ...]
     "clone_and_index_repo": (
         ("source_id", "repo_url", lambda v: isinstance(v, str) and _is_uuid(v.strip())),
     ),
-    "scan_for_optimizations": (("sources", "paths", lambda v: isinstance(v, dict)),),
-    "propose_bolt_configurations": (
-        ("sources", "paths", lambda v: isinstance(v, dict)),
-    ),
-    "optimize_executable_with_bolt": (
-        ("sources", "paths", lambda v: isinstance(v, dict)),
-    ),
-    # Needs a symbol and one of object_b64/kernel; symbol is already required.
 }
+
+
+def alternative_fields(
+    tool_name: str,
+) -> Tuple[Tuple[str, str, Callable[[Any], bool]], ...]:
+    """Core's alternatives for a tool, or an installed research program's."""
+    from app.agent_core import research_programs
+
+    found = ALTERNATIVE_FIELDS.get(tool_name)
+    if found is not None:
+        return found
+    return research_programs.alternative_fields().get(tool_name, ())
 
 
 def _resolve_bench_input(
@@ -146,7 +150,7 @@ def _resolve_bench_input(
 
 def _drop_malformed_alternatives(tool_name: str, params: Dict[str, Any]) -> List[str]:
     dropped: List[str] = []
-    for field, alternative, valid in ALTERNATIVE_FIELDS.get(tool_name, ()):
+    for field, alternative, valid in alternative_fields(tool_name):
         if field not in params:
             continue
         if params.get(alternative) in (None, "", [], {}):

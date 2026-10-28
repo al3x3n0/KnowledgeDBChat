@@ -322,19 +322,33 @@ class TestDeclaredEvidenceIsActuallyProduced:
         # three reach the executor identically, so all three count here --
         # a check that only recognised one spelling would report a tool as
         # emitting nothing while it emitted correctly.
-        for match in re.finditer(r'"findings"\s*(?::|\]\s*=|,)\s*\[', body):
-            depth, index = 0, match.end() - 1
-            while index < len(body):
-                if body[index] == "[":
-                    depth += 1
-                elif body[index] == "]":
-                    depth -= 1
-                    if depth == 0:
-                        break
-                index += 1
-            block = body[match.end() : index]
-            has_block = True
-            types.update(re.findall(r'"type"\s*:\s*"([a-z_0-9]+)"', block))
+        containers = [(r'"findings"\s*(?::|\]\s*=|,)\s*\[', "[", "]")]
+        # A handler may build a named list, append conditional findings, then
+        # return it. Follow only variables attached to the findings key so an
+        # unrelated artifacts list still cannot satisfy this guard.
+        for name in set(re.findall(r'"findings"\s*:\s*([a-z_]\w*)\b', body)):
+            name = re.escape(name)
+            containers.extend(
+                [
+                    (rf"\b{name}\s*=\s*\[", "[", "]"),
+                    (rf"\b{name}\.extend\(\s*\[", "[", "]"),
+                    (rf"\b{name}\.append\(\s*\{{", "{", "}"),
+                ]
+            )
+        for pattern, opening, closing in containers:
+            for match in re.finditer(pattern, body):
+                depth, index = 0, match.end() - 1
+                while index < len(body):
+                    if body[index] == opening:
+                        depth += 1
+                    elif body[index] == closing:
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    index += 1
+                block = body[match.end() : index]
+                has_block = True
+                types.update(re.findall(r'"type"\s*:\s*"([a-z_0-9]+)"', block))
         # The flag matters separately from the types. A handler may append a
         # finding it built in a variable ("findings": [finding]), where the
         # type is set at runtime and no static read can see it. That is not
@@ -342,6 +356,34 @@ class TestDeclaredEvidenceIsActuallyProduced:
         # reported as "emits findings, type not statically visible" rather
         # than as emitting nothing.
         return types, has_block
+
+    @pytest.mark.parametrize(
+        "body, expected",
+        [
+            ('return {"findings": [{"type": "inline"}]}', ({"inline"}, True)),
+            (
+                'reports = [{"type": "base"}]\n'
+                'reports.append({"type": "conditional"})\n'
+                'reports.extend([{"type": "extended"}])\n'
+                'artifacts = [{"type": "artifact"}]\n'
+                'return {"findings": reports, "artifacts": artifacts}',
+                ({"base", "conditional", "extended"}, True),
+            ),
+            (
+                'reports = [finding]\nreturn {"findings": reports}',
+                (set(), True),
+            ),
+            (
+                'artifacts = [{"type": "artifact"}]\n'
+                'return {"artifacts": artifacts}',
+                (set(), False),
+            ),
+        ],
+    )
+    def test_finding_containers_are_recognized_without_counting_artifacts(
+        self, body, expected
+    ):
+        assert self._emitted_finding_types(body) == expected
 
     def test_every_declared_evidence_type_is_emitted_somewhere(self):
         import re
@@ -421,8 +463,6 @@ class TestThePassesAModelIsToldAboutExist:
     )
     #: Tools running in kdbc-compiler-research, which is where the plugins are.
     CAN_LOAD = ("compile_c_snippet", "benchmark_c_snippet", "analyze_snippet_cycles")
-    #: A different image with neither the plugins nor clang's plugin flag.
-    CANNOT_LOAD = ("profile_c_workload",)
 
     def test_every_declared_pass_has_a_source_file_that_builds_it(self):
         """Skipped in the test container, which mounts backend/ as /app and so
@@ -446,15 +486,6 @@ class TestThePassesAModelIsToldAboutExist:
             spec = next(s for s in SPECS if s.name == name)
             desc = spec.parameters["properties"]["flags"]["description"]
             assert "fpass-plugin" in desc, f"{name} never mentions the passes"
-
-    def test_the_tools_that_cannot_load_them_stay_quiet(self):
-        """Naming a flag the runtime would refuse is worse than naming none."""
-        for name in self.CANNOT_LOAD:
-            spec = next(s for s in SPECS if s.name == name)
-            desc = spec.parameters["properties"]["flags"]["description"]
-            assert (
-                "fpass-plugin" not in desc
-            ), f"{name} runs in a different image and would refuse the flag"
 
     def test_a_result_changing_pass_says_so_where_a_model_will_read_it(self):
         from app.services.agent_toolchains import describe_llvm_passes

@@ -10,6 +10,7 @@ data:
   # layer means routing behaviour (the /video/{id} -> /stream/{id} rewrite,
   # WebSocket upgrade, 2GB bodies, MinIO presigned-URL proxying) is identical
   # to docker-compose and does not depend on ingress-controller annotations.
+  {{- $resolver := .Values.gateway.resolver | default "kube-dns.kube-system.svc.cluster.local" }}
   default.conf: |
     server {
         listen 80;
@@ -17,7 +18,7 @@ data:
 
         # Re-resolve Service names so a restarted pod's new ClusterIP is picked
         # up instead of being cached for the life of the worker process.
-        resolver {{ .Values.gateway.resolver }} valid=10s ipv6=off;
+        resolver {{ $resolver }} valid=10s ipv6=off;
         resolver_timeout 5s;
 
         client_max_body_size {{ .Values.gateway.clientMaxBodySize }};
@@ -44,7 +45,7 @@ data:
         # Video streaming: /video/{document_id} -> video-streamer /stream/{id}.
         # Must precede /api/.
         location ~ ^/video/(.+)$ {
-            set $video_streamer "http://{{ include "kdbc.videoStreamer.serviceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.videoStreamer.service.port }}";
+            set $video_streamer "http://{{ include "kdbc.videoStreamer.serviceName" . }}.{{ .Release.Namespace }}.svc.{{ .Values.gateway.clusterDnsDomain }}:{{ .Values.videoStreamer.service.port }}";
             proxy_pass $video_streamer/stream/$1$is_args$args;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
@@ -65,7 +66,7 @@ data:
 
         # API + chat WebSocket.
         location /api/ {
-            set $backend_upstream "http://{{ include "kdbc.backend.serviceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.backend.service.port }}";
+            set $backend_upstream "http://{{ include "kdbc.backend.serviceName" . }}.{{ .Release.Namespace }}.svc.{{ .Values.gateway.clusterDnsDomain }}:{{ .Values.backend.service.port }}";
             proxy_pass $backend_upstream;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
@@ -94,7 +95,7 @@ data:
         {{- if .Values.minio.enabled }}
         # MinIO proxy for presigned download URLs (MINIO_PROXY_BASE_URL).
         location /minio/ {
-            set $minio_upstream "http://{{ include "kdbc.minio.serviceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.minio.service.apiPort }}";
+            set $minio_upstream "http://{{ include "kdbc.minio.serviceName" . }}.{{ .Release.Namespace }}.svc.{{ .Values.gateway.clusterDnsDomain }}:{{ .Values.minio.service.apiPort }}";
             # `proxy_pass $var/` does NOT strip the /minio/ prefix: when
             # proxy_pass contains variables, a URI in the directive replaces the
             # whole request URI rather than substituting the matched prefix, so
@@ -119,7 +120,7 @@ data:
 
         # Static React build - catch-all.
         location / {
-            set $frontend_upstream "http://{{ include "kdbc.frontend.serviceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.frontend.service.port }}";
+            set $frontend_upstream "http://{{ include "kdbc.frontend.serviceName" . }}.{{ .Release.Namespace }}.svc.{{ .Values.gateway.clusterDnsDomain }}:{{ .Values.frontend.service.port }}";
             proxy_pass $frontend_upstream;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;

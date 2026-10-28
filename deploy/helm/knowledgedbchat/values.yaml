@@ -107,7 +107,19 @@ config:
   debug: "False"
   llmProvider: ollama
   defaultModel: llama3.2:1b
+  # Extra HTTP headers sent with every OpenAI-compatible LLM request, as a JSON
+  # object. Empty sends none. Use it to point llmProvider=openai at a gateway
+  # (e.g. a Portkey AI Gateway) that needs a config header per request:
+  #   llmExtraHeaders: '{"x-portkey-config":"{...}"}'
+  # and set OPENAI_API_BASE (via config.extra) to the gateway's /v1 URL.
+  llmExtraHeaders: ""
   embeddingModel: all-MiniLM-L6-v2
+  # External OpenAI-compatible embedding API. When set, embeddings come from
+  # this service instead of the local ONNX model. Set it to the base URL up to
+  # the version segment (e.g. http://<embedding-service>:10999/api/v1);
+  # the embedder appends /embeddings to it. Leave empty to use the local model.
+  # The matching key lives in secrets.embeddingApiKey.
+  embeddingApiBase: ""
   vectorStoreProvider: qdrant
   qdrantCollectionName: knowledge_base
   minioBucketName: documents
@@ -143,6 +155,9 @@ secrets:
   kimiApiKey: ""
   glmApiKey: ""
   qdrantApiKey: ""
+  # API key for the external embedding API (config.embeddingApiBase). Only
+  # used when config.embeddingApiBase is set.
+  embeddingApiKey: ""
   # Fernet key for the encrypted secrets store (python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
   secretsEncryptionKey: ""
   # Additional key/value pairs merged into the app Secret.
@@ -385,11 +400,14 @@ gateway:
   replicaCount: 2
   clientMaxBodySize: 2048M
   proxyTimeoutSeconds: 300
-  # DNS server nginx re-resolves Service names against. CoreDNS keeps the
-  # "kube-dns" Service name for compatibility, so this works on stock clusters;
-  # override with the ClusterIP (kubectl -n kube-system get svc kube-dns) if
-  # your cluster runs DNS under a different name.
-  resolver: kube-dns.kube-system.svc.cluster.local
+  # DNS server nginx re-resolves Service names against. Empty defaults to
+  # the stock kube-dns Service; on clusters whose DNS runs elsewhere
+  # (e.g. a node-local DNS cache) set it to that address.
+  resolver: ""
+  # DNS suffix appended to <service>.<namespace>.svc.<suffix> when
+  # resolving in-cluster Service names. Defaults to cluster.local for
+  # stock clusters; override for clusters with a custom domain.
+  clusterDnsDomain: cluster.local
   service:
     type: ClusterIP
     port: 80

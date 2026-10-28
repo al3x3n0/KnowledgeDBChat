@@ -78,22 +78,23 @@ def test_unknown_tools_are_not_touched():
 
 
 def test_a_one_item_list_where_a_string_is_wanted_is_unwrapped():
-    """A live run sent run_args as a list twice and lost both attempts."""
-    params = {"code": "int main(void){return 0;}", "run_args": ["--iterations=1000"]}
+    """A live run sent run_args to the simulator as a list twice and lost both
+    attempts; the same repair applies to any string field."""
+    params = {"code": "int main(void){return 0;}", "label": ["fastmod"]}
 
-    repaired = coerce_tool_params("simulate_c_workload", params)
+    repaired = coerce_tool_params("benchmark_c_snippet", params)
 
-    assert repaired == ["run_args"]
-    assert params["run_args"] == "--iterations=1000"
-    assert validate_tool_params("simulate_c_workload", params) is None
+    assert repaired == ["label"]
+    assert params["label"] == "fastmod"
+    assert validate_tool_params("benchmark_c_snippet", params) is None
 
 
 def test_a_multi_item_list_is_not_joined_into_a_string():
     """Joining would guess the separator; that is a real mistake to report."""
-    params = {"code": "int main(void){return 0;}", "run_args": ["--n", "1000"]}
+    params = {"code": "int main(void){return 0;}", "label": ["fastmod", "baseline"]}
 
-    assert coerce_tool_params("simulate_c_workload", params) == []
-    assert "run_args" in (validate_tool_params("simulate_c_workload", params) or "")
+    assert coerce_tool_params("benchmark_c_snippet", params) == []
+    assert "label" in (validate_tool_params("benchmark_c_snippet", params) or "")
 
 
 def test_a_structure_serialised_as_json_is_parsed_back():

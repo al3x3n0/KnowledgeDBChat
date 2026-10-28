@@ -22,7 +22,7 @@ APP = Path(__file__).resolve().parents[1] / "app"
 
 #: Handlers that catch Exception (or everything) and whose whole body is
 #: ``pass`` or ``continue``. May only shrink.
-LIMIT = 227
+LIMIT = 226
 
 
 def _silent_swallows(tree: ast.AST):

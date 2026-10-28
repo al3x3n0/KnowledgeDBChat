@@ -2,7 +2,7 @@
 User management API endpoints.
 """
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from loguru import logger
@@ -18,6 +18,7 @@ from app.models.user import User
 from app.schemas.auth import PasswordChange, UserResponse
 from app.schemas.common import PaginatedResponse
 from app.schemas.memory import UserPreferencesResponse, UserPreferencesUpdate
+from app.services import llm_provider_catalog as provider_catalog
 from app.services.auth_service import auth_service, get_current_user, require_admin
 from app.services.collaboration_service import (
     list_collaboration_users as load_collaboration_users,
@@ -47,6 +48,30 @@ LLM_TASK_TYPES = [
 ]
 
 
+class CustomProviderIn(BaseModel):
+    """A saved provider as the page sends it. ``api_key`` is sent only to
+    set or replace the key; leaving it out keeps the one already saved."""
+
+    id: Optional[str] = Field(None, max_length=32)
+    name: str = Field(..., max_length=60)
+    kind: str = Field("openai_compatible", max_length=32)
+    api_url: str = Field(..., max_length=500)
+    default_model: Optional[str] = Field(None, max_length=100)
+    models: List[str] = Field(default_factory=list, max_length=50)
+    api_key: Optional[str] = Field(None, max_length=500)
+    clear_api_key: bool = False
+
+
+class CustomProviderOut(BaseModel):
+    id: str
+    name: str
+    kind: str
+    api_url: str
+    default_model: Optional[str] = None
+    models: List[str] = Field(default_factory=list)
+    api_key_set: bool = False
+
+
 class LLMSettingsUpdate(BaseModel):
     """Schema for updating only LLM settings."""
 
@@ -66,11 +91,16 @@ class LLMSettingsUpdate(BaseModel):
     llm_max_tokens: Optional[int] = Field(
         None, ge=1, le=32000, description="Max response tokens"
     )
-    llm_task_models: Optional[dict] = Field(
+    llm_task_models: Optional[Dict[str, str]] = Field(
         None, description="Per-task model overrides: {task_type: model_name}"
     )
-    llm_task_providers: Optional[dict] = Field(
+    llm_task_providers: Optional[Dict[str, str]] = Field(
         None, description="Per-task provider overrides: {task_type: provider}"
+    )
+    llm_providers: Optional[List[CustomProviderIn]] = Field(
+        None,
+        description="Saved custom providers, named elsewhere as custom:<id>",
+        max_length=provider_catalog.MAX_CUSTOM_PROVIDERS,
     )
 
 
@@ -83,8 +113,9 @@ class LLMSettingsResponse(BaseModel):
     llm_api_key_set: bool = False  # Don't return the actual key, just whether it's set
     llm_temperature: Optional[float] = None
     llm_max_tokens: Optional[int] = None
-    llm_task_models: Optional[dict] = None  # Per-task model overrides
-    llm_task_providers: Optional[dict] = None  # Per-task provider overrides
+    llm_task_models: Optional[Dict[str, str]] = None  # Per-task model overrides
+    llm_task_providers: Optional[Dict[str, str]] = None  # Per-task provider overrides
+    llm_providers: List[CustomProviderOut] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -94,6 +125,80 @@ class LLMModelsResponse(BaseModel):
     models: List[str] = Field(default_factory=list)
     default_model: Optional[str] = None
     error: Optional[str] = None
+
+
+class BuiltinProviderOut(BaseModel):
+    id: str
+    label: str
+    api_url: Optional[str] = None
+    default_model: Optional[str] = None
+    models: List[str] = Field(default_factory=list)
+    system_configured: bool = False
+    requires_api_key: bool = True
+
+
+class ProviderTemplateOut(BaseModel):
+    id: str
+    label: str
+    kind: str
+    api_url: str
+    requires_api_key: bool = False
+    description: str = ""
+
+
+class LLMProviderCatalogResponse(BaseModel):
+    system_provider: str
+    system_model: Optional[str] = None
+    builtin: List[BuiltinProviderOut]
+    templates: List[ProviderTemplateOut]
+    kinds: List[str]
+
+
+class ProviderTestRequest(BaseModel):
+    kind: str = Field("openai_compatible", max_length=32)
+    api_url: str = Field(..., max_length=500)
+    api_key: Optional[str] = Field(None, max_length=500)
+    # A saved provider whose key to use when none is sent; only if the URL
+    # is still the saved one, so a saved key never goes somewhere new.
+    id: Optional[str] = Field(None, max_length=32)
+
+
+class ProviderTestResponse(BaseModel):
+    ok: bool
+    models: List[str] = Field(default_factory=list)
+    error: Optional[str] = None
+
+
+def _llm_settings_response(preferences: UserPreferences) -> LLMSettingsResponse:
+    return LLMSettingsResponse(
+        llm_provider=preferences.llm_provider,
+        llm_model=preferences.llm_model,
+        llm_api_url=preferences.llm_api_url,
+        llm_api_key_set=bool(preferences.llm_api_key),
+        llm_temperature=preferences.llm_temperature,
+        llm_max_tokens=preferences.llm_max_tokens,
+        llm_task_models=preferences.llm_task_models,
+        llm_task_providers=getattr(preferences, "llm_task_providers", None),
+        llm_providers=provider_catalog.public_view(
+            getattr(preferences, "llm_providers", None)
+        ),
+    )
+
+
+def _system_model(provider: str) -> Optional[str]:
+    if provider == "ollama":
+        return settings.DEFAULT_MODEL
+    for p in provider_catalog.builtin_providers():
+        if p["id"] == provider:
+            return p["default_model"]
+    return settings.DEFAULT_MODEL
+
+
+async def _own_preferences(db: AsyncSession, user: User) -> Optional[UserPreferences]:
+    result = await db.execute(
+        select(UserPreferences).where(UserPreferences.user_id == user.id)
+    )
+    return result.scalar_one_or_none()
 
 
 router = APIRouter()
@@ -319,16 +424,7 @@ async def get_my_llm_settings(
             # Return defaults (all None)
             return LLMSettingsResponse()
 
-        return LLMSettingsResponse(
-            llm_provider=preferences.llm_provider,
-            llm_model=preferences.llm_model,
-            llm_api_url=preferences.llm_api_url,
-            llm_api_key_set=bool(preferences.llm_api_key),
-            llm_temperature=preferences.llm_temperature,
-            llm_max_tokens=preferences.llm_max_tokens,
-            llm_task_models=preferences.llm_task_models,
-            llm_task_providers=getattr(preferences, "llm_task_providers", None),
-        )
+        return _llm_settings_response(preferences)
     except Exception as e:
         logger.error(f"Error getting LLM settings: {e}")
         raise HTTPException(status_code=500, detail="Failed to get LLM settings")
@@ -354,22 +450,45 @@ async def update_my_llm_settings(
 
         # Update only provided fields
         update_data = updates.model_dump(exclude_unset=True)
+        if "llm_providers" in update_data:
+            try:
+                update_data["llm_providers"] = (
+                    provider_catalog.normalize_custom_providers(
+                        updates.llm_providers,
+                        getattr(preferences, "llm_providers", None),
+                    )
+                    or None
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
         for field, value in update_data.items():
             setattr(preferences, field, value)
+
+        # Every provider choice must name something, checked on the state
+        # this update leaves: deleting a saved provider and moving off it
+        # arrive in one request.
+        task_providers = getattr(preferences, "llm_task_providers", None) or {}
+        unknown = provider_catalog.unknown_references(
+            [preferences.llm_provider, *task_providers.values()],
+            getattr(preferences, "llm_providers", None),
+        )
+        if unknown:
+            await db.rollback()
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Unknown provider: "
+                    + ", ".join(sorted(set(unknown)))
+                    + ". Choose a built-in provider or a saved one."
+                ),
+            )
 
         await db.commit()
         await db.refresh(preferences)
 
-        return LLMSettingsResponse(
-            llm_provider=preferences.llm_provider,
-            llm_model=preferences.llm_model,
-            llm_api_url=preferences.llm_api_url,
-            llm_api_key_set=bool(preferences.llm_api_key),
-            llm_temperature=preferences.llm_temperature,
-            llm_max_tokens=preferences.llm_max_tokens,
-            llm_task_models=preferences.llm_task_models,
-            llm_task_providers=getattr(preferences, "llm_task_providers", None),
-        )
+        return _llm_settings_response(preferences)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error updating LLM settings: {e}")
         raise HTTPException(status_code=500, detail="Failed to update LLM settings")
@@ -429,7 +548,36 @@ async def list_my_llm_models(
             or "ollama"
         ).lower()
 
+        if effective_provider.startswith(provider_catalog.CUSTOM_PREFIX):
+            stored = getattr(preferences, "llm_providers", None)
+            saved = provider_catalog.find_custom(stored, effective_provider)
+            if saved is None:
+                return LLMModelsResponse(
+                    provider=effective_provider,
+                    error="No saved provider by that name",
+                )
+            listed = await provider_catalog.list_models(
+                str(saved.get("kind")),
+                str(saved.get("api_url")),
+                provider_catalog.decrypt_key(saved),
+            )
+            names = list(saved.get("models") or [])
+            names += [m for m in listed["models"] if m not in names]
+            return LLMModelsResponse(
+                provider=effective_provider,
+                models=names,
+                default_model=saved.get("default_model"),
+                error=listed["error"],
+            )
+
         if effective_provider != "ollama":
+            for p in provider_catalog.builtin_providers():
+                if p["id"] == effective_provider:
+                    return LLMModelsResponse(
+                        provider=effective_provider,
+                        models=p["models"],
+                        default_model=p["default_model"],
+                    )
             return LLMModelsResponse(
                 provider=effective_provider,
                 models=[],
@@ -454,3 +602,44 @@ async def list_my_llm_models(
             default_model=None,
             error="Failed to list models",
         )
+
+
+@router.get("/me/llm-providers", response_model=LLMProviderCatalogResponse)
+async def get_llm_provider_catalog(
+    current_user: User = Depends(get_current_user),
+):
+    """What can be chosen: the built-in providers (and whether the
+    deployment holds a key for each) and templates for a custom one."""
+    system_provider = (settings.LLM_PROVIDER or "deepseek").lower()
+    return LLMProviderCatalogResponse(
+        system_provider=system_provider,
+        system_model=_system_model(system_provider),
+        builtin=provider_catalog.builtin_providers(),
+        templates=provider_catalog.TEMPLATES,
+        kinds=list(provider_catalog.CUSTOM_KINDS),
+    )
+
+
+@router.post("/me/llm-providers/test", response_model=ProviderTestResponse)
+async def test_llm_provider(
+    body: ProviderTestRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ask an endpoint which models it serves, before or after saving it.
+
+    Only model names come back, never the server's reply.
+    """
+    if body.kind not in provider_catalog.CUSTOM_KINDS:
+        raise HTTPException(status_code=400, detail=f"Unknown kind {body.kind!r}")
+    api_key = body.api_key
+    if not api_key and body.id:
+        preferences = await _own_preferences(db, current_user)
+        saved = provider_catalog.find_custom(
+            getattr(preferences, "llm_providers", None),
+            provider_catalog.CUSTOM_PREFIX + body.id,
+        )
+        if saved and str(saved.get("api_url")) == body.api_url.rstrip("/"):
+            api_key = provider_catalog.decrypt_key(saved)
+    result = await provider_catalog.list_models(body.kind, body.api_url, api_key)
+    return ProviderTestResponse(**result)

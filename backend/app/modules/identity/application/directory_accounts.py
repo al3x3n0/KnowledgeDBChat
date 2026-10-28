@@ -99,17 +99,68 @@ def may_link(existing: User, entry: Any) -> bool:
     """
     if getattr(existing, "auth_provider", "local") == DIRECTORY:
         return True
+    ours = (existing.email or "").strip().lower()
+    theirs = (getattr(entry, "email", None) or "").strip().lower()
     if self_registered(existing):
         # Anyone may register, and nothing checks the email they give: a
         # stranger could register a directory person's name and email before
         # that person first signs in, use the account, and have the
-        # directory hand it to them. Not by email, not by name.
-        return False
+        # directory hand it to them. Not by name, and by email only once an
+        # admin has vouched for that address.
+        return bool(ours) and ours == theirs and vouched_email(existing) == ours
     if getattr(settings, "LDAP_LINK_LOCAL_USERS_BY_USERNAME", False):
         return True
-    ours = (existing.email or "").strip().lower()
-    theirs = (getattr(entry, "email", None) or "").strip().lower()
     return bool(ours) and ours == theirs
+
+
+def vouched_email(user: User) -> Optional[str]:
+    """The address an admin vouched for on this account, lower-cased.
+
+    Kept with the address rather than as a flag, so a vouch never carries
+    over to an email the account did not have when it was given.
+    """
+    metadata = user.auth_metadata if isinstance(user.auth_metadata, dict) else {}
+    vouched = metadata.get("vouched")
+    if not isinstance(vouched, dict) or not user.is_verified:
+        return None
+    email = vouched.get("email")
+    return email.strip().lower() if isinstance(email, str) and email.strip() else None
+
+
+async def vouch(
+    db: AsyncSession, username: str, *, by: User, verified: bool = True
+) -> User:
+    """Record that an admin vouches for a local account's email, or withdraw it.
+
+    There is no mail to verify an address with, so this is how a
+    self-registered account becomes one the directory may link by email.
+    Raises ``LookupError`` when there is no such account and
+    :class:`AccountRefused` for a directory-managed one, which the directory
+    already vouches for.
+    """
+    user = await _first(db, User.username == (username or "").strip())
+    if user is None:
+        raise LookupError(f"no account is named '{username}'")
+    if getattr(user, "auth_provider", "local") == DIRECTORY:
+        raise AccountRefused(
+            f"'{user.username}' is managed by the directory, which vouches for it"
+        )
+    metadata = dict(user.auth_metadata) if isinstance(user.auth_metadata, dict) else {}
+    if verified:
+        metadata["vouched"] = {
+            "email": (user.email or "").strip().lower(),
+            "by": by.username,
+            "at": datetime.utcnow().isoformat(),
+        }
+    else:
+        metadata.pop("vouched", None)
+    # A new dict, assigned: the column is plain JSON.
+    user.auth_metadata = metadata
+    user.is_verified = verified
+    user.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(user)
+    return user
 
 
 def _metadata(user: Optional[User], entry: Any) -> dict:
@@ -225,7 +276,8 @@ async def account_for(
             if self_registered(existing):
                 raise AccountRefused(
                     f"the local account '{existing.username}' was registered from "
-                    "the sign-in page, and the directory never links those"
+                    "the sign-in page, and the directory links those only when an "
+                    "admin has vouched for the same email"
                 )
             raise AccountRefused(
                 f"the local account '{existing.username}' has the same name but "

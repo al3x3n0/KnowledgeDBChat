@@ -27,6 +27,7 @@ from sqlalchemy import desc, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
+from app.agent_core import research_programs
 from app.agent_core.runtime import AgentRuntimeRunner
 from app.agent_core.tool_specs.spec import ToolSpec
 from app.models.agent_definition import AgentDefinition
@@ -190,7 +191,7 @@ def _tool_requires_params(tool_name: str) -> bool:
     """
     try:
         from app.agent_core.tool_catalog import get_tool_metadata
-        from app.services.agent_tool_validation import ALTERNATIVE_FIELDS
+        from app.services.agent_tool_validation import alternative_fields
 
         metadata = get_tool_metadata(tool_name)
         schema = getattr(metadata, "input_schema", None) or {}
@@ -198,7 +199,7 @@ def _tool_requires_params(tool_name: str) -> bool:
         # so `required` alone said "no arguments needed" and the critic's
         # pivot called clone_and_index_repo and scan_for_optimizations with
         # {} -- three wasted actions in one live run, each a certain refusal.
-        return bool(schema.get("required")) or tool_name in ALTERNATIVE_FIELDS
+        return bool(schema.get("required")) or bool(alternative_fields(tool_name))
     except Exception:
         return False
 
@@ -253,6 +254,7 @@ class _AutonomousRuntimeAdapter:
         # no longer what the loop trusts.
         self._iterations_started = 0
         self._errors_seen = 0
+        self._loop_round_recorded = False
         # A resumed job continues from its checkpoint, so the budget is
         # counted from where it actually started rather than from zero.
         self._start_iteration = int(getattr(job, "iteration", 0) or 0)
@@ -261,6 +263,9 @@ class _AutonomousRuntimeAdapter:
     #: same thing goes wrong every time, and the iterations left will be spent
     #: the same way.
     MAX_ITERATION_ERRORS = 5
+
+    def _has_model_budget(self) -> bool:
+        return int(self.job.llm_calls_used or 0) < int(self.job.max_llm_calls or 0)
 
     async def can_continue(self) -> bool:
         # Checked before the job's own limits, because this one cannot be
@@ -314,9 +319,19 @@ class _AutonomousRuntimeAdapter:
         preserved_iteration = self.job.iteration
         preserved_errors = self.job.error_count
         preserved_log = self.job.execution_log
+        preserved_llm_calls = int(self.job.llm_calls_used or 0)
+        preserved_tool_calls = int(self.job.tool_calls_used or 0)
         await self.db.refresh(self.job)
         self.job.iteration = preserved_iteration
         self.job.error_count = preserved_errors
+        # Reload control state without refunding requests already made. A
+        # higher persisted count is authoritative too, so retain the maximum.
+        self.job.llm_calls_used = max(
+            preserved_llm_calls, int(self.job.llm_calls_used or 0)
+        )
+        self.job.tool_calls_used = max(
+            preserved_tool_calls, int(self.job.tool_calls_used or 0)
+        )
         if preserved_log is not None and len(preserved_log or []) > len(
             self.job.execution_log or []
         ):
@@ -324,7 +339,8 @@ class _AutonomousRuntimeAdapter:
         if self.job.status not in [AgentJobStatus.RUNNING.value]:
             logger.info(f"Job {self.job.id} status changed to {self.job.status}")
             return False
-        return True
+        # The reload may also reveal a tighter limit or a now-exhausted count.
+        return self.job.can_continue()
 
     async def on_iteration_start(self) -> None:
         self._iterations_started += 1
@@ -333,13 +349,16 @@ class _AutonomousRuntimeAdapter:
         # ever. This makes the job's number a report of what the loop did.
         self.job.iteration = self._start_iteration + self._iterations_started
         self.job.last_activity_at = datetime.utcnow()
-        # Snapshot what the run had established before this round, so a policy
-        # looking back over several rounds can tell a productive one from a
-        # round that only re-read what it already knew.
-        findings = self.state.get("findings")
-        agent_loop_policy.record_round(
-            self.state, len(findings) if isinstance(findings, list) else 0
-        )
+        # Keep a baseline, then count completed rounds. Recording only at the
+        # start leaves the last round invisible to can_continue and spends an
+        # extra iteration after the configured dry-round limit.
+        history = self.state.get("loop_finding_counts")
+        if not isinstance(history, list) or not history:
+            findings = self.state.get("findings")
+            agent_loop_policy.record_round(
+                self.state, len(findings) if isinstance(findings, list) else 0
+            )
+        self._loop_round_recorded = False
         warning = agent_loop_policy.policy_warning(self.job.config)
         if warning and not self.state.get("loop_policy_warned"):
             self.state["loop_policy_warned"] = True
@@ -390,36 +409,42 @@ class _AutonomousRuntimeAdapter:
             },
         )
 
-        used_causal_llm = await self.executor._ensure_causal_experiment_plan(
-            job=self.job,
-            state=self.state,
-            observation=observation,
-            user_settings=self.user_settings,
-            db=self.db,
-        )
-        if used_causal_llm:
-            self.job.llm_calls_used += 1
+        if self._has_model_budget():
+            used_causal_llm = await self.executor._ensure_causal_experiment_plan(
+                job=self.job,
+                state=self.state,
+                observation=observation,
+                user_settings=self.user_settings,
+                db=self.db,
+            )
+            if used_causal_llm:
+                self.job.llm_calls_used += 1
 
-        if self.executor._resolve_execution_mode(
-            self.job, state=self.state
-        ) == "plan_and_execute" and not self.state.get("execution_plan"):
-            self.job.current_phase = "planning"
-            self.job.phase_details = "Generating execution plan"
-        used_plan_llm = await self.executor._ensure_execution_plan(
-            self.job,
-            self.agent_def,
-            self.state,
-            observation,
-            self.user_settings,
-            db=self.db,
-        )
-        if used_plan_llm:
-            self.job.llm_calls_used += 1
+        if self._has_model_budget():
+            if self.executor._resolve_execution_mode(
+                self.job, state=self.state
+            ) == "plan_and_execute" and not self.state.get("execution_plan"):
+                self.job.current_phase = "planning"
+                self.job.phase_details = "Generating execution plan"
+            used_plan_llm = await self.executor._ensure_execution_plan(
+                self.job,
+                self.agent_def,
+                self.state,
+                observation,
+                self.user_settings,
+                db=self.db,
+            )
+            if used_plan_llm:
+                self.job.llm_calls_used += 1
         self.executor._ensure_subgoals(self.job, self.state)
         self.executor._ensure_swarm_chain_config(self.job, self.state)
         self.executor._ensure_subgoal_chain_config(self.job, self.state)
 
-        if self.executor._should_run_critic(self.job, self.state):
+        if self._has_model_budget() and self.executor._should_run_critic(
+            self.job, self.state
+        ):
+            # A request still spends its slot when no usable note comes back.
+            self.job.llm_calls_used += 1
             critic_note = await self.executor._run_critic_pass(
                 self.job, self.state, observation, self.user_settings, db=self.db
             )
@@ -433,7 +458,6 @@ class _AutonomousRuntimeAdapter:
                 )
                 self.state["critic_notes"] = notes[-max(1, max_notes) :]
                 self.state["last_critic_iteration"] = int(self.job.iteration or 0)
-                self.job.llm_calls_used += 1
                 trigger_info = (
                     self.state.get("critic_last_trigger")
                     if isinstance(self.state.get("critic_last_trigger"), dict)
@@ -464,7 +488,11 @@ class _AutonomousRuntimeAdapter:
                     }
                 )
 
-        if self.state.get("execution_plan") and not self.state.get("plan_completed"):
+        if (
+            self._has_model_budget()
+            and self.state.get("execution_plan")
+            and not self.state.get("plan_completed")
+        ):
             replan_trigger = self.executor.planner.evaluate_replan_triggers(
                 self.job,
                 self.state,
@@ -478,6 +506,7 @@ class _AutonomousRuntimeAdapter:
                     if isinstance(self.state.get("skill_profile"), dict)
                     else None,
                 )
+                self.job.llm_calls_used += 1
                 revised = await self.executor.planner.replan(
                     job=self.job,
                     state=self.state,
@@ -488,7 +517,6 @@ class _AutonomousRuntimeAdapter:
                     trigger_reason=replan_trigger,
                 )
                 self.executor._apply_revised_plan(self.state, revised)
-                self.job.llm_calls_used += 1
                 self.job.add_log_entry(
                     {
                         "phase": "replan",
@@ -506,6 +534,18 @@ class _AutonomousRuntimeAdapter:
         await controls.close_bracket(self.executor, self.job, self.db, self.state)
 
     async def think_phase(self, observation: Dict[str, Any]) -> Dict[str, Any]:
+        # Observation/planning may have consumed the final slot since the
+        # iteration-start check. Stop before asking for another decision.
+        if not self._has_model_budget():
+            self.job.add_log_entry(
+                {"phase": "limit_reached", "reason": "max_llm_calls"}
+            )
+            return {
+                "goal_achieved": False,
+                "should_stop": True,
+                "stop_reason": "max_llm_calls",
+                "action": None,
+            }
         decision = await self.executor.thinking_service.think(
             self.executor,
             self.job,
@@ -1288,7 +1328,9 @@ class _AutonomousRuntimeAdapter:
         )
         self.state["goal_progress"] = progress
         self.job.progress = progress
-        self.job.llm_calls_used += 1
+        # Progress scoring is deterministic for every job type. Charging it
+        # as a model call inflates usage and can exhaust a resumed loop's
+        # remaining budget before its next thinking phase.
         self.executor._advance_execution_plan_state(
             state=self.state,
             action=action,
@@ -1485,6 +1527,16 @@ class _AutonomousRuntimeAdapter:
 
         return {"progress": progress, "should_stop": False}
 
+    def _record_loop_round(self) -> None:
+        # Completion can fail after recording (for example during a commit).
+        # The error path must not count that same round a second time.
+        if not self._loop_round_recorded:
+            findings = self.state.get("findings")
+            agent_loop_policy.record_round(
+                self.state, len(findings) if isinstance(findings, list) else 0
+            )
+            self._loop_round_recorded = True
+
     async def on_iteration_complete(
         self,
         observation: Dict[str, Any],
@@ -1501,6 +1553,7 @@ class _AutonomousRuntimeAdapter:
         progress = int((evaluation or {}).get("progress", 0) or 0)
 
         findings_count = len(self.state["findings"])
+        self._record_loop_round()
         self.job.add_log_entry(
             {
                 "phase": "iteration_complete",
@@ -1585,6 +1638,7 @@ class _AutonomousRuntimeAdapter:
         await self.db.commit()
 
     async def on_iteration_error(self, exc: Exception) -> bool:
+        self._record_loop_round()
         self._errors_seen += 1
         logger.error(
             f"Error in iteration {self.job.iteration} "
@@ -1827,6 +1881,8 @@ class AutonomousAgentExecutor:
                 build_autonomous_snapshot_provider(self),
                 build_autonomous_project_bootstrap_provider(self),
                 build_autonomous_sandbox_skill_provider(self),
+                # Installed research programs, after every built-in.
+                *research_programs.build_providers(self),
                 # Last: it claims the reserved `p_` namespace, which no
                 # built-in may occupy, so ordering cannot matter -- but a
                 # contributed tool should never be ahead of a first-party one
@@ -3897,6 +3953,15 @@ class AutonomousAgentExecutor:
         # Walk up the chain: a stage may assume evidence from further back than
         # its immediate parent.
         inherited: List[Dict[str, Any]] = []
+        existing = state.get("findings")
+        seen = {
+            (
+                str(f.get("inherited_from_job_id") or ""),
+                agent_loop_policy.finding_identity(f),
+            )
+            for f in (existing if isinstance(existing, list) else [])
+            if isinstance(f, dict) and f.get("inherited") is True
+        }
         flagged_perishable: set = set()
         seen_jobs = 0
         current_id = parent_id
@@ -3920,8 +3985,21 @@ class AutonomousAgentExecutor:
                     # fixed at import -- cannot know one user's skills.
                     flagged_perishable.add(str(finding.get("type")))
                     continue
+                # A parent may already carry a grandparent's evidence. Keep
+                # the original producer, and import a claim only once even
+                # when a checkpoint resumes or the ancestor walk sees it again.
+                origin = str(
+                    finding.get("inherited_from_job_id")
+                    if finding.get("inherited") is True
+                    and finding.get("inherited_from_job_id")
+                    else ancestor.id
+                )
+                identity = (origin, agent_loop_policy.finding_identity(finding))
+                if identity in seen:
+                    continue
+                seen.add(identity)
                 carried = dict(finding)
-                carried["inherited_from_job_id"] = str(ancestor.id)
+                carried["inherited_from_job_id"] = origin
                 carried["inherited"] = True
                 inherited.append(carried)
             current_id = getattr(ancestor, "parent_job_id", None)
@@ -4739,7 +4817,8 @@ class AutonomousAgentExecutor:
         """
         Generate causal hypotheses + minimal experiments once for research jobs.
 
-        Returns True when an LLM call was used.
+        Returns True when an LLM request was attempted, even if its response
+        required a deterministic fallback plan.
         """
         cfg = job.config if isinstance(job.config, dict) else {}
         if str(job.job_type or "").strip().lower() != "research":
@@ -4846,7 +4925,8 @@ class AutonomousAgentExecutor:
                 max_hypotheses=max_hyp,
                 max_experiments=max_exp,
             )
-            used_llm = False
+            if hypotheses:
+                hypotheses["source"] = "fallback"
 
         if hypotheses:
             hypotheses["generated_at"] = datetime.utcnow().isoformat()

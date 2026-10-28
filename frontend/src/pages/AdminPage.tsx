@@ -37,6 +37,7 @@ import LoadingSpinner from '../components/common/LoadingSpinner';
 import toast from 'react-hot-toast';
 import ConfirmationModal from '../components/common/ConfirmationModal';
 import LdapPanel from '../components/admin/LdapPanel';
+import ResearchProgramsPanel from '../components/admin/ResearchProgramsPanel';
 
 const AdminPage: React.FC = () => {
   const location = useLocation();
@@ -58,6 +59,7 @@ const AdminPage: React.FC = () => {
     { id: 'logs', name: 'System Logs', icon: Server },
     { id: 'personas', name: 'Personas', icon: Users },
     { id: 'agents', name: 'Agents', icon: Bot },
+    { id: 'research-programs', name: 'Research Programs', icon: Cpu },
     { id: 'ai-hub', name: 'AI Hub', icon: Cpu },
     { id: 'tool-approvals', name: 'Tool Approvals', icon: CheckCircle },
     { id: 'directory', name: 'Directory (LDAP)', icon: Users },
@@ -171,6 +173,7 @@ const AdminPage: React.FC = () => {
             />
           )}
           {activeTab === 'agents' && <AgentsTab />}
+          {activeTab === 'research-programs' && <ResearchProgramsPanel />}
           {activeTab === 'ai-hub' && <AIHubAdminTab />}
           {activeTab === 'tool-approvals' && <ToolApprovalsTab />}
           {activeTab === 'directory' && <LdapPanel />}

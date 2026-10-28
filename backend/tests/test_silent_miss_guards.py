@@ -49,32 +49,3 @@ class TestAnUnreadableLoadIsNotAQuietMachine:
 
         assert "|| echo unknown" in source
         assert "/proc/loadavg 2>/dev/null'\n            ' || echo 0" not in source
-
-
-class TestAProbeThatLearnedNothingSaysSo:
-    """`missing = [c for c in REQUIRED if op_classes and c not in op_classes]`
-    made an empty op-class set produce an empty `missing`, so a model whose
-    config.ini could not be read came back `usable: True, probed: True` -- a
-    check that could not tell, recorded as a check that passed."""
-
-    def test_the_guard_no_longer_hides_an_empty_probe(self):
-        import inspect
-
-        from app.services import agent_gem5_sandbox
-
-        source = inspect.getsource(agent_gem5_sandbox.model_support)
-
-        assert "elif not op_classes:" in source
-        assert '"probed": False' in source
-
-    def test_the_required_classes_are_still_checked_when_known(self):
-        """The control: an empty probe reporting honestly must not stop a
-        populated probe from refusing a model that really lacks a unit."""
-        import inspect
-
-        from app.services import agent_gem5_sandbox
-
-        source = inspect.getsource(agent_gem5_sandbox.model_support)
-
-        assert "if c not in op_classes" in source
-        assert "op_classes and c not in op_classes" not in source

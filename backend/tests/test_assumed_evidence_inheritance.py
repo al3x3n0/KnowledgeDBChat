@@ -215,3 +215,56 @@ class TestAFindingCanSayItIsPerishable:
         child = _Job(config={"pipeline_assumes": ["skill_x"]}, parent=parent)
         state = await _inherit(child, _Db([parent, child]))
         assert len(state["findings"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_inheriting_again_after_resume_does_not_duplicate_evidence():
+    parent = _Job(findings=[{"type": "algorithm_spec", "title": "fastmod"}])
+    child = _Job(config={"pipeline_assumes": ["algorithm_spec"]}, parent=parent)
+    db = _Db([parent, child])
+    state = await _inherit(child, db)
+    await AutonomousAgentExecutor._inherit_assumed_findings(None, child, state, db)
+    assert len(state["findings"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_transitive_copy_keeps_its_origin_and_is_inherited_only_once():
+    origin = _Job(findings=[{"type": "algorithm_spec", "title": "fastmod"}])
+    middle = _Job(config={"pipeline_assumes": ["algorithm_spec"]}, parent=origin)
+    middle.results = await _inherit(middle, _Db([origin, middle]))
+    child = _Job(config={"pipeline_assumes": ["algorithm_spec"]}, parent=middle)
+    state = await _inherit(child, _Db([origin, middle, child]))
+    assert len(state["findings"]) == 1
+    assert state["findings"][0]["inherited_from_job_id"] == str(origin.id)
+
+
+@pytest.mark.asyncio
+async def test_independent_stages_can_establish_the_same_claim():
+    finding = {"type": "algorithm_spec", "title": "fastmod"}
+    origin = _Job(findings=[dict(finding)])
+    middle = _Job(parent=origin, findings=[dict(finding)])
+    child = _Job(config={"pipeline_assumes": ["algorithm_spec"]}, parent=middle)
+    state = await _inherit(child, _Db([origin, middle, child]))
+    assert len(state["findings"]) == 2
+    assert {f["inherited_from_job_id"] for f in state["findings"]} == {
+        str(origin.id),
+        str(middle.id),
+    }
+
+
+@pytest.mark.asyncio
+async def test_an_archived_copy_survives_an_unavailable_origin():
+    origin_id = str(uuid.uuid4())
+    middle = _Job(
+        findings=[
+            {
+                "type": "algorithm_spec",
+                "title": "fastmod",
+                "inherited": True,
+                "inherited_from_job_id": origin_id,
+            }
+        ]
+    )
+    child = _Job(config={"pipeline_assumes": ["algorithm_spec"]}, parent=middle)
+    state = await _inherit(child, _Db([middle, child]))
+    assert state["findings"][0]["inherited_from_job_id"] == origin_id

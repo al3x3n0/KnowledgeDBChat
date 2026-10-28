@@ -35,12 +35,10 @@ make download-models    # Download embedding + reranking models
 
 ### Sandbox images
 ```bash
-make sandbox-images     # every image this repo can build (base, compiler, polyglot, profiling, microarch)
+make sandbox-images     # every image this repo can build (base, compiler, polyglot, microarch)
 make sandbox-polyglot   # C + Rust + Python and nothing else; no crates, so not the default
 make sandbox-load       # copy what was built into the stack's sandbox daemon (see below)
 make sandbox-check      # which exist locally, the compiler image's toolchains, and what the app's daemon lacks
-make sandbox-gem5       # arm64 only; --platform is not optional
-make sandbox-axis AXIS_PATH=/path/to/axis   # context is the AXIS repo, not this one
 ```
 **The agent resolves images by their registry-qualified name**
 (`SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES` lists
@@ -180,7 +178,7 @@ database that already has a revision recorded.
 - **Backend**: FastAPI + SQLAlchemy 2.0 (async) + PostgreSQL + Redis + Celery
 - **Frontend**: React 18 + TypeScript (CRA) + Tailwind CSS + React Router 6; Zustand (workflow editor state), React Query (server cache), ReactFlow + Dagre (graph/workflow canvases), Tiptap (rich text), react-hook-form, react-hot-toast
 - **Vector Store**: Qdrant (default, runs as a service); ChromaDB (embedded) is still supported by the code but is no longer installed by default — it brings 173 MB of transitive dependencies for a backend this project does not use, so `pip install chromadb==0.4.18` first. **Embeddings and reranking run under ONNX Runtime** (`services/onnx_embeddings.py`), not torch: each model's own `onnx/model.onnx` is loaded from the same HF repo sentence-transformers used, so an existing index stays valid — measured per-vector cosine 1.000000 against the torch pipeline with identical top-5 rankings. That removed torch, transformers, scipy and scikit-learn (578 MB) for 53 MB, and it runs the cross-encoder torch fails on aarch64 ("could not create a primitive descriptor for a matmul primitive"), so reranking works where it used to disable itself. `EMBEDDING_BACKEND=sentence-transformers` restores the old path after `pip install sentence-transformers`
-- **LLM**: DeepSeek (default), OpenAI, Anthropic, Qwen (DashScope), Kimi (Moonshot), GLM (Zhipu), or Ollama, selected by `LLM_PROVIDER`. The stack no longer bundles Ollama — that provider still works against an instance you run yourself via `OLLAMA_BASE_URL`. `DEFAULT_MODEL` must name a model the chosen provider serves, since it reaches the request as `model or <PROVIDER>_MODEL`; per-request routing via `services/llm_routing.py` (fast/balanced/deep tiers). Native tool calling and schema-constrained output live in `services/llm_providers/` (used by `LLMService.generate_structured()`); `generate_response()` is the legacy prompted-text path
+- **LLM**: DeepSeek (default), OpenAI, Anthropic, Qwen (DashScope), Kimi (Moonshot), GLM (Zhipu), or Ollama, selected by `LLM_PROVIDER`. The stack no longer bundles Ollama — that provider still works against an instance you run yourself via `OLLAMA_BASE_URL`. per-request routing via `services/llm_routing.py` (fast/balanced/deep tiers). **A person picks a provider from a catalog the backend serves** (`services/llm_provider_catalog.py`, `GET /users/me/llm-providers`, Settings → LLM): the built-ins, whether the deployment holds a key for each, and templates (vLLM, LM Studio, llama.cpp, LiteLLM, OpenRouter...) for a **saved provider** -- a named endpoint with its own key (Fernet-encrypted, never returned) and default model, stored in `user_preferences.llm_providers` and named `custom:<id>` wherever a provider is named, so each task can go to a different endpoint. `UserLLMSettings.connection_for_task` is the one resolution both call paths and the routing preview use; the single API URL, key and default model belong to the default provider only (they used to follow a task sent elsewhere). Two routing faults found there: the prompted-text path sent `LLM_PROVIDER=openai` to DeepSeek's URL with DeepSeek's key, and `prefer_deepseek` overrode any configured provider whenever a DeepSeek key existed -- it now applies only to the deployment's own Ollama with nothing chosen. `DEFAULT_MODEL` is for Ollama and a bare custom URL; every other provider uses its own `<PROVIDER>_MODEL`, as the structured path already did. Native tool calling and schema-constrained output live in `services/llm_providers/` (used by `LLMService.generate_structured()`); `generate_response()` is the legacy prompted-text path
 - **Storage**: MinIO (S3-compatible object storage)
 - **Transcription**: OpenAI Whisper, on a dedicated `celery_transcription` worker. Whisper, librosa, speechbrain and resemblyzer (and numba/llvmlite under them) live only in `Dockerfile.transcription-worker`, which builds FROM the backend image; the API, general worker and beat images do not carry them. `transcribe_document` is routed to the `transcription` queue (`TRANSCRIPTION_CELERY_QUEUE`), so with that worker stopped the task waits rather than fails. Speaker diarization (speechbrain first, then resemblyzer + KMeans) is optional and off by default
 - **Code symbols**: every language through its own parser
@@ -580,6 +578,69 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   `workflow_engine.NODE_TYPES` rather than restated, and node ids are
   **refused** when longer than the `String(50)` column rather than truncated —
   shortening an identifier changes which node an edge names.
+- **Research programs** — domain research code that lives **outside this
+  repository** (`app/agent_core/research_programs.py`; decided 2026-10-19).
+  Core is the lab: the run loop, contracts, the sandbox, review, the knowledge
+  base. A line of research's own tools (a simulator driver, a binary rewriter,
+  the images they run in) are a *program*: a Python package in its own repo,
+  pip-installed into the backend and worker images, found through the
+  `kdbc.research_programs` entry point. It declares `ToolSpec`s exactly as a
+  built-in does, provider factories for their handlers, and its sandbox
+  images. **Installed means available**: its tools are appended to
+  `TOOL_SPECS` at import, so the model's menu, governance, job-type policy and
+  the evidence map see them unchanged (`TOOL_DOMAINS` lists them under the
+  program's name); the executor registers its providers after the built-ins;
+  its images join `allowed_images()`, since installing the program is the
+  decision to run them. A program that will not import, or that declares a
+  tool a built-in or another program already has, is refused **whole**,
+  logged, and shown by `GET /admin/research-programs` -- it does not stop the
+  API. `RESEARCH_PROGRAMS_DISABLED` leaves one out by name. Plugins and
+  sandbox skills stay the UI-authored, data-only extension points; a program
+  is code and is trusted like the rest of the image. **Core never imports a
+  program.** New domain-specific tools belong in a program, not in
+  `app/services`.
+- **Program identity travels with evidence** — each evidence manifest entry
+  from a loaded program records `research_program` (name and declared version)
+  at call time, including failed calls. Resuming after an upgrade appends the
+  new version without rewriting old entries. Bundle summaries and their README
+  read recorded versions rather than the current catalog, so disabling a
+  program cannot erase its history. Core tools and legacy entries omit this
+  field. Declared versions do not pin Python code bytes; sandbox image IDs and
+  artifact hashes retain their separate roles.
+  Replay reports include per-call `program_diagnostics` comparing recorded and
+  currently loaded owners, including missing programs and undeclared/legacy
+  versions. These diagnostics do not change the result-hash verdict or rewrite
+  the bundle: a changed implementation may reproduce the recorded result.
+  Missing replay handlers, failed tool results, and empty results are execution
+  errors, excluded from judged measurements. Without a differing successful
+  result, any such error makes the replay inconclusive.
+  `bundle_verified` findings retain the verified source job id and a bounded
+  replay summary (full counts, at most ten program issues and ten errors).
+  Counts are included in warning titles, and the context survives persisted
+  findings, inheritance, and `get_research_findings`. Full details stay in the
+  tool response; no requested replay is represented by a null summary.
+  Finding titles include the source job id so identical verification summaries
+  for different bundles remain distinct claims during inheritance.
+  Producer-defined `bundle-verification:` finding IDs fingerprint the full
+  verification context, including diagnostics beyond the ten-item sample.
+  Finding identity honors these IDs for bundle verifications; other finding
+  types and legacy bundle findings keep their title-based identity. Repeated
+  contexts reuse an ID, and transient error wording is not new progress.
+  `verify_run_bundle` declares both integrity and reproduction outputs to the
+  evidence planner. Broken integrity reports do not satisfy type requirements,
+  including legacy `intact: false` findings. A separate `bundle_reproduced`
+  finding is emitted only for intact artifacts with a successful, nonempty
+  replay covering all expected eligible comparisons; its ID is distinct from the integrity report but retains context
+  identity across stages. Skipped calls are reported, not claimed reproduced.
+  Core bundle contract types require their runtime proof fields; editable
+  labels on saved research notes cannot satisfy them.
+- **Evidence across research stages** — inherited findings keep the original
+  producer's job id, including across intermediate stages and checkpoint
+  resumes. Inheritance is idempotent by producer and the loop policy's claim
+  identity. Campaigns count each stage's own distinct claims; inherited copies
+  remain available to downstream tools but do not inflate campaign summaries,
+  conclusions, or discovery. Independent stages may establish the same claim
+  and both still count.
 - **Sandbox skills** — a sandboxed capability written as *data*. Every
   sandbox tool used to be a handler plus a `ToolSpec`, so a new kind of
   sandboxed work was a code change and a pipeline could only require evidence
@@ -903,6 +964,24 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   on its own (2026-10-16): four jobs, and an honest "the findings do not
   establish whether fastmod is worth adopting" -- the benchmark stage had
   taken one trial with no `%` baseline, which its contract allowed.
+- **Dry-round limits count completed iterations.** The runtime keeps one
+  initial finding-count baseline and records each round after its work, before
+  checkpointing. Recording only at iteration start hid the latest round from
+  the stop check and spent one extra action. A completion that fails after
+  recording is not counted again by the error path. The runtime regression
+  tests cover empty rounds, repeated claims, and failed finalization.
+- **A resumable blocked pause checkpoints its final state.** Tool-boundary
+  checkpoints precede evaluation, and a loop can stop before the five-round
+  periodic checkpoint. Finalization saves the findings and stop history at
+  `blocked_needs_input`, so a no-note resume can detect that it would stop
+  again, while an operator correction clears the stall and retains the work.
+- **Contract finding counts mean distinct eligible claims.** Both
+  `min_findings` and per-type thresholds use the loop policy's finding
+  identity. Repeating a tool result cannot satisfy a multi-result contract;
+  recalled evidence, reports of absence, and malformed entries cannot fill
+  the minimum. Filtering happens before deduplication so a recalled copy
+  cannot hide a fresh result. Raw findings stay intact for review and validity
+  checks, including checks that deliberately inspect successive measurements.
 - **The pipeline drafter is told what each evidence type is**
   (`agent_pipeline_draft._what_makes`). Its list gave a name, a duration and
   job types, so "implement fastmod in C, check it, benchmark it" became a
@@ -1000,31 +1079,6 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   search and progress reports without ingesting one. Naming a tool the runtime
   will refuse is worse than naming none, because the run plans around it.
 
-- **One idealisation/mechanism pairing crashes gem5: `l1d_capacity` with a
-  prefetcher on L2.** It dies inside
-  `BaseCache::CacheReqPacketQueue::sendDeferredPacket`, printing a libc
-  backtrace and *no* diagnostic — no `panic:`, no `fatal:`, nothing — which is
-  why it was first recorded as the unreadable "A simulation failed." and
-  diagnosed far too broadly, as idealisation being incompatible with mechanism
-  configs generally. `measure_headroom` now refuses this one pairing up front,
-  since the baseline arm runs first and a doomed run should not spend a full
-  simulation to discover it.
-
-  Measured one factor at a time, and the rule is exactly this narrow:
-  idealised l1d + L2 prefetcher **crashes**; default l1d + L2 prefetcher is
-  fine; idealised l1d with the same prefetcher on **l1d** is fine; idealised
-  l1d alone is fine (73.77% headroom on the kernel that first hit it);
-  idealised **l1i** or **l2** with an L2 prefetcher are fine. So the natural
-  progression — measure a mechanism, attribute what now limits it, bound the
-  remaining headroom of that same machine — is available; it is one square of
-  the grid that is not. An earlier hypothesis that the cause was the inverted
-  hierarchy (a 16MiB L1 above a 2MiB L2) was tested and refuted: widening L2
-  to 64MiB still crashes, so the prefetcher is the necessary ingredient.
-
-  A crash with no diagnostic is also why `_gem5_failure_line` falls back to
-  the top gem5 stack frame, demangled: when gem5 dies without a word, where it
-  died is the only account of what happened that exists.
-
 - **A failed tool call records why it failed.** `compact_action_ledger` keeps
   raw tool output out of `results.actions` deliberately, but it was dropping
   the error *message* too, so a failed call was indistinguishable from one that
@@ -1048,215 +1102,15 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   editing anything, and read the ledger's error, which is what makes an outage
   distinguishable from an agent with nothing to say.
 
-- **A model proposes application-specific optimisations; it never judges
-  them.** Scanning and `build_llvm_pass` stay inside what a compiler may
-  assume about *any* program. `propose_restructurings`
-  (`services/agent_restructure_proposer.py`) asks for the other kind of change:
-  one that holds because of something true of *this* application, such as a
-  parameter that doesn't change within a call, a bounded value range, or work
-  that gets repeated. Every proposal goes through `agent_restructure`, which
-  compiles a caller-owned driver once. A candidate replaces only the kernel,
-  so it can't change what is measured. The checks run in order: build, then
-  identical output on **every** input (a diverging candidate is never timed),
-  then interleaved timing against the original **and** against the original
-  at -O3 (plus -ffast-math if results may change). A win must beat the noise
-  on both the fastest and the median trial. `compiler_already_can` requires
-  the ceiling to *show* the gain. When the ceiling comparison is inside the
-  noise, the verdict is `faster_than_original`: a sincos rewrite 1.31x over
-  -O3 was first mislabelled because the host noise was 34%. Two things the
-  first live run got wrong are now structural. Proposals are requested **one
-  per call**, each told which ideas are taken; three whole files in one reply
-  exhausted a reasoning model's 32k budget before it wrote a character. And
-  when several proposals win, each is re-measured **against the best**. Three
-  "different" ideas all carried the same lookup table, so "branchless
-  masking, 6.3x" was really the table's 7.2x under another name.
-  `propose_binary_rewrites` / `evaluate_binary_rewrite`
-  (`services/agent_binary_rewrite.py`) apply the same judgement to one
-  function of a relocatable object. The model sees only the disassembly;
-  given C, it is compiled and withheld. The replacement is spliced in by
-  `llvm-objcopy --weaken-symbol`, and the build refuses a replacement that
-  does not export the symbol globally. Without that check the link succeeds
-  against the weakened original, and the "rewrite" is the original measured
-  twice. That check uses `false`, not `exit 1`: inside the shared script's
-  brace group, `exit` ended the whole run and hid the log. Equivalence is
-  checked on the given inputs, not proved, so the invariant a proposal relies
-  on is recorded on its finding.
-
-- **A rewrite can be searched for, not only proposed** (`search_restructurings`,
-  `services/agent_restructure_search.py`; adapted from ucb-bar/chia's gem5
-  alignment and AlphaEvolve-style loops). An archive of measured candidates;
-  each child is grown from a parent sampled from the best two, the model
-  shown the parent's source and what everything tried so far measured; a
-  child that fails scores 0 and the search goes on; two rounds without a
-  better candidate end it. Three things differ from chia, each for a reason
-  measured here. **Children are timed one at a time**, since a run timed
-  beside another measures the other. **Noise is not fitness**: an equivalent
-  candidate whose gain did not resolve scores the original's 1.0, so luck is
-  not bred. **The winner must hold on `holdout_inputs`** the search never
-  saw (at least one not among `inputs`), because the proposer's own rule --
-  iterating until something passes selects for whatever slips past these
-  inputs -- is exactly what a search does; only holdout evaluations are
-  recorded as findings. The holdout checks equivalence on the held-out
-  inputs and times the search's own bench input: timed on the first
-  held-out input, the first live run timed a 5-element edge case and read a
-  1.86x win as 0.66x. The archive (the original and the 15 fittest, kernels
-  included) is kept in the run's state per kernel, so a second call
-  continues it. **A search finds the harness.** The first live run's best
-  candidate (4.28x) cached the whole result in a static keyed on the array
-  pointer, because the driver calls the kernel twenty times to time it.
-  "Work repeated across calls" is a fair invariant when the application
-  repeats it and the measurement cannot tell that from the harness, so the
-  search's prompt says the repetition is the harness's, and a candidate that
-  adds mutable `static` state is flagged (`keeps_state_across_calls`, and in
-  the winner's summary) rather than refused, since a lazily built table
-  looks the same. A driver that varies its input between repetitions is the
-  structural answer and is the caller's to write. Also from that run: a
-  child bred from an unresolved 2.43x reciprocal rewrite resolved to a
-  1.86x `faster`. A second run met the provider down: it retried every
-  child for 47 minutes and answered "no candidate beat the original (0
-  judged)" as a success. An unreachable model now ends the search at the
-  first call, and a search that judged nothing is an error naming why. A
-  third run lost 3 of 4 children to the reasoning model spending its whole
-  32k budget thinking (`stop_reason=length`, 0 characters); a reply cut
-  empty is asked once more. No layer here exposes a reasoning budget (every
-  tier maps to the same model), so that is mitigated, not fixed.
-- **A winning rewrite can become a pass, and the pass is judged on four
-  separate questions** (`services/agent_pass_from_rewrite.py`,
-  `synthesize_pass_from_rewrite` and `evaluate_pass_on_kernel`). Does it
-  *fire* under `clang -fpass-plugin` (`did_not_fire` otherwise, never timed)?
-  Is the output identical on every input? How much of the hand rewrite's gain
-  does it *recover*? Both are timed in one interleaved run. And does it leave
-  a `must_decline` case alone? A pass that changes that case gets
-  `overreaches` whatever its speed. One live example matched any integer width
-  and indexed past its 256-entry table on 16-bit input. The kernel's inputs
-  could not catch that. The decline case is **frozen after the first
-  attempt**, or the cheapest repair is to move the test. Each source also goes
-  through `opt -passes=<name>,verify` right after the pass. Release clang does
-  not verify IR, and later passes papered over a fastmod pass's
-  `lshr i128 %x, i64 64`: the final IR verified clean, two repairs were told
-  only "diverged", and the verifier named the instruction at once
-  (`invalid_ir`). `not_expressible` is a result, not a failure. The model is
-  asked to say when a rewrite relies on a fact the IR does not carry. Asked to
-  drop stores the driver never reads, it named exactly that fact. Live: the
-  trig-table pass was 8.0x, with 116% recovered, since the table is computed
-  at compile time. The fastmod pass was 2.48x on the median, 2.44x over -O3.
-  An `unresolved` verdict is re-measured once at 15 trials, because the Docker
-  VM's load average cannot see load on the macOS host. It read "quiet" while
-  that host was saturated.
-
-- **The optimisation chain has been run on a real codebase (raylib 5.0),
-  and three things only real code could show are fixed.**
-  First, `scan_for_optimizations` could not take a repository at all. It
-  accepted only bare `.c` text, while raylib's translation units include
-  11 MB of headers under `external/`. It now takes `paths` + `include_dirs`
-  from a `clone_and_index_repo` workspace. The workspace is copied into the
-  sandbox directory, because the daemon resolves mounts on the host, where
-  only that directory is shared. Each failed file is reported with its own
-  first error. Over 7 of 7 translation units, 227 of 374 divisions inside
-  loops were loop-invariant.
-  Second, `propose_restructurings` did not re-measure. Three
-  `ImageBlurGaussian` rewrites were all bit-identical to raylib and all
-  `unresolved` at 7 trials. The proposer now does what the pass path does: an
-  unresolved candidate whose fastest trial hints at a gain is re-timed once at
-  15 trials. The one that held was 1.43x, and 1.44x over -O3: it stores the
-  blur's intermediate as bytes, since the vertical pass truncates to
-  `unsigned char` anyway.
-  Third, verdicts are judged on user+sys time from a tiny `wait4` helper
-  built in the sandbox. That helper resolves microseconds where `times` and
-  `/usr/bin/time` give 10 ms, and it enforces its own timeout, since
-  `timeout` around it would orphan the program. **This does not remove noise
-  under Docker Desktop.** The VM cannot see host preemption of its vCPUs, so
-  that time counts as running. The same null control read 0.159 on both
-  bases. Wall time is still used whenever CPU time exceeds it, because then
-  the candidate is multithreaded.
-  Turning the blur rewrite into a pass failed honestly: two compile errors,
-  then a pass that never fired. A data-layout change is a hard case, and
-  nothing broken was reported as working.
-  Found on the way: raylib's `ImageBlurGaussian` reads past its pixel buffer
-  when `blurSize` exceeds the image width or height. It is still present on
-  master `6ecf21f` (2026-09-28), shown with guard-page allocations since the
-  image ships no ASan runtime. It has not been reported upstream.
-
-- **Linked executables are optimised with BOLT, and judged like everything
-  else** (`services/agent_bolt.py`, image `kdbc-bolt-research` =
-  sandbox-base + Debian's `bolt-19`, `make sandbox-bolt`). A linked binary
-  has no linker left to prefer a strong symbol, so the function-swap used for
-  object files is impossible. What can change is *layout*. The tools build the
-  program **non-PIE with `--emit-relocs`**. Both are required: BOLT cannot
-  move functions without relocations, and instrumenting a PIE Lua failed on
-  `luaV_execute`, its hottest function. Profiles come from BOLT's own
-  instrumentation, because `perf` cannot run under `--cap-drop ALL`. By
-  default the profile is taken on **every input except the timed one**. The
-  measured binary is the profiled binary's own bytes, not a rebuild, because
-  BOLT maps a profile by address. There are three arms: the original, the
-  configuration under test, and the **standard recipe** as the ceiling, so
-  matching the recipe reads as `compiler_already_can`.
-  `propose_bolt_configurations` asks a model for configurations one at a
-  time, from the hot-function profile and what the recipe achieved.
-  `optimize_executable_with_bolt` judges one configuration you choose.
-  Options must come from an **allowlist**: they are interpolated into a
-  shell, and several BOLT options write files. BOLT's branch statistics are
-  reported as the mechanism (Lua: taken branches -89% to -93%), but the
-  verdict rests on timing. On Lua that effect is about 4% (fastest run 250 to
-  243 ms in a quiet prototype). With the host at load 58 to 72, every
-  configuration came back `unresolved`, which is correct.
-  Also fixed in the shared comparison: a timed run that *fails* is no longer
-  recorded as a time. A prototype "timed" a binary that was never built at
-  3 ms, beside the real one at 250 ms. A candidate that passes every
-  differential run and then fails a timed one is `crashed`.
-
-- **A speed verdict is paired, rotated, and checked against a control that
-  runs inside the same measurement.** This lives in the comparison
-  (`agent_restructure.judge_speed` / `run_comparison`), which every
-  restructuring, binary-rewrite, pass and BOLT tool shares. Three steps, each
-  forced by a measurement that lied without it.
-  *Paired*: arms are interleaved trial by trial, so the verdict uses the
-  median of per-trial ratios, with a distribution-free 95% interval from
-  order statistics (x(4)..x(12) at 15 pairs; the unpaired rule below 6).
-  Comparing each arm's fastest and median separately had to clear the whole
-  host's spread, and a ~4% BOLT effect sat under a 15-80% band.
-  *Rotated*: trial t starts at arm t mod k. With the baseline always first,
-  the same held-out BOLT recipe read "slower" (CI [0.776, 0.995]) and then
-  neutral on an identical run.
-  *Controlled*: a byte-identical copy of the baseline is timed alongside the
-  other arms, and a candidate's interval must clear the control's, not just
-  1. With the host at load 59, one of six A/A runs of identical binaries
-  still read "faster" at 1.037x, because bursty load breaks the independence
-  the interval assumes. With the control, six of six A/A runs were
-  unresolved at load 44-95. Real wins survived: raylib blur 1.31x
-  (CI [1.21, 1.48]), fastmod 2.10x. A win still has to clear the 3%
-  code-placement floor. Under this host's load, BOLT on Lua **never
-  resolved**: an in-sample "8%" did not reproduce, and a held-out profile
-  never showed a gain. That is the finding, not a failure to find one.
-
-- **A layout claim is a claim about a predictor, so BOLT can also be judged
-  in simulated cycles on a named core** (`measure="cycles"` on
-  `optimize_executable_with_bolt`, default `NeoverseV2`). Wall time could not
-  resolve BOLT on Lua on this host. Cycles are deterministic and could, and
-  the generic model told a very different story from the named one:
-
-  | core (conditional predictor) | recipe speedup | mispredicts |
-  |---|---|---|
-  | `O3CPU` (TournamentBP) | 1.307x | -72% |
-  | `NeoverseV2` (TAGE-SC-L 64KB) | 1.026x | -0.4% |
-
-  Nearly all of the generic core's gain was a weak predictor being rescued
-  by layout. What remains on a modern predictor is 19% fewer i-cache misses,
-  worth about 2.6%, below this host's wall-clock noise, which is why nothing
-  resolved natively.
-  Three traps are handled in code:
-  - BOLT cannot flush an instrumentation profile from a static binary at
-    exit, and a BOLT-ed static glibc binary aborts with "Unexpected reloc
-    type in static binary" (IRELATIVE). So the dynamic non-PIE build is
-    simulated; the gem5 and BOLT images carry the same glibc 2.36.
-  - NeoverseV2 cannot execute scalar `fmadd`, and Lua contains some. The
-    tool counts the fmadd family in every arm and refuses with the remedy
-    (`-ffp-contract=off`) before spending a simulation that would never end.
-  - `profile_run_args` sizes profiling separately from the measured run.
-    Simulation wants a small run and a profile wants a large one. Profiling
-    at the simulated size (n=300) turned the 2.6% gain into a 6.8% loss, with
-    mispredicts +134%.
-
+- **Compiler and microarchitecture research lives in its own repository,
+  `kdbc-uarch-lab`** (the `uarch_lab` research program): gem5 simulation and
+  mechanism studies, BOLT, application-specific restructuring and its search,
+  pass synthesis, binary rewriting, AXIS, fusion mining, profiling and
+  predictability -- their tools, handlers, images and tests. Its CLAUDE.md
+  carries what was learned building them (the gem5 crash rule, the paired and
+  controlled speed verdict, BOLT on a named core, inert mechanisms). The
+  speed-judging machinery (`judge_speed`, `run_comparison`) went with it,
+  since every caller is there.
 - **A deterministic sandbox run is replayed rather than repeated**
   (`services/sandbox_result_cache.py`; adapted from ucb-bar/chia's caching
   and bypass, and its golden results computed once). The gem5 simulations
@@ -1281,28 +1135,6 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   returns; the five studies built on `run_configs` do not yet repeat it in
   their own output. A study whose arms differ shares nothing: the key is the
   whole script, not each arm.
-- **A mechanism that never engaged is not a measurement of that mechanism.**
-  `evaluate_across_kernels` reported `geomean 1.0000x over 4 kernels` and
-  recorded it as a `mechanism_evaluation` finding a contract accepted. The
-  cause: an `IrregularStreamBufferPrefetcher` on L2 reports
-  `pfIdentified = 0, pfIssued = 0` -- it is instantiated, it has counters, and
-  it prefetches nothing -- so its arm matched the no-prefetcher run *to the
-  cycle* on every kernel. A `StridePrefetcher` on the same kernel issues
-  63,127 with 4,171 useful.
-
-  The dangerous form is not the 1.0000. Run the same inert mechanism against a
-  baseline that *does* prefetch and the null becomes the baseline's own gain,
-  inverted and attributed to the mechanism: a study concluded "ISB is a worse
-  general-purpose accelerator, geomean 0.78x, worst 0.50x" when 1/2.1028 =
-  0.4756 is simply Stride's measured 2.1x seen from the other side. Every
-  number was real and the conclusion was about a mechanism that never ran.
-
-  `inert_prefetchers()` reads the mechanism's **own counters**, not the
-  cycles: two arms can coincide honestly, but a prefetcher reporting zero
-  identified candidates has said itself that it never engaged. A mechanism
-  inert on every kernel is refused rather than reported. A build that does not
-  publish the counters accuses nobody -- silence is not evidence of idleness.
-
 - **A contract is read under every spelling it is written in.** A contract may
   name its evidence as `required_finding_types` (a list, or a mapping of
   counts) or as the normalised `required_finding_type_counts` — which is the
@@ -2013,7 +1845,9 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   savepoint, so one bad entry does not poison the rest.
   **Accounts are reconciled between logins** (`directory_sync.py`,
   `POST /admin/ldap/sync`, the Sync card; on a schedule with
-  `LDAP_SYNC_INTERVAL_MINUTES`, default 0 = off). Before, someone who left
+  `LDAP_SYNC_INTERVAL_MINUTES`; unset is hourly while LDAP is on, 0 turns
+  it off -- decided 2026-10-27, because off by default meant the only
+  deprovisioning was a sign-in nobody who left makes). Before, someone who left
   or lost the admin group kept the account and the role until they signed
   in again. Those `LDAP_IMPORT_FILTER` finds are the people who should have
   access: the rest are deactivated with `deactivated_by: directory_sync`,
@@ -2034,9 +1868,12 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   name and email before their first sign-in, use the account, and have the
   directory hand it to them (account pre-hijacking). The register route now
   records `auth_metadata.origin = "self_registration"`, and `may_link`
-  never links such an account, by email or by name; an account an admin
-  made, or one from before the marker, links as before (nothing marks any
-  account verified, so "verified" could not be the rule).
+  never links such an account by name, and by email only once an admin
+  has **vouched** for that address (`POST /admin/ldap/vouch`, the Vouch
+  card; decided 2026-10-27 -- there is no mail to verify one with). The
+  vouch is kept as `auth_metadata.vouched.email` with who gave it, so it
+  never covers an email the account did not have when it was given. An
+  account an admin made, or one from before the marker, links as before.
   `AUTH_SELF_REGISTRATION` unset means "allowed unless LDAP is on", the
   page reads `GET /auth/options` and hides "Sign up" when it is off, and
   says "Sign in with your directory account" when there is one. An
@@ -2066,8 +1903,12 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   control and member searches between pages, an entry moved to another OU
   keeps its account, and the sync deactivates a deleted entry and takes a
   lost admin role. The first run failed on the image's bundled CA, which
-  had expired: the client refusing it is the verification working. Not
-  run against Active Directory; `objectGUID` is tested as bytes only.
+  had expired: the client refusing it is the verification working.
+  `backend/scripts/ldap_test_server.sh` starts that server, and CI's
+  `ldap-real-server` job runs the file over both transports; the script
+  waits for LDAPS as well as plain LDAP, because the first local run met
+  LDAPS still dropping handshakes after plain binds worked. Not run
+  against Active Directory; `objectGUID` is tested as bytes only.
 - MCP API keys are tied to users; tool policies evaluated per user context
 
 ### Service Layer Pattern
@@ -2322,7 +2163,7 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   refuses a 500 whose `detail` is built from the exception. 4xx responses
   still carry their message: that text is for the caller.
 - **`except Exception: pass` is capped** (`tests/
-  test_silent_exception_swallows.py`, 227 and only shrinking). Not a demand
+  test_silent_exception_swallows.py`, 226 and only shrinking). Not a demand
   to rewrite them: a new best-effort step catches what it expects or logs
   what it ignores.
 - **A time limit on waiting is not a time limit on the work.**

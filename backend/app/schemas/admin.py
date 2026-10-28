@@ -153,3 +153,24 @@ class IngestionStatusResponse(BaseModel):
     vector_store: IngestionVectorStoreStatusResponse
     sources: List[IngestionSourceStatusResponse]
     recent_document_errors: List[Dict[str, Any]]
+
+
+class ResearchProgramInfo(BaseModel):
+    name: str
+    version: str = ""
+    description: str = ""
+    tools: List[str] = []
+    sandbox_images: List[str] = []
+
+
+class ResearchProgramFailure(BaseModel):
+    name: str
+    reason: str
+
+
+class ResearchProgramsStatus(BaseModel):
+    """Installed research programs: loaded, refused, and turned off."""
+
+    loaded: List[ResearchProgramInfo] = []
+    failed: List[ResearchProgramFailure] = []
+    disabled: List[str] = []

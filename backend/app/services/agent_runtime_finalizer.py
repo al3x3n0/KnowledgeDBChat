@@ -541,6 +541,18 @@ async def finalize_job(
         job.completed_at = datetime.utcnow()
     job.progress = state.get("goal_progress", 0)
 
+    # Operator actions live in persisted results, not checkpoint runtime state.
+    # Keep their audit history when rebuilding the final execution summary.
+    previous_results = job.results if isinstance(job.results, dict) else {}
+    previous_execution = previous_results.get("execution_strategy")
+    previous_execution = (
+        previous_execution if isinstance(previous_execution, dict) else {}
+    )
+    operator_interventions = previous_execution.get("operator_interventions")
+    operator_interventions = (
+        list(operator_interventions) if isinstance(operator_interventions, list) else []
+    )
+
     # Compile results
     findings = state.get("findings", []) or []
     artifacts = state.get("artifacts", []) or []
@@ -701,6 +713,7 @@ async def finalize_job(
     )
 
     job.results["execution_strategy"] = {
+        "operator_interventions": operator_interventions,
         "execution_mode": str(state.get("execution_mode") or "adaptive"),
         "execution_plan": (state.get("execution_plan") or [])[:12]
         if isinstance(state.get("execution_plan"), list)
@@ -1893,6 +1906,13 @@ async def finalize_job(
     hold_for_chain_approval(job)
 
     if job.status == AgentJobStatus.PAUSED.value:
+        if getattr(job, "current_phase", None) == "blocked_needs_input":
+            # Tool checkpoints precede evaluation, and the periodic checkpoint
+            # may not have run yet. A resumable pause must preserve its final
+            # evidence and stop history, not restore an earlier tool boundary.
+            await executor.checkpoint_service.save_checkpoint(
+                job=job, state=state, db=db, reason="blocked_needs_input"
+            )
         return {
             "status": job.status,
             "progress": job.progress,

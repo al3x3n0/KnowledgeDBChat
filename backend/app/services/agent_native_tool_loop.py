@@ -81,6 +81,9 @@ class NativeToolLoopService:
         async def _llm(
             *, with_tools: bool, response_schema: Optional[Dict[str, Any]] = None
         ):
+            # Count the request even when schema finalization raises and the
+            # caller receives the partial result instead of a completion.
+            result.llm_calls_used += 1
             completion = await llm_service.generate_structured(
                 messages=convo,
                 tools=tools if with_tools else None,
@@ -92,7 +95,6 @@ class NativeToolLoopService:
                 db=db,
                 snapshot_context=snapshot_context,
             )
-            result.llm_calls_used += 1
             return completion
 
         while True:
@@ -175,12 +177,12 @@ class NativeToolLoopService:
                 result.stop_reason = "repeated_tool_calls"
                 break
 
-        # Finalize: guarantee a schema-shaped answer when one was requested and
-        # the loop ended without one (budget stop, repeats, or free-text final).
+        # Schema finalization shares the same hard request budget as tool
+        # rounds. A caller must handle a partial result when no slot remains.
         if (
             final_response_schema is not None
             and result.structured is None
-            and result.llm_calls_used < max_llm_calls + 1
+            and result.llm_calls_used < max_llm_calls
         ):
             convo.append(
                 {

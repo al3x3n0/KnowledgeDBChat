@@ -43,6 +43,7 @@ from app.schemas.admin import (
     IngestionSourceStatusResponse,
     IngestionStatusResponse,
     IngestionVectorStoreStatusResponse,
+    ResearchProgramsStatus,
     SystemStatsResponse,
     TaskTriggerResponse,
 )
@@ -70,6 +71,8 @@ from app.schemas.ldap import (
     LdapSyncResponse,
     LdapTestRequest,
     LdapTestResponse,
+    LdapVouchRequest,
+    LdapVouchResponse,
 )
 from app.services import agent_sandbox_runtime
 from app.services.auth_service import require_admin
@@ -102,6 +105,14 @@ async def _set_download_task(task_id: str, payload: dict, ttl: int = 3600) -> No
 async def _get_download_task(task_id: str) -> dict | None:
     value = await cache_service.get(f"admin:download-task:{task_id}")
     return value if isinstance(value, dict) else None
+
+
+@router.get("/research-programs", response_model=ResearchProgramsStatus)
+async def research_programs_status(current_user: User = Depends(require_admin)):
+    """Which research programs this process loaded, and why any were not."""
+    from app.agent_core import research_programs
+
+    return research_programs.status()
 
 
 @router.get("/whisper/status")
@@ -287,6 +298,38 @@ async def ldap_sync_accounts(
     if not payload.dry_run:
         await asyncio.to_thread(sync_status.save_report, report)
     return LdapSyncResponse(**report)
+
+
+@router.post("/ldap/vouch", response_model=LdapVouchResponse)
+async def ldap_vouch_for_account(
+    payload: LdapVouchRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """
+    Admin: vouch for a local account's email, or withdraw the vouch.
+
+    Nothing sends mail, so no address a person typed at sign-up is checked.
+    The directory links a self-registered account only by an email an admin
+    has vouched for here; the vouch names the address, so a later change of
+    email is not covered by it.
+    """
+    from app.modules.identity.application import directory_accounts
+
+    try:
+        user = await directory_accounts.vouch(
+            db, payload.username, by=current_user, verified=payload.verified
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except directory_accounts.AccountRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return LdapVouchResponse(
+        username=user.username,
+        email=user.email,
+        is_verified=bool(user.is_verified),
+        self_registered=directory_accounts.self_registered(user),
+    )
 
 
 async def _directory_entries(search_filter: Optional[str], limit: int):

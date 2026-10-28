@@ -627,6 +627,90 @@ Run the evaluation regression gate with:
 make test-rnd-evals
 ```
 
+## Model-call accounting
+
+Progress scoring is deterministic and does not consume `max_llm_calls` or
+increment `llm_calls_used`. This also applies when scoring inherited findings or
+completing a contract after the last available model call. Historical stored
+usage totals are retained; they are not recalculated by this change.
+
+For the optional native tool loop, `native_tool_loop.max_llm_calls` includes
+the final schema-formatting request. That request runs only if a slot remains,
+and a failed formatting request still counts as an attempt. If the native loop
+uses its allowance without producing a valid decision, it returns a budget-stop
+decision instead of making a prompted fallback or parse-repair request. Already
+gathered findings remain in the run state; this stop does not claim that the
+goal was achieved. Planning that spends the job's final slot also prevents a
+subsequent thinking request in the same iteration.
+
+Observation rechecks the remaining job allowance before causal planning,
+execution planning, criticism, and replanning. A request that falls back to a
+deterministic plan or yields no critic note still consumes its attempted call;
+disabled or already-completed planning does not. Existing plans and findings
+remain available when later model steps are skipped for lack of allowance.
+
+Reloading job control state keeps the higher of the in-memory and persisted
+model/tool usage counts. A refresh cannot refund calls already made, while
+higher stored usage, tightened limits, and cancellation still take effect before
+the next iteration. This preserves usage across refreshes; it does not reconstruct
+calls lost before the refresh boundary.
+
+Automatic history compaction counts its summary request against the same job
+allowance, including failed requests. When only the decision's last slot remains,
+compaction uses its deterministic digest without a model request. Disabled,
+below-threshold, and digest-only compaction do not consume model-call allowance.
+
+Final conclusion synthesis also shares the job allowance. Structured output and
+its prompted JSON fallback each count as a request, including failures; fallback
+runs only if another slot remains. If no allowance remains, the optional
+conclusion has `generated_by: budget_exhausted` and no invented answer. Findings
+and normal chain completion remain available. Campaign-level synthesis, which
+has no single job allowance, is unchanged.
+
+## Evidence bundle completion contracts
+
+For a readable evidence bundle, `verify_run_bundle` returns a
+`bundle_verified` integrity report. A broken
+bundle remains visible for diagnosis but does not count toward a finding-type
+completion contract, including historical reports marked `intact: false`. A
+manually saved finding with a verification type label is not runtime proof and
+cannot satisfy either verification contract.
+
+To require reproduction rather than integrity alone, use this job configuration:
+
+```json
+{
+  "goal_contract": {
+    "enabled": true,
+    "required_finding_types": ["bundle_reproduced"]
+  }
+}
+```
+
+For a pipeline stage, put the inner contract under the stage's `contract` key.
+Call `verify_run_bundle` with `replay: true`; pass `job_id` to check an earlier
+job belonging to the same owner, or omit it to check the current run. When a
+stage has an allowed-tools list, include both `verify_run_bundle` and the recorded
+tools it must replay; replay keeps the stage's tool policy.
+
+`bundle_reproduced` is emitted only when artifacts are intact and a successful
+replay compared every eligible original successful call, with at least one
+comparison. Integrity-only checks, changed results,
+execution errors, all-skipped replays, and partial legacy comparisons do not
+satisfy this contract.
+Wall-clock results and other skipped calls remain reported; the finding proves
+the comparisons that ran, not that every recorded call was comparable. Its
+`replay_summary` records expected, judged, and skipped counts. Timing-dependent
+calls and originally failed calls are excluded from expected comparisons; a
+legacy successful call without a canonical hash remains expected and prevents
+the stronger reproduction proof.
+
+Both outputs retain source job IDs, program diagnostics, and stable context IDs
+when passed to downstream stages. A reproduced result may carry a program-version
+mismatch warning: matching outputs do not establish identical installed code. A stage may
+assume `bundle_reproduced` to consume an upstream proof; that is not a fresh
+replay by the receiving stage.
+
 ## Suggested first deployment
 
 If the goal is to "proceed with autonomous RnD AI agents" in a controlled way, start with one of these tracks:

@@ -25,8 +25,8 @@ def _pipeline(*stages, name="p"):
 class TestReadingASpec:
     def test_a_pipeline_is_read_from_plain_config(self):
         pipeline = _pipeline(
-            _stage("one", ["counter_trace"]),
-            _stage("two", ["predictability_ceiling"], depends_on=["one"]),
+            _stage("one", ["algorithm_spec"]),
+            _stage("two", ["implementation_verified"], depends_on=["one"]),
         )
         assert pipeline.name == "p"
         assert [s.id for s in pipeline.stages] == ["one", "two"]
@@ -34,13 +34,13 @@ class TestReadingASpec:
 
     def test_dependencies_may_be_written_as_a_string(self):
         pipeline = _pipeline(
-            _stage("one", ["counter_trace"]),
-            _stage("two", ["predictability_ceiling"], depends_on="one"),
+            _stage("one", ["algorithm_spec"]),
+            _stage("two", ["implementation_verified"], depends_on="one"),
         )
         assert pipeline.stages[1].depends_on == ("one",)
 
     def test_a_stage_without_a_loop_runs_once(self):
-        pipeline = _pipeline(_stage("one", ["counter_trace"]))
+        pipeline = _pipeline(_stage("one", ["algorithm_spec"]))
         assert pipeline.stages[0].iterations() == 1
 
     def test_required_types_are_read_however_the_contract_writes_them(self):
@@ -50,13 +50,13 @@ class TestReadingASpec:
                     {
                         "id": "a",
                         "contract": {
-                            "required_finding_type_counts": {"counter_trace": 3}
+                            "required_finding_type_counts": {"algorithm_spec": 3}
                         },
                     }
                 ]
             }
         )
-        assert as_counts.stages[0].required_finding_types() == ["counter_trace"]
+        assert as_counts.stages[0].required_finding_types() == ["algorithm_spec"]
 
 
 class TestRefusalsThatCostNothing:
@@ -71,20 +71,20 @@ class TestRefusalsThatCostNothing:
                 "second",
                 ["benchmark_measurement"],
                 depends_on=["first"],
-                assumes=["counter_trace"],
+                assumes=["algorithm_spec"],
             ),
         )
         problems = ps.validate(pipeline)
-        assert any("assumes 'counter_trace'" in p for p in problems)
+        assert any("assumes 'algorithm_spec'" in p for p in problems)
 
     def test_an_assumption_a_parent_does_produce_is_accepted(self):
         pipeline = _pipeline(
-            _stage("first", ["counter_trace"]),
+            _stage("first", ["algorithm_spec"]),
             _stage(
                 "second",
-                ["predictability_ceiling"],
+                ["implementation_verified"],
                 depends_on=["first"],
-                assumes=["counter_trace"],
+                assumes=["algorithm_spec"],
             ),
         )
         assert ps.validate(pipeline) == []
@@ -92,13 +92,13 @@ class TestRefusalsThatCostNothing:
     def test_an_assumption_inherited_from_a_grandparent_is_accepted(self):
         """Evidence carries down the chain, not just one step."""
         pipeline = _pipeline(
-            _stage("first", ["counter_trace"]),
-            _stage("second", ["predictability_ceiling"], depends_on=["first"]),
+            _stage("first", ["algorithm_spec"]),
+            _stage("second", ["implementation_verified"], depends_on=["first"]),
             _stage(
                 "third",
-                ["counter_tap_selection"],
+                ["prediction_recorded"],
                 depends_on=["second"],
-                assumes=["counter_trace"],
+                assumes=["algorithm_spec"],
             ),
         )
         assert ps.validate(pipeline) == []
@@ -191,16 +191,16 @@ class TestLoopBounds:
 class TestCompiling:
     def test_dependencies_come_before_dependants(self):
         pipeline = _pipeline(
-            _stage("last", ["counter_tap_selection"], depends_on=["middle"]),
-            _stage("first", ["counter_trace"]),
-            _stage("middle", ["predictability_ceiling"], depends_on=["first"]),
+            _stage("last", ["prediction_recorded"], depends_on=["middle"]),
+            _stage("first", ["algorithm_spec"]),
+            _stage("middle", ["implementation_verified"], depends_on=["first"]),
         )
         assert ps.topological_order(pipeline) == ["first", "middle", "last"]
 
     def test_the_same_spec_always_compiles_the_same_way(self):
         """Two runs of one pipeline are only comparable if the plan is stable."""
         pipeline = _pipeline(
-            _stage("a", ["counter_trace"]),
+            _stage("a", ["algorithm_spec"]),
             _stage("b", ["codegen_measurement"]),
             _stage("c", ["benchmark_measurement"]),
         )
@@ -210,23 +210,23 @@ class TestCompiling:
         """chain_for derives from nothing, which is right for one job and wrong
         for a stage: priced that way, cost grows with the depth of the graph
         and an affordable pipeline gets refused."""
-        alone = ps.plan(_pipeline(_stage("solo", ["predictability_ceiling"])))
-        assert "sample_hardware_counters" in alone.stages[0].tools
+        alone = ps.plan(_pipeline(_stage("solo", ["implementation_verified"])))
+        assert "extract_algorithm_spec" in alone.stages[0].tools
 
         chained = ps.plan(
             _pipeline(
-                _stage("trace", ["counter_trace"]),
-                _stage("ceiling", ["predictability_ceiling"], depends_on=["trace"]),
+                _stage("trace", ["algorithm_spec"]),
+                _stage("ceiling", ["implementation_verified"], depends_on=["trace"]),
             )
         )
         second = next(s for s in chained.stages if s.stage_id == "ceiling")
-        assert second.tools == ("measure_predictability",)
+        assert second.tools == ("check_implementation",)
         assert second.seconds < alone.stages[0].seconds
 
     def test_a_loop_is_priced_at_its_worst_case(self):
-        once = ps.plan(_pipeline(_stage("a", ["counter_trace"])))
+        once = ps.plan(_pipeline(_stage("a", ["algorithm_spec"])))
         thrice = ps.plan(
-            _pipeline(_stage("a", ["counter_trace"], loop={"max_iterations": 3}))
+            _pipeline(_stage("a", ["algorithm_spec"], loop={"max_iterations": 3}))
         )
         assert thrice.total_seconds == once.total_seconds * 3
 
@@ -237,7 +237,7 @@ class TestCompiling:
             _pipeline(
                 _stage("root", ["codegen_measurement"]),
                 _stage("left", ["benchmark_measurement"], depends_on=["root"]),
-                _stage("right", ["simulated_measurement"], depends_on=["root"]),
+                _stage("right", ["literature_review"], depends_on=["root"]),
             )
         )
         # Both branches wait on root, then run work of their own; the pipeline
@@ -247,9 +247,9 @@ class TestCompiling:
     def test_checkpoints_are_reported(self):
         compiled = ps.plan(
             _pipeline(
-                _stage("a", ["counter_trace"]),
+                _stage("a", ["algorithm_spec"]),
                 _stage(
-                    "b", ["predictability_ceiling"], depends_on=["a"], checkpoint=True
+                    "b", ["implementation_verified"], depends_on=["a"], checkpoint=True
                 ),
             )
         )
@@ -258,37 +258,37 @@ class TestCompiling:
 
 class TestSayingWhatItDoesNotKnow:
     def test_a_tool_with_no_recorded_cost_is_named_not_counted_as_free(self):
-        compiled = ps.plan(_pipeline(_stage("a", ["counter_tap_selection"])))
-        assert "select_counter_taps" in compiled.unpriced
+        compiled = ps.plan(_pipeline(_stage("a", ["prediction_recorded"])))
+        assert "record_prediction" in compiled.unpriced
 
     def test_the_description_says_the_estimate_is_a_floor(self):
         text = "\n".join(
-            ps.plan(_pipeline(_stage("a", ["counter_tap_selection"]))).describe()
+            ps.plan(_pipeline(_stage("a", ["prediction_recorded"]))).describe()
         )
         assert "floor" in text
 
     def test_fitting_the_budget_on_an_incomplete_estimate_carries_a_caveat(self):
         """This is how a budget comes to sound generous and be short."""
-        # model_parameters is produced by a tool with no recorded cost and no
+        # method_recorded is produced by a tool with no recorded cost and no
         # prerequisites, so this prices at nothing and is not therefore free.
-        verdict = ps.check_budget(_pipeline(_stage("a", ["model_parameters"])), 3600)
+        verdict = ps.check_budget(_pipeline(_stage("a", ["method_recorded"])), 3600)
         assert verdict["affordable"] is True
         assert "floor rather than a prediction" in verdict["caveat"]
 
 
 class TestAffording:
     def test_a_pipeline_that_cannot_afford_itself_is_refused_before_it_starts(self):
-        verdict = ps.check_budget(_pipeline(_stage("a", ["counter_trace"])), 60)
+        verdict = ps.check_budget(_pipeline(_stage("a", ["algorithm_spec"])), 30)
         assert verdict["affordable"] is False
         assert "short by" in verdict["refusal"]
 
     def test_the_refusal_says_what_to_do_about_it(self):
-        verdict = ps.check_budget(_pipeline(_stage("a", ["counter_trace"])), 60)
+        verdict = ps.check_budget(_pipeline(_stage("a", ["algorithm_spec"])), 30)
         for remedy in ("cut a stage", "lower a loop bound", "raise the budget"):
             assert remedy in verdict["refusal"]
 
     def test_a_pipeline_within_budget_is_allowed(self):
-        verdict = ps.check_budget(_pipeline(_stage("a", ["counter_trace"])), 3600 * 5)
+        verdict = ps.check_budget(_pipeline(_stage("a", ["algorithm_spec"])), 3600 * 5)
         assert verdict["affordable"] is True
 
 
@@ -301,17 +301,17 @@ class TestDescribing:
         text = "\n".join(
             ps.describe(
                 _pipeline(
-                    _stage("trace", ["counter_trace"]),
+                    _stage("trace", ["algorithm_spec"]),
                     _stage(
                         "ceiling",
-                        ["predictability_ceiling"],
+                        ["implementation_verified"],
                         depends_on=["trace"],
-                        assumes=["counter_trace"],
+                        assumes=["algorithm_spec"],
                     ),
                     name="study",
                 )
             )
         )
         assert "study" in text
-        assert "sample_hardware_counters" in text
-        assert "measure_predictability" in text
+        assert "extract_algorithm_spec" in text
+        assert "check_implementation" in text

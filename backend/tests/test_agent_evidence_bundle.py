@@ -7,6 +7,7 @@ hashed, and the image is pinned by id rather than tag.
 """
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -91,6 +92,63 @@ def test_entries_accumulate_in_order_as_the_run_goes(tmp_path):
     assert all(e["tool"] == "simulate_c_workload" for e in entries)
 
 
+def test_program_versions_survive_resume_upgrade_and_catalog_removal(
+    tmp_path, monkeypatch
+):
+    from app.agent_core import research_programs as programs
+    from app.agent_core.tool_specs.spec import ToolSpec
+
+    lab = programs.ResearchProgram(
+        name="test_lab",
+        version="1.0",
+        tool_specs=(
+            ToolSpec(name="measure_thing", description="Measure", parameters={}),
+        ),
+    )
+    monkeypatch.setattr(programs, "_REPORT", programs.LoadReport(loaded=[lab]))
+    first = _record(tmp_path, "measure_thing", {}, {"success": True})
+    original_manifest = (
+        bundle.bundle_dir("job-1", tmp_path) / bundle.MANIFEST_NAME
+    ).read_bytes()
+    monkeypatch.setattr(
+        programs, "_REPORT", programs.LoadReport(loaded=[replace(lab, version="2.0")])
+    )
+    second = _record(
+        tmp_path, "measure_thing", {}, {"success": False, "error": "failed"}
+    )
+    assert first["research_program"] == {"name": "test_lab", "version": "1.0"}
+    assert second["research_program"] == {"name": "test_lab", "version": "2.0"}
+    assert (
+        (bundle.bundle_dir("job-1", tmp_path) / bundle.MANIFEST_NAME)
+        .read_bytes()
+        .startswith(original_manifest)
+    )
+
+    # A different process with no program must still report historical versions.
+    monkeypatch.setattr(programs, "_REPORT", programs.LoadReport(disabled=["test_lab"]))
+    core = _record(tmp_path, "compile_c_snippet", {}, {"success": True})
+    assert "research_program" not in core
+    assert bundle.read_manifest("job-1", tmp_path) == [first, second, core]
+    summary = bundle.summarize("job-1", tmp_path)
+    assert summary["research_programs"] == [
+        {"name": "test_lab", "version": "1.0"},
+        {"name": "test_lab", "version": "2.0"},
+    ]
+    assert summary["failed"] == 1
+    assert bundle.verify_integrity("job-1", tmp_path)["intact"]
+    readme = (bundle.bundle_dir("job-1", tmp_path) / bundle.README_NAME).read_text()
+    assert "test_lab 1.0, test_lab 2.0" in readme
+
+
+def test_legacy_entries_do_not_infer_program_versions_from_current_catalog(tmp_path):
+    directory = bundle.bundle_dir("job-1", tmp_path)
+    directory.mkdir(parents=True)
+    (directory / bundle.MANIFEST_NAME).write_text(
+        json.dumps({"tool": "legacy_program_tool", "succeeded": True}) + "\n"
+    )
+    assert bundle.summarize("job-1", tmp_path)["research_programs"] == []
+
+
 def test_an_unpinned_entry_is_counted_rather_than_hidden(tmp_path):
     """A bundle that cannot say which image produced a result should say so."""
     _record(
@@ -116,12 +174,29 @@ def test_recording_never_raises_on_unserializable_input(tmp_path):
 
 
 def test_only_evidence_producing_tools_are_bundled():
-    assert "simulate_c_workload" in bundle.EVIDENCE_TOOLS
-    assert "profile_c_workload" in bundle.EVIDENCE_TOOLS
-    assert "axis_prove" in bundle.EVIDENCE_TOOLS
+    assert "compile_c_snippet" in bundle.evidence_tools()
+    assert "benchmark_c_snippet" in bundle.evidence_tools()
+    assert "analyze_snippet_cycles" in bundle.evidence_tools()
     # A bundle of every search would bury the measurements a reviewer checks.
-    assert "search_arxiv" not in bundle.EVIDENCE_TOOLS
-    assert "write_progress_report" not in bundle.EVIDENCE_TOOLS
+    assert "search_arxiv" not in bundle.evidence_tools()
+    assert "write_progress_report" not in bundle.evidence_tools()
+
+
+def test_a_research_program_s_measurements_are_bundled_too(monkeypatch):
+    """A program's simulator is evidence about the machine like core's own."""
+    from app.agent_core import research_programs as programs
+
+    lab = programs.ResearchProgram(
+        name="lab",
+        evidence_tools=("simulate_thing",),
+        image_origins={"kdbc-thing": {"dockerfile": "images/thing/Dockerfile"}},
+    )
+    monkeypatch.setattr(programs, "_REPORT", programs.LoadReport(loaded=[lab]))
+
+    assert "simulate_thing" in bundle.evidence_tools()
+    assert bundle.image_origin("ghcr.io/x/kdbc-thing:1") == {
+        "dockerfile": "images/thing/Dockerfile"
+    }
 
 
 def test_the_bundle_carries_its_own_verifier_from_the_first_entry(tmp_path):
@@ -195,6 +270,151 @@ class TestReplay:
         return execute
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "recorded_version,current_name,current_version,status",
+        [
+            ("1.0", "lab", "1.0", "match"),
+            ("1.0", "lab", "2.0", "version_mismatch"),
+            ("1.0", "replacement", "1.0", "program_mismatch"),
+            ("1.0", None, None, "program_unavailable"),
+            ("", "lab", "1.0", "version_unknown"),
+            ("1.0", "lab", "", "version_unknown"),
+        ],
+    )
+    @pytest.mark.parametrize("replay_cycles", [42, 43])
+    async def test_replay_reports_program_identity_separately_from_results(
+        self,
+        tmp_path,
+        monkeypatch,
+        recorded_version,
+        current_name,
+        current_version,
+        status,
+        replay_cycles,
+    ):
+        from app.agent_core import research_programs as programs
+        from app.agent_core.tool_specs.spec import ToolSpec
+
+        lab = programs.ResearchProgram(
+            name="lab",
+            version=recorded_version,
+            tool_specs=(
+                ToolSpec(name="measure", description="Measure", parameters={}),
+            ),
+        )
+        monkeypatch.setattr(programs, "_REPORT", programs.LoadReport(loaded=[lab]))
+        original = {"success": True, "data": {"cycles": 42}}
+        _record(tmp_path, "measure", {}, original)
+        directory = bundle.bundle_dir("job-1", tmp_path)
+        manifest = (directory / bundle.MANIFEST_NAME).read_bytes()
+        current = (
+            replace(lab, name=current_name, version=current_version)
+            if current_name is not None
+            else None
+        )
+        monkeypatch.setattr(
+            programs,
+            "_REPORT",
+            programs.LoadReport(loaded=[current] if current else []),
+        )
+        calls = []
+
+        async def execute(tool, params):
+            calls.append(tool)
+            return {"success": True, "data": {"cycles": replay_cycles}}
+
+        report = await bundle.replay_bundle("job-1", execute, root=tmp_path)
+        assert calls == ["measure"]
+        assert report["verdict"] == (
+            "reproduced" if replay_cycles == 42 else "differed"
+        )
+        assert report["program_diagnostics"] == [
+            {
+                "sequence": 1,
+                "tool": "measure",
+                "status": status,
+                "recorded": {"name": "lab", "version": recorded_version},
+                "current": {"name": current_name, "version": current_version}
+                if current
+                else None,
+            }
+        ]
+        assert (directory / bundle.MANIFEST_NAME).read_bytes() == manifest
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "tool,succeeded", [("measure", False), ("benchmark_c_snippet", True)]
+    )
+    async def test_skipped_calls_still_report_changed_program_versions(
+        self, tmp_path, monkeypatch, tool, succeeded
+    ):
+        from app.agent_core import research_programs as programs
+
+        monkeypatch.setattr(
+            programs, "tool_program", lambda _: {"name": "lab", "version": "1.0"}
+        )
+        _record(tmp_path, tool, {}, {"success": succeeded})
+        monkeypatch.setattr(
+            programs, "tool_program", lambda _: {"name": "lab", "version": "2.0"}
+        )
+        # An empty executor queue fails if a skipped tool is unexpectedly run.
+        report = await bundle.replay_bundle("job-1", self._executor([]), root=tmp_path)
+        assert report["judged"] == 0
+        assert report["skipped"][0]["tool"] == tool
+        assert report["program_diagnostics"][0]["status"] == "version_mismatch"
+
+    @pytest.mark.asyncio
+    async def test_legacy_program_calls_report_unknown_provenance(
+        self, tmp_path, monkeypatch
+    ):
+        from app.agent_core import research_programs as programs
+
+        monkeypatch.setattr(programs, "tool_program", lambda _: None)
+        _record(tmp_path, "legacy_measure", {}, {"success": True})
+        monkeypatch.setattr(
+            programs, "tool_program", lambda _: {"name": "lab", "version": "2.0"}
+        )
+        report = await bundle.replay_bundle(
+            "job-1", self._executor([{"success": True}]), root=tmp_path
+        )
+        assert report["program_diagnostics"][0]["status"] == "unrecorded"
+        assert report["program_diagnostics"][0]["recorded"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            {"success": False, "data": {"cycles": 42}},
+            {"error": "sandbox is unavailable"},
+            None,
+            {"success": False, "error": "x" * 500},
+        ],
+    )
+    @pytest.mark.parametrize("partial", [False, True])
+    async def test_failed_replays_are_errors_instead_of_changed_measurements(
+        self, tmp_path, failure, partial
+    ):
+        original = {"success": True, "data": {"cycles": 42}}
+        _record(tmp_path, "analyze_snippet_cycles", {"cpu": "test"}, original)
+        results = [failure]
+        if partial:
+            _record(tmp_path, "analyze_snippet_cycles", {"cpu": "other"}, original)
+            results.append(original)
+        manifest = bundle.bundle_dir("job-1", tmp_path) / bundle.MANIFEST_NAME
+        before = manifest.read_bytes()
+        report = await bundle.replay_bundle(
+            "job-1", self._executor(results), root=tmp_path
+        )
+        assert report["verdict"] == "inconclusive"
+        assert report["judged"] == int(partial)
+        assert report["reproduced"] == int(partial)
+        assert report["differed"] == []
+        assert len(report["errored"]) == 1
+        assert report["errored"][0]["sequence"] == 1
+        assert 0 < len(report["errored"][0]["why"]) <= 200
+        assert manifest.read_bytes() == before
+
+    @pytest.mark.asyncio
     async def test_an_identical_result_counts_as_reproduced(self, tmp_path):
         original = {"success": True, "data": {"cycles_per_iteration": 59.05}}
         _record(tmp_path, "analyze_snippet_cycles", {"cpu": "neoverse-n1"}, original)
@@ -205,6 +425,7 @@ class TestReplay:
 
         assert report["verdict"] == "reproduced"
         assert report["reproduced"] == 1
+        assert report["expected_comparisons"] == 1
         assert report["differed"] == []
 
     @pytest.mark.asyncio
@@ -255,7 +476,7 @@ class TestReplay:
         assert report["verdict"] == "reproduced"
 
     @pytest.mark.asyncio
-    async def test_a_benchmark_is_replayed_but_never_judged(self, tmp_path):
+    async def test_a_benchmark_is_skipped_and_never_judged(self, tmp_path):
         """Two honest runs of a wall-clock benchmark disagree."""
         _record(
             tmp_path,
@@ -309,15 +530,9 @@ class TestImagePortability:
     """A pinned id is only useful if a reader can act on it."""
 
     def test_a_project_image_says_how_to_rebuild_it(self):
-        origin = bundle.image_origin("ghcr.io/al3x3n0/kdbc-profiling-research:latest")
+        origin = bundle.image_origin("ghcr.io/al3x3n0/kdbc-polyglot-slim:latest")
 
-        assert "profiling-research/Dockerfile" in origin["dockerfile"]
-
-    def test_the_axis_image_warns_that_its_context_is_another_repository(self):
-        """Building it against this repo silently produces the wrong image."""
-        origin = bundle.image_origin("ghcr.io/al3x3n0/kdbc-axis-research:latest")
-
-        assert "AXIS repository" in origin["context"]
+        assert "polyglot-slim/Dockerfile" in origin["dockerfile"]
 
     def test_an_unknown_image_claims_no_origin(self):
         assert bundle.image_origin("someone-elses/image:latest") == {}
@@ -327,18 +542,18 @@ class TestImagePortability:
     ):
         monkeypatch.setitem(
             bundle._image_details,
-            "ghcr.io/al3x3n0/kdbc-gem5-research:latest",
+            "ghcr.io/al3x3n0/kdbc-compiler-research:latest",
             {
-                "reference": "ghcr.io/al3x3n0/kdbc-gem5-research:latest",
+                "reference": "ghcr.io/al3x3n0/kdbc-compiler-research:latest",
                 "id": "sha256:aaa",
                 "size_bytes": 574_000_000,
                 "created": "2026-08-18",
-                "origin": bundle.image_origin("kdbc-gem5-research"),
+                "origin": bundle.image_origin("kdbc-compiler-research"),
             },
         )
         _record(
             tmp_path,
-            "simulate_c_workload",
+            "compile_c_snippet",
             {"code": "x"},
             {"success": True},
             image_id="sha256:aaa",
@@ -417,3 +632,18 @@ def test_the_images_a_bundle_needs_are_readable_without_the_run(tmp_path, monkey
     known = bundle._images_known_to_bundle("job-1", tmp_path)
 
     assert [d["reference"] for d in known] == ["gem5-research:latest"]
+
+
+def test_bundle_verification_and_reproduction_have_a_runnable_producer():
+    from app.agent_core.tool_specs import spec_for
+    from app.services import agent_evidence_map
+
+    assert set(spec_for("verify_run_bundle").produces) == {
+        "bundle_verified",
+        "bundle_reproduced",
+    }
+    for finding_type in ("bundle_verified", "bundle_reproduced"):
+        assert agent_evidence_map.producer_of(finding_type) == "verify_run_bundle"
+        assert agent_evidence_map.chain_for([finding_type], job_type="analysis") == [
+            "verify_run_bundle"
+        ]

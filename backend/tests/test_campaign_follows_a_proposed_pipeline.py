@@ -276,6 +276,55 @@ async def test_the_conclusion_is_drawn_from_what_the_stages_found(
     assert {f["subject"] for f in findings} == {"survey the method"}
 
 
+async def test_inherited_stage_evidence_is_not_another_campaign_result(
+    db_session, test_user
+):
+    campaign = await _campaign(db_session, test_user)
+    job = await _launched(db_session, campaign)
+    await _proposes_and_completes(db_session, job)
+    find, specify = await _approved_and_run(db_session, job)
+    inherited = {
+        **find.results["findings"][0],
+        "inherited": True,
+        "inherited_from_job_id": str(find.id),
+    }
+    specify.results = {
+        **specify.results,
+        "findings": [inherited, *specify.results["findings"]],
+    }
+    await db_session.commit()
+
+    findings = await campaigns._all_findings(db_session, campaign)
+    assert [f["type"] for f in findings].count("papers_ingested") == 1
+    await campaigns.advance(db_session, campaign)
+    done = next(
+        i
+        for i in await campaigns._items(db_session, campaign)
+        if i.title == "survey the method"
+    )
+    assert done.outcome["finding_counts"]["papers_ingested"] == 1
+
+
+async def test_separate_measurements_with_the_same_title_both_count(
+    db_session, test_user
+):
+    campaign = await _campaign(db_session, test_user)
+    job = await _launched(db_session, campaign)
+    await _proposes_and_completes(db_session, job)
+    find, specify = await _approved_and_run(db_session, job)
+    for stage in (find, specify):
+        stage.results = {
+            "goal_contract": {"satisfied": True},
+            "findings": [
+                {"type": "measurement", "title": "baseline"},
+                {"type": "measurement", "title": "baseline"},
+            ],
+        }
+    await db_session.commit()
+    findings = await campaigns._all_findings(db_session, campaign)
+    assert len([f for f in findings if f["type"] == "measurement"]) == 2
+
+
 async def test_stages_spend_the_budget(db_session, test_user):
     campaign = await _campaign(db_session, test_user, max_jobs=3)
     job = await _launched(db_session, campaign)

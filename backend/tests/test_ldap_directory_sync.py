@@ -378,10 +378,37 @@ class TestSync:
 
 
 class TestSchedule:
-    def test_off_unless_an_interval_is_set(self, monkeypatch):
+    def test_an_explicit_zero_turns_it_off(self, monkeypatch):
+        monkeypatch.setattr(settings, "LDAP_ENABLED", True, raising=False)
         monkeypatch.setattr(settings, "LDAP_SYNC_INTERVAL_MINUTES", 0, raising=False)
 
+        assert sync_status.interval_minutes() == 0
         assert sync_status.claim_due_run() is False
+
+    def test_unset_is_hourly_with_ldap_on(self, monkeypatch):
+        # Off by default, someone who left kept the account until a sign-in
+        # they would never make.
+        monkeypatch.setattr(settings, "LDAP_ENABLED", True, raising=False)
+        monkeypatch.setattr(settings, "LDAP_SYNC_INTERVAL_MINUTES", None, raising=False)
+
+        assert sync_status.interval_minutes() == 60
+
+    def test_unset_is_off_with_ldap_off(self, monkeypatch):
+        monkeypatch.setattr(settings, "LDAP_ENABLED", False, raising=False)
+        monkeypatch.setattr(settings, "LDAP_SYNC_INTERVAL_MINUTES", None, raising=False)
+
+        assert sync_status.interval_minutes() == 0
+
+    def test_an_explicit_interval_is_kept(self, monkeypatch):
+        monkeypatch.setattr(settings, "LDAP_ENABLED", True, raising=False)
+        monkeypatch.setattr(settings, "LDAP_SYNC_INTERVAL_MINUTES", 15, raising=False)
+
+        assert sync_status.interval_minutes() == 15
+
+    def test_the_setting_is_unset_by_default(self):
+        from app.core.config import Settings
+
+        assert Settings.model_fields["LDAP_SYNC_INTERVAL_MINUTES"].default is None
 
     def test_the_task_does_nothing_when_off(self, directory, monkeypatch):
         from app.tasks.identity_tasks import sync_directory_accounts
@@ -419,12 +446,13 @@ class TestRoutes:
         assert response.status_code == 403
 
     def test_status_says_how_accounts_are_matched_and_how_often_synced(
-        self, ids, client, admin_headers
+        self, ids, client, admin_headers, monkeypatch
     ):
+        monkeypatch.setattr(settings, "LDAP_SYNC_INTERVAL_MINUTES", 30, raising=False)
         body = client.get("/api/v1/admin/ldap/status", headers=admin_headers).json()
 
         assert body["unique_id_attribute"] == "entryUUID"
-        assert body["sync_interval_minutes"] == 0
+        assert body["sync_interval_minutes"] == 30
 
     async def test_a_directory_account_cannot_set_a_local_password(
         self, ids, db_session

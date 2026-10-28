@@ -21,6 +21,8 @@ did.
 """
 
 from datetime import datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -222,6 +224,86 @@ class TestTheRunnerHonoursTheStop:
         result = await AgentRuntimeRunner().run(adapter)
         assert result["errors"] == adapter.MAX_ITERATION_ERRORS
         assert calls["observe"] == adapter.MAX_ITERATION_ERRORS
+
+
+class TestDryRoundsCountCompletedWork:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("productive_rounds", [0, 1, 2])
+    async def test_no_extra_action_after_two_completed_dry_rounds(
+        self, productive_rounds
+    ):
+        job = _Job(max_iterations=10)
+        job.config = {"loop_until": "no_new_findings", "loop_dry_rounds": 2}
+        session = _RevertingSession(revert=False)
+        session.commit = AsyncMock()
+        adapter = _adapter(job, session)
+        adapter.executor = SimpleNamespace(
+            trigger_progress_chain=AsyncMock(),
+            _persist_runtime_execution_strategy=lambda *args: None,
+            _save_checkpoint=AsyncMock(),
+        )
+        actions = []
+
+        async def observe():
+            return {}
+
+        async def think(observation):
+            return {"action": {"tool": "measure"}}
+
+        async def act(decision):
+            actions.append(job.iteration)
+            if job.iteration <= productive_rounds:
+                adapter.state["findings"].append(
+                    {"type": "measurement", "title": f"sample {job.iteration}"}
+                )
+            elif adapter.state["findings"]:
+                # A repeated result must not buy another round of work.
+                adapter.state["findings"].append(dict(adapter.state["findings"][-1]))
+            return {"action": decision["action"], "action_result": {"success": True}}
+
+        async def evaluate(decision, action_bundle):
+            return {"progress": 0, "should_stop": False}
+
+        async def result():
+            return adapter.state
+
+        adapter.observe_phase = observe
+        adapter.think_phase = think
+        adapter.act_phase = act
+        adapter.evaluate_phase = evaluate
+        adapter.build_run_result = result
+        state = await AgentRuntimeRunner().run(adapter)
+
+        assert len(actions) == productive_rounds + 2
+        assert "2 consecutive rounds" in state["loop_policy_stop_reason"]
+        assert state["loop_finding_counts"][-3:] == [productive_rounds] * 3
+
+    @pytest.mark.asyncio
+    async def test_failed_completion_does_not_count_one_round_twice(self):
+        job = _Job()
+        session = _RevertingSession(revert=False)
+        session.commit = AsyncMock()
+        adapter = _adapter(job, session)
+        adapter.executor = SimpleNamespace(
+            trigger_progress_chain=AsyncMock(side_effect=RuntimeError("write failed"))
+        )
+
+        await adapter.on_iteration_start()
+        adapter.state["findings"].append({"type": "measurement", "title": "sample"})
+        with pytest.raises(RuntimeError, match="write failed"):
+            await adapter.on_iteration_complete({}, {}, {}, {})
+        await adapter.on_iteration_error(RuntimeError("write failed"))
+
+        assert adapter.state["loop_finding_counts"] == [0, 1]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_round_is_counted_once(self):
+        adapter = _adapter(_Job(), _RevertingSession(revert=False))
+        adapter.db.commit = AsyncMock()
+        await adapter.on_iteration_start()
+        await adapter.on_iteration_error(RuntimeError("tool failed"))
+
+        assert adapter.state["loop_finding_counts"] == [0, 0]
 
 
 class TestRefreshDoesNotEraseTheRecord:

@@ -336,6 +336,16 @@ function getErrorMessage(error: AxiosError<ApiErrorResponse>): string {
   return error.response?.data?.detail || error.response?.data?.message || error.message || 'An error occurred';
 }
 
+// LLM provider selection: the backend's own schemas, not restatements.
+export type LLMSettings = components['schemas']['LLMSettingsResponse'];
+export type LLMProviderCatalog = components['schemas']['LLMProviderCatalogResponse'];
+export type ProviderTemplate = components['schemas']['ProviderTemplateOut'];
+export type SavedLLMProvider = components['schemas']['CustomProviderOut'];
+// `clear_api_key` has a server-side default, so it is optional to send.
+export type SavedLLMProviderInput = Omit<components['schemas']['CustomProviderIn'], 'clear_api_key'> & {
+  clear_api_key?: boolean;
+};
+
 export interface GitRepoRequestPayload {
   provider: 'github' | 'gitlab';
   name?: string;
@@ -1048,39 +1058,16 @@ class ApiClient {
   }
 
   // User LLM Settings
-  async getUserLLMSettings(): Promise<{
-    llm_provider: string | null;
-    llm_model: string | null;
-    llm_api_url: string | null;
-    llm_api_key_set: boolean;
-    llm_temperature: number | null;
-    llm_max_tokens: number | null;
-    llm_task_models: Record<string, string> | null;
-    llm_task_providers: Record<string, string> | null;
-  }> {
+  async getUserLLMSettings(): Promise<LLMSettings> {
     const response = await this.client.get('/api/v1/users/me/llm-settings');
     return response.data;
   }
 
-  async updateUserLLMSettings(settings: {
-    llm_provider?: string | null;
-    llm_model?: string | null;
-    llm_api_url?: string | null;
-    llm_api_key?: string | null;
-    llm_temperature?: number | null;
-    llm_max_tokens?: number | null;
-    llm_task_models?: Record<string, string> | null;
-    llm_task_providers?: Record<string, string> | null;
-  }): Promise<{
-    llm_provider: string | null;
-    llm_model: string | null;
-    llm_api_url: string | null;
-    llm_api_key_set: boolean;
-    llm_temperature: number | null;
-    llm_max_tokens: number | null;
-    llm_task_models: Record<string, string> | null;
-    llm_task_providers: Record<string, string> | null;
-  }> {
+  async updateUserLLMSettings(
+    settings: Omit<components['schemas']['LLMSettingsUpdate'], 'llm_providers'> & {
+      llm_providers?: SavedLLMProviderInput[] | null;
+    },
+  ): Promise<LLMSettings> {
     const response = await this.client.put('/api/v1/users/me/llm-settings', settings);
     return response.data;
   }
@@ -1090,8 +1077,20 @@ class ApiClient {
     return response.data;
   }
 
-  async listMyLLMModels(params?: { provider?: string }): Promise<{ provider: string; models: string[]; default_model?: string | null; error?: string | null }> {
+  async listMyLLMModels(params?: { provider?: string }): Promise<components['schemas']['LLMModelsResponse']> {
     const response = await this.client.get('/api/v1/users/me/llm-models', { params });
+    return response.data;
+  }
+
+  async getLLMProviderCatalog(): Promise<LLMProviderCatalog> {
+    const response = await this.client.get('/api/v1/users/me/llm-providers');
+    return response.data;
+  }
+
+  async testLLMProvider(
+    body: components['schemas']['ProviderTestRequest'],
+  ): Promise<components['schemas']['ProviderTestResponse']> {
+    const response = await this.client.post('/api/v1/users/me/llm-providers/test', body);
     return response.data;
   }
 

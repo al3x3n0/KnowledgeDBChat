@@ -959,17 +959,19 @@ async def preview_agent_routing(
     )
 
     # User overrides summary
+    user_conn = user_settings.connection_for_task(task_type)
     user_llm = {
         "provider": user_settings.get_provider_for_task(task_type),
-        "model": user_settings.get_model_for_task(task_type),
-        "api_url": user_settings.api_url,
+        "model": user_conn.model,
+        "api_url": user_conn.api_url,
         "has_custom": user_settings.has_custom_settings(),
     }
 
     notes: list[str] = []
-    if user_settings.api_url:
+    if user_conn.api_url:
         notes.append(
-            "User has custom api_url configured; runtime will route via custom OpenAI-compatible endpoint."
+            f"User settings send this task to {user_conn.api_url} "
+            f"({user_conn.provider or 'custom'})."
         )
     if any(t in {"fast", "balanced", "deep"} for t in attempt_tiers if t):
         notes.append(

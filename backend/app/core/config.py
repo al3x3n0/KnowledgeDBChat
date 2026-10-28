@@ -92,10 +92,10 @@ class Settings(BaseSettings):
     # Only used when LLM_PROVIDER is 'ollama'. Point it at an instance you run
     # yourself; nothing in the compose stacks serves this.
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    # Must name a model the configured provider actually serves: it reaches
-    # the request as `model or settings.<PROVIDER>_MODEL`, so an Ollama model
-    # name under LLM_PROVIDER=deepseek is sent to DeepSeek and rejected with a
-    # 400 naming the three it accepts.
+    # The model for Ollama, and for a bare custom API URL with no model.
+    # Every other provider falls back to its own <PROVIDER>_MODEL on both
+    # call paths: this used to reach the prompted-text path whatever the
+    # provider, so LLM_PROVIDER=openai sent deepseek-v4-pro to OpenAI.
     DEFAULT_MODEL: str = "deepseek-v4-pro"
     # For Ollama, models sized for a Mac: "llama3.2:1b" (~1GB, best for 8GB),
     # "llama3.2:3b" (~2GB), "phi3:mini" (~2GB), "gemma:2b" (~1.5GB); on more

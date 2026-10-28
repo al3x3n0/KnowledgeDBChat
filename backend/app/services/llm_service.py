@@ -38,9 +38,11 @@ from app.core.config import parse_llm_extra_headers, settings
 from app.models.llm_usage import LLMUsageEvent
 from app.services import llm_truncation
 from app.services.llm_concurrency import llm_slot
+from app.services.llm_provider_catalog import ResolvedConnection
 from app.services.llm_routing import (
     coerce_routing_config,
     compute_attempt_tiers,
+    prefers_deepseek,
     resolve_tier_overrides,
 )
 from app.utils.exceptions import LLMServiceError
@@ -125,6 +127,9 @@ class UserLLMSettings:
     max_tokens: Optional[int] = None
     task_models: Optional[Dict[str, str]] = None  # Per-task model overrides
     task_providers: Optional[Dict[str, str]] = None  # Per-task provider overrides
+    # Saved connections a provider choice may name as "custom:<id>"
+    # (stored form: keys encrypted). See llm_provider_catalog.
+    custom_providers: Optional[List[Dict[str, Any]]] = None
 
     @classmethod
     def from_preferences(cls, prefs) -> "UserLLMSettings":
@@ -140,6 +145,7 @@ class UserLLMSettings:
             max_tokens=getattr(prefs, "llm_max_tokens", None),
             task_models=getattr(prefs, "llm_task_models", None),
             task_providers=getattr(prefs, "llm_task_providers", None),
+            custom_providers=getattr(prefs, "llm_providers", None),
         )
 
     def has_custom_settings(self) -> bool:
@@ -178,6 +184,53 @@ class UserLLMSettings:
         if self.task_providers and task_type in self.task_providers:
             return self.task_providers[task_type]
         return self.provider
+
+    def connection_for_task(self, task_type: str) -> ResolvedConnection:
+        """Where a call of this task type goes, as far as these settings say.
+
+        The single API URL, key and default model belong to the person's
+        default provider. A task sent elsewhere does not take them: they
+        used to apply to every task, so a summarisation override to Ollama
+        still went to the custom URL, and a default model meant for one
+        provider was sent to another. A saved provider (``custom:<id>``)
+        brings its own endpoint, key and default model.
+        """
+        from app.services.llm_provider_catalog import (
+            CUSTOM_PREFIX,
+            KIND_TO_PROVIDER,
+            decrypt_key,
+            find_custom,
+        )
+
+        override = (self.task_providers or {}).get(task_type) or None
+        chosen = override or self.provider or None
+        follows_default = override is None or override == self.provider
+        task_model = (self.task_models or {}).get(task_type) or None
+        default_model = self.model if follows_default else None
+
+        if chosen and str(chosen).startswith(CUSTOM_PREFIX):
+            saved = find_custom(self.custom_providers, chosen)
+            if saved is None:
+                # A choice naming a provider since deleted: the deployment
+                # decides, as if nothing were chosen.
+                logger.warning(f"LLM provider {chosen!r} names no saved provider")
+                return ResolvedConnection(model=task_model)
+            return ResolvedConnection(
+                provider=KIND_TO_PROVIDER.get(
+                    str(saved.get("kind")), "openai_compatible"
+                ),
+                model=task_model or default_model or saved.get("default_model"),
+                api_url=saved.get("api_url"),
+                api_key=decrypt_key(saved),
+                chosen_by_user=True,
+            )
+        return ResolvedConnection(
+            provider=str(chosen).lower() if chosen else None,
+            model=task_model or default_model,
+            api_url=self.api_url if follows_default else None,
+            api_key=self.api_key if follows_default else None,
+            chosen_by_user=bool(chosen),
+        )
 
 
 async def load_user_llm_settings(db: Any, user_id: Any) -> Optional["UserLLMSettings"]:
@@ -798,18 +851,15 @@ class LLMService:
             effective_max_tokens = max_tokens
 
             if user_settings and user_settings.has_custom_settings():
-                task_provider = user_settings.get_provider_for_task(task_type)
-                if task_provider:
-                    effective_provider = task_provider.lower()
+                conn = user_settings.connection_for_task(task_type)
+                if conn.provider:
+                    effective_provider = conn.provider
                 if effective_model is None:
-                    effective_model = (
-                        user_settings.get_model_for_task(task_type)
-                        or user_settings.model
-                    )
-                if user_settings.api_url:
-                    effective_api_url = user_settings.api_url
-                if user_settings.api_key:
-                    effective_api_key = user_settings.api_key
+                    effective_model = conn.model
+                if conn.api_url:
+                    effective_api_url = conn.api_url
+                if conn.api_key:
+                    effective_api_key = conn.api_key
                 if effective_temperature is None:
                     effective_temperature = user_settings.temperature
                 if effective_max_tokens is None:
@@ -1038,20 +1088,19 @@ class LLMService:
                 effective_provider = self.provider
                 effective_api_url = None
                 effective_api_key = None
+                provider_chosen = False
 
                 if user_settings and user_settings.has_custom_settings():
-                    task_provider = user_settings.get_provider_for_task(task_type)
-                    if task_provider:
-                        effective_provider = task_provider.lower()
-                    task_model = user_settings.get_model_for_task(task_type)
-                    if task_model:
-                        model = task_model
-                    elif user_settings.model:
-                        model = user_settings.model
-                    if user_settings.api_url:
-                        effective_api_url = user_settings.api_url
-                    if user_settings.api_key:
-                        effective_api_key = user_settings.api_key
+                    conn = user_settings.connection_for_task(task_type)
+                    if conn.provider:
+                        effective_provider = conn.provider
+                    provider_chosen = conn.chosen_by_user
+                    if conn.model:
+                        model = conn.model
+                    if conn.api_url:
+                        effective_api_url = conn.api_url
+                    if conn.api_key:
+                        effective_api_key = conn.api_key
                     if user_settings.temperature is not None:
                         temperature = user_settings.temperature
                     if user_settings.max_tokens is not None:
@@ -1060,20 +1109,28 @@ class LLMService:
                 # Explicit overrides (per-agent routing)
                 if provider_override:
                     effective_provider = str(provider_override).strip().lower()
+                    provider_chosen = True
                 if api_url_override:
                     effective_api_url = str(api_url_override).strip() or None
                 if api_key_override:
                     effective_api_key = str(api_key_override)
 
-                # Fall back to system defaults for model
-                if not model:
+                # The system default model is for Ollama and for a bare
+                # custom URL, as on the structured path. Every external
+                # provider has its own <PROVIDER>_MODEL; DEFAULT_MODEL
+                # (deepseek-v4-pro unless set) used to reach OpenAI too.
+                _sdk_names = {"anthropic", "qwen", "kimi", "glm", "openai_compatible"}
+                if not model and (
+                    effective_provider == "ollama"
+                    or (effective_api_url and effective_provider not in _sdk_names)
+                ):
                     try:
                         from app.core.feature_flags import get_str as _get_str
 
                         model = await _get_str("llm_default_model")
                     except Exception:
                         model = None
-                model = model or self.default_model
+                    model = model or self.default_model
                 temperature = (
                     temperature if temperature is not None else settings.TEMPERATURE
                 )
@@ -1155,7 +1212,16 @@ class LLMService:
                     "qwen": ("qwen",),
                     "kimi": ("kimi", "moonshot"),
                     "glm": ("glm",),
+                    # A saved provider serves whatever its owner named.
+                    "openai_compatible": ("",),
                 }
+                # OpenAI goes through its own provider (OPENAI_API_BASE,
+                # OPENAI_API_KEY, OPENAI_MODEL). It used to share the
+                # DeepSeek branch and so was sent to DeepSeek's URL with
+                # DeepSeek's key. An explicit legacy API URL keeps the
+                # custom branch below, as before.
+                if effective_provider == "openai" and not effective_api_url:
+                    _sdk_provider_model_prefixes["openai"] = ("",)
                 if effective_provider in _sdk_provider_model_prefixes:
                     from app.services.llm_providers import (
                         build_provider as _build_provider,
@@ -1233,19 +1299,16 @@ class LLMService:
                         extra = meta
                     return result
 
-                use_deepseek = (
-                    effective_provider == "deepseek"
-                    or effective_provider == "openai"
-                    or (
-                        prefer_deepseek
-                        and bool(getattr(settings, "DEEPSEEK_API_KEY", None))
+                use_deepseek = effective_provider == "deepseek" or (
+                    prefers_deepseek(
+                        prefer_deepseek,
+                        effective_provider=effective_provider,
+                        provider_chosen=provider_chosen,
                     )
                 )
 
                 if use_deepseek:
-                    provider_used = (
-                        "deepseek" if effective_provider == "deepseek" else "openai"
-                    )
+                    provider_used = "deepseek"
                     messages = self._build_chat_messages(
                         query=query,
                         context=context,

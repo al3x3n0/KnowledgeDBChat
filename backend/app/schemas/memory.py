@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, validator
 
 
 class MemoryBase(BaseModel):
@@ -276,6 +276,16 @@ class UserPreferencesResponse(UserPreferencesBase):
     user_id: UUID
     created_at: datetime
     updated_at: datetime
+
+    # Read from the row so `llm_api_key_set` can say whether there is one,
+    # and never written out: this response returned the person's provider
+    # key in plain text. `/users/me/llm-settings` already said only "set".
+    llm_api_key: Optional[str] = Field(None, exclude=True)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def llm_api_key_set(self) -> bool:
+        return bool(self.llm_api_key)
 
     model_config = ConfigDict(from_attributes=True)
 

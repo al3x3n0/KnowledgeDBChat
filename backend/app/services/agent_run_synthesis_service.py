@@ -162,6 +162,37 @@ def build_conclusion_prompt(goal: str, findings: Any) -> str:
     )
 
 
+#: A second request after an empty reply. The first is sized for the answer;
+#: reasoning models charge their thinking to the same budget, and a run's
+#: conclusion came back empty having spent all of it reasoning.
+RETRY_MAX_TOKENS = 4000
+RETRY_NOTE = (
+    "\n\nYour previous reply contained no usable answer. Reply now with the "
+    "JSON object only, the answer in at most 120 words."
+)
+MAX_FINDINGS_AS_EVIDENCE = 10
+
+
+def findings_only_conclusion(
+    rows: List[str], reason: str, generated_by: str = "findings_only"
+) -> Dict[str, Any]:
+    """What a person reads when no model answer could be written: no answer
+    (this module does not invent one), and the findings the run did record,
+    so the result is the evidence rather than a bare apology."""
+    return {
+        "answer": None,
+        "confidence": "low",
+        "evidence": list(rows[:MAX_FINDINGS_AS_EVIDENCE]),
+        "gaps": [reason],
+        "generated_by": generated_by,
+        "findings_considered": len(rows),
+    }
+
+
+def _usable(payload: Any) -> bool:
+    return isinstance(payload, dict) and bool(str(payload.get("answer") or "").strip())
+
+
 def conclusion_without_evidence(reason: str) -> Dict[str, Any]:
     """The honest result when there is nothing to conclude from."""
     return {
@@ -200,38 +231,47 @@ async def conclude(
         result["gaps"] = list(result["gaps"]) + list(extra_gaps or [])
         return result
 
-    try:
-        from app.services import llm_structured
+    from app.services import llm_structured
 
-        payload = await llm_structured.ask_for_json(
+    async def _ask(max_tokens: int, note: str = "", phase_suffix: str = "") -> Any:
+        context = dict(snapshot_context or {})
+        if phase_suffix and context.get("phase"):
+            context["phase"] = f"{context['phase']}{phase_suffix}"
+        return await llm_structured.ask_for_json(
             llm_service,
             schema=CONCLUSION_SCHEMA,
             system_prompt=SYSTEM_PROMPT,
-            user_message=build_conclusion_prompt(goal, findings),
+            user_message=build_conclusion_prompt(goal, findings) + note,
             task_type="summarization",
             temperature=0.1,
-            max_tokens=900,
+            max_tokens=max_tokens,
             db=db,
-            snapshot_context=snapshot_context,
+            snapshot_context=context or None,
         )
+
+    try:
+        payload = await _ask(900)
+        if not _usable(payload):
+            payload = await _ask(RETRY_MAX_TOKENS, RETRY_NOTE, "_retry")
     except Exception as exc:
         # The caller is finalizing something. An optional summary that aborts
         # would also skip whatever runs after it.
         logger.warning(f"Conclusion synthesis failed: {exc}")
-        return {
-            "answer": None,
-            "confidence": "low",
-            "evidence": [],
-            "gaps": [f"Conclusion could not be generated: {str(exc)[:200]}"]
-            + list(extra_gaps or []),
-            "generated_by": "error",
-        }
-
-    if not isinstance(payload, dict) or not str(payload.get("answer") or "").strip():
-        result = conclusion_without_evidence(
-            "The model did not return a usable conclusion."
+        result = findings_only_conclusion(
+            rows,
+            f"Conclusion could not be generated: {str(exc)[:200]}",
+            generated_by="error",
         )
-        result["gaps"] = list(result["gaps"]) + list(extra_gaps or [])
+        result["gaps"] += list(extra_gaps or [])
+        return result
+
+    if not _usable(payload):
+        result = findings_only_conclusion(
+            rows,
+            "The model returned no usable conclusion, twice; the findings "
+            "below are what the run recorded, without an interpretation.",
+        )
+        result["gaps"] += list(extra_gaps or [])
         return result
 
     return {
@@ -246,16 +286,12 @@ async def conclude(
     }
 
 
-def _budget_exhausted_conclusion() -> Dict[str, Any]:
-    return {
-        "answer": None,
-        "confidence": "low",
-        "evidence": [],
-        "gaps": [
-            "Model-call budget exhausted before conclusion generation could finish."
-        ],
-        "generated_by": "budget_exhausted",
-    }
+def _budget_exhausted_conclusion(rows: Optional[List[str]] = None) -> Dict[str, Any]:
+    return findings_only_conclusion(
+        list(rows or []),
+        "Model-call budget exhausted before conclusion generation could finish.",
+        generated_by="budget_exhausted",
+    )
 
 
 class _BudgetedConclusionLLM:
@@ -300,10 +336,11 @@ async def synthesize_conclusion(
         # have recorded plenty.
         return conclusion_without_evidence("The run recorded no findings.")
 
+    rows = summarize_findings_for_prompt(findings)
     if int(getattr(job, "llm_calls_used", 0) or 0) >= int(
         getattr(job, "max_llm_calls", 0) or 0
     ):
-        return _budget_exhausted_conclusion()
+        return _budget_exhausted_conclusion(rows)
 
     model = _BudgetedConclusionLLM(executor.llm_service, job)
     result = await conclude(
@@ -317,7 +354,7 @@ async def synthesize_conclusion(
             "phase": "conclusion",
         },
     )
-    return _budget_exhausted_conclusion() if model.exhausted else result
+    return _budget_exhausted_conclusion(rows) if model.exhausted else result
 
 
 def conclusion_line(conclusion: Optional[Dict[str, Any]]) -> str:
@@ -337,6 +374,7 @@ __all__ = [
     "build_conclusion_prompt",
     "conclusion_line",
     "conclusion_without_evidence",
+    "findings_only_conclusion",
     "summarize_findings_for_prompt",
     "synthesize_conclusion",
 ]

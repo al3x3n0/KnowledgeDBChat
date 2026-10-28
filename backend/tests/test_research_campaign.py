@@ -586,6 +586,8 @@ def scripted_conclusion(monkeypatch):
 
         async def fake(*args, **kwargs):
             calls["user_message"] = kwargs.get("user_message")
+            calls["user_settings"] = kwargs.get("user_settings")
+            calls["user_id"] = kwargs.get("user_id")
             if isinstance(payload, Exception):
                 raise payload
             return payload
@@ -654,6 +656,29 @@ async def test_the_conclusion_is_drawn_from_what_the_jobs_found(
     prompt = calls["user_message"]
     assert "31ms unrolled" in prompt, "the finding has to reach the prompt"
     assert campaign.goal in prompt, "and so does the goal it is answering"
+
+
+@pytest.mark.asyncio
+async def test_the_conclusion_runs_on_the_owners_llm_settings(
+    db_session, scripted_conclusion
+):
+    """It went to the deployment's default provider whatever the owner had
+    chosen, and its usage was attributed to nobody."""
+    from app.models.memory import UserPreferences
+
+    calls = scripted_conclusion(ANSWER)
+    campaign = await _campaign(db_session, items=[{"title": "measure it"}])
+    db_session.add(UserPreferences(user_id=campaign.user_id, llm_provider="openai"))
+    await db_session.commit()
+
+    step = await campaigns.advance(db_session, campaign)
+    await _finish_with_findings(
+        db_session, step["launched_job"], [{"type": "measurement", "summary": "31ms"}]
+    )
+    await campaigns.advance(db_session, campaign)
+
+    assert calls["user_settings"].provider == "openai"
+    assert calls["user_id"] == campaign.user_id
 
 
 @pytest.mark.asyncio

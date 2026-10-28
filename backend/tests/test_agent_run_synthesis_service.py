@@ -291,3 +291,37 @@ def test_metric_rendering_is_bounded_and_skips_non_numbers():
     assert "flag" not in rendered and "label" not in rendered
     assert "empty_series" not in rendered
     assert len(rendered.split(", ")) <= MAX_METRICS_PER_FINDING
+
+
+@pytest.mark.asyncio
+async def test_a_runs_conclusion_runs_on_its_owners_llm_settings(
+    scripted, db_session, test_user
+):
+    """Every other model call in a run is made with the owner's settings; the
+    conclusion went to the deployment's default provider."""
+    from app.models.memory import UserPreferences
+
+    db_session.add(UserPreferences(user_id=test_user.id, llm_provider="custom:gpu"))
+    await db_session.commit()
+    calls = scripted({"answer": "Held.", "confidence": "high"})
+    job = _Job()
+    job.user_id = test_user.id
+
+    await synthesis.synthesize_conclusion(
+        _Executor(), job, _state(FINDINGS), db_session
+    )
+
+    (call,) = calls
+    assert call["user_settings"].provider == "custom:gpu"
+    assert call["user_id"] == test_user.id
+
+
+@pytest.mark.asyncio
+async def test_an_owner_without_settings_gets_the_defaults(scripted, db_session):
+    calls = scripted({"answer": "Held.", "confidence": "high"})
+
+    await synthesis.synthesize_conclusion(
+        _Executor(), _Job(), _state(FINDINGS), db_session
+    )
+
+    assert calls[0]["user_settings"] is None and calls[0]["user_id"] is None

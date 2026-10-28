@@ -212,6 +212,8 @@ async def conclude(
     db: Any = None,
     snapshot_context: Optional[Dict[str, Any]] = None,
     extra_gaps: Optional[List[str]] = None,
+    user_settings: Any = None,
+    user_id: Any = None,
 ) -> Dict[str, Any]:
     """Answer a goal from a set of findings. Never raises.
 
@@ -224,6 +226,11 @@ async def conclude(
     `extra_gaps` is for what the caller knows and the findings cannot say --
     that a campaign ran out of budget, say, which makes any answer partial for
     a reason no individual finding records.
+
+    `user_settings` and `user_id` are the owner's: the conclusion is a model
+    call made for them, like every other one in the run. Without them it went
+    to the deployment's default provider whatever provider the owner had
+    chosen, and its usage was attributed to nobody.
     """
     rows = summarize_findings_for_prompt(findings)
     if not rows:
@@ -245,6 +252,8 @@ async def conclude(
             task_type="summarization",
             temperature=0.1,
             max_tokens=max_tokens,
+            user_settings=user_settings,
+            user_id=user_id,
             db=db,
             snapshot_context=context or None,
         )
@@ -342,12 +351,17 @@ async def synthesize_conclusion(
     ):
         return _budget_exhausted_conclusion(rows)
 
+    from app.services.llm_service import load_user_llm_settings
+
+    owner = getattr(job, "user_id", None)
     model = _BudgetedConclusionLLM(executor.llm_service, job)
     result = await conclude(
         model,
         goal=getattr(job, "goal", ""),
         findings=findings,
         db=db,
+        user_settings=await load_user_llm_settings(db, owner),
+        user_id=owner,
         snapshot_context={
             "job_id": str(getattr(job, "id", "") or "") or None,
             "iteration": int(getattr(job, "iteration", 0) or 0),

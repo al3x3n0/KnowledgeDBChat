@@ -145,7 +145,90 @@ async def test_an_empty_model_reply_is_not_dressed_up_as_an_answer(patched):
     )
 
     assert result["answer"] is None
-    assert result["generated_by"] == "no_evidence"
+    assert result["generated_by"] == "findings_only"
+    # The reader gets what the run found, not a bare "no conclusion".
+    assert result["evidence"] == synthesis.summarize_findings_for_prompt(FINDINGS)
+    assert "twice" in result["gaps"][0]
+
+
+@pytest.fixture
+def scripted(monkeypatch):
+    """ask_for_json answering from a script, recording each request."""
+    from app.services import llm_structured
+
+    calls = []
+
+    def _install(*replies):
+        queue = list(replies)
+
+        async def _ask(*args, **kwargs):
+            calls.append(kwargs)
+            reply = queue.pop(0)
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+        monkeypatch.setattr(llm_structured, "ask_for_json", _ask)
+        return calls
+
+    return _install
+
+
+@pytest.mark.asyncio
+async def test_an_empty_reply_is_asked_again_with_room_to_answer(scripted):
+    """A run's conclusion came back empty having spent its whole budget
+    reasoning. The second request has the room and says to be brief."""
+    calls = scripted(
+        None, {"answer": "fastmod is 2.25x faster.", "confidence": "medium"}
+    )
+
+    result = await synthesis.synthesize_conclusion(
+        _Executor(), _Job(), _state(FINDINGS)
+    )
+
+    assert result["generated_by"] == "llm"
+    assert result["answer"] == "fastmod is 2.25x faster."
+    first, second = calls
+    assert first["max_tokens"] == 900
+    assert second["max_tokens"] == synthesis.RETRY_MAX_TOKENS
+    assert second["user_message"].endswith(synthesis.RETRY_NOTE)
+    assert second["snapshot_context"]["phase"] == "conclusion_retry"
+
+
+@pytest.mark.asyncio
+async def test_a_usable_first_reply_is_not_asked_again(scripted):
+    calls = scripted({"answer": "Held.", "confidence": "high"})
+
+    await synthesis.synthesize_conclusion(_Executor(), _Job(), _state(FINDINGS))
+
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failure_still_shows_what_the_run_found(scripted):
+    scripted(RuntimeError("provider exploded"))
+
+    result = await synthesis.synthesize_conclusion(
+        _Executor(), _Job(), _state(FINDINGS)
+    )
+
+    assert result["generated_by"] == "error" and result["answer"] is None
+    assert result["evidence"] == synthesis.summarize_findings_for_prompt(FINDINGS)
+
+
+@pytest.mark.asyncio
+async def test_a_campaigns_own_gaps_survive_the_fallback(scripted):
+    scripted(None, None)
+
+    result = await synthesis.conclude(
+        object(),
+        goal="g",
+        findings=FINDINGS,
+        extra_gaps=["The campaign ran out of jobs."],
+    )
+
+    assert result["gaps"][-1] == "The campaign ran out of jobs."
+    assert result["evidence"]
 
 
 def test_conclusion_line_reads_cleanly_either_way():

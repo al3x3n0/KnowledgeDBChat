@@ -57,6 +57,7 @@ async def test_no_allowance_produces_no_model_request_or_answer(remaining):
 
     assert model.calls == [] and run.llm_calls_used == 3
     assert result["answer"] is None and result["generated_by"] == "budget_exhausted"
+    assert result["evidence"], "the findings are shown even with no allowance"
 
 
 async def test_structured_success_charges_its_one_request_and_keeps_context():
@@ -123,3 +124,27 @@ async def test_no_evidence_does_not_spend_a_request():
 
     assert model.calls == [] and run.llm_calls_used == 3
     assert result["generated_by"] == "no_evidence"
+
+
+async def test_the_retry_after_an_empty_reply_is_charged_too():
+    """A second request is a request: it needs the allowance and spends it."""
+
+    class Empty(Model):
+        async def generate_response(self, **kwargs):
+            self.calls.append(("prompted", kwargs))
+            return "I could not decide."
+
+    model, run = Empty(structured="invalid"), job(4)
+    result = await synthesize_conclusion(
+        SimpleNamespace(llm_service=model), run, {"findings": FINDINGS}
+    )
+    # Two attempts, each a structured request and a prompted one.
+    assert len(model.calls) == 4 and run.llm_calls_used == 7
+    assert result["generated_by"] == "findings_only"
+
+    model, run = Empty(structured="invalid"), job(3)
+    result = await synthesize_conclusion(
+        SimpleNamespace(llm_service=model), run, {"findings": FINDINGS}
+    )
+    assert len(model.calls) == 3 and run.llm_calls_used == 6
+    assert result["generated_by"] == "budget_exhausted"

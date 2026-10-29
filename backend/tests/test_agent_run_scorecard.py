@@ -98,6 +98,23 @@ class TestFinalJobs:
         )
         assert agent_run_waiting.waiting_on([first, retry]) == "job"
 
+    def test_a_job_still_writing_up_is_not_over(self):
+        """Graded at 'completed', a trial's conclusion was minutes away."""
+        job = _job()
+        job.execution_lease_expires_at = datetime.now(timezone.utc) + timedelta(
+            minutes=2
+        )
+        assert agent_run_waiting.waiting_on([job]) == "job"
+        job.execution_lease_expires_at = None
+        assert agent_run_waiting.waiting_on([job]) is None
+
+    def test_a_lapsed_lease_does_not_hold_a_run_open(self):
+        job = _job()
+        job.execution_lease_expires_at = datetime.now(timezone.utc) - timedelta(
+            minutes=1
+        )
+        assert agent_run_waiting.waiting_on([job]) is None
+
 
 class TestScore:
     def test_the_stages_decide_not_the_job_that_planned_them(self):

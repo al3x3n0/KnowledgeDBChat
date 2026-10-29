@@ -669,6 +669,12 @@ has no single job allowance, is unchanged.
 
 ## Evidence bundle completion contracts
 
+Timing-based rewrite evaluations (`evaluate_restructuring`) are skipped by
+hash-based bundle replay, like benchmarks. Their measured durations and speed
+ratios are not deterministic. A bundle containing only these evaluations cannot
+establish `bundle_reproduced`; validate correctness and remeasure performance
+separately before claiming an optimization was independently confirmed.
+
 For a readable evidence bundle, `verify_run_bundle` returns a
 `bundle_verified` integrity report. A broken
 bundle remains visible for diagnosis but does not count toward a finding-type

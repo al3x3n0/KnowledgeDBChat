@@ -5195,6 +5195,13 @@ class AutonomousAgentExecutor:
         # without approval.
         if cfg.get("pipeline_stage"):
             return
+        # An eval trial is graded on the goal it was given. The first eval
+        # launch's six trials each met or missed their contract within half
+        # an hour and then started three follow-ups apiece -- a harness, more
+        # timings, a noise analysis -- that the launch, which waits for the
+        # whole run, then waited on and graded as part of the trial.
+        if cfg.get("autonomous_rnd_eval"):
+            return
         if bool(state.get("subgoal_chain_configured")):
             return
         # Same depth ceiling the job-creating tools enforce. Without it a job that

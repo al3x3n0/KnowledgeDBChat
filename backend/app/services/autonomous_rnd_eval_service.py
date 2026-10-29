@@ -17,13 +17,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional
 
+from app.services import agent_run_scorecard
+
 BUILTIN_AUTONOMOUS_RND_EVAL_SUITES = {
     "compiler_research_v1": (
         Path(__file__).resolve().parents[2]
         / "evals"
         / "autonomous_rnd"
         / "compiler_research_v1.json"
-    )
+    ),
+    "agent_rigour_v1": (
+        Path(__file__).resolve().parents[2]
+        / "evals"
+        / "autonomous_rnd"
+        / "agent_rigour_v1.json"
+    ),
 }
 
 
@@ -40,6 +48,10 @@ class AutonomousRnDEvalTask:
     graders: List[Dict[str, Any]]
     trials: int = 3
     pass_threshold: float = 1.0
+    # What a launched trial runs as. A task about a pipeline stage's contract
+    # needs a contract, which only the job's config can carry.
+    job_type: str = "analysis"
+    config: Optional[Dict[str, Any]] = None
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "AutonomousRnDEvalTask":
@@ -57,8 +69,15 @@ class AutonomousRnDEvalTask:
         threshold = _bounded_float(
             value.get("pass_threshold"), default=1.0, minimum=0.0, maximum=1.0
         )
+        config = value.get("config")
+        if config is not None and not isinstance(config, dict):
+            raise EvalDefinitionError(
+                f"Evaluation task '{task_id}' config must be a JSON object"
+            )
         return cls(
             id=task_id,
+            job_type=str(value.get("job_type") or "analysis").strip() or "analysis",
+            config=dict(config) if config else None,
             name=str(value.get("name") or task_id).strip() or task_id,
             category=str(value.get("category") or "general").strip() or "general",
             prompt=str(value.get("prompt") or ""),
@@ -232,6 +251,9 @@ class AutonomousRnDEvalHarness:
             else 0.0
         )
         total_trials = sum(int(report["trial_count"]) for report in task_reports)
+        scorecards = [
+            card for report in task_reports for card in _scorecards(report["trials"])
+        ]
         return {
             "suite_id": suite.id,
             "suite_name": suite.name,
@@ -242,6 +264,13 @@ class AutonomousRnDEvalHarness:
             "mean_score": round(mean_score, 6),
             "pass_at_k": round(pass_at_k, 6),
             "pass_pow_k": round(pass_pow_k, 6),
+            # Present when trials were graded from launched runs: the numbers
+            # two runs of the suite are compared on besides pass rates.
+            **(
+                {"run_metrics": agent_run_scorecard.summarize(scorecards)}
+                if scorecards
+                else {}
+            ),
             "tasks": task_reports,
         }
 
@@ -465,6 +494,7 @@ class AutonomousRnDEvalHarness:
     ) -> Dict[str, Any]:
         passed_count = sum(1 for trial in trials if bool(trial.get("passed")))
         trial_count = len(trials)
+        scorecards = _scorecards(trials)
         return {
             "task_id": task.id,
             "task_name": task.name,
@@ -481,8 +511,23 @@ class AutonomousRnDEvalHarness:
             )
             if trial_count
             else 0.0,
+            **(
+                {"run_metrics": agent_run_scorecard.summarize(scorecards)}
+                if scorecards
+                else {}
+            ),
             "trials": trials,
         }
+
+
+def _scorecards(trials: List[Mapping[str, Any]]) -> List[Mapping[str, Any]]:
+    """The run scorecards of graded trials that have one."""
+    return [
+        trial["outcome"]["run"]
+        for trial in trials
+        if isinstance(trial.get("outcome"), Mapping)
+        and isinstance(trial["outcome"].get("run"), Mapping)
+    ]
 
 
 def _lookup(value: Mapping[str, Any], path: str) -> tuple[bool, Any]:

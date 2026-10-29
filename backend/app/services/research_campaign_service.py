@@ -25,7 +25,7 @@ next.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Sequence
 from uuid import UUID
 
@@ -42,22 +42,14 @@ from app.models.research_campaign import (
 )
 from app.services import agent_campaign_priority as priority
 from app.services.agent_loop_policy import finding_identity
-from app.utils.datetimes import age
+from app.services.agent_run_waiting import WAITING_ON_APPROVAL
+from app.services.agent_run_waiting import waiting_on as _waiting_on
 
-TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled", "stopped"}
 DEFAULT_MAX_JOBS = 10
 # A campaign may not spawn unlimited work from one job's findings. Ten
 # candidates in a report are a reading list, not a plan.
 MAX_ITEMS_FROM_ONE_JOB = 5
 _JOB_NAME_LENGTH = AgentJob.__table__.c.name.type.length
-# A stage that has just completed may not have created the stage after it
-# yet: completing and starting the next are two writes. For this long, a
-# completed job with follow-up work it has not started is not "finished".
-STAGE_HANDOVER_GRACE = timedelta(minutes=5)
-
-WAITING_ON_JOB = "job"
-WAITING_ON_APPROVAL = "approval"
-WAITING_ON_PERSON = "person"
 
 
 async def create_campaign(
@@ -180,40 +172,6 @@ async def _run_of(db: AsyncSession, job: AgentJob) -> List[AgentJob]:
         .all()
     )
     return [job, *stages]
-
-
-def _hands_over(job: AgentJob) -> bool:
-    """True while a completed job may still be about to start its successor."""
-    chain = job.chain_config if isinstance(job.chain_config, dict) else {}
-    if not chain.get("child_jobs") or getattr(job, "chain_triggered", False):
-        return False
-    if str(job.status or "") != "completed":
-        return False
-    since = age(job.completed_at)
-    return since is not None and since < STAGE_HANDOVER_GRACE
-
-
-def _waiting_on(run: Sequence[AgentJob]) -> Optional[str]:
-    """What an item's run is waiting for, or None when all of it has ended.
-
-    A run paused for a person is named apart from one that is working: a
-    campaign that has stopped until somebody approves a plan looks, from its
-    counters, exactly like one whose job is still running.
-    """
-    waiting: Optional[str] = None
-    for job in run:
-        status = str(job.status or "")
-        if status in TERMINAL_JOB_STATUSES:
-            if _hands_over(job):
-                waiting = waiting or WAITING_ON_JOB
-            continue
-        if status == AgentJobStatus.PAUSED.value:
-            if str(job.current_phase or "") == "awaiting_approval":
-                return WAITING_ON_APPROVAL
-            waiting = WAITING_ON_PERSON
-        elif waiting != WAITING_ON_PERSON:
-            waiting = WAITING_ON_JOB
-    return waiting
 
 
 def _stage_name(job: AgentJob) -> str:

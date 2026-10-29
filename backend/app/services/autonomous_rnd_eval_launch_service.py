@@ -31,6 +31,7 @@ from app.models.autonomous_rnd_eval_launch import (
 )
 from app.models.autonomous_rnd_eval_run import AutonomousRndEvalRun
 from app.models.experiment import ExperimentRun
+from app.services import agent_run_waiting
 from app.services.agent_job_creation_service import (
     AgentJobSpec,
     agent_job_creation_service,
@@ -45,12 +46,6 @@ from app.services.autonomous_rnd_trajectory_service import (
 )
 
 EVAL_RUN_SOURCE_LAUNCH = "launch"
-
-TERMINAL_JOB_STATUSES = {
-    AgentJobStatus.COMPLETED.value,
-    AgentJobStatus.FAILED.value,
-    AgentJobStatus.CANCELLED.value,
-}
 
 
 class EvalLaunchError(RuntimeError):
@@ -185,7 +180,7 @@ class AutonomousRnDEvalLaunchService:
         launch_id: UUID,
         config_overrides: Optional[Dict[str, Any]],
     ) -> AgentJobSpec:
-        config: Dict[str, Any] = dict(config_overrides or {})
+        config: Dict[str, Any] = {**(task.config or {}), **(config_overrides or {})}
         # The eval binding lives in config so a trial job is identifiable
         # without a second table, and so finalization can rebuild bindings.
         config["autonomous_rnd_eval"] = {
@@ -199,7 +194,7 @@ class AutonomousRnDEvalLaunchService:
         return AgentJobSpec(
             name=f"{suite.name} · {task.name} · trial {trial_index + 1}"[:200],
             description=f"Evaluation trial for suite {suite.id}, task {task.id}",
-            job_type="analysis",
+            job_type=task.job_type,
             goal=task.prompt or task.name,
             config=config,
             max_iterations=int(settings.AUTONOMOUS_RND_EVAL_TRIAL_MAX_ITERATIONS),
@@ -234,12 +229,59 @@ class AutonomousRnDEvalLaunchService:
         )
         return {job.id: job for job in jobs}
 
+    async def _load_runs(
+        self,
+        db: AsyncSession,
+        *,
+        launch: AutonomousRndEvalLaunch,
+        jobs_by_id: Dict[UUID, AgentJob],
+    ) -> Dict[UUID, List[AgentJob]]:
+        """Each trial job with every job sharing its root, oldest first.
+
+        A trial may propose a plan whose stages do the work, and a stage short
+        of its contract is retried by a new job; grading the trial job alone
+        would grade the planning, or the attempt that was replaced.
+        """
+        runs: Dict[UUID, List[AgentJob]] = {
+            job_id: [job] for job_id, job in jobs_by_id.items()
+        }
+        if not jobs_by_id:
+            return runs
+        followers = (
+            (
+                await db.execute(
+                    select(AgentJob)
+                    .where(
+                        AgentJob.root_job_id.in_(list(jobs_by_id)),
+                        AgentJob.id.notin_(list(jobs_by_id)),
+                        AgentJob.user_id == launch.user_id,
+                    )
+                    .order_by(AgentJob.created_at.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for job in followers:
+            runs.setdefault(job.root_job_id, []).append(job)
+        return runs
+
     async def progress(
         self, db: AsyncSession, *, launch: AutonomousRndEvalLaunch
     ) -> Dict[str, Any]:
         jobs_by_id = await self._load_jobs(db, launch=launch)
+        runs = await self._load_runs(db, launch=launch, jobs_by_id=jobs_by_id)
         statuses = [str(job.status or "") for job in jobs_by_id.values()]
-        terminal = [status for status in statuses if status in TERMINAL_JOB_STATUSES]
+        # A trial is settled when its run is: the trial job may have ended
+        # while the plan it proposed, or a retry of its stage, still runs.
+        # A run paused for a person counts as settled, since nobody is
+        # watching an eval; one waiting on a plan's approval does not.
+        terminal = [
+            job_id
+            for job_id in jobs_by_id
+            if agent_run_waiting.waiting_on(runs[job_id])
+            in (None, agent_run_waiting.WAITING_ON_PERSON)
+        ]
         missing = int(launch.job_count or 0) - len(jobs_by_id)
         return {
             "job_count": int(launch.job_count or 0),
@@ -278,6 +320,7 @@ class AutonomousRnDEvalLaunchService:
             return None
 
         jobs_by_id = await self._load_jobs(db, launch=launch)
+        trial_runs = await self._load_runs(db, launch=launch, jobs_by_id=jobs_by_id)
         runs_by_job: Dict[Any, List[ExperimentRun]] = defaultdict(list)
         if jobs_by_id:
             experiment_runs = (
@@ -314,6 +357,7 @@ class AutonomousRnDEvalLaunchService:
                     autonomous_rnd_trajectory_adapter.build_outcome(
                         job,
                         experiment_runs=runs_by_job.get(job.id, []),
+                        run_jobs=trial_runs.get(job.id) or [job],
                     )
                 )
             outcomes[task_id] = task_outcomes

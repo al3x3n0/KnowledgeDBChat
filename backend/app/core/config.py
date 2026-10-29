@@ -671,6 +671,17 @@ class Settings(BaseSettings):
     AGENT_NATIVE_TOOL_LOOP_ENABLED: bool = False
     AGENT_NATIVE_TOOL_LOOP_MAX_TOOL_CALLS: int = 5
     AGENT_NATIVE_TOOL_LOOP_MAX_LLM_CALLS: int = 6
+    # DeepSeek's own agent runtime as a job's backbone (job config
+    # `backbone: deepseek_harness`; services/agent_harness_backbone.py). Off
+    # by default: an alpha runtime in its own virtualenv, built into the
+    # image only with WITH_DEEPSEEK_HARNESS=true. Its session-log upload and
+    # telemetry are always off; the base URL is DeepSeek's Anthropic-style
+    # endpoint unless set here.
+    AGENT_DEEPSEEK_HARNESS_ENABLED: bool = False
+    AGENT_DEEPSEEK_HARNESS_PYTHON: str = "/opt/deepseek-harness/bin/python"
+    AGENT_DEEPSEEK_HARNESS_MODEL: str = ""
+    AGENT_DEEPSEEK_HARNESS_REASONING_EFFORT: str = ""
+    AGENT_DEEPSEEK_HARNESS_BASE_URL: str = ""
     # Automatic context compaction: when serialized iteration state exceeds
     # the threshold, older actions are summarized into compressed_history
     # (same contract as the agent-invoked compress_history tool). Per-job

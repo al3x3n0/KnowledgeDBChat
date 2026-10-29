@@ -50,6 +50,19 @@ RUN pip install --no-cache-dir --no-compile -r requirements.txt \
     && find /opt/venv -name "__pycache__" -type d -prune -exec rm -rf {} + \
     && find /opt/venv -name "*.pyc" -delete
 
+# The DeepSeek Harness backbone, opt-in: its own virtualenv, since the SDK needs
+# a newer pydantic than the backend pins. Absent (an empty directory) unless
+# built with WITH_DEEPSEEK_HARNESS=true; AGENT_DEEPSEEK_HARNESS_PYTHON points
+# at /opt/deepseek-harness/bin/python.
+ARG WITH_DEEPSEEK_HARNESS=false
+COPY requirements-deepseek-harness.txt .
+RUN mkdir -p /opt/deepseek-harness \
+    && if [ "$WITH_DEEPSEEK_HARNESS" = "true" ]; then \
+         python -m venv /opt/deepseek-harness \
+         && /opt/deepseek-harness/bin/pip install --no-cache-dir --pre \
+              -r requirements-deepseek-harness.txt; \
+       fi
+
 # numba and llvmlite, 185 MB of JIT, are removed after the fact rather than by
 # not asking for them: nothing here depends on them any more except
 # `unstructured`, which declares numba and imports it in exactly two modules --
@@ -196,6 +209,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /opt/deepseek-harness /opt/deepseek-harness
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=ffmpeg /out/ /
 

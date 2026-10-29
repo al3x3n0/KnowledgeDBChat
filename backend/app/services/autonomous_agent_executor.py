@@ -44,6 +44,7 @@ from app.services import (
     agent_evidence_map,
     agent_execution_graph,
     agent_failure_diagnosis,
+    agent_harness_backbone,
     agent_loop_policy,
     agent_method_record,
     agent_plan_normalization,
@@ -259,6 +260,12 @@ class _AutonomousRuntimeAdapter:
         # A resumed job continues from its checkpoint, so the budget is
         # counted from where it actually started rather than from zero.
         self._start_iteration = int(getattr(job, "iteration", 0) or 0)
+        # Set when another loop chooses the actions (the DeepSeek harness
+        # backbone). Then the action it chose is the one that runs, and the
+        # calls this loop adds on its own judgement -- plan-step enforcement,
+        # verification, summarise and recovery -- are not made: the backbones
+        # are compared on their choices, not on ours made on their behalf.
+        self.externally_driven = False
 
     #: Consecutive failures before the run is abandoned. Reaching it means the
     #: same thing goes wrong every time, and the iterations left will be spent
@@ -792,7 +799,7 @@ class _AutonomousRuntimeAdapter:
                 }
             )
         if action:
-            if not checkpoint_override_applied:
+            if not checkpoint_override_applied and not self.externally_driven:
                 action = self.executor._enforce_plan_step_action(
                     self.job, self.state, action
                 )
@@ -1119,7 +1126,8 @@ class _AutonomousRuntimeAdapter:
             )
             primary_tool = str(action.get("tool") or "").strip()
             should_verify = (
-                bool(graph_cfg.get("enabled", True))
+                not self.externally_driven
+                and bool(graph_cfg.get("enabled", True))
                 and bool(graph_cfg.get("verify_enabled", True))
                 and bool(action_result.get("success", False))
                 and primary_tool in verify_on_tools
@@ -1208,7 +1216,8 @@ class _AutonomousRuntimeAdapter:
 
             summarize_every = int(graph_cfg.get("summarize_every_n_iterations", 1) or 1)
             should_summarize = (
-                bool(graph_cfg.get("enabled", True))
+                not self.externally_driven
+                and bool(graph_cfg.get("enabled", True))
                 and bool(graph_cfg.get("summarize_enabled", True))
                 and bool(action_result.get("success", False))
                 and (int(self.job.iteration or 0) % max(1, summarize_every) == 0)
@@ -1387,7 +1396,7 @@ class _AutonomousRuntimeAdapter:
         )
 
         recovery_triggered = False
-        if stall_info.get("should_recover"):
+        if stall_info.get("should_recover") and not self.externally_driven:
             recovery_budget = int(
                 self.executor._get_stall_config(self.job).get("max_recovery_actions", 0)
             )
@@ -3905,6 +3914,16 @@ class AutonomousAgentExecutor:
             max_runtime=max_runtime,
             progress_callback=progress_callback,
         )
+        if agent_harness_backbone.backbone_of(job) == (
+            agent_harness_backbone.DEEPSEEK_HARNESS
+        ):
+            job.add_log_entry(
+                {
+                    "phase": "backbone",
+                    "backbone": agent_harness_backbone.DEEPSEEK_HARNESS,
+                }
+            )
+            return await agent_harness_backbone.HarnessBackboneRunner().run(adapter)
         return await AgentRuntimeRunner().run(adapter)
 
     async def _inherit_assumed_findings(

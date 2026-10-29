@@ -71,8 +71,9 @@ def test_lists_builtin_autonomous_rnd_eval_suites(client, auth_headers):
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["suites"][0]["id"] == "compiler_research_v1"
-    assert payload["suites"][0]["task_count"] == 3
+    suites = {suite["id"]: suite for suite in payload["suites"]}
+    assert suites["compiler_research_v1"]["task_count"] == 3
+    assert suites["agent_rigour_v1"]["task_count"] == 3
 
 
 def test_grades_persisted_agent_jobs_as_trials(

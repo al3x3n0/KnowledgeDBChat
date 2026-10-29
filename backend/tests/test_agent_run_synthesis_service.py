@@ -325,3 +325,28 @@ async def test_an_owner_without_settings_gets_the_defaults(scripted, db_session)
     )
 
     assert calls[0]["user_settings"] is None and calls[0]["user_id"] is None
+
+
+def test_a_finding_with_no_title_is_shown_by_its_subject_and_verdict():
+    """check_implementation records none; its findings vanished from the
+    prompt, and a run with six verified implementations was concluded as
+    having recorded nothing."""
+    from app.services.agent_run_synthesis_service import (
+        summarize_findings_for_prompt,
+    )
+
+    rows = summarize_findings_for_prompt(
+        [
+            {
+                "type": "implementation_verified",
+                "subject": "branchless_abs",
+                "verified": True,
+                "cases_passed": 64,
+                "generated_cases": 60,
+            },
+            {"type": "implementation_verified", "subject": "abs_v1", "verified": False},
+        ]
+    )
+    assert rows[0].startswith("[implementation_verified] branchless_abs (verified)")
+    assert "cases_passed=64" in rows[0]
+    assert rows[1] == "[implementation_verified] abs_v1 (not verified)"

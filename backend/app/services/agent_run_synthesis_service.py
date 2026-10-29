@@ -129,6 +129,25 @@ def summarize_finding_metrics(finding: Dict[str, Any]) -> str:
     return ", ".join(pairs)
 
 
+#: Fields that carry a finding's verdict. Booleans are left out of the
+#: metrics line, and `check_implementation` records no title: its findings
+#: were dropped whole, so a run whose contract was met by six verified
+#: implementations was concluded "The run recorded no findings" (first eval
+#: launch, 2026-10-29), and another as having "no reference implementation".
+VERDICT_FIELDS = ("verified", "verdict", "intact", "reproduced")
+
+
+def _verdict_words(finding: Dict[str, Any]) -> str:
+    words = []
+    for name in VERDICT_FIELDS:
+        value = finding.get(name)
+        if isinstance(value, bool):
+            words.append(name if value else f"not {name}")
+        elif isinstance(value, str) and value.strip():
+            words.append(f"{name}: {value.strip()[:40]}")
+    return ", ".join(words)
+
+
 def summarize_findings_for_prompt(findings: Any) -> List[str]:
     """Render findings as short lines, keeping whatever identifies them."""
     rows: List[str] = []
@@ -139,12 +158,16 @@ def summarize_findings_for_prompt(findings: Any) -> List[str]:
             finding.get("title")
             or finding.get("summary")
             or finding.get("content")
+            or finding.get("subject")
             or ""
         ).strip()
-        if not title:
+        verdicts = _verdict_words(finding)
+        if not title and not verdicts:
             continue
         kind = str(finding.get("type") or "finding").strip()
-        row = f"[{kind}] {title[:MAX_FINDING_CHARS]}"
+        row = f"[{kind}] {title[:MAX_FINDING_CHARS]}".rstrip()
+        if verdicts:
+            row += f" ({verdicts})"
         metrics = summarize_finding_metrics(finding)
         if metrics:
             row += f" | {metrics}"

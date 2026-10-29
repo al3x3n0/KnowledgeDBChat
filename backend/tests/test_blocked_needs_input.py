@@ -721,3 +721,31 @@ class TestACorrectionOverridesTheGoal:
         """The stable prompt keys the provider cache; an empty clue list must
         not perturb it."""
         assert self._stable({}) == self._stable({"operator_clues": []})
+
+
+@pytest.mark.asyncio
+async def test_the_conclusion_is_asked_for_with_nothing_uncommitted(
+    db_session, test_user, monkeypatch
+):
+    """The conclusion is a long model call. Two runs lost their execution
+    lease during it, because the job row was written and not committed, and
+    the lease heartbeat waits on that row's lock."""
+    from app.core.session_writes import has_uncommitted_writes
+
+    job = _job(user_id=test_user.id)
+    db_session.add(job)
+    await db_session.commit()
+    seen = {}
+
+    async def _conclusion(executor, job, state, db):
+        seen["uncommitted"] = has_uncommitted_writes(db)
+        return {"answer": "x", "generated_by": "llm"}
+
+    monkeypatch.setattr(agent_runtime_finalizer, "synthesize_conclusion", _conclusion)
+    await agent_runtime_finalizer.finalize_job(
+        _executor({"enabled": False, "satisfied": True}),
+        job,
+        {"goal_progress": 100},
+        db_session,
+    )
+    assert seen == {"uncommitted": False}

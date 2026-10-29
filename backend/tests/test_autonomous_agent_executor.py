@@ -3062,6 +3062,21 @@ def test_a_pipeline_stage_gets_no_follow_up_jobs_of_its_own():
     assert (job.chain_config or {}).get("child_jobs")
 
 
+def test_an_eval_trial_gets_no_follow_up_jobs_of_its_own():
+    """It is graded on its goal; follow-ups were waited on and graded too."""
+    executor = AutonomousAgentExecutor()
+    job = _make_job(config={"autonomous_rnd_eval": {"task_id": "t", "trial_index": 0}})
+    state = _make_state()
+    state["subgoals"] = [
+        {"title": "Scope", "status": "in_progress"},
+        {"title": "Measure", "status": "pending"},
+    ]
+
+    executor._ensure_subgoal_chain_config(job, state)
+
+    assert not (job.chain_config or {}).get("child_jobs")
+
+
 def test_ensure_swarm_chain_config_creates_specialized_child_jobs():
     executor = AutonomousAgentExecutor()
     job = _make_job(

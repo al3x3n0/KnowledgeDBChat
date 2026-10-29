@@ -41,6 +41,17 @@ class TestTheVerdict:
         assert "within the host's own noise" in verdict["reason"]
         assert verdict["noise_band"] > 0.2
 
+    def test_a_jittering_candidate_is_not_called_slower(self):
+        """Identical programs, from the first eval launch: the baseline held
+        steady, the candidate swung, and a baseline-only band called it 1.16x
+        slower."""
+        verdict = paired.judge(
+            [99, 118, 118, 137, 149, 103, 123, 112, 112],
+            [96, 95, 101, 107, 99, 97, 106, 113, 108],
+        )
+        assert verdict["verdict"] == "indistinguishable"
+        assert verdict["noise_band"] > 0.15
+
     def test_rounds_that_disagree_do_not_carry_a_verdict(self):
         base = [500] * 8
         cand = [300, 300, 300, 300, 700, 700, 700, 300]

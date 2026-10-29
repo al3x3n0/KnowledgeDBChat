@@ -12,9 +12,10 @@ paired trials into a verdict, and the verdict has to be able to say "I cannot
 tell":
 
 * The host's own noise is measured in the same run, for free: consecutive
-  BASELINE trials are an A/A comparison, and how far they disagree is how far
-  two runs of the same program disagree here and now. A difference smaller
-  than that is not a difference.
+  trials of one program are an A/A comparison, and how far they disagree is
+  how far two runs of the same program disagree here and now. Both arms are
+  measured and the larger band is used, since one arm can jitter while the
+  other holds steady. A difference smaller than that is not a difference.
 * A verdict of faster or slower also needs the rounds to agree: most of the
   paired trials must point the same way, so one lucky round cannot carry it.
 * Too few rounds, or a workload too small to time on this host, is
@@ -56,6 +57,14 @@ def _quantile(values: Sequence[float], q: float) -> float:
     return ordered[low] + (ordered[high] - ordered[low]) * (position - low)
 
 
+def _self_noise(trials: Sequence[float]) -> float:
+    """How far consecutive trials of one program disagree (log ratio, p75)."""
+    return _quantile(
+        [abs(math.log(trials[i + 1] / trials[i])) for i in range(len(trials) - 1)],
+        0.75,
+    )
+
+
 def judge(candidate_ms: Sequence[int], baseline_ms: Sequence[int]) -> Dict[str, Any]:
     """The verdict for paired trials, round i of each arm taken together."""
     pairs = [
@@ -76,11 +85,14 @@ def judge(candidate_ms: Sequence[int], baseline_ms: Sequence[int]) -> Dict[str, 
         return out
 
     logs = [math.log(c / b) for c, b in pairs]
+    candidate = [c for c, _ in pairs]
     baseline = [b for _, b in pairs]
-    null = [
-        abs(math.log(baseline[i + 1] / baseline[i])) for i in range(len(baseline) - 1)
-    ]
-    noise = max(MIN_NOISE, _quantile(null, 0.75))
+    # Each arm against itself, and the larger of the two. Reading the
+    # baseline alone called identical programs (`x << 1` and `x * 2` at -O2)
+    # 1.16x "slower": the candidate's trials swung 99-149 ms while the
+    # baseline's held at 95-113, so the band was 7% and the jitter was
+    # taken for a difference. Measured on both arms it is 19%.
+    noise = max(MIN_NOISE, _self_noise(candidate), _self_noise(baseline))
     centre = median(logs)
     ratio = math.exp(centre)
     faster_rounds = sum(1 for x in logs if x < 0)

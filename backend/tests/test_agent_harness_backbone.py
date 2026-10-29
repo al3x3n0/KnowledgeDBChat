@@ -277,3 +277,33 @@ def test_a_run_that_ends_takes_the_harness_with_it(tmp_path, monkeypatch):
     pid = asyncio.run(_cancel_once_started())
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
+
+
+ERRORING_DRIVER = textwrap.dedent(
+    """
+    import json, sys
+    sys.stdin.read()
+    print(json.dumps({"event": "result", "final_response": "", "finish_reason": "error",
+                      "turn_end_reasons": [{"kind": "error", "message": "429 rate limited"}],
+                      "errors": []}), flush=True)
+    """
+)
+
+
+def test_a_session_that_errs_before_any_call_fails_the_job(tmp_path, monkeypatch):
+    """Four sessions ended in error with no model turn and were finalised as
+    completed runs with their contracts unmet; nothing said why."""
+    monkeypatch.setattr(backbone.settings, "DEEPSEEK_API_KEY", "sk-test")
+    driver = tmp_path / "erroring_driver.py"
+    driver.write_text(ERRORING_DRIVER, encoding="utf-8")
+    adapter = FakeAdapter(stop_after=1)
+    runner = backbone.HarnessBackboneRunner(
+        driver_python=sys.executable, driver_script=str(driver)
+    )
+
+    with pytest.raises(backbone.HarnessSessionFailed, match="429 rate limited"):
+        asyncio.run(runner.run(adapter))
+    (session,) = [e for e in adapter.job.log if e["phase"] == "harness_session"]
+    assert session["turn_end_reasons"] == [
+        {"kind": "error", "message": "429 rate limited"}
+    ]

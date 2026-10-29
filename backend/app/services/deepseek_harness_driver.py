@@ -47,6 +47,10 @@ def main() -> int:
 
     totals: Dict[str, float] = {}
     counts = {"assistant_messages": 0, "tool_calls": 0, "turns": 0}
+    # Why each turn ended, and any event that reports an error. A session
+    # once ended with finish_reason "error" and nothing else to go on.
+    reasons: list = []
+    errors: list = []
 
     def on_notification(notification: Any) -> None:
         if getattr(notification, "method", "") != "session.event":
@@ -66,6 +70,17 @@ def main() -> int:
             counts["tool_calls"] += 1
         elif kind == "turn/end":
             counts["turns"] += 1
+            data = event.get("data") if isinstance(event.get("data"), dict) else {}
+            reasons.append(data.get("reason"))
+        if "error" in str(kind) or (
+            isinstance(event.get("data"), dict) and "error" in event["data"]
+        ):
+            errors.append(
+                {
+                    "type": kind,
+                    "data": json.dumps(event.get("data"), default=str)[:1500],
+                }
+            )
 
     config = DeepSeekHarnessConfig(
         model=spec.get("model") or "deepseek-v4-pro",
@@ -92,6 +107,8 @@ def main() -> int:
                 "error": f"{type(exc).__name__}: {exc}"[:2000],
                 "counts": counts,
                 "usage": totals,
+                "turn_end_reasons": reasons[-5:],
+                "errors": errors[-5:],
             }
         )
         return 1
@@ -102,6 +119,8 @@ def main() -> int:
             "finish_reason": result.finish_reason,
             "counts": counts,
             "usage": totals,
+            "turn_end_reasons": reasons[-5:],
+            "errors": errors[-5:],
         }
     )
     return 0

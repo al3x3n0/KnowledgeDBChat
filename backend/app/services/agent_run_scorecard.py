@@ -33,11 +33,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Set
 from app.services import agent_evidence_map, agent_run_profile
 from app.services.agent_loop_policy import finding_identity
 from app.services.agent_pipeline_spec import _required_types
-from app.services.agent_run_waiting import (
-    WAITING_ON_PERSON,
-    final_jobs,
-    waiting_on,
-)
+from app.services.agent_run_waiting import WAITING_ON_PERSON, final_jobs, waiting_on
 from app.utils.datetimes import as_aware_utc
 
 DECISIVE_VERDICTS = ("faster", "slower")

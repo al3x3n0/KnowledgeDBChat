@@ -331,9 +331,7 @@ def test_a_finding_with_no_title_is_shown_by_its_subject_and_verdict():
     """check_implementation records none; its findings vanished from the
     prompt, and a run with six verified implementations was concluded as
     having recorded nothing."""
-    from app.services.agent_run_synthesis_service import (
-        summarize_findings_for_prompt,
-    )
+    from app.services.agent_run_synthesis_service import summarize_findings_for_prompt
 
     rows = summarize_findings_for_prompt(
         [

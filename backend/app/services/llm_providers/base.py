@@ -47,6 +47,10 @@ class LLMCompletion:
     completion_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
     raw: Optional[Dict[str, Any]] = None
+    # The provider's chain of thought, where it returns one. A loop hands it
+    # back with the turn it belongs to (`reasoning_content`) so a thinking
+    # model keeps its reasoning across tool calls, as DeepSeek V4 is built to.
+    reasoning: Optional[str] = None
 
     @property
     def has_tool_calls(self) -> bool:

@@ -110,16 +110,22 @@ class NativeToolLoopService:
                 result.stop_reason = "completed"
                 break
 
-            convo.append(
-                {
-                    "role": "assistant",
-                    "content": completion.text or "",
-                    "tool_calls": [
-                        {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
-                        for tc in completion.tool_calls
-                    ],
-                }
-            )
+            turn: Dict[str, Any] = {
+                "role": "assistant",
+                "content": completion.text or "",
+                "tool_calls": [
+                    {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                    for tc in completion.tool_calls
+                ],
+            }
+            # Handed back with the turn, so the next round reasons on from
+            # here instead of starting over. DeepSeek V4 accepted the next
+            # round without it when probed (2026-10-29); it is the model's
+            # design, and the harness backbone does the same, so the two
+            # loops are compared on the loop and not on this.
+            if getattr(completion, "reasoning", None):
+                turn["reasoning_content"] = completion.reasoning
+            convo.append(turn)
 
             for tc in completion.tool_calls:
                 action = {"tool": tc.name, "params": tc.arguments or {}}

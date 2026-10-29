@@ -128,6 +128,25 @@ class TestOpenAICompatibleProvider:
         assert completion.total_tokens == 15
         assert completion.stop_reason == "stop"
 
+    def test_parse_response_keeps_the_reasoning(self):
+        from types import SimpleNamespace as NS
+
+        response = NS(
+            id="r",
+            model="deepseek-v4-pro",
+            usage=None,
+            choices=[
+                NS(
+                    finish_reason="tool_calls",
+                    message=NS(content="", tool_calls=[], reasoning_content="think"),
+                )
+            ],
+        )
+        completion = OpenAICompatibleProvider._parse_response(
+            response, provider="deepseek", fallback_model="m"
+        )
+        assert completion.reasoning == "think"
+
     def test_parse_response_tool_calls(self):
         tool_call = SimpleNamespace(
             id="call_abc",

@@ -206,6 +206,8 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                 "content": str(message.get("content") or ""),
             }
             tool_calls = message.get("tool_calls")
+            if role == "assistant" and message.get("reasoning_content"):
+                entry["reasoning_content"] = str(message["reasoning_content"])
             if role == "assistant" and tool_calls:
                 entry["tool_calls"] = [
                     {
@@ -284,4 +286,5 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                 "reasoning_tokens": reasoning_tokens,
                 "reasoning_chars": len(str(reasoning)) if reasoning else 0,
             },
+            reasoning=str(reasoning) if reasoning else None,
         )

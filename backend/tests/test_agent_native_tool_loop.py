@@ -87,6 +87,39 @@ class TestNativeToolLoopService:
         assert roles == ["user", "assistant", "tool"]
         assert "hits" in second_messages[2]["content"]
 
+    def test_the_reasoning_goes_back_with_its_turn(self):
+        """A thinking model keeps its chain of thought across tool calls."""
+        thinking = _completion(tool_calls=[_tool_call()])
+        thinking.reasoning = "Search first, then decide."
+        llm = FakeLLM(
+            [thinking, _completion(text=json.dumps(DECISION), structured=DECISION)]
+        )
+
+        async def execute_tool(name, params):
+            return {"success": True}
+
+        run(
+            native_tool_loop_service.run(
+                llm_service=llm,
+                messages=[{"role": "user", "content": "go"}],
+                tools=SAMPLE_TOOLS,
+                execute_tool=execute_tool,
+                final_response_schema={"type": "object"},
+            )
+        )
+        assistant = llm.calls[1]["messages"][1]
+        assert assistant["reasoning_content"] == "Search first, then decide."
+
+        from app.services.llm_providers.openai_compatible import (
+            OpenAICompatibleProvider,
+        )
+
+        (_, sent, _) = OpenAICompatibleProvider._convert_messages(
+            llm.calls[1]["messages"]
+        )
+        assert sent["reasoning_content"] == "Search first, then decide."
+        assert sent["tool_calls"][0]["function"]["name"] == "search_documents"
+
     def test_deferred_action_stops_without_execution(self):
         llm = FakeLLM([_completion(tool_calls=[_tool_call(name="delete_document")])])
 

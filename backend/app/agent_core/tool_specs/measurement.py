@@ -253,6 +253,69 @@ SPECS: tuple[ToolSpec, ...] = (
         consumes="a program that times itself; runs it on the real host.",
     ),
     ToolSpec(
+        name="compare_c_snippets",
+        description="Time a candidate program against a baseline in ONE "
+        "sandbox run, alternating them round by round (A B, B A, ...), and "
+        "judge the difference against the host's own noise -- two runs of the "
+        "baseline against each other, measured in the same run. Use this "
+        "instead of two benchmark_c_snippet calls whenever the question is "
+        "'is X faster than Y': separate calls are taken at different moments "
+        "on a host whose speed moves, and this one's verdict "
+        "(faster / slower / indistinguishable / cannot_tell) says when the "
+        "difference is smaller than that noise. Records a "
+        "benchmark_measurement for each program and a benchmark_comparison. "
+        "Both programs must be self-contained, in the same language, and "
+        "should compute the same thing -- check_implementation is the check "
+        "that they do.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "The candidate: a self-contained program.",
+                },
+                "baseline_code": {
+                    "type": "string",
+                    "description": (
+                        "What the candidate is compared with, written the "
+                        "obvious way (plain `%`, the scalar loop, the "
+                        "library call), doing the same work."
+                    ),
+                },
+                "label": {"type": "string", "description": "Name of the candidate."},
+                "baseline_label": {
+                    "type": "string",
+                    "description": "Name of the baseline (default 'baseline').",
+                },
+                "language": {
+                    "type": "string",
+                    "enum": _LANGUAGES,
+                    "description": "Toolchain for both programs (default 'c').",
+                },
+                "flags": {
+                    "type": "string",
+                    "description": "Compiler flags for both, as for benchmark_c_snippet.",
+                },
+                "rounds": {
+                    "type": "integer",
+                    "description": (
+                        "Paired rounds, 5-20 (default 8). Fewer than 5 cannot "
+                        "be judged. Give each program enough work that a trial "
+                        "takes ~250 ms or more: shorter ones are at this "
+                        "host's scheduling noise."
+                    ),
+                },
+            },
+            "required": ["code", "baseline_code"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("benchmark_measurement", "benchmark_comparison"),
+        typical_seconds=60,
+        consumes="two programs that do the same work; runs both on the real host.",
+    ),
+    ToolSpec(
         name="retract_finding",
         description=(
             "Withdraw a finding from an earlier run that this run has shown to be "

@@ -26,7 +26,12 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 
 from app.core.config import settings
-from app.services import agent_measurement_lock, agent_sandbox_runtime, agent_toolchains
+from app.services import (
+    agent_measurement_lock,
+    agent_paired_timing,
+    agent_sandbox_runtime,
+    agent_toolchains,
+)
 
 DEFAULT_IMAGE = "ghcr.io/al3x3n0/kdbc-compiler-research:latest"
 MAX_CODE_CHARS = 20000
@@ -950,6 +955,228 @@ async def benchmark_c_snippet(
                 # machine too busy to measure anything.
                 **quality,
             }
+        ],
+    }
+
+
+DEFAULT_ROUNDS = 8
+MAX_ROUNDS = 20
+
+
+def _paired_script(build: str, rounds: int, timeout_seconds: int) -> str:
+    """Build both arms, warm both, then time them in alternating order."""
+    budget = int(timeout_seconds * TRIAL_BUDGET_SHARE * 1_000_000_000)
+    lines = [
+        f"(cd a && {build}) 2>compile_err.txt || "
+        "{ cat compile_err.txt >&2; exit 90; }",
+        f"(cd b && {build}) 2>compile_err.txt || "
+        "{ cat compile_err.txt >&2; exit 92; }",
+        # One untimed run of each, keeping its output: the result shows what
+        # each program printed, so a reader can see whether they agreed.
+        "./a/prog >out_a.txt 2>&1; ./b/prog >out_b.txt 2>&1",
+        "arm() { s=$(date +%s%N); ./$1/prog >/dev/null 2>&1; rc=$?; "
+        'e=$(date +%s%N); if [ $rc -ne 0 ]; then echo "$1 exited $rc" >&2; '
+        'exit 91; fi; echo "__${1}_ms__ $(( (e - s) / 1000000 ))"; }',
+        f"__t0=$(date +%s%N); __budget={budget}; __stop=",
+    ]
+    for order in agent_paired_timing.interleaved_order(rounds):
+        first, second = order[0], order[1]
+        lines.append(
+            f'[ -n "$__stop" ] || {{ arm {first}; arm {second}; '
+            "[ $(( $(date +%s%N) - __t0 )) -ge $__budget ] && __stop=1; }"
+        )
+    lines += [
+        'echo "__out_a__"; head -c 4000 out_a.txt; echo; echo "__out_end__"',
+        'echo "__out_b__"; head -c 4000 out_b.txt; echo; echo "__out_end__"',
+        'echo "__loadavg__ $(cut -d" " -f1 /proc/loadavg 2>/dev/null || echo unknown)"',
+        'echo "__cpus__ $(nproc 2>/dev/null || echo unknown)"',
+    ]
+    return "; ".join(lines)
+
+
+async def compare_c_snippets(
+    *,
+    code: str,
+    baseline_code: str,
+    label: str = "",
+    baseline_label: str = "",
+    flags: str = "",
+    rounds: int = DEFAULT_ROUNDS,
+    language: str = agent_toolchains.DEFAULT_LANGUAGE,
+    image: str = DEFAULT_IMAGE,
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS * 2,
+) -> Dict[str, Any]:
+    """Time a candidate against a baseline in one container, alternating.
+
+    Two separate benchmarks are taken at different moments on a host whose
+    speed moves, so a difference between them may be the host. Here each
+    round runs both programs back to back (A B, then B A), the host's noise is
+    measured from the baseline's own trials, and the verdict
+    (`agent_paired_timing.judge`) may be "cannot tell".
+    """
+    chain = agent_toolchains.resolve(language)
+    if chain is None:
+        return {"error": agent_toolchains.unsupported_language(language)}
+    for source in (code, baseline_code):
+        blocked = _preflight(source, image)
+        if blocked:
+            return blocked
+
+    rounds = max(1, min(int(rounds or DEFAULT_ROUNDS), MAX_ROUNDS))
+    flags = flags or chain.default_flags
+    safe_flags = _clean_flags(flags)
+    if safe_flags is None:
+        return {"error": f"flags contain unsupported characters: {flags!r}"}
+    safe_flags = agent_toolchains.enforce(chain, safe_flags)
+
+    with tempfile.TemporaryDirectory(prefix="paired_bench_") as workdir:
+        for arm, source in (("a", code), ("b", baseline_code)):
+            Path(workdir, arm).mkdir()
+            Path(workdir, arm, chain.source_file).write_text(source, encoding="utf-8")
+        script = _paired_script(
+            agent_toolchains.build_script(chain, safe_flags), rounds, timeout_seconds
+        )
+        try:
+            async with agent_measurement_lock.exclusive_measurement(
+                wait_seconds=float(
+                    getattr(settings, "AGENT_MEASUREMENT_LOCK_WAIT_SECONDS", 180)
+                ),
+                ttl_seconds=agent_measurement_lock.ttl_for(timeout_seconds),
+                enabled=bool(getattr(settings, "AGENT_MEASUREMENT_LOCK_ENABLED", True)),
+            ) as lock_outcome:
+                returncode, stdout, stderr = await _run(
+                    script, workdir, image=image, timeout_seconds=timeout_seconds
+                )
+        except asyncio.TimeoutError:
+            return {"error": f"Comparison timed out after {timeout_seconds}s"}
+        except FileNotFoundError:
+            return {"error": "Docker is not available to this process"}
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(f"compare_c_snippets failed: {exc}")
+            return {"error": f"Comparison failed: {exc}"}
+
+    if returncode in (90, 92):
+        which = "candidate" if returncode == 90 else "baseline"
+        return {
+            "success": False,
+            "error": f"The {which} did not compile: "
+            + explain_compiler_failure(stderr),
+            "compiler_stderr": stderr[:MAX_OUTPUT_CHARS],
+            "flags": flags,
+        }
+    if returncode != 0:
+        return {
+            "success": False,
+            "error": (
+                f"A program exited non-zero ({stderr.strip()[:200]})"
+                if returncode == 91
+                else f"Comparison failed with exit code {returncode}"
+            ),
+            "stdout": stdout[:MAX_OUTPUT_CHARS],
+            "stderr": stderr[:MAX_OUTPUT_CHARS],
+        }
+
+    timings: Dict[str, List[int]] = {"a": [], "b": []}
+    outputs: Dict[str, List[str]] = {"a": [], "b": []}
+    load_average: Optional[float] = None
+    cpu_count: Optional[int] = None
+    capturing: Optional[str] = None
+    for line in stdout.splitlines():
+        if capturing:
+            if line == "__out_end__":
+                capturing = None
+            else:
+                outputs[capturing].append(line)
+            continue
+        if line in ("__out_a__", "__out_b__"):
+            capturing = line[6]
+        elif line.startswith(("__a_ms__ ", "__b_ms__ ")):
+            try:
+                timings[line[2]].append(int(line.split()[1]))
+            except (IndexError, ValueError):
+                continue
+        elif line.startswith("__loadavg__ "):
+            try:
+                load_average = float(line.split()[1])
+            except (IndexError, ValueError):
+                continue
+        elif line.startswith("__cpus__ "):
+            try:
+                cpu_count = int(line.split()[1])
+            except (IndexError, ValueError):
+                continue
+
+    verdict = agent_paired_timing.judge(timings["a"], timings["b"])
+    subject = describe_subject(code, label)
+    baseline_subject = describe_subject(baseline_code, baseline_label or "baseline")
+    if baseline_subject == subject:
+        baseline_subject = f"{subject} (baseline)"
+    lock_quality = lock_outcome.as_quality()
+
+    def _measurement(arm: str, source: str, name: str) -> Dict[str, Any]:
+        quality = measurement_quality(load_average, cpu_count, timings[arm])
+        quality.update(lock_quality)
+        return {
+            "type": "benchmark_measurement",
+            "subject": name,
+            "title": (
+                f"{name} @ {chain.language} {flags}: fastest "
+                f"{min(timings[arm]) if timings[arm] else '?'} ms of "
+                f"{len(timings[arm])} paired trials"
+            ),
+            "language": chain.language,
+            "flags": flags,
+            **recorded_source(source),
+            "fastest_ms": min(timings[arm]) if timings[arm] else None,
+            "all_ms": timings[arm],
+            "reported_metrics": parse_reported_metrics("\n".join(outputs[arm])),
+            "paired_with": baseline_subject if arm == "a" else subject,
+            **quality,
+        }
+
+    comparison = {
+        "type": "benchmark_comparison",
+        "subject": f"{subject} vs {baseline_subject}",
+        "title": f"{subject} vs {baseline_subject}: {verdict['verdict']}"
+        + (
+            f" ({verdict['speedup']:.2f}x)"
+            if verdict["verdict"] in ("faster", "slower")
+            else ""
+        ),
+        "candidate": subject,
+        "baseline": baseline_subject,
+        "language": chain.language,
+        "flags": flags,
+        **verdict,
+        **(
+            {"load_per_cpu": round(load_average / cpu_count, 2)}
+            if load_average is not None and cpu_count
+            else {}
+        ),
+        **lock_quality,
+    }
+    return {
+        "success": True,
+        "data": {
+            "image": image,
+            "language": chain.language,
+            "flags": flags,
+            **verdict,
+            "candidate_ms": timings["a"],
+            "baseline_ms": timings["b"],
+            "candidate_stdout": "\n".join(outputs["a"])[:MAX_OUTPUT_CHARS],
+            "baseline_stdout": "\n".join(outputs["b"])[:MAX_OUTPUT_CHARS],
+            "note": (
+                "Both programs were timed in one container, alternating, and "
+                "the noise band is two runs of the baseline against each "
+                "other. Compare stdout to see whether they computed the same "
+                "thing; check_implementation is the check that they do."
+            ),
+        },
+        "findings": [
+            _measurement("a", code, subject),
+            _measurement("b", baseline_code, baseline_subject),
+            comparison,
         ],
     }
 

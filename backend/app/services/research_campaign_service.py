@@ -709,7 +709,7 @@ async def conclude_campaign(
     wrong trade.
     """
     from app.services.agent_run_synthesis_service import conclude, conclusion_line
-    from app.services.llm_service import LLMService
+    from app.services.llm_service import LLMService, load_user_llm_settings
 
     findings = await _all_findings(db, campaign)
 
@@ -731,6 +731,8 @@ async def conclude_campaign(
         db=db,
         snapshot_context={"campaign_id": str(campaign.id), "phase": "conclusion"},
         extra_gaps=extra_gaps,
+        user_settings=await load_user_llm_settings(db, campaign.user_id),
+        user_id=campaign.user_id,
     )
 
     campaign.conclusion = conclusion_line(result) or None

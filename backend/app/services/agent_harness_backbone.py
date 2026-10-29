@@ -370,8 +370,18 @@ class HarnessBackboneRunner:
                         "text": STOP_TEXT.format(reason=run.stopped),
                         "is_error": True,
                     }
-                return await self._iteration(adapter, run, name, params)
+                try:
+                    return await self._iteration(adapter, run, name, params)
+                finally:
+                    await self._commit(adapter)
 
+        # Nothing may be left uncommitted while the harness thinks. Its model
+        # turns take minutes, and an uncommitted write to the job row holds
+        # that row's lock: the execution lease heartbeat, an UPDATE of the same
+        # row, waited behind it, the lease lapsed after two minutes and the
+        # worker abandoned a live job (first run on the stack, 2026-10-29).
+        # This loop commits before every model call for the same reason.
+        await self._commit(adapter)
         token = secrets.token_urlsafe(32)
         server = _QuietServer(mcp_app(token=token, tools=tools, call=call))
         await server.start()
@@ -403,6 +413,12 @@ class HarnessBackboneRunner:
         if run.terminal is not None:
             return run.terminal
         return await adapter.build_run_result()
+
+    @staticmethod
+    async def _commit(adapter: Any) -> None:
+        db = getattr(adapter, "db", None)
+        if db is not None:
+            await db.commit()
 
     async def _iteration(
         self, adapter: Any, run: _Run, name: str, params: Dict[str, Any]
@@ -567,10 +583,14 @@ class HarnessBackboneRunner:
             await asyncio.wait_for(proc.wait(), timeout=30)
         except asyncio.TimeoutError:
             run.stopped = run.stopped or "the time limit was reached"
-            proc.kill()
-            await proc.wait()
         finally:
             guard.cancel()
+            # Whatever ends this -- a timeout, the job abandoned for a lost
+            # lease, a cancel -- the harness goes with it. Left running, it
+            # kept calling an MCP server that no longer existed.
+            if proc.returncode is None:
+                proc.kill()
+                await proc.wait()
         if proc.returncode not in (0, None) and not run.final.get("error"):
             run.final.setdefault(
                 "error", "".join(run.stderr_tail)[-1500:] or f"exit {proc.returncode}"

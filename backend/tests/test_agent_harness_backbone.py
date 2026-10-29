@@ -174,8 +174,13 @@ class FakeAdapter:
             ],
         )
         self.agent_def = None
+        self.events = []
+        self.db = SimpleNamespace(commit=self._commit)
         self.start_time = utc_now()
         self.max_runtime = timedelta(minutes=5)
+
+    async def _commit(self):
+        self.events.append("commit")
 
     async def can_continue(self):
         return True
@@ -185,6 +190,7 @@ class FakeAdapter:
 
     async def act_phase(self, decision):
         assert self.externally_driven, "the harness's choice must be the one that runs"
+        self.events.append("act")
         self.acted.append(decision["action"])
         return {
             "action": decision["action"],
@@ -229,3 +235,45 @@ def test_the_harness_chooses_and_the_contract_stops_it(tmp_path, monkeypatch):
         adapter.job.llm_calls_used == 3
     ), "the harness's model turns count against the budget"
     assert adapter.state["harness_final_response"] == "done"
+    # Committed before the harness had control and after every call: an
+    # uncommitted job row held the lock the lease heartbeat needs.
+    assert adapter.events[:2] == ["commit", "act"]
+    assert adapter.events.count("commit") >= 1 + len(adapter.acted)
+
+
+HANGING_DRIVER = textwrap.dedent(
+    """
+    import os, sys, time
+    open(sys.argv[0] + ".pid", "w").write(str(os.getpid()))
+    sys.stdin.read()
+    time.sleep(600)
+    """
+)
+
+
+def test_a_run_that_ends_takes_the_harness_with_it(tmp_path, monkeypatch):
+    """Abandoned for a lost lease, the job left its harness running."""
+    import os
+
+    monkeypatch.setattr(backbone.settings, "DEEPSEEK_API_KEY", "sk-test")
+    driver = tmp_path / "hanging_driver.py"
+    driver.write_text(HANGING_DRIVER, encoding="utf-8")
+    runner = backbone.HarnessBackboneRunner(
+        driver_python=sys.executable, driver_script=str(driver)
+    )
+    pid_file = tmp_path / "hanging_driver.py.pid"
+
+    async def _cancel_once_started():
+        task = asyncio.create_task(runner.run(FakeAdapter(stop_after=1)))
+        for _ in range(400):
+            if pid_file.exists() and pid_file.read_text():
+                break
+            await asyncio.sleep(0.025)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return int(pid_file.read_text())
+
+    pid = asyncio.run(_cancel_once_started())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)

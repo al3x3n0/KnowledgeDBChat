@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
+from app.services import agent_run_scorecard
 from app.services.autonomous_rnd_evidence_verification_service import (
     autonomous_rnd_evidence_verifier,
 )
@@ -38,7 +39,11 @@ class AutonomousRnDTrajectoryAdapter:
         job: Any,
         *,
         experiment_runs: Optional[Iterable[Any]] = None,
+        run_jobs: Optional[Iterable[Any]] = None,
     ) -> Dict[str, Any]:
+        """`run_jobs` is the trial job and every job sharing its root; given,
+        the outcome carries the run's scorecard under `run`, which graders
+        read by path (`run.contract_met`, `run.benchmark.baselined`, ...)."""
         results = _mapping(getattr(job, "results", None))
         canonical = deepcopy(_mapping(results.get("evaluation_outcome")))
         structured = _mapping(results.get("structured_output"))
@@ -107,6 +112,8 @@ class AutonomousRnDTrajectoryAdapter:
                 if getattr(run, "id", None)
             ],
         }
+        if run_jobs is not None:
+            outcome["run"] = agent_run_scorecard.score(list(run_jobs) or [job])
         if getattr(job, "error", None):
             outcome["error"] = str(job.error)[:1000]
         verified = autonomous_rnd_evidence_verifier.verify(outcome)

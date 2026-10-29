@@ -1,0 +1,82 @@
+{
+  "id": "agent_rigour_v1",
+  "name": "Agent Rigour v1",
+  "description": "Fixed goals that exercise the October 2026 weak spots: a benchmark with its baseline, a difference that is not there, and a correctness check before exploring. Graded on the run's scorecard (contract met, baseline present, conclusion answered, iterations to first evidence, wall time), so two runs of the suite say whether a change helped.",
+  "version": 1,
+  "seed": 2026,
+  "tasks": [
+    {
+      "id": "fastmod_against_modulo",
+      "name": "Is fastmod faster than % for a runtime divisor",
+      "category": "benchmark",
+      "trials": 2,
+      "pass_threshold": 0.75,
+      "job_type": "research",
+      "prompt": "Implement Lemire's fastmod (32-bit, precomputed 64-bit reciprocal M = UINT64_MAX / d + 1) in C. Check it against plain `%` on generated inputs, then determine whether it is faster than `%` for a divisor known only at run time. Report the speedup with its uncertainty, or say that the measurement cannot tell.",
+      "config": {
+        "goal_contract": {
+          "required_finding_types": ["implementation_verified", "benchmark_measurement"],
+          "validity": {
+            "distinct_subjects": {"benchmark_measurement": 2},
+            "bounds": {
+              "implementation_verified": {"field": "generated_cases", "min": 50}
+            }
+          }
+        }
+      },
+      "graders": [
+        {"id": "settled", "type": "field_equals", "path": "run.settled", "expected": true},
+        {"id": "contract_met", "type": "field_equals", "path": "run.contract_met", "expected": true},
+        {"id": "baselined", "type": "field_equals", "path": "run.benchmark.baselined", "expected": true},
+        {"id": "answered", "type": "field_equals", "path": "run.conclusion.answered", "expected": true},
+        {"id": "paired", "type": "field_equals", "path": "run.benchmark.paired", "expected": true, "required": false}
+      ]
+    },
+    {
+      "id": "shift_against_multiply",
+      "name": "A difference that is not there",
+      "category": "null_control",
+      "trials": 2,
+      "pass_threshold": 1.0,
+      "job_type": "research",
+      "prompt": "Determine whether `x << 1` is faster than `x * 2` for unsigned 32-bit integers in C at -O2, in a loop over at least 100 million values. If the measurement cannot tell them apart, say so: do not report a speedup the measurement does not support.",
+      "config": {
+        "goal_contract": {
+          "required_finding_types": ["benchmark_measurement"],
+          "validity": {"distinct_subjects": {"benchmark_measurement": 2}}
+        }
+      },
+      "graders": [
+        {"id": "settled", "type": "field_equals", "path": "run.settled", "expected": true},
+        {"id": "contract_met", "type": "field_equals", "path": "run.contract_met", "expected": true},
+        {"id": "no_invented_difference", "type": "field_equals", "path": "run.benchmark.claimed_difference", "expected": false},
+        {"id": "answered", "type": "field_equals", "path": "run.conclusion.answered", "expected": true}
+      ]
+    },
+    {
+      "id": "branchless_abs_verified",
+      "name": "Verify before exploring",
+      "category": "implementation",
+      "trials": 2,
+      "pass_threshold": 0.75,
+      "job_type": "research",
+      "prompt": "Write a branchless absolute value for int32_t in C (no `if`, no `?:`, no library call) and verify it against a straightforward reference implementation on at least 50 generated inputs, including INT32_MIN + 1, -1, 0 and INT32_MAX.",
+      "config": {
+        "goal_contract": {
+          "required_finding_types": ["implementation_verified"],
+          "validity": {
+            "bounds": {
+              "implementation_verified": {"field": "generated_cases", "min": 50}
+            }
+          }
+        }
+      },
+      "graders": [
+        {"id": "settled", "type": "field_equals", "path": "run.settled", "expected": true},
+        {"id": "contract_met", "type": "field_equals", "path": "run.contract_met", "expected": true},
+        {"id": "answered", "type": "field_equals", "path": "run.conclusion.answered", "expected": true},
+        {"id": "quick_to_evidence", "type": "metric_bounds", "path": "run.iterations_to_first_evidence", "max": 6, "required": false}
+      ]
+    }
+  ]
+}

@@ -1674,6 +1674,13 @@ async def finalize_job(
         # synthesize_conclusion swallows its own errors, and this guards the
         # call site as well: an optional summary must not be able to abort
         # finalization, because the chain trigger comes after it.
+        # Committed first: the conclusion is a model call of a minute or
+        # more, and whatever this finaliser has written to the job row since
+        # its last commit would hold that row's lock for all of it. The
+        # execution lease heartbeat is an UPDATE of the same row; two runs
+        # lost their lease here and were abandoned before the conclusion was
+        # written (2026-10-29).
+        await db.commit()
         try:
             job.results["conclusion"] = await synthesize_conclusion(
                 executor, job, state, db

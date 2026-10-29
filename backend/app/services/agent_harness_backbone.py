@@ -410,6 +410,8 @@ class HarnessBackboneRunner:
         state["harness_final_response"] = str(run.final.get("final_response") or "")[
             :4000
         ]
+        # As after every call: the finaliser's model calls come next.
+        await self._commit(adapter)
         if run.terminal is not None:
             return run.terminal
         return await adapter.build_run_result()

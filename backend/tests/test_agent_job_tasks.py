@@ -741,3 +741,54 @@ class TestWhatTheSweepMustNotTouch:
         agent_job_tasks.check_stalled_agent_jobs(undispatched_minutes=60)
 
         assert sent == []
+
+
+class TestAJobWaitingInTheQueue:
+    """A paired eval of 30 trials on a two-slot worker lost 19 to this sweep:
+    each was pending with no task id while its message waited behind running
+    trials, and after three requeues it was failed as "never started"."""
+
+    def _exhausted(self, db_session, monkeypatch, in_broker):
+        _patch_celery_session_factory(monkeypatch)
+        sent = _capture_dispatch(monkeypatch)
+        job = _pending_job(age_minutes=95)
+        job.execution_log = [
+            {"phase": agent_job_tasks.UNDISPATCHED_REQUEUE_PHASE, "attempt": n + 1}
+            for n in range(agent_job_tasks.MAX_UNDISPATCHED_REQUEUES)
+        ]
+        _run(_seed_job(db_session, job))
+        monkeypatch.setattr(
+            agent_job_tasks, "sync_follow_up_outcome_for_job", _noop_async_two_args
+        )
+        monkeypatch.setattr(
+            agent_job_tasks, "_publish_job_progress", _noop_async_kwargs
+        )
+        monkeypatch.setattr(
+            agent_job_tasks.broker_queue,
+            "waiting_agent_job_ids",
+            lambda: in_broker(str(job.id)),
+        )
+        agent_job_tasks.check_stalled_agent_jobs(undispatched_minutes=60)
+        _run(db_session.refresh(job))
+        return job, sent
+
+    def test_it_is_neither_failed_nor_queued_again(self, db_session, monkeypatch):
+        job, sent = self._exhausted(db_session, monkeypatch, lambda jid: {jid})
+
+        assert job.status == AgentJobStatus.PENDING.value
+        assert job.error is None
+        assert sent == []
+
+    def test_a_job_the_broker_does_not_hold_is_still_failed(
+        self, db_session, monkeypatch
+    ):
+        job, _ = self._exhausted(db_session, monkeypatch, lambda jid: {"other"})
+
+        assert job.status == AgentJobStatus.FAILED.value
+
+    def test_a_broker_that_cannot_say_leaves_the_age_rule(
+        self, db_session, monkeypatch
+    ):
+        job, _ = self._exhausted(db_session, monkeypatch, lambda jid: None)
+
+        assert job.status == AgentJobStatus.FAILED.value

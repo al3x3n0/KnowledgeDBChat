@@ -86,6 +86,18 @@ def hands_over(job: Any) -> bool:
     return since is not None and since < STAGE_HANDOVER_GRACE
 
 
+def still_writing_up(job: Any, now: Optional[datetime] = None) -> bool:
+    """True while a worker still holds the job, whatever its status says.
+
+    A run is marked completed before its finaliser writes the conclusion,
+    the library record and its memories, which can take minutes; an eval
+    graded a trial in that gap and found no conclusion. The worker releases
+    the lease when it is done, and a dead worker's lease lapses.
+    """
+    expires = as_aware_utc(getattr(job, "execution_lease_expires_at", None))
+    return expires is not None and expires > (now or datetime.now(timezone.utc))
+
+
 def waiting_on(run: Sequence[Any]) -> Optional[str]:
     """What a run is waiting for, or None when all of it has ended.
 
@@ -96,6 +108,10 @@ def waiting_on(run: Sequence[Any]) -> Optional[str]:
     waiting: Optional[str] = None
     for job in final_jobs(run):
         status = str(job.status or "")
+        if still_writing_up(job):
+            if waiting != WAITING_ON_PERSON:
+                waiting = WAITING_ON_JOB
+            continue
         if status in TERMINAL_JOB_STATUSES:
             if hands_over(job):
                 waiting = waiting or WAITING_ON_JOB
@@ -117,5 +133,6 @@ __all__ = [
     "WAITING_ON_PERSON",
     "final_jobs",
     "hands_over",
+    "still_writing_up",
     "waiting_on",
 ]

@@ -24,7 +24,7 @@ from sqlalchemy.orm import selectinload
 from app.core.celery import AGENT_JOB_SOFT_TIME_LIMIT_SECONDS, celery_app
 from app.core.database import create_celery_session
 from app.models.agent_job import AgentJob, AgentJobStatus
-from app.services import agent_job_user_cap
+from app.services import agent_job_user_cap, broker_queue
 from app.services.agent_execution_lease_service import (
     ExecutionLeaseLostError,
     agent_execution_lease_service,
@@ -1198,9 +1198,21 @@ def check_stalled_agent_jobs(timeout_minutes: int = 30, undispatched_minutes: in
                 )
             )
             requeued_count = 0
-            for job in undispatched_result.scalars().all():
+            undispatched_jobs = undispatched_result.scalars().all()
+            # Waiting in the queue behind busy workers looks, from here, exactly
+            # like a message the broker lost; only the broker can tell them
+            # apart. None means it could not say, and the age rule decides.
+            in_broker = (
+                await asyncio.to_thread(broker_queue.waiting_agent_job_ids)
+                if undispatched_jobs
+                else set()
+            )
+            for job in undispatched_jobs:
                 # A live lease means a worker has it after all; leave it alone.
                 if not is_orphaned(job, now):
+                    continue
+                # Its message is still queued: it is waiting, not lost.
+                if in_broker and str(job.id) in in_broker:
                     continue
                 # Waiting its turn behind its owner's other jobs, with a
                 # redelivery still due: not a job nobody picked up.

@@ -100,6 +100,17 @@ class HarnessUnavailable(RuntimeError):
     """The backbone was asked for and cannot run here."""
 
 
+class HarnessSessionFailed(RuntimeError):
+    """The harness ended in error before running a single tool call.
+
+    Raised so the job fails with the harness's own reason. Finalised as an
+    ordinary ending, four such sessions read as runs that had completed with
+    their contracts unmet, having never reached the model.
+    """
+
+    fatal = True
+
+
 def backbone_of(job: Any) -> str:
     config = getattr(job, "config", None)
     value = config.get(BACKBONE_KEY) if isinstance(config, dict) else None
@@ -317,6 +328,7 @@ def _contract_line(state: Dict[str, Any]) -> str:
 @dataclass
 class _Run:
     stopped: Optional[str] = None
+    calls: int = 0
     calls_after_stop: int = 0
     terminal: Any = None
     llm_turns: int = 0
@@ -404,12 +416,28 @@ class HarnessBackboneRunner:
                 "calls_after_stop": run.calls_after_stop,
                 "finish_reason": run.final.get("finish_reason"),
                 "error": run.final.get("error"),
+                "turn_end_reasons": run.final.get("turn_end_reasons"),
+                "errors": run.final.get("errors"),
                 "final_response": str(run.final.get("final_response") or "")[:1500],
             }
         )
         state["harness_final_response"] = str(run.final.get("final_response") or "")[
             :4000
         ]
+        failed = (
+            run.final.get("event") == "error"
+            or run.final.get("finish_reason") == "error"
+        )
+        if failed and run.calls == 0 and run.terminal is None:
+            await self._commit(adapter)
+            detail = run.final.get("error") or json.dumps(
+                run.final.get("turn_end_reasons") or run.final.get("errors"),
+                default=str,
+            )
+            raise HarnessSessionFailed(
+                "The DeepSeek harness ended in error before running any tool: "
+                f"{str(detail)[:800]}"
+            )
         # As after every call: the finaliser's model calls come next.
         await self._commit(adapter)
         if run.terminal is not None:
@@ -447,6 +475,7 @@ class HarnessBackboneRunner:
                 "evaluate": int((time.monotonic() - started) * 1000),
             }
             await adapter.on_iteration_complete({}, decision, bundle, evaluation)
+            run.calls += 1
         except Exception as exc:  # noqa: BLE001 - the adapter decides
             if bool(getattr(exc, "fatal", False)):
                 raise

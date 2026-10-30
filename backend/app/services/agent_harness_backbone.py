@@ -49,7 +49,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from loguru import logger
 
@@ -58,6 +58,7 @@ from app.utils.datetimes import as_aware_utc, utc_now
 
 BACKBONE_KEY = "backbone"
 DEEPSEEK_HARNESS = "deepseek_harness"
+LOOP = "loop"
 SERVER_NAME = "kdbc"
 
 #: Rows of the harness's `sdk-minimal` profile that give it tools or send data
@@ -130,6 +131,35 @@ def unavailable_reason() -> Optional[str]:
     if not settings.DEEPSEEK_API_KEY:
         return "DEEPSEEK_API_KEY is not set"
     return None
+
+
+def resolve_backbone(job: Any, user_settings: Any = None) -> Tuple[str, Optional[str]]:
+    """The backbone this job runs on, and why it fell back, if it did.
+
+    A job naming a backbone gets it (an unavailable harness then fails the
+    job, as asked). One naming none gets ``AGENT_DEFAULT_BACKBONE``, except
+    that the harness talks only to DeepSeek with the deployment's key: an
+    owner who chose another provider keeps the loop, which honours that
+    choice, and so does a worker that cannot run the harness.
+    """
+    explicit = backbone_of(job)
+    if explicit:
+        return (DEEPSEEK_HARNESS if explicit == DEEPSEEK_HARNESS else LOOP), None
+    default = str(settings.AGENT_DEFAULT_BACKBONE or "").strip().lower()
+    if default != DEEPSEEK_HARNESS:
+        return LOOP, None
+    provider = str(
+        getattr(user_settings, "provider", None) or settings.LLM_PROVIDER or ""
+    ).lower()
+    if provider != "deepseek":
+        return LOOP, (
+            f"the owner's model provider is {provider!r}; the harness talks "
+            "only to DeepSeek"
+        )
+    reason = unavailable_reason()
+    if reason:
+        return LOOP, reason
+    return DEEPSEEK_HARNESS, None
 
 
 def build_patch(url: str, token: str) -> str:
@@ -635,10 +665,12 @@ class HarnessBackboneRunner:
 __all__ = [
     "BACKBONE_KEY",
     "DEEPSEEK_HARNESS",
+    "LOOP",
     "HarnessBackboneRunner",
     "HarnessUnavailable",
     "backbone_of",
     "build_patch",
     "handle_rpc",
+    "resolve_backbone",
     "unavailable_reason",
 ]

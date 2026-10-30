@@ -3914,15 +3914,15 @@ class AutonomousAgentExecutor:
             max_runtime=max_runtime,
             progress_callback=progress_callback,
         )
-        if agent_harness_backbone.backbone_of(job) == (
-            agent_harness_backbone.DEEPSEEK_HARNESS
-        ):
-            job.add_log_entry(
-                {
-                    "phase": "backbone",
-                    "backbone": agent_harness_backbone.DEEPSEEK_HARNESS,
-                }
-            )
+        backbone, fell_back = agent_harness_backbone.resolve_backbone(
+            job, user_settings
+        )
+        if backbone == agent_harness_backbone.DEEPSEEK_HARNESS or fell_back:
+            entry = {"phase": "backbone", "backbone": backbone}
+            if fell_back:
+                entry["fallback_reason"] = fell_back
+            job.add_log_entry(entry)
+        if backbone == agent_harness_backbone.DEEPSEEK_HARNESS:
             return await agent_harness_backbone.HarnessBackboneRunner().run(adapter)
         return await AgentRuntimeRunner().run(adapter)
 

@@ -50,11 +50,12 @@ RUN pip install --no-cache-dir --no-compile -r requirements.txt \
     && find /opt/venv -name "__pycache__" -type d -prune -exec rm -rf {} + \
     && find /opt/venv -name "*.pyc" -delete
 
-# The DeepSeek Harness backbone, opt-in: its own virtualenv, since the SDK needs
-# a newer pydantic than the backend pins. Absent (an empty directory) unless
-# built with WITH_DEEPSEEK_HARNESS=true; AGENT_DEEPSEEK_HARNESS_PYTHON points
-# at /opt/deepseek-harness/bin/python.
-ARG WITH_DEEPSEEK_HARNESS=false
+# The DeepSeek Harness backbone, the default for agent jobs: its own virtualenv,
+# since the SDK needs a newer pydantic than the backend pins.
+# WITH_DEEPSEEK_HARNESS=false leaves an empty directory, and jobs fall back to
+# the platform's own loop; AGENT_DEEPSEEK_HARNESS_PYTHON points at
+# /opt/deepseek-harness/bin/python.
+ARG WITH_DEEPSEEK_HARNESS=true
 COPY requirements-deepseek-harness.txt .
 RUN mkdir -p /opt/deepseek-harness \
     && if [ "$WITH_DEEPSEEK_HARNESS" = "true" ]; then \

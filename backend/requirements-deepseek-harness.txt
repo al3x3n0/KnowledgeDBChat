@@ -1,4 +1,4 @@
-# DeepSeek Harness, for the optional `deepseek_harness` job backbone
+# DeepSeek Harness, for the `deepseek_harness` job backbone (the default)
 # (app/services/agent_harness_backbone.py). Installed into its OWN virtualenv
 # (/opt/deepseek-harness) because the SDK requires pydantic>=2.12 and the
 # backend pins an older one. Pre-releases only on PyPI: install with --pre.

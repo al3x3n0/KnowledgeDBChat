@@ -1406,7 +1406,12 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   The same reason keeps `agent_decision_parser.coerce_bool` (a model's
   output: true/yes/1/y) apart from `config_values.coerce_bool` (a person's
   config, which also accepts on/off), and `workflow_tasks.run_async` (a fresh
-  loop per call, closed after) apart from `job_support.run_async`.
+  loop per call, closed after) apart from `job_support.run_async`. **A
+  closed loop must not stay set on the thread**: the workflow helper left
+  one after every scheduled tick, and the next `job_support.run_async` task
+  in that pool process got it and failed with "Event loop is closed" -- 72
+  tasks in a day, an agent's arXiv ingestion among them. Each helper now
+  guards its own side.
 - **A backlog item's `decomposition` is edited through
   `services/coding_backlog_decomposition.py`.** The operator endpoint and the
   backlog orchestrator write the same JSON document, and the orchestrator

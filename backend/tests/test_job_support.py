@@ -358,3 +358,46 @@ def test_an_unreachable_redis_means_not_cancelled(monkeypatch):
     assert job_support.flag_is_set("job:cancel") is False
     job_support.delete_keys("job:cancel")
     assert client.closed == 2
+
+
+def test_run_async_after_a_task_closed_its_loop():
+    """The worker's sequence: a scheduled-workflow tick, then an ingestion.
+
+    The tick closed its loop and left it set, and the ingestion that landed in
+    the same pool process next failed with "Event loop is closed".
+    """
+    import asyncio
+
+    from app.tasks import workflow_tasks
+
+    async def answer():
+        return 7
+
+    stale = asyncio.new_event_loop()
+    asyncio.set_event_loop(stale)
+    stale.close()
+    try:
+        assert job_support.run_async(answer()) == 7
+        assert workflow_tasks.run_async(answer()) == 7
+        assert job_support.run_async(answer()) == 7
+    finally:
+        asyncio.get_event_loop_policy().get_event_loop().close()
+        asyncio.set_event_loop(None)
+
+
+def test_a_workflow_task_leaves_no_closed_loop_behind():
+    import asyncio
+
+    from app.tasks import workflow_tasks
+
+    async def answer():
+        return 7
+
+    assert workflow_tasks.run_async(answer()) == 7
+    try:
+        current = asyncio.get_event_loop_policy().get_event_loop()
+    except RuntimeError:
+        return
+    assert not current.is_closed()
+    current.close()
+    asyncio.set_event_loop(None)

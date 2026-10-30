@@ -29,6 +29,10 @@ def run_async(coro):
         return loop.run_until_complete(coro)
     finally:
         loop.close()
+        # Not left set once closed: the next task in this process would be
+        # handed it (job_support.run_async), and the scheduled-workflow tick
+        # runs every minute.
+        asyncio.set_event_loop(None)
 
 
 @celery_app.task(bind=True, name="app.tasks.workflow.execute_workflow")

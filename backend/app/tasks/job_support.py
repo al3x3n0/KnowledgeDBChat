@@ -38,10 +38,19 @@ def run_async(coroutine):
     Four task modules carried this; three were identical and the fourth
     differed only in how it failed when a loop was already running, which a
     prefork worker never has.
+
+    A closed loop is no loop. ``get_event_loop`` hands back whatever loop the
+    thread was last given, closed or not, and a task that closes its own
+    loop without unsetting it left one behind: every later task in that pool
+    process failed at once with "Event loop is closed" -- 72 in a day, the
+    monitoring sweeps and an agent's arXiv ingestion among them, which the
+    agent could only report as a paper that never appeared.
     """
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
+        loop = None
+    if loop is None or loop.is_closed():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
     if loop.is_running():

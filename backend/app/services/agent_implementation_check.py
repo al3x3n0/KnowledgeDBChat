@@ -120,6 +120,9 @@ class OracleResult:
     disagreed: int = 0
     disagreements: List[Dict[str, str]] = field(default_factory=list)
     generator_error: str = ""
+    #: Lines in the one input, when every index printed the same one: a
+    #: generator printing its whole batch at once prints many.
+    repeated_input_lines: int = 0
 
     @property
     def compared(self) -> int:
@@ -597,8 +600,14 @@ async def check_implementation(
     oracle = None
     if oracle_chains is not None:
         oracle = _read_oracle(stdout, count, oracle_chains[0].language, tolerance)
+    reason, note = _checked_nothing(oracle) if oracle is not None else ("", "")
     return ImplementationCheck(
-        ran=True, cases=results, oracle=oracle, language=chain.language
+        ran=True,
+        cases=results,
+        oracle=oracle,
+        language=chain.language,
+        reason=reason,
+        note=note,
     )
 
 
@@ -761,7 +770,43 @@ def _read_oracle(
                 }
             )
     result.distinct_inputs = len(inputs)
+    if len(inputs) == 1:
+        result.repeated_input_lines = len(next(iter(inputs)).strip().splitlines())
     return result
+
+
+def _checked_nothing(oracle: OracleResult) -> tuple:
+    """The reason and note for an oracle that ran and compared nothing.
+
+    Both are the call's to fix, like a reference that is the candidate, and
+    both left `reason` empty: a live run was handed `passed: false` with no
+    word on why, four times, and stopped as stuck. Its generator printed its
+    whole batch of 3,272 inputs on every index -- a check that was thorough
+    and still counted as one case.
+    """
+    if oracle.generated >= 2 and oracle.distinct_inputs == 1:
+        shape = (
+            f" That input has {oracle.repeated_input_lines} lines: the "
+            "generator prints its whole batch whatever the index. Print only "
+            "the input for that index -- line i of the batch, say."
+            if oracle.repeated_input_lines > 1
+            else ""
+        )
+        return (
+            "generator_ignores_index",
+            f"Every one of the {oracle.generated} indices produced the same "
+            "input, so this was one case, not a check. The generator is run "
+            "once per index, with the index (0, 1, 2, ...) on stdin, and must "
+            f"print the ONE input that index stands for.{shape}",
+        )
+    if oracle.compared == 0 and oracle.reference_failed > 0:
+        return (
+            "reference_failed_everywhere",
+            f"The reference exited non-zero on all {oracle.reference_failed} "
+            "generated inputs, so nothing was compared. Check that it reads "
+            "the input the generator prints, in that format.",
+        )
+    return "", ""
 
 
 def _split_case_output(stdout: str, expected_cases: int):
@@ -819,9 +864,12 @@ def describe() -> List[str]:
         "no worked example, construct one whose answer is known independently "
         "and say where it came from.",
         "Prefer an oracle to hand-written cases: a plainly correct reference "
-        "(the definition, however slow) and a generator of many inputs, edge "
-        "cases first. A handful of cases chosen by the author of the code "
-        "tends to be the handful it passes.",
+        "(the definition, however slow) and a generator. The generator is run "
+        "once per index: it reads the index (0, 1, 2, ...) on stdin and prints "
+        "the ONE input that index stands for, edge cases at the first indices. "
+        "A generator printing its whole batch at once is one case, however "
+        "many lines it has. A handful of cases chosen by the author of the "
+        "code tends to be the handful it passes.",
         "Code that fails to compile has not produced a wrong answer -- it has "
         "failed earlier, and the fix is to the build, not to the algorithm. "
         "Do not go looking for a bug in the method until it runs.",

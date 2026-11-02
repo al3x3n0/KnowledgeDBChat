@@ -1638,6 +1638,8 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "reference_is_candidate",
             "reference_compile_error",
             "generator_compile_error",
+            "generator_ignores_index",
+            "reference_failed_everywhere",
         ):
             return {"error": outcome.note, "data": evidence}
 

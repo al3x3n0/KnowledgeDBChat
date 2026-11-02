@@ -126,12 +126,46 @@ class TestChecksThatCheckNothing:
 
         assert not result.verified
         assert result.oracle.distinct_inputs == 1 and result.oracle.disagreed == 0
+        assert result.reason == "generator_ignores_index"
+        assert "index" in result.note and "stdin" in result.note
+
+    async def test_a_generator_printing_its_whole_batch_is_told_so(self, host_sandbox):
+        """The live shape: every index printed all of the inputs at once.
+
+        Both programs loop over their input, so each index really did compare
+        the whole batch and they agreed -- and it still counts as one case.
+        """
+        loops = (
+            "import sys\n"
+            "for line in sys.stdin:\n"
+            "    n, d = map(int, line.split())\n"
+            "    print(n % d)\n"
+        )
+        reference = (
+            "import sys\n"
+            "for line in sys.stdin:\n"
+            "    a, b = map(int, line.split())\n"
+            "    print(a - (a // b) * b)\n"
+        )
+        batch = "for n in range(40):\n    print(n, 7)\n"
+
+        result = await check(code=loops, reference=reference, generator=batch)
+
+        assert result.oracle.agreed == 30 and result.oracle.distinct_inputs == 1
+        assert result.reason == "generator_ignores_index"
+        assert "40 lines" in result.note and "line i" in result.note
 
     async def test_a_reference_failing_everywhere_compares_nothing(self, host_sandbox):
         result = await check(reference="raise SystemExit(3)")
 
         assert not result.verified
         assert result.oracle.reference_failed == 30 and result.oracle.compared == 0
+        assert result.reason == "reference_failed_everywhere"
+
+    async def test_a_check_that_compared_inputs_has_no_complaint(self, host_sandbox):
+        result = await check()
+
+        assert result.reason == "" and result.note == ""
 
     async def test_the_candidate_as_its_own_reference_is_refused_unrun(
         self, host_sandbox
@@ -211,6 +245,22 @@ class TestTheTool:
         )
 
         assert "error" in result
+
+    async def test_a_generator_ignoring_its_index_is_an_error_saying_why(
+        self, host_sandbox
+    ):
+        result = await self._handler()(
+            {
+                "code": CANDIDATE,
+                "language": "python",
+                "reference": {"code": REFERENCE, "language": "python"},
+                "generator": {"code": "print(1000, 7)", "language": "python"},
+            },
+            None,
+        )
+
+        assert "same input" in result["error"]
+        assert "findings" not in result
 
     async def test_an_oracle_alone_is_enough_to_produce_the_finding(self, host_sandbox):
         result = await self._handler()(

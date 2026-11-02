@@ -1825,6 +1825,28 @@ def _required_choices(schema: Any, most: int = 8) -> str:
     return "=" + "|".join(choices)
 
 
+def _param_shape(schema: Any) -> str:
+    """``{a*,b}`` for an object parameter, ``[{a*,b}]`` for a list of them.
+
+    The tool list named a parameter and not what it holds, so an object
+    was a guess. Live runs passed `check_implementation` its `reference` as
+    a bare string and its `cases` as a count -- five refused calls in one
+    trial -- where the DeepSeek harness, reading the full schema, made
+    none. One level only: 11 parameters in the whole catalog have a shape
+    to show, 342 characters in all.
+    """
+    if not isinstance(schema, dict):
+        return ""
+    if schema.get("type") == "array" and isinstance(schema.get("items"), dict):
+        inner = _param_shape(schema["items"])
+        return f"[{inner}]" if inner else ""
+    fields = schema.get("properties") if schema.get("type") == "object" else None
+    if not isinstance(fields, dict) or not fields:
+        return ""
+    required = set(schema.get("required") or [])
+    return "{" + ",".join(f + ("*" if f in required else "") for f in fields) + "}"
+
+
 def _tools_with_params(tool_names: Sequence[str], limit: int = 6000) -> str:
     """Render each tool as ``name(param, param)`` for the critic.
 
@@ -5334,8 +5356,15 @@ class AutonomousAgentExecutor:
             "uncertainty_max_age_iterations": _as_int(
                 "critic_uncertainty_max_age_iterations", 2, 1, 50
             ),
+            # As far apart as the interval. The "uncertainty" is the gap
+            # between the two best-ranked tools, which with a hundred tools
+            # is nearly always a tie: 292 of 294 critic passes in 40 days
+            # were triggered by it (median gap 0.0012 against a threshold
+            # near 0.05), so at a spacing of 1 the critic ran on every
+            # iteration and cost two thirds as much as thinking. A stall
+            # or verification debt still calls it at once.
             "uncertainty_min_iterations_since_last": _as_int(
-                "critic_uncertainty_min_iterations_since_last", 1, 1, 50
+                "critic_uncertainty_min_iterations_since_last", 4, 1, 50
             ),
             "uncertainty_stage_schedule_enabled": bool(
                 cfg.get("critic_uncertainty_stage_schedule_enabled", True)
@@ -5494,7 +5523,7 @@ class AutonomousAgentExecutor:
         uncertainty_candidates = 0
         if bool(cfg.get("on_uncertainty", True)):
             min_since_last = int(
-                cfg.get("uncertainty_min_iterations_since_last", 1) or 1
+                cfg.get("uncertainty_min_iterations_since_last", 4) or 4
             )
             if (iteration - last_iter) >= min_since_last:
                 rows = state.get("counterfactual_last")
@@ -8644,6 +8673,7 @@ RESPONSE FORMAT:
                         param_parts.append(
                             f"{pname}{req_marker}"
                             + (_required_choices(pinfo) if req_marker else "")
+                            + _param_shape(pinfo)
                         )
                     param_str = f" ({', '.join(param_parts)})"
 

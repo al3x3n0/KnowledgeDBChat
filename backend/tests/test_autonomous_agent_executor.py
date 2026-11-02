@@ -4383,6 +4383,28 @@ def test_should_run_critic_on_uncertainty_when_score_gap_is_small():
     assert executor._should_run_critic(job, state) is False
 
 
+def test_by_default_a_near_tie_does_not_call_the_critic_every_iteration():
+    """The top-two gap is nearly always a tie, so it may not set the pace."""
+    executor = AutonomousAgentExecutor()
+    job = _make_job(config={"critic_on_stall": False})
+    state = _make_state()
+    state["counterfactual_last"] = [
+        {"rank": 1, "tool": "search_documents", "priority_score": 0.81},
+        {"rank": 2, "tool": "search_arxiv", "priority_score": 0.81},
+    ]
+    state["last_critic_iteration"] = 5
+
+    calls = []
+    for iteration in range(6, 14):
+        job.iteration = iteration
+        state["counterfactual_last_iteration"] = iteration
+        if executor._should_run_critic(job, state):
+            calls.append(iteration)
+            state["last_critic_iteration"] = iteration
+
+    assert calls == [9, 13]
+
+
 def test_should_run_critic_uncertainty_threshold_scales_by_stage_and_mode():
     executor = AutonomousAgentExecutor()
     job = _make_job(

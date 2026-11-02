@@ -467,6 +467,38 @@ def test_anything_else_is_listed_by_name_alone(schema):
     assert _required_choices(schema) == ""
 
 
+def test_a_parameter_holding_an_object_lists_its_fields():
+    """Live runs passed `reference` as a string and `cases` as a count."""
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    listing = AutonomousAgentExecutor()._format_tools_for_prompt("research", {})
+    line = next(
+        entry
+        for entry in listing.splitlines()
+        if entry.startswith("- check_implementation ")
+    )
+
+    assert "reference{code*,language}" in line
+    assert "generator{code*,language,count}" in line
+    assert "cases[{name,input,expected_output*}]" in line
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"type": "object"},
+        {"type": "object", "properties": {}},
+        {"type": "array", "items": {"type": "string"}},
+        {"type": "string"},
+        "not a schema",
+    ],
+)
+def test_a_parameter_with_no_fields_to_show_is_listed_by_name_alone(schema):
+    from app.services.autonomous_agent_executor import _param_shape
+
+    assert _param_shape(schema) == ""
+
+
 # --- a stage's budget is the stage's ---
 #
 # The first plan approved live came from a scoping run allowed ten iterations.

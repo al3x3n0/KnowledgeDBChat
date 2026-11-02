@@ -58,6 +58,10 @@ os.environ.setdefault("MINIO_READ_TIMEOUT_SECONDS", "5")
 # that need to SEE the dispatch still monkeypatch .delay themselves, and that
 # keeps working.
 os.environ.setdefault("CELERY_BROKER_URL", "memory://")
+# Tests drive the platform's own loop with scripted models. The harness
+# default would, inside an image that has it and a DeepSeek key, start the
+# real runtime against the real API.
+os.environ.setdefault("AGENT_DEFAULT_BACKBONE", "loop")
 # Rate limits are counted in Redis in a deployment; tests have none.
 os.environ.setdefault("RATE_LIMIT_STORAGE_URL", "memory://")
 # No Redis in tests: the shared model-call cap would probe it on each call.

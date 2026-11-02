@@ -672,12 +672,18 @@ class Settings(BaseSettings):
     AGENT_NATIVE_TOOL_LOOP_MAX_TOOL_CALLS: int = 5
     AGENT_NATIVE_TOOL_LOOP_MAX_LLM_CALLS: int = 6
     # DeepSeek's own agent runtime as a job's backbone (job config
-    # `backbone: deepseek_harness`; services/agent_harness_backbone.py). Off
-    # by default: an alpha runtime in its own virtualenv, built into the
-    # image only with WITH_DEEPSEEK_HARNESS=true. Its session-log upload and
-    # telemetry are always off; the base URL is DeepSeek's Anthropic-style
-    # endpoint unless set here.
-    AGENT_DEEPSEEK_HARNESS_ENABLED: bool = False
+    # `backbone: deepseek_harness`; services/agent_harness_backbone.py), in
+    # its own virtualenv in the image (WITH_DEEPSEEK_HARNESS, on by default).
+    # Its session-log upload and telemetry are always off; the base URL is
+    # DeepSeek's Anthropic-style endpoint unless set here.
+    AGENT_DEEPSEEK_HARNESS_ENABLED: bool = True
+    # What a job that names no backbone runs on: `deepseek_harness`, or
+    # `loop` for this platform's own observe/think/act loop. Decided
+    # 2026-10-30 on a paired eval (harness 14/15, loop 11/15, at about a
+    # third of the model calls). A job whose owner chose another provider,
+    # or a worker that cannot run the harness, falls back to the loop and
+    # logs why; `config.backbone` on a job chooses either explicitly.
+    AGENT_DEFAULT_BACKBONE: str = "deepseek_harness"
     AGENT_DEEPSEEK_HARNESS_PYTHON: str = "/opt/deepseek-harness/bin/python"
     AGENT_DEEPSEEK_HARNESS_MODEL: str = ""
     AGENT_DEEPSEEK_HARNESS_REASONING_EFFORT: str = ""

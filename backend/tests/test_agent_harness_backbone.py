@@ -307,3 +307,68 @@ def test_a_session_that_errs_before_any_call_fails_the_job(tmp_path, monkeypatch
     assert session["turn_end_reasons"] == [
         {"kind": "error", "message": "429 rate limited"}
     ]
+
+
+class TestTheDefault:
+    """The harness is the default backbone (decided 2026-10-30); the loop is
+    what a job falls back to when the harness would ignore its owner's choice
+    of provider or cannot run on this worker."""
+
+    @pytest.fixture
+    def harness_runs_here(self, monkeypatch):
+        monkeypatch.setattr(
+            backbone.settings, "AGENT_DEFAULT_BACKBONE", "deepseek_harness"
+        )
+        monkeypatch.setattr(backbone.settings, "AGENT_DEEPSEEK_HARNESS_ENABLED", True)
+        monkeypatch.setattr(
+            backbone.settings, "AGENT_DEEPSEEK_HARNESS_PYTHON", sys.executable
+        )
+        monkeypatch.setattr(backbone.settings, "DEEPSEEK_API_KEY", "sk-test")
+        monkeypatch.setattr(backbone.settings, "LLM_PROVIDER", "deepseek")
+
+    @staticmethod
+    def _job(**config):
+        return SimpleNamespace(config=config)
+
+    def test_a_job_naming_no_backbone_gets_the_harness(self, harness_runs_here):
+        assert backbone.resolve_backbone(self._job()) == ("deepseek_harness", None)
+
+    def test_a_job_may_still_ask_for_the_loop(self, harness_runs_here):
+        assert backbone.resolve_backbone(self._job(backbone="loop")) == ("loop", None)
+
+    def test_an_owner_who_chose_another_provider_keeps_the_loop(
+        self, harness_runs_here
+    ):
+        chosen, why = backbone.resolve_backbone(
+            self._job(), SimpleNamespace(provider="openai")
+        )
+        assert chosen == "loop" and "'openai'" in why
+
+    def test_a_saved_provider_counts_as_another_provider(self, harness_runs_here):
+        chosen, why = backbone.resolve_backbone(
+            self._job(), SimpleNamespace(provider="custom:abc")
+        )
+        assert chosen == "loop" and why
+
+    def test_a_worker_without_the_harness_falls_back_and_says_why(
+        self, harness_runs_here, monkeypatch
+    ):
+        monkeypatch.setattr(
+            backbone.settings, "AGENT_DEEPSEEK_HARNESS_PYTHON", "/nonexistent/python"
+        )
+        chosen, why = backbone.resolve_backbone(self._job())
+        assert chosen == "loop" and "/nonexistent/python" in why
+
+    def test_a_job_that_asked_for_the_harness_is_not_quietly_moved(
+        self, harness_runs_here, monkeypatch
+    ):
+        monkeypatch.setattr(backbone.settings, "DEEPSEEK_API_KEY", "")
+        # Resolved as asked; the runner then refuses with the reason.
+        assert backbone.resolve_backbone(self._job(backbone="deepseek_harness")) == (
+            "deepseek_harness",
+            None,
+        )
+
+    def test_the_loop_as_the_deployment_default(self, harness_runs_here, monkeypatch):
+        monkeypatch.setattr(backbone.settings, "AGENT_DEFAULT_BACKBONE", "loop")
+        assert backbone.resolve_backbone(self._job()) == ("loop", None)

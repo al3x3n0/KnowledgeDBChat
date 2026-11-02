@@ -4851,6 +4851,49 @@ class AutonomousAgentExecutor:
             max_experiments=max_experiments,
         )
 
+    def _answers_one_question(self, job: AgentJob) -> bool:
+        """Whether the run's contract already says what answers it.
+
+        A contract naming the evidence that answers the goal, each piece of it
+        produced by a tool this job type may call, has its plan already: the
+        evidence chain, which the stable prompt spells out. The causal and
+        execution plans restated it, at about two minutes and two model calls
+        before the first action (measured on agent_rigour_v1: 87 s and 35 s),
+        while the DeepSeek harness, which has neither, answered the same
+        questions as often. `answer_immediately` in the job config decides it
+        either way; so does asking for plan_and_execute.
+        """
+        from app.services import agent_evidence_map
+
+        cfg = job.config if isinstance(job.config, dict) else {}
+        if "answer_immediately" in cfg:
+            return self._coerce_bool(cfg.get("answer_immediately"), default=False)
+        if self._resolve_execution_mode(job) == "plan_and_execute":
+            return False
+        contract = self._get_goal_contract_config(job)
+        if not contract.get("enabled"):
+            return False
+        required = list((contract.get("required_finding_type_counts") or {}).keys())
+        return agent_evidence_map.every_type_has_a_producer(
+            required, job_type=str(job.job_type or "")
+        )
+
+    def _skips_planning(self, job: AgentJob, state: Dict[str, Any], plan: str) -> bool:
+        """Skip one up-front plan for a run that answers one question, logged."""
+        if not self._answers_one_question(job):
+            return False
+        skipped = state.setdefault("planning_skipped", [])
+        if plan not in skipped:
+            skipped.append(plan)
+            job.add_log_entry(
+                {
+                    "phase": "planning_skipped",
+                    "plan": plan,
+                    "reason": "the goal contract names the evidence that answers it",
+                }
+            )
+        return True
+
     async def _ensure_causal_experiment_plan(
         self,
         job: AgentJob,
@@ -4869,6 +4912,10 @@ class AutonomousAgentExecutor:
         if str(job.job_type or "").strip().lower() != "research":
             return False
         if not bool(cfg.get("causal_experiment_planner_enabled", True)):
+            return False
+        if "causal_experiment_planner_enabled" not in cfg and self._skips_planning(
+            job, state, "causal_experiment_plan"
+        ):
             return False
         existing = state.get("causal_experiment_plan")
         if isinstance(existing, dict) and existing.get("experiments"):
@@ -5018,6 +5065,12 @@ class AutonomousAgentExecutor:
         if execution_mode == "plan_and_execute":
             plan_then_act_enabled = True
         if not plan_then_act_enabled:
+            return False
+        if (
+            execution_mode != "plan_and_execute"
+            and "plan_then_act_enabled" not in cfg
+            and self._skips_planning(job, state, "execution_plan")
+        ):
             return False
         if state.get("execution_plan"):
             return False

@@ -4652,3 +4652,105 @@ def test_an_artifact_counts_as_evidence_too():
     state["artifacts"].append({"type": "chart"})
     executor._update_stall_state(job, state, 61, {"tool": "create_chart"})
     assert state["stalled_iterations"] == 0
+
+
+# --- a run that answers one question starts at the first link of its chain ---
+#
+# The causal and execution plans cost about two minutes and two model calls
+# before the first action, restating the evidence chain the stable prompt
+# already gives, while the DeepSeek harness, which has neither, answered the
+# same questions as often.
+
+_FASTMOD_CONTRACT = {
+    "goal_contract": {
+        "required_finding_types": ["implementation_verified", "benchmark_measurement"]
+    }
+}
+
+
+def _planner_calls(executor):
+    executor.llm_service.generate_response = AsyncMock(
+        return_value=json.dumps({"plan_steps": [], "hypotheses": [], "experiments": []})
+    )
+    return executor.llm_service.generate_response
+
+
+async def _plan(executor, job, state):
+    observation = {"iteration": 1, "context": []}
+    causal = await executor._ensure_causal_experiment_plan(
+        job=job, state=state, observation=observation, user_settings=None
+    )
+    execution = await executor._ensure_execution_plan(
+        job=job,
+        agent_def=None,
+        state=state,
+        observation=observation,
+        user_settings=None,
+    )
+    return causal, execution
+
+
+@pytest.mark.asyncio
+async def test_a_contract_naming_its_evidence_skips_both_plans():
+    executor = AutonomousAgentExecutor()
+    calls = _planner_calls(executor)
+    job = _make_job(config=dict(_FASTMOD_CONTRACT))
+    state = _make_state()
+
+    assert await _plan(executor, job, state) == (False, False)
+    assert calls.await_count == 0
+    assert state["planning_skipped"] == ["causal_experiment_plan", "execution_plan"]
+    logged = [e for e in job.execution_log if e.get("phase") == "planning_skipped"]
+    assert [e["plan"] for e in logged] == ["causal_experiment_plan", "execution_plan"]
+
+
+@pytest.mark.asyncio
+async def test_an_open_goal_is_still_planned():
+    executor = AutonomousAgentExecutor()
+    calls = _planner_calls(executor)
+    job = _make_job()
+
+    await _plan(executor, job, _make_state())
+
+    assert calls.await_count == 2
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"answer_immediately": False},
+        {"execution_mode": "plan_and_execute"},
+        {"causal_experiment_planner_enabled": True, "plan_then_act_enabled": True},
+    ],
+)
+@pytest.mark.asyncio
+async def test_asking_for_a_plan_gets_one(extra):
+    executor = AutonomousAgentExecutor()
+    calls = _planner_calls(executor)
+    job = _make_job(config={**_FASTMOD_CONTRACT, **extra})
+
+    await _plan(executor, job, _make_state())
+
+    assert calls.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_evidence_this_job_type_cannot_produce_is_planned_for():
+    executor = AutonomousAgentExecutor()
+    calls = _planner_calls(executor)
+    job = _make_job(
+        config={"goal_contract": {"required_finding_types": ["no_such_evidence"]}}
+    )
+
+    await _plan(executor, job, _make_state())
+
+    assert calls.await_count == 2
+
+
+def test_an_empty_requirement_has_no_producer():
+    from app.services import agent_evidence_map
+
+    assert not agent_evidence_map.every_type_has_a_producer([], job_type="research")
+    assert agent_evidence_map.every_type_has_a_producer(
+        ["benchmark_measurement"], job_type="research"
+    )

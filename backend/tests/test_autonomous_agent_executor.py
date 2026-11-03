@@ -4754,3 +4754,46 @@ def test_an_empty_requirement_has_no_producer():
     assert agent_evidence_map.every_type_has_a_producer(
         ["benchmark_measurement"], job_type="research"
     )
+
+
+# --- one failed call is not a run in trouble ---
+#
+# At a threshold of 20, `moderate_blocked_ratio` (one failed node in four) was
+# enough to start an extra rule-chosen tool call and a critic pass after a
+# single refusal the run was about to correct.
+
+
+def _graph_with_failures(failed: int, total: int = 4):
+    state = _make_state()
+    state["execution_graph_nodes"] = [
+        {"id": f"step_{i}", "type": "act", "success": i >= failed} for i in range(total)
+    ]
+    state["execution_graph_edges"] = []
+    return state
+
+
+def _stall_check(executor, job, state):
+    return executor._update_stall_state(
+        job, state, progress=25, action={"tool": "search_documents", "params": {}}
+    )
+
+
+def test_one_failed_call_starts_no_recovery_and_no_critic():
+    executor = AutonomousAgentExecutor()
+    job = _make_job()
+    job.iteration = 2
+    state = _graph_with_failures(1)
+
+    assert _stall_check(executor, job, state)["should_recover"] is False
+    assert executor._should_run_critic(job, state) is False
+
+
+def test_half_the_graph_failing_is_trouble():
+    executor = AutonomousAgentExecutor()
+    job = _make_job()
+    job.iteration = 2
+    state = _graph_with_failures(2)
+
+    assert _stall_check(executor, job, state)["should_recover"] is True
+    assert executor._should_run_critic(job, state) is True
+    assert state["critic_last_trigger"]["reason"] == "graph"

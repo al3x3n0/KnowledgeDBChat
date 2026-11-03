@@ -253,11 +253,23 @@ def build_runtime_snapshot(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+#: The severity at which the graph says a run is in trouble: two or more
+#: failed nodes making up half the graph (`high_blocked_ratio`). It was 20,
+#: which `moderate_blocked_ratio` reaches with ONE failed call among four
+#: nodes -- so a single refusal, usually corrected on the next call, started
+#: an extra rule-chosen tool call and a critic pass. In nine open-goal runs
+#: that was 16 recoveries and 17 critic passes in 61 iterations, 66 of 81
+#: recoveries over 40 days were a `search_documents` on the goal, and each
+#: added up to ten "document" findings that read as progress. A call that
+#: keeps failing is escalated by `agent_failure_diagnosis` already.
+TROUBLE_SEVERITY = 35
+
+
 def has_recovery_pressure(
     state: dict[str, Any],
     *,
     verification_debt_threshold: int = 2,
-    severity_threshold: int = 20,
+    severity_threshold: int = TROUBLE_SEVERITY,
 ) -> bool:
     """Return whether live execution-graph health indicates rescue/recovery pressure."""
     runtime = build_runtime_snapshot(state)
@@ -272,4 +284,4 @@ def has_recovery_pressure(
     graph_severity = int(graph_health.get("severity_score", 0) or 0)
     return verification_debt >= max(
         1, int(verification_debt_threshold or 2)
-    ) or graph_severity >= max(1, int(severity_threshold or 20))
+    ) or graph_severity >= max(1, int(severity_threshold or TROUBLE_SEVERITY))

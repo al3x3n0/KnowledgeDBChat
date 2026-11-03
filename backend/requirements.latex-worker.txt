@@ -3,6 +3,9 @@
 
 # Background Tasks
 celery==5.3.4
+# Pinned: celery only bounds it (<6.0), and kombu 5.7.0 refuses redis-py
+# below 6.1 -- a fresh install got it and could not reach the broker.
+kombu==5.6.2
 redis==5.0.1
 
 # Database (async)

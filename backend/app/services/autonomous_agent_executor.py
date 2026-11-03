@@ -4444,7 +4444,7 @@ class AutonomousAgentExecutor:
         state: Dict[str, Any],
         *,
         verification_debt_threshold: int = 2,
-        severity_threshold: int = 20,
+        severity_threshold: int = agent_execution_graph.TROUBLE_SEVERITY,
     ) -> bool:
         """Return whether graph health indicates rescue/recovery pressure."""
         return agent_execution_graph.has_recovery_pressure(
@@ -5562,7 +5562,6 @@ class AutonomousAgentExecutor:
         ) and self._has_graph_recovery_pressure(
             state,
             verification_debt_threshold=int(cfg.get("stall_threshold", 2) or 2),
-            severity_threshold=20,
         )
         by_uncertainty = False
         uncertainty_gap: Optional[float] = None
@@ -6023,7 +6022,6 @@ class AutonomousAgentExecutor:
         graph_pressure = self._has_graph_recovery_pressure(
             state,
             verification_debt_threshold=max(1, rescue_threshold),
-            severity_threshold=20,
         )
 
         if stalled >= rescue_threshold or graph_pressure:
@@ -8763,7 +8761,10 @@ RESPONSE FORMAT:
                 "stall_graph_recovery_verification_debt", 2, 1, 100
             ),
             "graph_recovery_severity": _as_int(
-                "stall_graph_recovery_severity", 20, 1, 100
+                "stall_graph_recovery_severity",
+                agent_execution_graph.TROUBLE_SEVERITY,
+                1,
+                100,
             ),
         }
 
@@ -9293,7 +9294,11 @@ RESPONSE FORMAT:
         graph_recovery = bool(cfg.get("graph_recovery_enabled", True)) and (
             verification_debt
             >= int(cfg.get("graph_recovery_verification_debt", 2) or 2)
-            or graph_severity >= int(cfg.get("graph_recovery_severity", 20) or 20)
+            or graph_severity
+            >= int(
+                cfg.get("graph_recovery_severity")
+                or agent_execution_graph.TROUBLE_SEVERITY
+            )
         )
         should_recover = (
             stalled >= int(cfg["max_iterations_without_progress"])

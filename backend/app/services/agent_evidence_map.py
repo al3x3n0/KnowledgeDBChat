@@ -221,6 +221,25 @@ def chain_for(required: Iterable[str], *, job_type: Optional[str] = None) -> Lis
     return ordered
 
 
+def every_type_has_a_producer(
+    required: Iterable[str], *, job_type: Optional[str] = None
+) -> bool:
+    """Whether this job type can call a tool yielding each finding type named.
+
+    False for an empty list: a contract naming no evidence says nothing about
+    how the run is to be answered.
+    """
+    names = [str(name or "").strip() for name in required]
+    names = [name for name in names if name]
+    if not names:
+        return False
+    runnable = _callable_by(job_type)
+    return all(
+        any(runnable is None or tool in runnable for tool in producers_of(name))
+        for name in names
+    )
+
+
 def _callable_by(job_type: Optional[str]) -> Optional[set]:
     """Tools this job type may actually run, or None when unfiltered."""
     if not job_type:

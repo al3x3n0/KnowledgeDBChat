@@ -580,3 +580,42 @@ async def test_the_drafter_is_told_the_plan_is_already_approved(db_session, test
 
     assert planning.ALREADY_APPROVED in model.asked[0]
     assert "needs no checkpoint" in planning.ALREADY_APPROVED
+
+
+# --- the tool list keeps the method an evidence tool's description holds ---
+
+
+def _listed(tool: str) -> str:
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    listing = AutonomousAgentExecutor()._format_tools_for_prompt("research", {})
+    return next(
+        entry for entry in listing.splitlines() if entry.startswith(f"- {tool} ")
+    )
+
+
+def test_an_evidence_tool_is_described_in_full():
+    """The oracle protocol was past the 200th character, so the loop never read it."""
+    line = _listed("check_implementation")
+
+    assert "a `generator` that prints one input per index" in line
+    assert "instead of two benchmark_c_snippet calls" in _listed("compare_c_snippets")
+
+
+def test_any_other_tool_is_cut_at_a_sentence_not_a_word():
+    from app.services.autonomous_agent_executor import _tool_description
+
+    text = "First sentence is here. " * 5 + "Second part never fits " * 10
+    shown = _tool_description("not_an_evidence_tool", text)
+
+    assert shown.endswith("here.")
+    assert len(shown) <= 200
+
+
+def test_one_long_sentence_is_cut_and_says_so():
+    from app.services.autonomous_agent_executor import _tool_description
+
+    shown = _tool_description("not_an_evidence_tool", "word " * 100)
+
+    assert shown.endswith("...")
+    assert len(shown) <= 203

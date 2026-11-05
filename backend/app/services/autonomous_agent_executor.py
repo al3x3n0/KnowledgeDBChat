@@ -1847,6 +1847,25 @@ def _param_shape(schema: Any) -> str:
     return "{" + ",".join(f + ("*" if f in required else "") for f in fields) + "}"
 
 
+def _tool_description(name: str, description: str, most: int = 200) -> str:
+    """A tool's description as the tool list shows it.
+
+    Every description was cut at 200 characters, mid-word, and the long
+    ones are long because the second half is the method: check_implementation
+    lost its whole oracle protocol, compare_c_snippets "use this instead of
+    two benchmark_c_snippet calls", benchmark_c_snippet how to time the same
+    program again. The DeepSeek harness reads them whole. So a tool that
+    produces evidence is described in full -- 42 of the 65 descriptions the
+    cut shortened, about 18k characters of a stable prompt that keys the
+    cache -- and any other tool keeps its opening sentences up to the limit.
+    """
+    text = " ".join(str(description or "").split())
+    if len(text) <= most or agent_evidence_map.entry_for(name):
+        return text
+    end = max(text.rfind(". ", 0, most + 1), text.rfind("; ", 0, most + 1))
+    return text[: end + 1] if end >= most // 2 else text[:most].rstrip() + "..."
+
+
 def _tools_with_params(tool_names: Sequence[str], limit: int = 6000) -> str:
     """Render each tool as ``name(param, param)`` for the critic.
 
@@ -8734,7 +8753,8 @@ RESPONSE FORMAT:
                 elif tool_def["name"] in discouraged:
                     role_marker = " [discouraged]"
                 tool_descriptions.append(
-                    f"- {tool_def['name']}{param_str}{role_marker}: {tool_def['description'][:200]}"
+                    f"- {tool_def['name']}{param_str}{role_marker}: "
+                    + _tool_description(tool_def["name"], tool_def["description"])
                 )
 
         return "\n".join(tool_descriptions)

@@ -437,6 +437,56 @@ ingress:
   tls: []
 
 # -----------------------------------------------------------------------------
+# cert-manager integration
+# -----------------------------------------------------------------------------
+# When ingress.tls is non-empty and certManager.enabled, the chart renders a
+# namespaced Issuer + a Certificate per ingress.tls entry. issuerType selects
+# the Issuer kind:
+#   - "freeipa":    Issuer.certmanager.freeipa.org (needs the FreeIPA cert-
+#                   manager operator running and the authSecret present).
+#   - anything else: selfSigned Issuer.cert-manager.io.
+# Defaults are conservative: verify TLS to the IPA host (insecure: false),
+# fail the Issuer on error (ignoreError: false), and run a post-upgrade job
+# that forces a cert re-issue so switching issuerType never strands the old
+# self-signed secret. Per-environment overrides live in values-<env>.yaml.
+certManager:
+  enabled: false
+  issuerType: selfsigned
+  # Name/namespace of the Secret holding the IPA admin user + password.
+  authSecret:
+    name: ""
+    namespace: cert-manager
+  # The FreeIPA server host (used only when issuerType is freeipa).
+  ipaHost: ""
+  # Whether the provisioner may create IPA objects during issuance. Defaults
+  # match the freeipa-issuer 1.0.1 behaviour for the kdbc-test deployment:
+  #   addHost: false        (the 1.0.0 provisioner had a host-add bug; the host
+  #                          is pre-created in IPA, so the provisioner must not
+  #                          re-add it)
+  #   addPrincipal: true    (create the Kerberos principal for the FQDN)
+  #   addService: true      (create the HTTP/<host> Kerberos service)
+  # Set addHost: true only if your `freeipa-auth` user has the IPA `add`
+  # privilege on cn=computers AND the host entry does not yet exist.
+  addHost: false
+  addPrincipal: true
+  addService: true
+  # Verify TLS from the issuer to ipaHost. Set true only for self-signed dev.
+  insecure: false
+  # Fail the Issuer on error instead of silently continuing.
+  ignoreError: false
+  # NOTE: the FreeIPA Issuer CRD has no CA-bundle field, so the provisioner
+  # verifies ipaHost against the cert-manager pod's system trust store. To make
+  # a corporate IPA host verifiable with insecure: false, the IPA CA must be in
+  # the cert-manager pod trust store (or insecure: true as a fallback).
+  # Post-install/upgrade job that re-triggers certificate issuance.
+  triggerRenewal: true
+  # Image that ships a kubectl binary for the renewal-trigger job.
+  renewalImage:
+    repository: bitnami/kubectl
+    tag: "1.31"
+    pullPolicy: IfNotPresent
+
+# -----------------------------------------------------------------------------
 # Video streaming microservice (Go)
 # -----------------------------------------------------------------------------
 videoStreamer:
@@ -633,6 +683,15 @@ kroki:
       memory: 1Gi
   external:
     url: ""
+
+# -----------------------------------------------------------------------------
+# Helm test hook
+# -----------------------------------------------------------------------------
+tests:
+  # Image for the connectivity-check hook pod.
+  image:
+    repository: curlimages/curl
+    tag: "8.10.1"
 
 # -----------------------------------------------------------------------------
 # Network policy

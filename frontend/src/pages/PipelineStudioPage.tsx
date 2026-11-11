@@ -18,8 +18,8 @@
  * Launch is the one thing here that spends anything. It is offered only for a
  * pipeline that is startable — valid, expressible as a chain, and inside its
  * budget — and it names the price and the stopping points before it starts.
- * The estimate on screen is sent with the request, so a spec edited since it
- * was priced is refused by the server rather than quietly costing more.
+ * Checks belong to the exact spec and budget being edited. The estimate on
+ * screen is also sent with launch so the server can refuse a changed price.
  *
  * A pipeline that has run also shows its last run: how far it got, which stage
  * it is on, and whether the stages that finished produced what they promised.
@@ -36,12 +36,13 @@ import {
   Layers,
   PauseCircle,
   Play,
+  RefreshCw,
   Save,
   Sparkles,
   Trash2,
   Workflow,
 } from 'lucide-react';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
 
@@ -49,6 +50,8 @@ import Button from '../components/common/Button';
 import PipelineGraph from '../components/pipelines/PipelineGraph';
 import PipelineRunProgress from '../components/pipelines/PipelineRunProgress';
 import StageInspector from '../components/pipelines/StageInspector';
+import BindingPreviewPanel from '../components/pipelines/BindingPreviewPanel';
+import { removePipelineStages, replacePipelineStage } from '../utils/pipelineEditing';
 import { apiClient } from '../services/api';
 import type {
   ChainImportCandidate,
@@ -160,7 +163,13 @@ const PipelineStudioPage: React.FC = () => {
   const navigate = useNavigate();
   const [source, setSource] = useState<string>(readDraft);
   const [budget, setBudget] = useState<string>('');
-  const [check, setCheck] = useState<PipelineCheck | null>(null);
+  const [catalogRevision, setCatalogRevision] = useState(0);
+  const checkKey = JSON.stringify([source, budget, catalogRevision]);
+  const [checked, setChecked] = useState<{ key: string; result: PipelineCheck } | null>(null);
+  const check = checked?.key === checkKey ? checked.result : null;
+  const checkRequest = useRef(0);
+  const currentCheckKey = useRef(checkKey);
+  currentCheckKey.current = checkKey;
   const [parseError, setParseError] = useState<string>('');
   const [serverError, setServerError] = useState<string>('');
   const [checking, setChecking] = useState(false);
@@ -203,29 +212,37 @@ const PipelineStudioPage: React.FC = () => {
   }, [source]);
 
   const runCheck = useCallback(async () => {
+    const request = ++checkRequest.current;
+    const isCurrent = () => request === checkRequest.current && checkKey === currentCheckKey.current;
     setParseError(parsed.error);
+    setServerError('');
+    setChecked(null);
     if (parsed.error || !parsed.value) {
-      setCheck(null);
+      setChecking(false);
       return;
     }
     setChecking(true);
-    setServerError('');
     try {
       const budgetSeconds = budget.trim() ? Number(budget.trim()) : undefined;
       const result = await apiClient.checkPipeline(
         parsed.value,
         Number.isFinite(budgetSeconds) && budgetSeconds ? budgetSeconds : undefined
       );
-      setCheck(result);
+      if (isCurrent()) setChecked({ key: checkKey, result });
     } catch (error: any) {
       // A 400 here means the shape is wrong in a way the parser accepted —
       // valid JSON that is not a pipeline. The server says which.
-      setServerError(error?.response?.data?.detail || 'Could not check the pipeline');
-      setCheck(null);
+      if (isCurrent()) {
+        setServerError(error?.response?.data?.detail || 'Could not check the pipeline');
+        setChecked(null);
+      }
     } finally {
-      setChecking(false);
+      if (request === checkRequest.current) setChecking(false);
     }
-  }, [parsed, budget]);
+  }, [parsed, budget, checkKey]);
+
+  useEffect(() => () => { checkRequest.current += 1; }, []);
+  useEffect(() => { setParseError(''); setServerError(''); }, [checkKey]);
 
   const [saved, setSaved] = useState<SavedPipeline[]>([]);
   // Which saved pipeline the editor is currently showing. null means the
@@ -233,20 +250,38 @@ const PipelineStudioPage: React.FC = () => {
   // does not.
   const [openId, setOpenId] = useState<string | null>(null);
 
-  /** The evidence types a contract may require, and the job types. Fetched
-   *  once: it is derived from the tool specs and does not change under a
-   *  session. Without it the stage editor would be a text box, and typing an
-   *  evidence type nothing produces is the most common way a pipeline fails
-   *  its own check. */
+  /** The current owner's tools and active skills may change in another tab.
+   *  Refresh metadata without replacing the spec or remounting its editors. */
   const [vocabulary, setVocabulary] = useState<PipelineVocabulary | null>(null);
-  useEffect(() => {
-    apiClient
-      .getPipelineVocabulary()
-      .then(setVocabulary)
-      // The editor still works without it -- the text view is untouched and
-      // the checker is the real authority -- so this is not worth a toast.
-      .catch(() => {});
+  const [vocabularyLoading, setVocabularyLoading] = useState(true);
+  const [vocabularyError, setVocabularyError] = useState('');
+  const vocabularyRequest = useRef(0);
+  const refreshVocabulary = useCallback(async () => {
+    const request = ++vocabularyRequest.current;
+    setVocabularyLoading(true);
+    setVocabularyError('');
+    // A catalog refresh must not leave Launch using an older capability check.
+    checkRequest.current += 1;
+    setChecked(null);
+    setChecking(false);
+    try {
+      const result = await apiClient.getPipelineVocabulary();
+      if (request === vocabularyRequest.current) setVocabulary(result);
+    } catch {
+      if (request === vocabularyRequest.current) {
+        setVocabularyError('Could not refresh the tool catalog. Retry to load current tools and skills. Your stage settings are preserved.');
+      }
+    } finally {
+      if (request === vocabularyRequest.current) {
+        setVocabularyLoading(false);
+        setCatalogRevision((revision) => revision + 1);
+      }
+    }
   }, []);
+  useEffect(() => {
+    refreshVocabulary();
+    return () => { vocabularyRequest.current += 1; };
+  }, [refreshVocabulary]);
 
   const [describing, setDescribing] = useState('');
   const [drafting, setDrafting] = useState(false);
@@ -268,6 +303,7 @@ const PipelineStudioPage: React.FC = () => {
         Number.isFinite(budgetSeconds) && budgetSeconds ? budgetSeconds : undefined
       );
       setOpenId(null);
+      setSelectedStage(null);
       setSource(JSON.stringify(result.spec, null, 2));
       setDescribing('');
       if (result.problems.length) {
@@ -404,6 +440,7 @@ const PipelineStudioPage: React.FC = () => {
         await refreshSaved();
         await refreshImportable();
         setOpenId(pipeline.id);
+        setSelectedStage(null);
         setSource(JSON.stringify(pipeline.spec, null, 2));
       } catch (error: any) {
         const detail = error?.response?.data?.detail;
@@ -451,10 +488,13 @@ const PipelineStudioPage: React.FC = () => {
 
   const handleOpen = useCallback((pipeline: SavedPipeline) => {
     setOpenId(pipeline.id);
+    // Stage ids are local to a pipeline. Unmount its editors so unapplied
+    // defaults and bindings cannot carry into another document with the same ids.
+    setSelectedStage(null);
     setSource(JSON.stringify(pipeline.spec, null, 2));
     // Whatever verdict was cached when it was saved is not re-used: tools and
     // their costs move underneath a stored spec, so it is checked again.
-    setCheck(null);
+    setChecked(null);
   }, []);
 
   const handleDeleteSaved = useCallback(
@@ -482,7 +522,7 @@ const PipelineStudioPage: React.FC = () => {
   // chain, or cannot afford its own budget, must not offer a Launch button
   // that the server is only going to refuse.
   const canLaunch = Boolean(
-    check?.valid &&
+    !checking && !vocabularyLoading && check?.valid &&
       check.expressible &&
       check.plan &&
       (!check.budget || check.budget.affordable)
@@ -508,7 +548,7 @@ const PipelineStudioPage: React.FC = () => {
       const started = await apiClient.launchPipeline(parsed.value, {
         budgetSeconds: budgetSeconds || undefined,
         // The estimate shown above is the estimate being agreed to. If the
-        // spec changed since it was priced the server refuses rather than
+        // price changed on the server since the check, it refuses rather than
         // running something nobody saw costed.
         acknowledgedSeconds: total,
         pipelineId: openId || undefined,
@@ -603,6 +643,7 @@ const PipelineStudioPage: React.FC = () => {
               const starter = STARTERS.find((s) => s.label === e.target.value);
               if (!starter) return;
               setOpenId(null);
+              setSelectedStage(null);
               setSource(starter.source);
             }}
           >
@@ -631,10 +672,9 @@ const PipelineStudioPage: React.FC = () => {
       </div>
 
       <p className="text-sm text-gray-500 flex-none max-w-3xl">
-        A stage says what must be <em>true</em> when it is done, not which tools to
-        run — those are derived from the contract. The checks below are decided
-        before anything starts; the run panel is the one part of this page
-        showing work that already happened.
+        Set each stage’s goal and required evidence, then choose any extra tools
+        it needs. Evidence tools are derived automatically. Checks and estimates
+        appear before launch; the run panel shows the latest execution.
       </p>
 
       {/* Say what you want. The other way into a format nobody knows: the
@@ -863,6 +903,18 @@ const PipelineStudioPage: React.FC = () => {
 
         {/* What is wrong with it, and what it will cost */}
         <div className="flex flex-col min-h-0 overflow-y-auto scrollbar-thin space-y-3">
+          <section aria-label="Tool catalog" className="rounded-lg border border-gray-300 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-medium text-gray-700">Tool catalog</span>
+              <button type="button" onClick={refreshVocabulary} disabled={vocabularyLoading}
+                className="inline-flex items-center gap-1 text-xs text-primary-700 underline disabled:opacity-50">
+                <RefreshCw className="w-3 h-3" />Refresh tools and skills
+              </button>
+            </div>
+            {vocabularyLoading && <p role="status" className="text-xs text-gray-500">Loading tools and skills…</p>}
+            {vocabularyError && <p role="alert" className="text-xs text-yellow-700">{vocabularyError}</p>}
+            {vocabularyError && vocabulary && <p className="text-xs text-gray-500">Showing the last loaded catalog.</p>}
+          </section>
           {/* The selected stage, editable. Selecting a node used to only
               highlight it, so everything a stage SAYS could still be changed
               only as JSON. Writes a whole new spec like every other gesture,
@@ -872,30 +924,29 @@ const PipelineStudioPage: React.FC = () => {
               stage={selectedStageObject}
               allStageIds={(parsed.value?.stages || []).map((st: any) => String(st.id))}
               vocabulary={vocabulary}
+              vocabularyLoading={vocabularyLoading}
               onChange={(next) => {
-                const stages = (parsed.value?.stages || []).map((st: any) =>
-                  String(st.id) === selectedStage ? next : st
-                );
-                applySpecFromGraph({ ...(parsed.value || {}), stages });
+                applySpecFromGraph(replacePipelineStage(parsed.value || {}, selectedStage!, next));
                 // Renaming a stage moves the selection with it, or the panel
                 // would close on the first keystroke in the id field.
                 if (next.id !== selectedStage) setSelectedStage(next.id);
               }}
               onDelete={() => {
-                const stages = (parsed.value?.stages || [])
-                  .filter((st: any) => String(st.id) !== selectedStage)
-                  // A dependency on a deleted stage is a problem the author
-                  // did not create, so it goes with it.
-                  .map((st: any) => ({
-                    ...st,
-                    depends_on: (st.depends_on || []).filter(
-                      (d: string) => d !== selectedStage
-                    ),
-                  }));
-                applySpecFromGraph({ ...(parsed.value || {}), stages });
+                applySpecFromGraph(removePipelineStages(parsed.value || {}, [selectedStage!]));
                 setSelectedStage(null);
               }}
               onClose={() => setSelectedStage(null)}
+            />
+          )}
+
+          {selectedStageObject && (
+            <BindingPreviewPanel
+              rootJobId={openPipeline?.last_job_id}
+              stage={selectedStageObject}
+              spec={parsed.value || {}}
+              catalogRevision={catalogRevision}
+              catalogRefreshing={vocabularyLoading}
+              onOpenJob={(id) => navigate(`/autonomous-agents?job=${id}`)}
             />
           )}
 

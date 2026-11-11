@@ -123,7 +123,9 @@ def test_the_binding_names_what_a_fan_in_stage_waits_on():
     for root in bound.roots:
         walk(root)
     assert configs["merge"]["pipeline_depends_on"] == ["left", "right"]
-    assert "pipeline_depends_on" not in configs["left"]
+    # Single-parent dependencies also drive tool argument bindings now; file
+    # inheritance still uses the ordinary parent path for these stages.
+    assert configs["left"]["pipeline_depends_on"] == ["start"]
 
 
 async def _job(db, user, stage, *, parent=None, status="completed", depends_on=None):

@@ -297,7 +297,12 @@ def coerce_tool_params(tool_name: str, params: Optional[Dict[str, Any]]) -> List
 
 
 def validate_tool_params(
-    tool_name: str, params: Optional[Dict[str, Any]]
+    tool_name: str,
+    params: Optional[Dict[str, Any]],
+    *,
+    schema: Optional[Dict[str, Any]] = None,
+    partial: bool = False,
+    reject_unknown: bool = False,
 ) -> Optional[str]:
     """Return a message describing why this call is malformed, or None.
 
@@ -306,17 +311,23 @@ def validate_tool_params(
     """
     from app.agent_core.tool_catalog import get_tool_metadata
 
-    metadata = get_tool_metadata(tool_name)
-    schema = getattr(metadata, "input_schema", None) or {}
+    builtin_schema = schema is None
+    if schema is None:
+        metadata = get_tool_metadata(tool_name)
+        schema = getattr(metadata, "input_schema", None) or {}
     properties = schema.get("properties")
-    if not isinstance(properties, dict) or not properties:
-        return None
+    if not isinstance(properties, dict):
+        if not reject_unknown:
+            return None
+        properties = {}
 
     supplied = params if isinstance(params, dict) else {}
     problems: List[str] = []
 
     for field in schema.get("required") or []:
         name = str(field)
+        if partial and name not in supplied:
+            continue
         if name not in supplied:
             expected = (properties.get(name) or {}).get("type")
             problems.append(
@@ -328,10 +339,12 @@ def validate_tool_params(
             problems.append(f"required field {name} is empty")
 
     for name, value in supplied.items():
-        if name.startswith("_"):  # runtime bookkeeping, not part of the schema
+        if name.startswith("_") and not reject_unknown:
             continue
         spec = properties.get(name)
         if not isinstance(spec, dict):
+            if reject_unknown:
+                problems.append(f"unknown field: {name}")
             continue
         expected = spec.get("type")
         check = _TYPE_CHECKS.get(str(expected))
@@ -357,8 +370,12 @@ def validate_tool_params(
             # the handler — "badly formed hexadecimal UUID string" — named
             # neither the tool nor the field.
             problems.append(
-                f"field {name} should be a UUID, got {value!r}; this is a "
-                "knowledge-base id, not an external identifier"
+                f"field {name} should be a UUID, got {value!r}"
+                + (
+                    "; this is a knowledge-base id, not an external identifier"
+                    if builtin_schema
+                    else ""
+                )
             )
 
     if not problems:

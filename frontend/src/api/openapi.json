@@ -32678,6 +32678,173 @@
         "title": "PipelineBindResponse",
         "type": "object"
       },
+      "PipelineBindingPreviewItem": {
+        "properties": {
+          "argument": {
+            "title": "Argument",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "path": {
+            "default": "",
+            "title": "Path",
+            "type": "string"
+          },
+          "source_contract_satisfied": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Contract Satisfied"
+          },
+          "source_job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Job Id"
+          },
+          "source_stage": {
+            "default": "",
+            "title": "Source Stage",
+            "type": "string"
+          },
+          "source_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Status"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "tool": {
+            "title": "Tool",
+            "type": "string"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "value_json": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Json"
+          },
+          "value_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Type"
+          }
+        },
+        "required": [
+          "tool",
+          "argument",
+          "status"
+        ],
+        "title": "PipelineBindingPreviewItem",
+        "type": "object"
+      },
+      "PipelineBindingPreviewRequest": {
+        "properties": {
+          "budget_seconds": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "If given, also check the plan fits this budget",
+            "title": "Budget Seconds"
+          },
+          "spec": {
+            "description": "The pipeline spec: name and stages",
+            "title": "Spec",
+            "type": "object"
+          },
+          "stage": {
+            "minLength": 1,
+            "title": "Stage",
+            "type": "string"
+          }
+        },
+        "required": [
+          "spec",
+          "stage"
+        ],
+        "title": "PipelineBindingPreviewRequest",
+        "type": "object"
+      },
+      "PipelineBindingPreviewResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PipelineBindingPreviewItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "omitted": {
+            "default": 0,
+            "title": "Omitted",
+            "type": "integer"
+          },
+          "root_job_id": {
+            "title": "Root Job Id",
+            "type": "string"
+          },
+          "stage": {
+            "title": "Stage",
+            "type": "string"
+          }
+        },
+        "required": [
+          "root_job_id",
+          "stage"
+        ],
+        "title": "PipelineBindingPreviewResponse",
+        "type": "object"
+      },
       "PipelineCheckResponse": {
         "description": "What is wrong with a pipeline, before anything expensive runs.\n\n`valid` covers only the spec. A pipeline can be valid, be expressible as a\nchain, and still not fit its budget \u2014 so the three are reported separately\nrather than collapsed into one boolean the caller has to interpret.",
         "properties": {
@@ -32823,6 +32990,16 @@
             },
             "title": "Producers",
             "type": "array"
+          },
+          "sandbox_skill": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PipelineSandboxSkill"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "typical_seconds": {
             "default": 0,
@@ -33268,6 +33445,52 @@
         "title": "PipelineRunStagesResponse",
         "type": "object"
       },
+      "PipelineSandboxSkill": {
+        "description": "Execution summary of an active skill belonging to the vocabulary owner.",
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "image": {
+            "title": "Image",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "produces": {
+            "title": "Produces",
+            "type": "string"
+          },
+          "result_fields": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Result Fields",
+            "type": "object"
+          },
+          "skill": {
+            "title": "Skill",
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "title": "Timeout Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "skill",
+          "name",
+          "description",
+          "produces",
+          "image",
+          "timeout_seconds"
+        ],
+        "title": "PipelineSandboxSkill",
+        "type": "object"
+      },
       "PipelineSpecRequest": {
         "description": "A pipeline to check. `budget_seconds` is optional: a pipeline can be\nvalid and still be unaffordable, and those are different answers.",
         "properties": {
@@ -33296,6 +33519,104 @@
         "title": "PipelineSpecRequest",
         "type": "object"
       },
+      "PipelineTool": {
+        "properties": {
+          "consumes": {
+            "default": "",
+            "title": "Consumes",
+            "type": "string"
+          },
+          "cost_tier": {
+            "default": "unknown",
+            "title": "Cost Tier",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "effects": {
+            "default": "unknown",
+            "title": "Effects",
+            "type": "string"
+          },
+          "execution": {
+            "title": "Execution",
+            "type": "string"
+          },
+          "image": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image"
+          },
+          "job_types": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Types"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "network": {
+            "default": "unknown",
+            "title": "Network",
+            "type": "string"
+          },
+          "parameters": {
+            "title": "Parameters",
+            "type": "object"
+          },
+          "produces": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Produces",
+            "type": "array"
+          },
+          "program_images": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Program Images",
+            "type": "array"
+          },
+          "requires": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Requires",
+            "type": "array"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "source",
+          "execution"
+        ],
+        "title": "PipelineTool",
+        "type": "object"
+      },
       "PipelineVocabularyResponse": {
         "description": "What a stage editor may offer, and a drafter may use.\n\nServed rather than hardcoded in the frontend for the same reason the\nbackend derives it from the tool specs: a second list of finding types\ndrifts from the tools the first time one is added.",
         "properties": {
@@ -33311,6 +33632,13 @@
               "type": "string"
             },
             "title": "Job Types",
+            "type": "array"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/PipelineTool"
+            },
+            "title": "Tools",
             "type": "array"
           }
         },
@@ -58767,6 +59095,81 @@
           }
         ],
         "summary": "Launch Pipeline",
+        "tags": [
+          "agent-pipelines"
+        ]
+      }
+    },
+    "/api/v1/agent-pipelines/runs/{root_job_id}/bindings/preview": {
+      "post": {
+        "description": "Inspect edited bindings against this owner's latest recorded stage results.",
+        "operationId": "preview_pipeline_bindings_api_v1_agent_pipelines_runs__root_job_id__bindings_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "root_job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Root Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PipelineBindingPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineBindingPreviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Preview Pipeline Bindings",
         "tags": [
           "agent-pipelines"
         ]

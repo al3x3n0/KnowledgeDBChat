@@ -850,8 +850,16 @@ class _AutonomousRuntimeAdapter:
                 },
             )
             self.state["approval_checkpoint_pending"] = None
-            checkpoint_gate = self.executor._evaluate_approval_checkpoint(
-                self.job, self.state, action
+            # Approval must see the same stage defaults as the eventual call,
+            # including calls driven by an external harness.
+            action = effective_action
+            decision["action"] = action
+            checkpoint_gate = (
+                {"required": False}
+                if action.get("_pipeline_binding_error")
+                else self.executor._evaluate_approval_checkpoint(
+                    self.job, self.state, action
+                )
             )
             if bool(checkpoint_gate.get("required", False)):
                 checkpoint_payload = (
@@ -4146,25 +4154,24 @@ class AutonomousAgentExecutor:
         action: Dict[str, Any],
         job: AgentJob,
     ) -> Dict[str, Any]:
-        """Inject default source scope for search-like tools when omitted."""
+        """Apply stage argument defaults, then default source scope."""
         if not isinstance(action, dict):
+            return action
+        from app.services.agent_pipeline_tool_bindings import (
+            SOURCE_SCOPED_TOOLS,
+            apply_bindings,
+        )
+        from app.services.agent_pipeline_tool_defaults import apply_defaults
+
+        action = apply_defaults(action, job)
+        action = apply_bindings(action, job)
+        if action.get("_pipeline_binding_error"):
             return action
         tool = str(action.get("tool") or "").strip()
         if not tool:
             return action
 
-        scoped_tools = {
-            "search_documents",
-            "search_with_filters",
-            "get_knowledge_base_stats",
-            "create_synthesis_document",
-            "add_to_reading_list",
-            "get_reading_lists",
-            "save_research_finding",
-            "create_document_from_text",
-            "project_bootstrap",
-        }
-        if tool not in scoped_tools:
+        if tool not in SOURCE_SCOPED_TOOLS:
             return action
 
         params = action.get("params")
@@ -8206,6 +8213,27 @@ what THIS run establishes.
         from app.services import agent_measurement_validity
 
         contract_config = self._get_goal_contract_config(job)
+
+        stage_defaults = (job.config or {}).get("pipeline_tool_defaults")
+        stage_bindings = (job.config or {}).get("pipeline_tool_bindings")
+        if (job.config or {}).get("pipeline_stage") and stage_bindings:
+            base_prompt += (
+                "BOUND TOOL ARGUMENTS (resolved from dependency results; these "
+                "override defaults and explicit call arguments):\n"
+                + json.dumps(stage_bindings, ensure_ascii=False)
+                + "\n\n"
+            )
+        if (
+            (job.config or {}).get("pipeline_stage")
+            and isinstance(stage_defaults, dict)
+            and stage_defaults
+        ):
+            base_prompt += (
+                "STAGE TOOL ARGUMENT DEFAULTS (fill omitted arguments; explicit "
+                "call arguments override these values):\n"
+                + json.dumps(stage_defaults, ensure_ascii=False)
+                + "\n\n"
+            )
 
         # How the evidence this contract demands is actually obtained. A run
         # given a goal and no method chooses its tools well and then gets the

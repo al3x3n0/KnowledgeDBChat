@@ -130,7 +130,7 @@ def expressible(pipeline: Pipeline) -> List[str]:
     return problems
 
 
-def _job_spec(stage: PipelineStage, pipeline: Pipeline) -> Dict[str, Any]:
+def stage_job_spec(stage: PipelineStage, pipeline: Pipeline) -> Dict[str, Any]:
     """One stage as the config a chained job is created from.
 
     The keys are the ones ``create_chained_job`` reads. ``pipeline_stage`` is
@@ -140,6 +140,16 @@ def _job_spec(stage: PipelineStage, pipeline: Pipeline) -> Dict[str, Any]:
     config: Dict[str, Any] = {
         "pipeline": pipeline.name,
         "pipeline_stage": stage.id,
+        # Explicit even when unset: inherited config from a restricted parent
+        # must not silently restrict its child as well.
+        "pipeline_tools": list(stage.tools) if stage.tools is not None else None,
+        "pipeline_tool_defaults": dict(stage.tool_defaults),
+        "pipeline_tool_bindings": dict(stage.tool_bindings),
+        "pipeline_depends_on": list(stage.depends_on),
+        "pipeline_input_results": {},
+        "pipeline_forward_dependencies": [],
+        "pipeline_forward_results": {},
+        "may_revisit": list(stage.may_revisit),
     }
     if stage.contract:
         config["goal_contract"] = dict(stage.contract)
@@ -164,7 +174,6 @@ def _job_spec(stage: PipelineStage, pipeline: Pipeline) -> Dict[str, Any]:
     # and how much of the run's shared budget is left. Without both, the tool
     # that requests a rerun has nothing to check a request against.
     if stage.may_revisit:
-        config["may_revisit"] = list(stage.may_revisit)
         config["revisit_budget"] = int(pipeline.revisit_budget)
 
     if stage.loop is not None:
@@ -220,7 +229,7 @@ def bind(pipeline: Pipeline) -> BoundPipeline:
 
     def build(stage_id: str, seen: Tuple[str, ...] = ()) -> Dict[str, Any]:
         stage = known[stage_id]
-        job = _job_spec(stage, pipeline)
+        job = stage_job_spec(stage, pipeline)
 
         direct = [c for c in children[stage_id] if len(known[c].depends_on) == 1]
         converging = [c for c in children[stage_id] if len(known[c].depends_on) > 1]

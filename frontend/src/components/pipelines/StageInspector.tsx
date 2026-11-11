@@ -21,16 +21,20 @@
 
 import clsx from 'clsx';
 import { AlertTriangle, Check, Clock, Trash2, X } from 'lucide-react';
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 
 import type { PipelineEvidenceType, PipelineVocabulary } from '../../types';
+import { removeStageToolConfiguration, stageBindingSourceIssues } from '../../utils/pipelineEditing';
 import type { PipelineStageSpec } from './PipelineGraph';
+import StageToolPicker from './StageToolPicker';
+import StageSkillDetails from './StageSkillDetails';
 
 export interface StageInspectorProps {
   stage: PipelineStageSpec;
   /** Every stage id, so `depends_on` can only name one that exists. */
   allStageIds: string[];
   vocabulary: PipelineVocabulary | null;
+  vocabularyLoading?: boolean;
   onChange: (next: PipelineStageSpec) => void;
   onDelete: () => void;
   onClose: () => void;
@@ -49,11 +53,16 @@ export const StageInspector: React.FC<StageInspectorProps> = ({
   stage,
   allStageIds,
   vocabulary,
+  vocabularyLoading,
   onChange,
   onDelete,
   onClose,
 }) => {
   const [evidenceFilter, setEvidenceFilter] = useState('');
+  const loadingVocabulary = vocabularyLoading ?? !vocabulary;
+  const [idDraft, setIdDraft] = useState(stage.id);
+  const [idError, setIdError] = useState('');
+  useEffect(() => { setIdDraft(stage.id); setIdError(''); }, [stage.id]);
 
   const required: string[] = useMemo(
     () => (stage.contract?.required_finding_types as string[]) || [],
@@ -81,6 +90,7 @@ export const StageInspector: React.FC<StageInspectorProps> = ({
 
   const jobType = String(stage.job_type || 'research');
   const jobTypeWrong = forcedJobTypes.length > 0 && !forcedJobTypes.includes(jobType);
+  const bindingIssues = stageBindingSourceIssues(stage, allStageIds);
 
   const patch = (fields: Partial<PipelineStageSpec>) => onChange({ ...stage, ...fields });
 
@@ -103,7 +113,8 @@ export const StageInspector: React.FC<StageInspectorProps> = ({
         return ax - bx || a.name.localeCompare(b.name);
       });
     }
-    return all.filter((e) => e.name.toLowerCase().includes(needle));
+    return all.filter((e) => [e.name, e.sandbox_skill?.name, e.sandbox_skill?.description, e.sandbox_skill?.image]
+      .filter(Boolean).join(' ').toLowerCase().includes(needle));
   }, [vocabulary, evidenceFilter, required]);
 
   const totalSeconds = required.reduce(
@@ -144,9 +155,23 @@ export const StageInspector: React.FC<StageInspectorProps> = ({
           <input
             aria-label="Stage id"
             className={FIELD}
-            value={stage.id}
-            onChange={(e) => patch({ id: e.target.value })}
+            value={idDraft}
+            onChange={(e) => { setIdDraft(e.target.value); setIdError(''); }}
+            onBlur={() => {
+              const id = idDraft.trim();
+              if (!id || (id !== stage.id && allStageIds.includes(id))) {
+                setIdError('Rename not applied: stage id must be nonempty and unique.');
+                return;
+              }
+              if (id !== stage.id) patch({ id });
+              else setIdDraft(id);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') e.currentTarget.blur();
+              if (e.key === 'Escape') { setIdDraft(stage.id); setIdError(''); }
+            }}
           />
+          {idError && <span role="alert" className="text-[11px] text-red-600">{idError}</span>}
         </label>
         <label className="block">
           <span className="text-[11px] text-gray-500">Job type</span>
@@ -212,7 +237,8 @@ export const StageInspector: React.FC<StageInspectorProps> = ({
         <div className="max-h-44 overflow-y-auto scrollbar-thin rounded-md border border-gray-300 divide-y divide-gray-200">
           {visibleEvidence.length === 0 && (
             <p className="text-[11px] text-gray-500 p-2">
-              {vocabulary ? 'Nothing matches.' : 'Loading the evidence types…'}
+              {vocabulary ? 'Nothing matches.' : loadingVocabulary
+                ? 'Loading the evidence types…' : 'Tool catalog unavailable. Refresh tools and skills to retry.'}
             </p>
           )}
           {visibleEvidence.map((entry) => {
@@ -249,6 +275,48 @@ export const StageInspector: React.FC<StageInspectorProps> = ({
           })}
         </div>
       </div>
+
+      <StageSkillDetails required={required} evidence={byName} loading={loadingVocabulary} />
+
+      {bindingIssues.length > 0 && <section aria-label="Stage binding issues" className="rounded border border-yellow-600 p-2 text-[11px] text-yellow-700">
+        <h4 className="font-medium">Bindings need attention</h4>
+        <ul className="list-disc pl-4 space-y-1">
+          {bindingIssues.map((issue) => <li key={issue}>{issue}</li>)}
+        </ul>
+        <p className="mt-1">Bindings are preserved. Repair them under “Bind arguments to stage results” before launch.</p>
+      </section>}
+
+      <StageToolPicker
+        key={stage.id}
+        tools={vocabulary?.tools}
+        selected={stage.tools}
+        jobType={jobType}
+        onChange={(tools) => patch({ tools })}
+        onRemoveTool={(name) => onChange(removeStageToolConfiguration(stage, name))}
+        defaults={stage.tool_defaults}
+        bindings={stage.tool_bindings}
+        sources={stage.depends_on || []}
+        onBindingsChange={(name, values) => {
+          const next = { ...(stage.tool_bindings || {}) };
+          if (values) next[name] = values;
+          else delete next[name];
+          patch({
+            tool_bindings: Object.keys(next).length ? next : undefined,
+            tools: values && Array.isArray(stage.tools) && !stage.tools.includes(name)
+              ? [...stage.tools, name] : stage.tools,
+          });
+        }}
+        onDefaultsChange={(name, values) => {
+          const next = { ...(stage.tool_defaults || {}) };
+          if (values) next[name] = values;
+          else delete next[name];
+          patch({
+            tool_defaults: Object.keys(next).length ? next : undefined,
+            tools: values && Array.isArray(stage.tools) && !stage.tools.includes(name)
+              ? [...stage.tools, name] : stage.tools,
+          });
+        }}
+      />
 
       <div className="grid grid-cols-2 gap-2">
         <label className="block">

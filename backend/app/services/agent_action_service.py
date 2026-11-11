@@ -8,6 +8,7 @@ from typing import Any, Dict
 from loguru import logger
 
 from app.services.agent_execution_journal_service import agent_execution_journal_service
+from app.services.agent_job_tool_policy import get_tools_for_job_type
 from app.services.agent_tool_providers.base import AgentToolExecutionContext
 from app.services.agent_tool_validation import coerce_tool_params, validate_tool_params
 
@@ -42,6 +43,7 @@ class AgentActionService:
         db: Any,
     ) -> Dict[str, Any]:
         """Execute the decided action and return normalized results."""
+        action = executor._apply_default_scope_to_action(dict(action), job)
         intent = await agent_execution_journal_service.begin_tool_call(
             executor=executor,
             job=job,
@@ -91,6 +93,27 @@ class AgentActionService:
             "artifacts": [],
             "timestamp": datetime.utcnow().isoformat(),
         }
+        if action.get("_pipeline_binding_error"):
+            result["error"] = action["_pipeline_binding_error"]
+            return result
+
+        config = job.config if isinstance(job.config, dict) else {}
+        if config.get("pipeline_stage"):
+            # Menu filtering covers model-generated decisions. Direct actions
+            # and external harnesses must obey the same stage policy at dispatch.
+            profile = state.get("skill_profile")
+            allowed = get_tools_for_job_type(
+                job.job_type,
+                config,
+                profile=profile if isinstance(profile, dict) else None,
+                contributed=getattr(executor, "_contributed_specs", None),
+            )
+            if tool_name not in allowed:
+                result["error"] = (
+                    f"Tool {tool_name!r} is not available to pipeline stage "
+                    f"{config['pipeline_stage']!r}. Check its tool selection and job policy."
+                )
+                return result
 
         scope_violation = executor._validate_action_scope(job, action)
         scope_guard_cfg = executor._get_scope_guard_config(job)
@@ -127,7 +150,18 @@ class AgentActionService:
         coerced = coerce_tool_params(str(tool_name or ""), params)
         if coerced:
             result["coerced_params"] = coerced
-        invalid = validate_tool_params(str(tool_name or ""), params)
+        # The global metadata catalog describes built-ins. Plugin schemas are
+        # owner-scoped and frozen with this executor's job menu, so use that
+        # same declaration for bound values and model-supplied arguments.
+        schema = next(
+            (
+                spec.parameters
+                for spec in (getattr(executor, "_contributed_specs", None) or [])
+                if spec.name == tool_name
+            ),
+            None,
+        )
+        invalid = validate_tool_params(str(tool_name or ""), params, schema=schema)
         if invalid:
             result["error"] = invalid
             return result

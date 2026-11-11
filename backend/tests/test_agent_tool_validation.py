@@ -98,6 +98,15 @@ def test_a_real_uuid_passes():
     assert message is None
 
 
+def test_an_explicit_tool_schema_does_not_assume_uuids_belong_to_the_knowledge_base():
+    schema = {"properties": {"run_id": {"type": "string", "format": "uuid"}}}
+    message = validate_tool_params(
+        "p_external_run", {"run_id": "external-run"}, schema=schema
+    )
+    assert "field run_id should be a UUID" in message
+    assert "knowledge-base" not in message
+
+
 def test_a_field_that_promises_no_uuid_is_left_alone():
     """Only fields whose description promises a UUID are held to one."""
     message = validate_tool_params("search_web", {"query": "not-a-uuid"})

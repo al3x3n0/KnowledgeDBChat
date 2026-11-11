@@ -37,6 +37,32 @@ class StagePlanResponse(BaseModel):
     unpriced: List[str] = Field(default_factory=list)
 
 
+class PipelineBindingPreviewRequest(PipelineSpecRequest):
+    stage: str = Field(..., min_length=1)
+
+
+class PipelineBindingPreviewItem(BaseModel):
+    tool: str
+    argument: str
+    source_stage: str = ""
+    path: str = ""
+    source_job_id: Optional[str] = None
+    source_status: Optional[str] = None
+    source_contract_satisfied: Optional[bool] = None
+    status: str
+    value_type: Optional[str] = None
+    value_json: Optional[str] = None
+    truncated: bool = False
+    error: Optional[str] = None
+
+
+class PipelineBindingPreviewResponse(BaseModel):
+    root_job_id: str
+    stage: str
+    items: List[PipelineBindingPreviewItem] = Field(default_factory=list)
+    omitted: int = 0
+
+
 class PipelinePlanResponse(BaseModel):
     order: List[str] = Field(default_factory=list)
     stages: List[StagePlanResponse] = Field(default_factory=list)
@@ -64,6 +90,18 @@ class PipelineCheckResponse(BaseModel):
     budget: Optional[Dict[str, Any]] = None
 
 
+class PipelineSandboxSkill(BaseModel):
+    """Execution summary of an active skill belonging to the vocabulary owner."""
+
+    skill: str
+    name: str
+    description: str
+    produces: str
+    image: str
+    result_fields: Dict[str, str] = Field(default_factory=dict)
+    timeout_seconds: int
+
+
 class PipelineEvidenceType(BaseModel):
     """One finding type an author may require."""
 
@@ -76,6 +114,24 @@ class PipelineEvidenceType(BaseModel):
     job_types: List[str] = Field(default_factory=list)
     perishable: bool = False
     consumes: str = ""
+    sandbox_skill: Optional[PipelineSandboxSkill] = None
+
+
+class PipelineTool(BaseModel):
+    name: str
+    description: str
+    source: str
+    execution: str
+    job_types: Optional[List[str]] = None
+    produces: List[str] = Field(default_factory=list)
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+    requires: List[str] = Field(default_factory=list)
+    consumes: str = ""
+    effects: str = "unknown"
+    network: str = "unknown"
+    cost_tier: str = "unknown"
+    image: Optional[str] = None
+    program_images: List[str] = Field(default_factory=list)
 
 
 class PipelineVocabularyResponse(BaseModel):
@@ -88,6 +144,7 @@ class PipelineVocabularyResponse(BaseModel):
 
     evidence_types: List[PipelineEvidenceType] = Field(default_factory=list)
     job_types: List[str] = Field(default_factory=list)
+    tools: List[PipelineTool] = Field(default_factory=list)
 
 
 class PipelineDraftRequest(BaseModel):

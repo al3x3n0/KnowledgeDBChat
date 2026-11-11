@@ -129,6 +129,11 @@ class PipelineStage:
     #: specification redone -- but only along an edge someone decided was
     #: sensible, and only to a stage whose output it actually consumes.
     may_revisit: Tuple[str, ...] = ()
+    # None preserves the normal menu; an explicit list limits it to these
+    # extra tools plus the tools needed to produce the contract's evidence.
+    tools: Optional[Tuple[str, ...]] = None
+    tool_defaults: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    tool_bindings: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     def required_finding_types(self) -> List[str]:
         """The finding types this stage's contract demands."""
@@ -217,6 +222,11 @@ def normalize(spec: Mapping[str, Any]) -> Pipeline:
                 spawn_on=spawn,
                 checkpoint=bool(raw.get("checkpoint")),
                 may_revisit=_as_tuple(raw.get("may_revisit")),
+                tools=(
+                    _as_tuple(raw["tools"]) if raw.get("tools") is not None else None
+                ),
+                tool_defaults=dict(raw.get("tool_defaults") or {}),
+                tool_bindings=dict(raw.get("tool_bindings") or {}),
             )
         )
     return Pipeline(
@@ -234,9 +244,24 @@ def normalize(spec: Mapping[str, Any]) -> Pipeline:
 #: A key outside both sets can never appear, because no tool writes arbitrary
 #: top-level result keys -- the finalizer builds them from a fixed vocabulary.
 PRODUCIBLE_RESULT_KEYS = {
-    "structured_output": "set_output_schema",
-    "formatted_outputs": "format_as_table or format_as_report",
+    "structured_output": ("set_output_schema",),
+    "formatted_outputs": ("format_as_table", "format_as_report"),
 }
+
+
+def required_result_tools(contract: Mapping[str, Any]) -> Tuple[str, ...]:
+    """Tools that can write the contract's explicitly required result keys."""
+    required = contract.get("required_result_keys")
+    if not isinstance(required, list):
+        return ()
+    return tuple(
+        dict.fromkeys(
+            tool
+            for key in required
+            for tool in PRODUCIBLE_RESULT_KEYS.get(str(key).strip(), ())
+        )
+    )
+
 
 ALWAYS_WRITTEN_RESULT_KEYS = frozenset(
     {
@@ -472,6 +497,39 @@ def _revisit_problems(pipeline: Pipeline) -> List[str]:
 
 def _stage_problems(stage: PipelineStage, pipeline: Pipeline) -> List[str]:
     problems: List[str] = []
+    from app.services.agent_pipeline_tool_bindings import valid_pointer
+
+    for tool, bindings in stage.tool_bindings.items():
+        if not isinstance(bindings, dict):
+            problems.append(f"{stage.id}: bindings for {tool!r} must be an object")
+            continue
+        for argument, reference in bindings.items():
+            if not isinstance(reference, dict) or set(reference) != {"stage", "path"}:
+                problems.append(
+                    f"{stage.id}: binding {tool}.{argument} needs stage and path"
+                )
+            elif reference["stage"] not in stage.depends_on:
+                problems.append(
+                    f"{stage.id}: binding {tool}.{argument} must name a declared dependency"
+                )
+            elif not valid_pointer(reference["path"]):
+                problems.append(
+                    f"{stage.id}: binding {tool}.{argument} path must be a JSON Pointer"
+                )
+
+    if stage.tools:
+        from app.agent_core import tool_specs
+
+        runnable = set(tool_specs.STATIC_CATALOG.tools_for_job_type(stage.job_type))
+        for name in stage.tools:
+            declaration = tool_specs.spec_for(name)
+            # Plugin names are resolved against the owner at the HTTP boundary.
+            if declaration is None and not name.startswith("p_"):
+                problems.append(f"{stage.id}: unknown tool {name!r}")
+            elif declaration is not None and name not in runnable:
+                problems.append(
+                    f"{stage.id}: tool {name!r} cannot run under job_type {stage.job_type!r}"
+                )
 
     # A stage that only waits for a person does no work, so there is nothing
     # to instruct it to do -- the same carve-out that lets it demand nothing.
@@ -506,8 +564,8 @@ def _stage_problems(stage: PipelineStage, pipeline: Pipeline) -> List[str]:
             f"{stage.id}: requires result_key {key!r}, which nothing writes. "
             f"No tool sets arbitrary keys in job.results; the ones a run can "
             f"produce are {producible} (via "
-            f"{PRODUCIBLE_RESULT_KEYS['structured_output']} and "
-            f"{PRODUCIBLE_RESULT_KEYS['formatted_outputs']}). Put the number "
+            f"{' or '.join(PRODUCIBLE_RESULT_KEYS['structured_output'])} and "
+            f"{' or '.join(PRODUCIBLE_RESULT_KEYS['formatted_outputs'])}). Put the number "
             f"inside structured_output rather than beside it."
         )
 
@@ -770,7 +828,23 @@ def plan(pipeline: Pipeline) -> PipelinePlan:
         required = stage.required_finding_types()
         iterations = stage.iterations()
         inherited = _upstream_finding_types(stage, pipeline)
-        tools = _incremental_chain(required, inherited, stage.job_type)
+        planned_tools = list(_incremental_chain(required, inherited, stage.job_type))
+        seen_tools = set(planned_tools)
+
+        def add_extra(name: str) -> None:
+            if name in seen_tools:
+                return
+            seen_tools.add(name)
+            entry = evidence.entry_for(name)
+            for prerequisite in entry.requires if entry else ():
+                add_extra(prerequisite)
+            planned_tools.append(name)
+
+        for name in (*required_result_tools(stage.contract), *(stage.tools or ())):
+            add_extra(name)
+        if stage.may_revisit:
+            add_extra("request_stage_rerun")
+        tools = tuple(planned_tools)
         seconds = _chain_seconds(tools) * iterations
         cost[stage_id] = seconds
         upstream_finish = max(

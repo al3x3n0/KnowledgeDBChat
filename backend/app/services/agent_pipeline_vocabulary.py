@@ -21,10 +21,13 @@ findings were told nothing produced them.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from app.agent_core import tool_specs
 from app.services import agent_evidence_map
+
+if TYPE_CHECKING:
+    from app.services.plugin_registry import ResolvedContributions
 
 
 @dataclass(frozen=True)
@@ -52,9 +55,11 @@ class EvidenceType:
     perishable: bool = False
     #: What the producing tool consumes, in the tool's own words.
     consumes: str = ""
+    #: Owner-scoped execution details for an active Sandbox Skill only.
+    sandbox_skill: Optional[Dict[str, Any]] = None
 
     def as_dict(self) -> Dict[str, Any]:
-        return {
+        entry = {
             "name": self.name,
             "producers": list(self.producers),
             "typical_seconds": self.typical_seconds,
@@ -62,6 +67,9 @@ class EvidenceType:
             "perishable": self.perishable,
             "consumes": self.consumes,
         }
+        if self.sandbox_skill is not None:
+            entry["sandbox_skill"] = self.sandbox_skill
+        return entry
 
 
 def _job_types_for(producers: Tuple[str, ...]) -> Tuple[str, ...]:
@@ -135,6 +143,52 @@ def as_dict() -> Dict[str, Any]:
         "evidence_types": [e.as_dict() for e in evidence_types()],
         "job_types": job_types(),
     }
+
+
+def tool_choices(contributions: ResolvedContributions) -> List[Dict[str, Any]]:
+    """The same installed and owner-scoped tools offered by the executor."""
+    from app.agent_core import research_programs
+
+    programs = {
+        spec.name: program
+        for program in research_programs.installed()
+        for spec in program.tool_specs
+    }
+    catalog = tool_specs.STATIC_CATALOG.extended_with(contributions.specs)
+    out = []
+    for spec in catalog.all_specs():
+        if spec.job_types is not None and not spec.job_types:
+            continue
+        plugin_tool = contributions.tools.get(spec.name)
+        program = programs.get(spec.name)
+        source = program.name if program else "built-in"
+        image = (
+            plugin_tool.config.get("image")
+            if plugin_tool and plugin_tool.tool_type == "docker_container"
+            else None
+        )
+        out.append(
+            {
+                "name": spec.name,
+                "description": spec.description,
+                "source": plugin_tool.plugin_slug if plugin_tool else source,
+                "execution": plugin_tool.tool_type if plugin_tool else "server",
+                "job_types": list(spec.job_types)
+                if spec.job_types is not None
+                else None,
+                "produces": list(spec.produces),
+                "parameters": spec.parameters,
+                "requires": list(spec.requires),
+                "consumes": spec.consumes,
+                "effects": spec.effects,
+                "network": spec.network,
+                "cost_tier": spec.cost_tier,
+                "image": image if isinstance(image, str) else None,
+                # A program declares its image set, not a per-tool binding.
+                "program_images": list(program.sandbox_images) if program else [],
+            }
+        )
+    return sorted(out, key=lambda tool: tool["name"])
 
 
 def unknown_types(required: List[str]) -> List[str]:

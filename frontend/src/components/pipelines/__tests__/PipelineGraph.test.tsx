@@ -22,7 +22,7 @@ jest.mock('reactflow', () => {
   const React = require('react');
   return {
     __esModule: true,
-    default: ({ nodes, edges, onConnect, onEdgesDelete, onNodesDelete }: any) => {
+    default: ({ nodes, edges, onConnect, onEdgesDelete, onNodesDelete, children }: any) => {
       captured = { nodes, edges, onConnect, onEdgesDelete, onNodesDelete };
       return (
         <div data-testid="flow">
@@ -38,11 +38,13 @@ jest.mock('reactflow', () => {
           {edges.map((e: any) => (
             <div key={e.id} data-testid={`edge-${e.id}`} />
           ))}
+          {children}
         </div>
       );
     },
     Background: () => null,
     Controls: () => null,
+    Panel: ({ children }: any) => <>{children}</>,
     Handle: () => null,
     Position: { Top: 'top', Bottom: 'bottom' },
     ReactFlowProvider: ({ children }: any) => <>{children}</>,
@@ -188,5 +190,20 @@ describe('editing writes the spec, not a private model', () => {
     // Otherwise writeup would still depend on a stage that no longer exists,
     // and the checker would report a problem the user did not create.
     expect(next.stages.find((s: any) => s.id === 'writeup').depends_on).toEqual([]);
+  });
+
+  it('keyboard deletion cleans revisit edges, preserves bindings, and clears the deleted selection', () => {
+    const onSelectStage = jest.fn();
+    const bindings = { read: { query: { stage: 'read', path: '/query' } } };
+    const { onChange } = mountGraph({ selectedStageId: 'read', onSelectStage, spec: {
+      ...spec, stages: spec.stages.map((stage) => stage.id === 'writeup'
+        ? { ...stage, may_revisit: ['read'], tool_bindings: bindings } : stage),
+    } });
+    captured.onNodesDelete([{ id: 'read' }]);
+    const writeup = onChange.mock.calls[0][0].stages.find((stage: any) => stage.id === 'writeup');
+    expect(writeup.depends_on).toEqual([]);
+    expect(writeup.may_revisit).toEqual([]);
+    expect(writeup.tool_bindings).toEqual(bindings);
+    expect(onSelectStage).toHaveBeenCalledWith(null);
   });
 });

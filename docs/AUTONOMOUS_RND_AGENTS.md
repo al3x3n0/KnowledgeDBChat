@@ -286,6 +286,160 @@ This keeps the loop evidence-driven:
 - record
 - relaunch
 
+## Tool access in Pipeline Studio
+
+Select a stage in `/pipelines` and use **Tool access** to choose between the
+normal menu of all permitted tools and **Evidence tools + selected extras**.
+The latter offers a searchable catalog of built-in tools, installed research
+program tools, and the current user's enabled plugin tools. Each entry names
+its source and execution type; the choices are filtered by the stage's job
+type. These can be file tools, data processors, compilers, solvers, API calls,
+or other capabilities, not only simulators.
+
+Expand **Inputs, results, and execution** on a tool to inspect its declared
+arguments (including required fields and the full JSON Schema), evidence types,
+prerequisite tools, and effects/network/cost classification. Container plugin
+tools show their configured image. Research programs show their declared image
+set, which is not a per-tool image binding or a readiness check. Inspection is
+available in both tool-access modes; the agent supplies arguments at call time.
+
+In the specification, omit `tools` (or use `null`) for the normal menu. An
+explicit list such as `"tools": ["search_documents"]` limits the menu to those
+extras plus the tools and prerequisites derived from the stage's evidence
+contract. Required result keys also keep their writers available:
+`structured_output` permits `set_output_schema`, and `formatted_outputs`
+permits `format_as_table` and `format_as_report`. A stage with `may_revisit`
+keeps `request_stage_rerun` available. These appear in the stage's plan,
+including a notice when their execution cost is unknown. Successors receive
+only their own declared backward edges.
+`"tools": []` means contract tools only. Selection controls what the
+agent may call; it does not force a call or supply its arguments. Job and role
+restrictions still apply. Each stage has its own selection, including after a
+restricted parent, and unavailable selections are refused before launch.
+The action executor rechecks that policy before dispatch, including for direct
+calls and external harnesses; a default or result binding cannot grant access
+to an excluded tool.
+Studio ties each check to the exact specification and budget. Editing either
+disables Launch immediately until that version passes its check, and late
+responses from older checks cannot replace the current verdict or estimate.
+
+In a tool's inspection panel, **Stage argument defaults** accepts a JSON object.
+Click **Apply defaults** to store it; unapplied edits do not change the stage.
+In restricted mode, applying defaults also selects that tool as an extra.
+The specification stores these under `tool_defaults`, keyed by tool name, for
+example `"tool_defaults": {"search_web": {"query": "compiler optimization"}}`.
+Explicit call arguments override defaults by top-level field; nested objects
+are replaced as a whole. **Clear defaults** removes the stage's settings.
+Opening another pipeline or a worked example resets the stage editor and
+discards unapplied defaults and binding edits, even when stage IDs match.
+
+Before launch, defaults are checked for available tools and declared argument
+names, types, enum values, and UUID requirements using the runtime parameter
+checker. Required arguments can be omitted from defaults because the agent
+supplies the rest at call time. Defaults reach scope checks, approval, and the
+execution journal before dispatch, and are cleared rather than inherited by
+the next stage. They configure arguments only; selecting a Docker image still
+follows the tool or Sandbox Skill's own configuration.
+
+For a Docker-backed procedure, configure and validate a Sandbox Skill under
+**Tools**, activate it, then select its `skill_<slug>` evidence under **Must
+produce**. Its image, files, result schema, and control stay with the skill.
+The stage automatically receives both the skill loader and runner. Installing
+a research program remains a deployment operation; attaching one of its tools
+does not build an image or install a package.
+
+Selected skills appear under **Sandbox Skills used by this stage**, with their
+configured image, command timeout, result fields, and whether their evidence
+goes stale when working files change. These details come from the current
+owner's active, verified skills; they describe configuration, not live Docker
+availability. The evidence filter also searches skill names, descriptions,
+and images. Edit and validate a skill in **Tools**, then choose **Refresh tools
+and skills** in Studio. Refresh preserves the specification, selected stage,
+and argument edits for tools that remain in the catalog. A failed refresh keeps
+the last catalog visible and offers a retry. Launch waits for the refresh and a
+fresh check of the current configuration. Requiring a skill makes its runner
+available; the agent still chooses commands from the loaded procedure and
+collects the declared result when ready.
+
+Tools with saved defaults or bindings remain visible for repair even if they
+are no longer selected or compatible with the stage's job type. Unavailable
+tools show their saved settings, including in normal access mode. **Remove
+tool and settings** explicitly removes that tool's extra selection, defaults,
+and bindings in one edit, preserving other tools and the stage's access mode.
+It does not remove evidence requirements from the stage contract.
+
+Refreshing the catalog also clears binding previews and waits for the refresh
+before allowing another preview request. Run **Preview applied bindings** again
+to check values against the current tool schema. Older requests cannot restore
+preview values or errors after a refresh or specification change.
+
+### Passing results between tools
+
+Inside tool inspection, use **Bind arguments to stage results**. Select an
+argument, a declared dependency stage, and a JSON Pointer into that stage's
+results, then **Apply bindings**. For example, `/structured_output/code` reads
+the code field, while `/findings/0/value` reads a finding's value. An empty
+pointer selects the complete results object. `~1` escapes a slash in a key and
+`~0` escapes a tilde. Expressions and arbitrary job IDs are not supported.
+
+The spec stores these as
+`"tool_bindings": {"check_implementation": {"code": {"stage": "produce", "path": "/structured_output/code"}}}`.
+The source must be in this stage's `depends_on`. Bound values override defaults
+and explicit call arguments, preserve JSON types, and are resolved before
+approval and execution. Missing sources or paths fail the call without invoking
+the tool; there is no fallback to a model-supplied value. Argument types are
+checked by the normal runtime validator after resolution.
+For contributed tools, runtime type, enum, required-field, and UUID checks use
+the owner's plugin schema resolved for that job, before reaching the plugin
+handler. A malformed bound value is refused instead of falling back to a
+model argument or starting a container.
+
+Child creation snapshots only its declared dependency results. Fan-in stages
+receive each dependency's results; new and restarted children rebuild these
+inputs from their actual parents rather than retaining an older stage's inputs.
+Each attempt also receives independent copies of its argument settings,
+inherited evidence, and downstream chain definition. Editing or restarting one
+attempt does not mutate an earlier attempt or the template used for later runs.
+
+Stage renames update dependencies, revisit edges, and binding sources together.
+Enter or leave the stage-id field to apply a rename; duplicate or empty ids are
+refused without changing the specification.
+
+Deleting a stage removes dependencies and revisit edges naming it, through
+either the inspector or the graph keyboard shortcut. Explicit result bindings
+remain in the specification for repair; Studio does not silently replace them
+with defaults or model-supplied arguments. The inspector names missing binding
+sources even with tool inspection collapsed. Removing a dependency or changing
+a tool's argument schema also highlights invalid rows in the binding editor.
+Restore the dependency, choose a new source/argument, or remove the binding,
+then **Apply bindings**. Until repaired, the pipeline checker refuses launch.
+
+Restarting a stage uses the latest attempt of its predecessor and refuses to
+fall back to older evidence while that attempt is unfinished or its contract
+is unmet. A fan-in restart also requires completed dependencies from the same
+branching attempt. The run panel uses those same checks to offer Restart.
+Inserted stages receive their own tool settings; they do not
+inherit the parent's tool selection, defaults, or bindings. Explicit bindings
+downstream keep naming their original source, carried through the inserted
+stages as frozen snapshots even across repeated insertions. Forwarded results
+remain separate from each inserted stage's declared tool inputs and are cleared
+when no successor needs them. Insertion inside a fan-in branch is refused because
+it would break the runner's sibling-based join; edit that graph in Studio instead.
+
+For a saved pipeline with a previous run, select a stage with bindings and
+choose **Preview applied bindings**. The preview resolves the edited spec
+against the latest recorded attempt of each dependency in that run. It shows
+values and types, missing paths, empty bound source scopes, parameter-check
+errors, and the source job's status and contract result. Known defaults and
+bindings go through the normal tool argument coercion before preview validation.
+Values and the number of returned bindings are capped, with truncation and
+omitted entries shown explicitly.
+
+Preview is read-only and does not call tools or change the pipeline. Editing
+the spec clears the displayed preview. Recorded results can differ from a
+running stage's frozen inputs and from what a new run will produce; a resolved
+value is not evidence that its source contract passed.
+
 ## Capability evaluation
 
 Use the autonomous R&D evaluation harness to measure completed research outcomes,

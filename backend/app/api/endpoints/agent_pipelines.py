@@ -29,7 +29,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.models.agent_job import AgentJobChainDefinition, AgentJobStatus
+from app.models.agent_job import AgentJob, AgentJobChainDefinition, AgentJobStatus
 from app.models.agent_pipeline import AgentPipeline
 from app.models.user import User
 from app.schemas.agent_job import AgentJobCreate
@@ -39,6 +39,8 @@ from app.schemas.agent_pipeline import (
     ChainImportSurveyResponse,
     ContractSuggestionsRequest,
     ContractSuggestionsResponse,
+    PipelineBindingPreviewRequest,
+    PipelineBindingPreviewResponse,
     PipelineBindResponse,
     PipelineCheckResponse,
     PipelineDraftRequest,
@@ -102,6 +104,41 @@ def _normalized(spec):
                 f"{type(stages).__name__}"
             ),
         )
+    for stage in stages or []:
+        if isinstance(stage, dict) and stage.get("tool_bindings") is not None:
+            bindings = stage["tool_bindings"]
+            if not isinstance(bindings, dict) or any(
+                not isinstance(name, str)
+                or not name.strip()
+                or not isinstance(values, dict)
+                or any(not isinstance(arg, str) or not arg.strip() for arg in values)
+                for name, values in bindings.items()
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Stage 'tool_bindings' must map tools to argument bindings",
+                )
+        if isinstance(stage, dict) and stage.get("tool_defaults") is not None:
+            defaults = stage["tool_defaults"]
+            if not isinstance(defaults, dict) or any(
+                not isinstance(name, str)
+                or not name.strip()
+                or not isinstance(values, dict)
+                for name, values in defaults.items()
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Stage 'tool_defaults' must map tool names to argument objects",
+                )
+        if isinstance(stage, dict) and stage.get("tools") is not None:
+            tools = stage["tools"]
+            if not isinstance(tools, list) or any(
+                not isinstance(name, str) or not name.strip() for name in tools
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Stage 'tools' must be a list of nonempty tool names",
+                )
     try:
         return agent_pipeline_spec.normalize(spec)
     except (ValueError, TypeError, AttributeError) as error:
@@ -110,8 +147,8 @@ def _normalized(spec):
         raise HTTPException(status_code=400, detail=f"Not a pipeline spec: {error}")
 
 
-async def _skill_problems(db: AsyncSession, user: User, pipeline) -> list[str]:
-    """Skill evidence a stage requires that this user has no active skill for.
+async def _capability_problems(db: AsyncSession, user: User, pipeline) -> list[str]:
+    """Check skill evidence and explicit tools against the current owner.
 
     `validate()` has no user, so it accepts any `skill_*` type as producible in
     principle. This is the half of the check that knows whose skills exist --
@@ -124,7 +161,71 @@ async def _skill_problems(db: AsyncSession, user: User, pipeline) -> list[str]:
         entry.name
         for entry in await sandbox_skill_service.evidence_types_for_user(db, user.id)
     ]
-    return agent_pipeline_draft.skill_problems(pipeline, available)
+    problems = agent_pipeline_draft.skill_problems(pipeline, available)
+    if any(
+        stage.tools is not None or stage.tool_defaults or stage.tool_bindings
+        for stage in pipeline.stages
+    ):
+        from app.services import plugin_registry
+        from app.services.agent_job_tool_policy import get_tools_for_job_type
+        from app.services.agent_tool_validation import validate_tool_params
+
+        contributions = await plugin_registry.contributions_for_user(db, user.id)
+        choices = {
+            tool["name"]: tool
+            for tool in agent_pipeline_vocabulary.tool_choices(contributions)
+        }
+        for stage in pipeline.stages:
+            allowed = get_tools_for_job_type(
+                stage.job_type,
+                {
+                    "pipeline_stage": stage.id,
+                    "pipeline_tools": list(stage.tools)
+                    if stage.tools is not None
+                    else None,
+                    "goal_contract": stage.contract,
+                    "may_revisit": list(stage.may_revisit),
+                },
+                contributed=contributions.specs,
+            )
+            for name in dict.fromkeys(
+                [*(stage.tools or ()), *stage.tool_defaults, *stage.tool_bindings]
+            ):
+                tool = choices.get(name)
+                if tool is None:
+                    problems.append(
+                        f"{stage.id}: tool {name!r} is not available to this user"
+                    )
+                elif (
+                    tool["job_types"] is not None
+                    and stage.job_type not in tool["job_types"]
+                ):
+                    problems.append(
+                        f"{stage.id}: tool {name!r} cannot run under job_type {stage.job_type!r}"
+                    )
+                else:
+                    if name not in allowed:
+                        problems.append(
+                            f"{stage.id}: attach tool {name!r} before configuring arguments"
+                        )
+                    invalid = validate_tool_params(
+                        name,
+                        stage.tool_defaults.get(name, {}),
+                        schema=tool["parameters"],
+                        partial=True,
+                        reject_unknown=True,
+                    )
+                    if invalid:
+                        problems.append(f"{stage.id}: tool defaults: {invalid}")
+                    parameters = tool["parameters"].get("properties") or {}
+                    if not isinstance(parameters, dict):
+                        parameters = {}
+                    for argument in stage.tool_bindings.get(name, {}):
+                        if argument not in parameters:
+                            problems.append(
+                                f"{stage.id}: binding {name}.{argument} names an unknown argument"
+                            )
+    return problems
 
 
 @router.post("/check", response_model=PipelineCheckResponse)
@@ -141,7 +242,7 @@ async def check_pipeline(
     """
     pipeline = _normalized(payload.spec)
     problems = agent_pipeline_spec.validate(pipeline)
-    problems.extend(await _skill_problems(db, current_user, pipeline))
+    problems.extend(await _capability_problems(db, current_user, pipeline))
     valid = not problems
 
     # Only ask the later questions once the earlier ones are settled: binding
@@ -198,18 +299,20 @@ async def get_pipeline_vocabulary(
     the failure it causes -- a contract asking for evidence nothing produces --
     is the most common way an authored pipeline fails its own check.
     """
-    from app.services import sandbox_skill_service
+    from app.services import plugin_registry, sandbox_skill_service
 
     vocabulary = agent_pipeline_vocabulary.as_dict()
     # The static vocabulary is derived from the tool specs and has no user.
     # What this user's active sandbox skills yield is the part it cannot know.
     skills = await sandbox_skill_service.evidence_types_for_user(db, current_user.id)
+    contributions = await plugin_registry.contributions_for_user(db, current_user.id)
     return PipelineVocabularyResponse(
         evidence_types=[
             PipelineEvidenceType(**e)
             for e in [*vocabulary["evidence_types"], *(s.as_dict() for s in skills)]
         ],
         job_types=list(vocabulary["job_types"]),
+        tools=agent_pipeline_vocabulary.tool_choices(contributions),
     )
 
 
@@ -263,7 +366,7 @@ async def bind_pipeline(
     """
     pipeline = _normalized(payload.spec)
     problems = agent_pipeline_spec.validate(pipeline)
-    problems.extend(await _skill_problems(db, current_user, pipeline))
+    problems.extend(await _capability_problems(db, current_user, pipeline))
     if problems:
         # 422 rather than 400: the request was well-formed and the pipeline is
         # not, which is a different thing for a caller to handle.
@@ -304,7 +407,7 @@ async def launch_pipeline(
     pipeline = _normalized(payload.spec)
 
     problems = agent_pipeline_spec.validate(pipeline)
-    problems.extend(await _skill_problems(db, current_user, pipeline))
+    problems.extend(await _capability_problems(db, current_user, pipeline))
     if problems:
         raise HTTPException(status_code=422, detail="; ".join(problems))
 
@@ -416,6 +519,66 @@ async def launch_pipeline(
     )
 
 
+@router.post(
+    "/runs/{root_job_id}/bindings/preview",
+    response_model=PipelineBindingPreviewResponse,
+)
+async def preview_pipeline_bindings(
+    root_job_id: UUID,
+    payload: PipelineBindingPreviewRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Inspect edited bindings against this owner's latest recorded stage results."""
+    root = (
+        await db.execute(
+            select(AgentJob.id).where(
+                AgentJob.id == root_job_id, AgentJob.user_id == current_user.id
+            )
+        )
+    ).scalar_one_or_none()
+    if root is None:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+    pipeline = _normalized(payload.spec)
+    stage = pipeline.by_id().get(payload.stage)
+    if stage is None:
+        raise HTTPException(status_code=422, detail="Stage not found in specification")
+    stages = [
+        entry
+        for entry in await agent_pipeline_restart.load_run(root_job_id, db)
+        if entry.job.user_id == current_user.id
+    ]
+    if not stages:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+    from app.services import agent_pipeline_binding_preview, plugin_registry
+
+    contributions = await plugin_registry.contributions_for_user(db, current_user.id)
+    from app.services.agent_job_tool_policy import get_tools_for_job_type
+
+    allowed = get_tools_for_job_type(
+        stage.job_type,
+        {
+            "pipeline_stage": stage.id,
+            "pipeline_tools": list(stage.tools) if stage.tools is not None else None,
+            "goal_contract": stage.contract,
+            "may_revisit": list(stage.may_revisit),
+        },
+        contributed=contributions.specs,
+    )
+    tools = {
+        tool["name"]: tool
+        for tool in agent_pipeline_vocabulary.tool_choices(contributions)
+        if tool["name"] in allowed
+    }
+    return PipelineBindingPreviewResponse(
+        root_job_id=str(root_job_id),
+        stage=stage.id,
+        **agent_pipeline_binding_preview.preview(
+            stage, agent_pipeline_restart.latest_per_stage(stages), tools
+        ),
+    )
+
+
 @router.get("/runs/{root_job_id}/stages", response_model=PipelineRunStagesResponse)
 async def get_pipeline_run_stages(
     root_job_id: UUID,
@@ -496,14 +659,7 @@ async def get_pipeline_run_stages(
                 status=status,
                 iteration=int(job.iteration or 0),
                 contract_satisfied=entry.contract_met,
-                # Every stage that has run is restartable: one with a
-                # predecessor re-fires the chain from it, and the head is
-                # re-run from its own definition. This reported False for the
-                # head while the endpoint had just learned to do it -- a
-                # capability the API denied having. A stage still running is
-                # not offered, because the service refuses it: two runners on
-                # one stage is what the execution lease exists to stop.
-                restartable=status != AgentJobStatus.RUNNING.value,
+                restartable=agent_pipeline_restart.can_restart(entry, stages, latest),
                 goal=planned.goal or str(job.goal or ""),
                 checkpoint=planned.checkpoint,
                 waiting_on_person=phase in agent_pipeline_restart.WAITING_ON_A_PERSON,
@@ -610,6 +766,28 @@ async def insert_pipeline_stage(
     owner_ids = {str(stage.job.user_id) for stage in stages}
     if owner_ids != {str(current_user.id)} and not current_user.is_admin():
         raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
+
+    source = agent_pipeline_restart.latest_per_stage(stages).get(payload.after)
+    parsed = _normalized(
+        {
+            "stages": [
+                {
+                    **payload.stage,
+                    "job_type": payload.stage.get("job_type")
+                    or (source.job.job_type if source else "research"),
+                    "depends_on": [payload.after],
+                }
+            ]
+        }
+    )
+    owner = current_user
+    if source is not None and source.job.user_id != current_user.id:
+        owner = await db.get(User, source.job.user_id)
+        if owner is None:
+            raise HTTPException(status_code=404, detail="Pipeline owner not found")
+    problems = await _capability_problems(db, owner, parsed)
+    if problems:
+        raise HTTPException(status_code=422, detail="; ".join(problems))
 
     from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 

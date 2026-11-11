@@ -12,6 +12,7 @@ start on an implementation nothing had verified.
 """
 
 import uuid
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -210,6 +211,10 @@ class TestARestartBuildsOnWhatWasEstablished:
         cmp_job = _stage_job(
             "compare", AgentJobStatus.PAUSED.value, parent=meas, root=root
         )
+        meas.chain_config["child_jobs"][0]["config"]["operator_clues"] = [
+            {"note": "original instruction", "iteration": 0}
+        ]
+        original_chain = deepcopy(meas.chain_config)
         stages = [
             restart.StageJob(stage_id="measure", job=meas),
             restart.StageJob(stage_id="compare", job=cmp_job),
@@ -241,7 +246,8 @@ class TestARestartBuildsOnWhatWasEstablished:
         assert meas.chain_triggered is False
         # The correction has to land where the run reads it.
         clues = child_config["config"]["operator_clues"]
-        assert "table 3" in clues[0]["note"]
+        assert "table 3" in clues[-1]["note"]
+        assert meas.chain_config == original_chain
         assert dispatched == [str(child.id)], "a job that is never queued never runs"
 
     async def test_no_note_is_fine_and_attaches_nothing(self, monkeypatch, db_session):
@@ -295,6 +301,80 @@ class TestTheLatestAttemptIsTheOneThatCounts:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,contract,allowed",
+    [("completed", True, True), ("running", True, False), ("completed", False, False)],
+)
+async def test_a_restart_uses_the_latest_parent_attempt_without_falling_back(
+    monkeypatch, db_session, status, contract, allowed
+):
+    root = uuid.uuid4()
+    old = _stage_job("measure", "completed", root=root, children=("compare",))
+    target = _stage_job("compare", "paused", parent=old, root=root)
+    newer = _stage_job(
+        "measure", status, root=root, children=("compare",), contract=contract
+    )
+
+    async def load(*args):
+        return [
+            restart.StageJob("measure", old),
+            restart.StageJob("compare", target),
+            restart.StageJob("measure", newer),
+        ]
+
+    monkeypatch.setattr(restart, "load_run", load)
+    monkeypatch.setattr(
+        "app.tasks.agent_job_tasks.execute_agent_job_task.delay", lambda *args: None
+    )
+    executor = _Executor()
+    stages = await load()
+    assert (
+        restart.can_restart(stages[1], stages, restart.latest_per_stage(stages))
+        is allowed
+    )
+    if allowed:
+        await restart.restart_from_stage(
+            root_job_id=root, stage_id="compare", executor=executor, db=db_session
+        )
+        assert executor.created[0][0] is newer
+    else:
+        with pytest.raises(restart.PipelineRestartError):
+            await restart.restart_from_stage(
+                root_job_id=root, stage_id="compare", executor=executor, db=db_session
+            )
+        assert executor.created == []
+
+
+@pytest.mark.asyncio
+async def test_restarting_a_fan_in_refuses_dependencies_from_different_attempts(
+    monkeypatch, db_session
+):
+    root = uuid.uuid4()
+    left = _stage_job("left", "completed", root=root, children=("join",))
+    right = _stage_job("right", "completed", root=root)
+    left.parent_job_id, right.parent_job_id = uuid.uuid4(), uuid.uuid4()
+    target = _stage_job("join", "paused", parent=left, root=root)
+    left.chain_config["child_jobs"][0]["config"].update(
+        origin="swarm_fan_in_aggregator", pipeline_depends_on=["left", "right"]
+    )
+
+    async def load(*args):
+        return [
+            restart.StageJob("left", left),
+            restart.StageJob("right", right),
+            restart.StageJob("join", target),
+        ]
+
+    monkeypatch.setattr(restart, "load_run", load)
+    stages = await load()
+    assert not restart.can_restart(stages[2], stages, restart.latest_per_stage(stages))
+    with pytest.raises(restart.PipelineRestartError, match="different attempts"):
+        await restart.restart_from_stage(
+            root_job_id=root, stage_id="join", executor=_Executor(), db=db_session
+        )
+
+
+@pytest.mark.asyncio
 class TestTheHeadCanBeRerun:
     """`may_revisit: [<head>]` was a promise the system could not keep.
 
@@ -318,6 +398,15 @@ class TestTheHeadCanBeRerun:
         head.id = root
         head.user_id = test_user.id
         head.root_job_id = None
+
+        head.config["operator_clues"] = [
+            {"note": "original instruction", "iteration": 0}
+        ]
+        head.config["pipeline_tool_defaults"] = {
+            "check_implementation": {"cases": [{"stdin": "seed"}]}
+        }
+        original_config = deepcopy(head.config)
+        original_chain = deepcopy(head.chain_config)
 
         async def _load(root_job_id, db):
             return [restart.StageJob(stage_id="profile", job=head)]
@@ -343,7 +432,14 @@ class TestTheHeadCanBeRerun:
             child.chain_config == head.chain_config
         ), "the stages after it must re-derive exactly as they did before"
         # The correction is the only new input, and it must be readable.
-        assert "instruction level" in child.config["operator_clues"][0]["note"]
+        assert "instruction level" in child.config["operator_clues"][-1]["note"]
+        assert head.config == original_config
+        child.config["pipeline_tool_defaults"]["check_implementation"]["cases"][0][
+            "stdin"
+        ] = "child edit"
+        child.chain_config["child_jobs"][0]["goal"] = "child edit"
+        assert head.config == original_config
+        assert head.chain_config == original_chain
         # Same run, so the stage view and the ledger still see one pipeline.
         assert child.root_job_id == root
         assert dispatched == [str(child.id)], "a job never queued never runs"
@@ -444,6 +540,36 @@ class TestTheStagesViewDoesNotDenyWhatItCanDo:
 
         running = next(s for s in response.stages if s.stage == "measure")
         assert running.restartable is False
+
+    @pytest.mark.parametrize(
+        "status,eligible", [("running", False), ("completed", True)]
+    )
+    async def test_restart_offer_checks_the_latest_upstream_attempt(
+        self, monkeypatch, status, eligible
+    ):
+        root, owner = uuid.uuid4(), uuid.uuid4()
+        old = _stage_job("profile", "completed", children=("measure",))
+        old.id = root
+        target = _stage_job("measure", "paused", parent=old, root=root)
+        newer = _stage_job("profile", status, root=root, children=("measure",))
+        stages = [
+            restart.StageJob(stage, job)
+            for stage, job in [
+                ("profile", old),
+                ("measure", target),
+                ("profile", newer),
+            ]
+        ]
+        for entry in stages:
+            entry.job.user_id = owner
+        module = await self._view(monkeypatch, stages, owner)
+        response = await module.get_pipeline_run_stages(
+            root_job_id=root,
+            current_user=SimpleNamespace(id=owner),
+            db=None,
+        )
+        measure = next(stage for stage in response.stages if stage.stage == "measure")
+        assert measure.restartable is eligible
 
 
 @pytest.mark.asyncio

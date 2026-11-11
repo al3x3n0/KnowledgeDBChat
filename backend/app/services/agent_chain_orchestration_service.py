@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
@@ -175,7 +176,9 @@ class AgentChainOrchestrationService:
         if not sibling_parent_id:
             return {}
         siblings_res = await db.execute(
-            select(AgentJob).where(AgentJob.parent_job_id == sibling_parent_id)
+            select(AgentJob)
+            .where(AgentJob.parent_job_id == sibling_parent_id)
+            .order_by(AgentJob.created_at, AgentJob.id)
         )
         siblings = siblings_res.scalars().all()
         if not siblings:
@@ -199,6 +202,8 @@ class AgentChainOrchestrationService:
                     "is_terminal": str(s.status or "") in terminal,
                     "progress": int(s.progress or 0),
                     "role": str(cfg.get("swarm_role") or ""),
+                    "pipeline_stage": str(cfg.get("pipeline_stage") or ""),
+                    "pipeline": str(cfg.get("pipeline") or ""),
                     "results": s.results if isinstance(s.results, dict) else {},
                     "output_artifacts": (
                         s.output_artifacts
@@ -416,20 +421,21 @@ class AgentChainOrchestrationService:
         parent_config = parent_job.chain_config or {}
 
         # Build child job configuration
-        child_job_config = child_config.get("config", {})
+        child_job_config = deepcopy(child_config.get("config") or {})
 
         # Merge inherited config if specified
         if parent_config.get("inherit_config") and parent_job.config:
-            child_job_config = {**parent_job.config, **child_job_config}
+            child_job_config = {**deepcopy(parent_job.config), **child_job_config}
 
         # Merge parent results if inheriting
         if parent_config.get("inherit_results", True) and parent_job.results:
-            if "inherited_data" not in child_job_config:
+            if not isinstance(child_job_config.get("inherited_data"), dict):
                 child_job_config["inherited_data"] = {}
-            child_job_config["inherited_data"]["parent_results"] = parent_job.results
-            child_job_config["inherited_data"][
-                "parent_findings"
-            ] = parent_job.results.get("findings", [])
+            parent_results = deepcopy(parent_job.results)
+            child_job_config["inherited_data"]["parent_results"] = parent_results
+            child_job_config["inherited_data"]["parent_findings"] = parent_results.get(
+                "findings", []
+            )
 
         if str(child_job_config.get("origin") or "") == "swarm_fan_in_aggregator":
             sibling_payload = await executor._build_swarm_sibling_payload(
@@ -440,7 +446,7 @@ class AgentChainOrchestrationService:
                     child_job_config.get("inherited_data"), dict
                 ):
                     child_job_config["inherited_data"] = {}
-                child_job_config["inherited_data"]["swarm"] = sibling_payload
+                child_job_config["inherited_data"]["swarm"] = deepcopy(sibling_payload)
         elif (
             str(child_job_config.get("origin") or "") == "swarm_fan_in_rerun_aggregator"
         ):
@@ -460,8 +466,34 @@ class AgentChainOrchestrationService:
                 child_job_config.get("inherited_data"), dict
             ):
                 child_job_config["inherited_data"] = {}
-            child_job_config["inherited_data"]["swarm"] = sibling_payload
+            child_job_config["inherited_data"]["swarm"] = deepcopy(sibling_payload)
             child_job_config.pop("swarm_rerun_base_payload", None)
+
+        if child_job_config.get("pipeline_stage"):
+            from app.services.agent_pipeline_tool_bindings import dependency_results
+
+            swarm = (child_job_config.get("inherited_data") or {}).get("swarm")
+            if (child_config.get("config") or {}).get(
+                "origin"
+            ) != "swarm_fan_in_aggregator":
+                swarm = None
+            child_job_config["pipeline_input_results"] = dependency_results(
+                parent_job, child_job_config, swarm
+            )
+            # Insertions carry the inputs their displaced successors still
+            # name. Keep those snapshots separate from this stage's callable
+            # inputs so repeated insertions neither lose nor expose them.
+            child_job_config["pipeline_forward_results"] = dependency_results(
+                parent_job,
+                {
+                    **child_job_config,
+                    "pipeline_depends_on": child_job_config.get(
+                        "pipeline_forward_dependencies"
+                    )
+                    or [],
+                },
+                swarm,
+            )
 
         # Create the child job
         child_job = AgentJob(
@@ -482,7 +514,7 @@ class AgentChainOrchestrationService:
             root_job_id=parent_job.root_job_id or parent_job.id,
             chain_depth=parent_job.chain_depth + 1,
             # Chain config for further chaining
-            chain_config=child_config.get("chain_config"),
+            chain_config=deepcopy(child_config.get("chain_config")),
             # Resource limits - inherit from parent or use child config
             max_iterations=child_config.get(
                 "max_iterations", parent_job.max_iterations

@@ -440,6 +440,10 @@ the spec clears the displayed preview. Recorded results can differ from a
 running stage's frozen inputs and from what a new run will produce; a resolved
 value is not evidence that its source contract passed.
 
+UI examples captured with local fixture data: [stage tool defaults](screenshots/pipeline-tool-defaults.png)
+and [resolved binding preview](screenshots/pipeline-binding-preview.png). They show
+the authoring interface, not a live tool execution or a deployment health check.
+
 ## Capability evaluation
 
 Use the autonomous R&D evaluation harness to measure completed research outcomes,

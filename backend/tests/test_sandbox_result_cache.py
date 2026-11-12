@@ -19,6 +19,52 @@ from app.services import sandbox_result_cache as cache
 
 pytestmark = pytest.mark.unit
 
+
+def test_stateful_consumers_can_detect_nested_reproduction_contexts():
+    assert cache.is_bypassed() is False
+    with cache.bypassed():
+        assert cache.is_bypassed() is True
+        with cache.bypassed():
+            assert cache.is_bypassed() is True
+        assert cache.is_bypassed() is True
+    assert cache.is_bypassed() is False
+
+
+async def test_bypass_is_inherited_by_child_work_without_leaking_to_other_jobs():
+    entered = asyncio.Event()
+    checked = asyncio.Event()
+
+    async def consumer():
+        await asyncio.sleep(0)
+        return cache.is_bypassed()
+
+    async def replay_job():
+        with cache.bypassed():
+            entered.set()
+            await checked.wait()
+            assert await asyncio.create_task(consumer()) is True
+        assert cache.is_bypassed() is False
+
+    async def normal_job():
+        await entered.wait()
+        try:
+            assert await consumer() is False
+        finally:
+            checked.set()
+
+    await asyncio.gather(replay_job(), normal_job())
+    assert cache.is_bypassed() is False
+
+
+def test_disabling_cache_storage_does_not_mark_a_call_as_reproduction(monkeypatch):
+    monkeypatch.setattr(settings, "SANDBOX_RESULT_CACHE_ENABLED", False)
+    assert cache.enabled() is False
+    assert cache.is_bypassed() is False
+    with cache.bypassed():
+        assert cache.is_bypassed() is True
+        assert cache.enabled() is False
+
+
 SCRIPT = "mkdir -p m5out && cat workload.c | wc -c > m5out/stats.txt && echo done"
 
 
@@ -173,11 +219,16 @@ class TestTheStore:
 
 
 class TestEvidenceReplay:
-    async def test_a_bundle_replay_never_reads_the_cache(self, monkeypatch, tmp_path):
+    @pytest.mark.parametrize("fails", [False, True])
+    async def test_a_bundle_replay_never_reads_the_cache(
+        self, monkeypatch, tmp_path, fails
+    ):
         seen = []
 
         async def execute(tool, params):
-            seen.append(cache._BYPASS.get())
+            seen.append(cache.is_bypassed())
+            if fails:
+                raise RuntimeError("replay failed")
             return {"success": True}
 
         directory = tmp_path / "job"
@@ -199,9 +250,11 @@ class TestEvidenceReplay:
             agent_evidence_bundle, "bundle_dir", lambda job_id, root=None: directory
         )
 
-        await agent_evidence_bundle.replay_bundle("job", execute)
+        report = await agent_evidence_bundle.replay_bundle("job", execute)
 
         assert seen == [True]
+        assert len(report["errored"]) == int(fails)
+        assert cache.is_bypassed() is False
 
     def test_a_replayed_result_hashes_like_a_computed_one(self):
         computed = {"data": {"cycles": 10, "replayed_from_cache": False}}

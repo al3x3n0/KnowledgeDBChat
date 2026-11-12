@@ -851,6 +851,13 @@ job belonging to the same owner, or omit it to check the current run. When a
 stage has an allowed-tools list, include both `verify_run_bundle` and the recorded
 tools it must replay; replay keeps the stage's tool policy.
 
+Replay enters the task-local `sandbox_result_cache.bypassed()` context. Research
+programs with their own saved assessments can check
+`sandbox_result_cache.is_bypassed()` to refuse those assessments during
+reproduction. The flag reaches awaited and child-task work, stays isolated from
+independent jobs, and resets even when a replayed call fails. Disabling sandbox
+cache storage globally does not set this reproduction flag.
+
 `bundle_reproduced` is emitted only when artifacts are intact and a successful
 replay compared every eligible original successful call, with at least one
 comparison. Integrity-only checks, changed results,

@@ -83,14 +83,25 @@ def bypassed() -> Iterator[None]:
         _BYPASS.reset(token)
 
 
+def is_bypassed() -> bool:
+    """Whether this task's context requires fresh execution for reproduction.
+
+    Stateful research evaluators must also reject their own saved assessments
+    during bundle reproduction; bypassing only the sandbox cache is insufficient.
+    This reports ``bypassed()``, independently of the global cache setting.
+    """
+    return _BYPASS.get()
+
+
 def root() -> Path:
     configured = str(getattr(settings, "SANDBOX_RESULT_CACHE_DIR", "") or "").strip()
     return Path(configured) if configured else Path(tempfile.gettempdir()) / ROOT_NAME
 
 
 def enabled() -> bool:
-    return bool(getattr(settings, "SANDBOX_RESULT_CACHE_ENABLED", True)) and not (
-        _BYPASS.get()
+    return (
+        bool(getattr(settings, "SANDBOX_RESULT_CACHE_ENABLED", True))
+        and not is_bypassed()
     )
 
 

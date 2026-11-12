@@ -43,6 +43,7 @@ class AgentActionService:
         db: Any,
     ) -> Dict[str, Any]:
         """Execute the decided action and return normalized results."""
+        original_action = action
         action = executor._apply_default_scope_to_action(dict(action), job)
         intent = await agent_execution_journal_service.begin_tool_call(
             executor=executor,
@@ -51,6 +52,10 @@ class AgentActionService:
             action=action,
             db=db,
         )
+        # Callers retain this key for retries and outbox correlation. Preparing
+        # pipeline arguments must not hide the journal's bookkeeping from them.
+        if "_idempotency_key" in action:
+            original_action["_idempotency_key"] = action["_idempotency_key"]
         try:
             result = await self._act_unjournaled(executor, job, action, state, db)
         except Exception as exc:

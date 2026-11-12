@@ -109,6 +109,7 @@ async def test_journal_scope_guard_and_provider_receive_the_effective_arguments(
 
     async def begin(**kwargs):
         seen["journal"] = deepcopy(kwargs["action"]["params"])
+        kwargs["action"]["_idempotency_key"] = "journal-key"
         return None
 
     async def handle(params, context):
@@ -131,14 +132,17 @@ async def test_journal_scope_guard_and_provider_receive_the_effective_arguments(
             )
         ]
     )
+    action = {"tool": "search_web", "params": {}}
     result = await AgentActionService().act(
         executor,
         job({"search_web": {"query": "baseline"}}),
-        {"tool": "search_web", "params": {}},
+        action,
         {},
         None,
     )
     assert result["success"] is True
+    assert action["_idempotency_key"] == "journal-key"
+    assert action["params"] == {}
     assert seen == {
         "journal": {"query": "baseline"},
         "scope": {"query": "baseline"},

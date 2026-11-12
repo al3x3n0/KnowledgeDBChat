@@ -25,7 +25,8 @@ pytestmark = pytest.mark.unit
 GOOD_STAGE = {
     "id": "reprofile_fine",
     "goal": "Profile again at instruction level so the hot block's sequence is visible",
-    "contract": {"required_finding_types": ["dynamic_profile"]},
+    # Insertion is core behavior; its fixture must work without a research program.
+    "contract": {"required_finding_types": ["implementation_verified"]},
 }
 
 

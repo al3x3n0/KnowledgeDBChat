@@ -21,13 +21,37 @@ findings were told nothing produced them.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence, Tuple
 
 from app.agent_core import tool_specs
+from app.agent_core.tool_specs.spec import ToolSpec
 from app.services import agent_evidence_map
 
-if TYPE_CHECKING:
-    from app.services.plugin_registry import ResolvedContributions
+
+class CatalogPluginTool(Protocol):
+    """Plugin fields used for inspection, without depending on its resolver."""
+
+    @property
+    def tool_type(self) -> str:
+        ...
+
+    @property
+    def config(self) -> Mapping[str, Any]:
+        ...
+
+    @property
+    def plugin_slug(self) -> str:
+        ...
+
+
+class CatalogContributions(Protocol):
+    @property
+    def specs(self) -> Sequence[ToolSpec]:
+        ...
+
+    @property
+    def tools(self) -> Mapping[str, CatalogPluginTool]:
+        ...
 
 
 @dataclass(frozen=True)
@@ -145,7 +169,7 @@ def as_dict() -> Dict[str, Any]:
     }
 
 
-def tool_choices(contributions: ResolvedContributions) -> List[Dict[str, Any]]:
+def tool_choices(contributions: CatalogContributions) -> List[Dict[str, Any]]:
     """The same installed and owner-scoped tools offered by the executor."""
     from app.agent_core import research_programs
 

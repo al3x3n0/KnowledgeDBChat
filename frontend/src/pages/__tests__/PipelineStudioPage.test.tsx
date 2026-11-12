@@ -7,9 +7,10 @@
  * unaffordable one.
  */
 
-import { fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from 'react-query';
+import { MemoryRouter } from 'react-router-dom';
 
 import PipelineStudioPage from '../PipelineStudioPage';
 
@@ -20,7 +21,7 @@ const render = (ui: React.ReactElement) =>
     <QueryClientProvider
       client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
     >
-      {ui}
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>{ui}</MemoryRouter>
     </QueryClientProvider>
   );
 
@@ -49,6 +50,7 @@ jest.mock('../../services/api', () => ({
     // died on render, which is exactly the shape the note above warns about,
     // arriving from the other direction.
     getPipelineVocabulary: jest.fn(),
+    previewPipelineBindings: jest.fn(),
   },
 }));
 
@@ -86,6 +88,9 @@ const vocabulary = {
     },
   ],
   job_types: ['research', 'analysis', 'coding'],
+  tools: [
+    { name: 'p_data_fetch', description: 'Fetch a dataset', source: 'data', execution: 'webhook', job_types: ['research'], produces: [], parameters: { type: 'object', properties: { query: { type: 'string' } } } },
+  ],
 };
 
 const okCheck = {
@@ -140,6 +145,222 @@ const typeSpec = (text: string) =>
   fireEvent.change(screen.getByLabelText('Pipeline specification'), {
     target: { value: text },
   });
+
+describe('refreshing the tool catalog', () => {
+  const configured = {
+    name: 'data', stages: [
+      { id: 'profile', goal: 'Find data', contract: { required_finding_types: ['document'] } },
+      { id: 'measure', goal: 'Convert data', depends_on: ['profile'], tools: ['p_data_fetch'],
+        contract: { required_finding_types: ['skill_convert'] },
+        tool_defaults: { p_data_fetch: { query: 'saved query' } },
+        tool_bindings: { p_data_fetch: { query: { stage: 'profile', path: '/query' } } },
+      },
+    ],
+  };
+  const sourceText = () => (screen.getByLabelText('Pipeline specification') as HTMLTextAreaElement).value;
+  const refresh = () => screen.getByRole('button', { name: 'Refresh tools and skills' });
+  const launch = () => screen.getByRole('button', { name: /Launch/i });
+
+  it('refreshes skill details without replacing the spec, selection, or unapplied argument edits', async () => {
+    render(<PipelineStudioPage />);
+    await waitFor(() => expect(launch()).toBeEnabled());
+    typeSpec(JSON.stringify(configured));
+    fireEvent.click(document.querySelector('.react-flow__node[data-id="measure"]')!);
+    fireEvent.click(await screen.findByLabelText('Inspect tool p_data_fetch'));
+    const argumentEditor = await screen.findByLabelText('Argument defaults for p_data_fetch');
+    fireEvent.change(argumentEditor, { target: { value: '{"query":"unsaved edit"}' } });
+    await waitFor(() => expect(launch()).toBeEnabled());
+    const original = sourceText();
+    const checksBefore = apiClient.checkPipeline.mock.calls.length;
+    apiClient.getPipelineVocabulary.mockResolvedValue({ ...vocabulary, evidence_types: [
+      ...vocabulary.evidence_types,
+      { name: 'skill_convert', producers: ['run_sandbox_skill'], typical_seconds: 120,
+        job_types: [], perishable: true, consumes: 'a dataset', sandbox_skill: {
+          skill: 'convert', name: 'Convert data', description: 'Convert a dataset to normalized records.',
+          produces: 'skill_convert', image: 'dataset-tools:8', timeout_seconds: 90,
+          result_fields: { records: 'number' },
+        } },
+    ] });
+    fireEvent.click(refresh());
+    expect(launch()).toBeDisabled();
+    expect(await screen.findByText('Configured image: dataset-tools:8')).toBeVisible();
+    expect(screen.getByLabelText('Stage id')).toHaveValue('measure');
+    expect(screen.getByLabelText('Argument defaults for p_data_fetch')).toHaveValue('{"query":"unsaved edit"}');
+    expect(sourceText()).toBe(original);
+    await waitFor(() => expect(apiClient.checkPipeline.mock.calls.length).toBeGreaterThan(checksBefore));
+    expect(apiClient.checkPipeline).toHaveBeenLastCalledWith(configured, undefined);
+    await waitFor(() => expect(launch()).toBeEnabled());
+  });
+
+  it('keeps removed tool settings for repair and rechecks them before enabling Launch', async () => {
+    render(<PipelineStudioPage />);
+    await waitFor(() => expect(launch()).toBeEnabled());
+    typeSpec(JSON.stringify(configured));
+    fireEvent.click(document.querySelector('.react-flow__node[data-id="measure"]')!);
+    await waitFor(() => expect(launch()).toBeEnabled());
+    apiClient.getPipelineVocabulary.mockResolvedValue({ ...vocabulary, tools: [] });
+    apiClient.checkPipeline.mockResolvedValue({ ...okCheck, valid: false, plan: null,
+      problems: ['measure: tool p_data_fetch is unavailable'],
+    });
+    fireEvent.click(refresh());
+    expect(launch()).toBeDisabled();
+    expect(await screen.findByRole('button', { name: /p_data_fetch is unavailable/ })).toBeVisible();
+    await screen.findByText('measure: tool p_data_fetch is unavailable');
+    expect(launch()).toBeDisabled();
+    expect(JSON.parse(sourceText())).toEqual(configured);
+    fireEvent.click(screen.getByRole('button', { name: /p_data_fetch is unavailable/ }));
+    const repaired = JSON.parse(sourceText());
+    expect(repaired.stages[1].tools).toEqual([]);
+    expect(repaired.stages[1].tool_defaults).toBeUndefined();
+    expect(repaired.stages[1].tool_bindings).toBeUndefined();
+    expect(repaired.stages[0]).toEqual(configured.stages[0]);
+    await waitFor(() => expect(apiClient.checkPipeline).toHaveBeenLastCalledWith(repaired, undefined));
+  });
+
+  it('retries an initial failure and keeps the last catalog after a later failure', async () => {
+    apiClient.getPipelineVocabulary.mockRejectedValueOnce(new Error('unavailable'));
+    render(<PipelineStudioPage />);
+    expect(await screen.findByText(/Could not refresh the tool catalog/)).toBeVisible();
+    typeSpec(JSON.stringify(configured));
+    fireEvent.click(document.querySelector('.react-flow__node[data-id="measure"]')!);
+    expect(screen.getByText('Tool catalog unavailable. Refresh tools and skills to retry.')).toBeVisible();
+    const original = sourceText();
+    fireEvent.click(refresh());
+    expect(await screen.findByLabelText('Allow tool p_data_fetch')).toBeVisible();
+    expect(screen.queryByText(/Could not refresh the tool catalog/)).not.toBeInTheDocument();
+    await waitFor(() => expect(refresh()).toBeEnabled());
+    apiClient.getPipelineVocabulary.mockRejectedValueOnce(new Error('unavailable again'));
+    fireEvent.click(refresh());
+    expect(await screen.findByText('Showing the last loaded catalog.')).toBeVisible();
+    expect(screen.getByLabelText('Allow tool p_data_fetch')).toBeVisible();
+    expect(sourceText()).toBe(original);
+    expect(screen.getByLabelText('Stage id')).toHaveValue('measure');
+    expect(apiClient.getPipelineVocabulary).toHaveBeenCalledTimes(3);
+  });
+});
+
+it('clears unavailable configuration in normal access mode without removing another tool settings', async () => {
+  render(<PipelineStudioPage />);
+  await screen.findAllByText('profile_c_workload');
+  const reference = { stage: 'produce', path: '/value' };
+  const original = { stages: [{ id: 'produce' }, { id: 'consume', tools: null, depends_on: ['produce'],
+    tool_defaults: { p_removed: { query: 'remove' }, p_data_fetch: { query: 'keep' } },
+    tool_bindings: { p_removed: { query: reference }, p_data_fetch: { query: reference } },
+  }] };
+  typeSpec(JSON.stringify(original));
+  fireEvent.click(document.querySelector('.react-flow__node[data-id="consume"]')!);
+  expect(screen.getByText('p_removed is unavailable')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: /p_removed is unavailable/ }));
+  const next = JSON.parse((screen.getByLabelText('Pipeline specification') as HTMLTextAreaElement).value).stages[1];
+  expect(next.tools).toBeNull();
+  expect(next.tool_defaults).toEqual({ p_data_fetch: { query: 'keep' } });
+  expect(next.tool_bindings).toEqual({ p_data_fetch: { query: reference } });
+  expect(next.depends_on).toEqual(['produce']);
+  expect(screen.queryByText('p_removed is unavailable')).not.toBeInTheDocument();
+});
+
+it('keeps bindings visible for explicit repair after deleting their source stage', async () => {
+  render(<PipelineStudioPage />);
+  await screen.findAllByText('profile_c_workload');
+  const original = { name: 'p', stages: [
+    { id: 'produce', goal: 'Produce' }, { id: 'other', goal: 'Other source' },
+    { id: 'consume', goal: 'Consume', depends_on: ['produce', 'other'], may_revisit: ['produce', 'other'],
+      tools: ['p_data_fetch'], tool_defaults: { p_data_fetch: { query: 'a default' } },
+      tool_bindings: { p_data_fetch: { query: { stage: 'produce', path: '/query' } } },
+    },
+  ] };
+  typeSpec(JSON.stringify(original));
+  fireEvent.click(document.querySelector('.react-flow__node[data-id="produce"]')!);
+  fireEvent.click(screen.getByLabelText('Delete stage produce'));
+  const current = () => JSON.parse((screen.getByLabelText('Pipeline specification') as HTMLTextAreaElement).value);
+  expect(current().stages[1]).toMatchObject({ depends_on: ['other'], may_revisit: ['other'], tool_bindings: original.stages[2].tool_bindings });
+  fireEvent.click(document.querySelector('.react-flow__node[data-id="consume"]')!);
+  expect(screen.getByRole('region', { name: 'Stage binding issues' })).toHaveTextContent("source stage 'produce' no longer exists");
+  fireEvent.click(screen.getByLabelText('Inspect tool p_data_fetch'));
+  fireEvent.change(await screen.findByLabelText('Binding source 1 for p_data_fetch'), { target: { value: 'other' } });
+  expect(current().stages[1].tool_bindings.p_data_fetch.query.stage).toBe('produce');
+  fireEvent.click(screen.getByText('Apply bindings'));
+  expect(current().stages[1].tool_bindings.p_data_fetch.query).toEqual({ stage: 'other', path: '/query' });
+  expect(current().stages[1].tool_defaults).toEqual(original.stages[2].tool_defaults);
+  expect(screen.queryByRole('region', { name: 'Stage binding issues' })).not.toBeInTheDocument();
+});
+
+it('writes stage tool selections into the checked specification', async () => {
+  render(<PipelineStudioPage />);
+  await screen.findAllByText('profile_c_workload');
+  const node = document.querySelector('.react-flow__node[data-id="profile"]');
+  expect(node).not.toBeNull();
+  fireEvent.click(node!);
+  fireEvent.change(await screen.findByLabelText('Stage tool access'), { target: { value: 'selected' } });
+  fireEvent.click(screen.getByLabelText('Allow tool p_data_fetch'));
+  const editor = screen.getByLabelText('Pipeline specification') as HTMLTextAreaElement;
+  expect(JSON.parse(editor.value).stages[0].tools).toEqual(['p_data_fetch']);
+  await waitFor(() => {
+    const calls = apiClient.checkPipeline.mock.calls;
+    expect(calls[calls.length - 1][0].stages[0].tools).toEqual(['p_data_fetch']);
+  });
+});
+
+it('applies tool defaults to the stage and attaches the tool in restricted mode', async () => {
+  render(<PipelineStudioPage />);
+  await screen.findAllByText('profile_c_workload');
+  fireEvent.click(document.querySelector('.react-flow__node[data-id="profile"]')!);
+  fireEvent.change(await screen.findByLabelText('Stage tool access'), { target: { value: 'selected' } });
+  fireEvent.click(screen.getByLabelText('Inspect tool p_data_fetch'));
+  const input = await screen.findByLabelText('Argument defaults for p_data_fetch');
+  fireEvent.change(input, { target: { value: '{"limit":5}' } });
+  fireEvent.click(screen.getByText('Apply defaults'));
+  const editor = screen.getByLabelText('Pipeline specification') as HTMLTextAreaElement;
+  const stage = JSON.parse(editor.value).stages[0];
+  expect(stage.tools).toEqual(['p_data_fetch']);
+  expect(stage.tool_defaults).toEqual({ p_data_fetch: { limit: 5 } });
+});
+
+it('does not carry an unapplied defaults edit into another stage', async () => {
+  render(<PipelineStudioPage />);
+  await screen.findAllByText('profile_c_workload');
+  fireEvent.click(document.querySelector('.react-flow__node[data-id="profile"]')!);
+  fireEvent.click(await screen.findByLabelText('Inspect tool p_data_fetch'));
+  fireEvent.change(await screen.findByLabelText('Argument defaults for p_data_fetch'), { target: { value: '{"limit":5}' } });
+  fireEvent.click(document.querySelector('.react-flow__node[data-id="measure"]')!);
+  fireEvent.click(await screen.findByLabelText('Inspect tool p_data_fetch'));
+  expect(await screen.findByLabelText('Argument defaults for p_data_fetch')).toHaveValue('{}');
+});
+
+it('writes dependency argument bindings into the stage specification', async () => {
+  render(<PipelineStudioPage />);
+  await screen.findAllByText('profile_c_workload');
+  fireEvent.click(document.querySelector('.react-flow__node[data-id="measure"]')!);
+  fireEvent.click(await screen.findByLabelText('Inspect tool p_data_fetch'));
+  fireEvent.click(await screen.findByText('Add binding'));
+  fireEvent.change(screen.getByLabelText('Binding path 1 for p_data_fetch'), { target: { value: '/structured_output/query' } });
+  fireEvent.click(screen.getByText('Apply bindings'));
+  const source = (screen.getByLabelText('Pipeline specification') as HTMLTextAreaElement).value;
+  expect(JSON.parse(source).stages[1].tool_bindings).toEqual({ p_data_fetch: { query: { stage: 'profile', path: '/structured_output/query' } } });
+  expect(screen.getByRole('region', { name: 'Binding preview' })).toBeInTheDocument();
+  expect(screen.getByText('Preview applied bindings')).toBeDisabled();
+});
+
+it('commits a stage rename with its dependencies and bindings, and refuses collisions', async () => {
+  render(<PipelineStudioPage />);
+  await screen.findAllByText('profile_c_workload');
+  typeSpec(JSON.stringify({ name: 'p', stages: [
+    { id: 'produce', goal: 'Produce' },
+    { id: 'consume', goal: 'Consume', depends_on: ['produce'], tool_bindings: { p_data_fetch: { query: { stage: 'produce', path: '/query' } } } },
+  ] }));
+  fireEvent.click(document.querySelector('.react-flow__node[data-id="produce"]')!);
+  const id = await screen.findByLabelText('Stage id');
+  fireEvent.change(id, { target: { value: 'new_name' } });
+  fireEvent.blur(id);
+  const current = () => JSON.parse((screen.getByLabelText('Pipeline specification') as HTMLTextAreaElement).value);
+  expect(current().stages[0].id).toBe('new_name');
+  expect(current().stages[1].depends_on).toEqual(['new_name']);
+  expect(current().stages[1].tool_bindings.p_data_fetch.query.stage).toBe('new_name');
+  fireEvent.change(screen.getByLabelText('Stage id'), { target: { value: 'consume' } });
+  fireEvent.blur(screen.getByLabelText('Stage id'));
+  expect(screen.getByRole('alert')).toHaveTextContent('Rename not applied');
+  expect(current().stages[0].id).toBe('new_name');
+});
 
 it('shows the tools it derived, which the author never writes', async () => {
   render(<PipelineStudioPage />);
@@ -255,6 +476,70 @@ it('marks unpriced tools rather than letting a stage look free', async () => {
 
 
 describe('launching', () => {
+  it('requires a fresh check immediately after changing stage configuration', async () => {
+    render(<PipelineStudioPage />);
+    const launch = screen.getByRole('button', { name: /Launch/i });
+    await waitFor(() => expect(launch).toBeEnabled());
+    apiClient.checkPipeline.mockImplementation(() => new Promise(() => {}));
+    const previous = JSON.parse((screen.getByLabelText('Pipeline specification') as HTMLTextAreaElement).value);
+    previous.stages[0].tool_defaults = { search_documents: { query: 'a different input' } };
+    typeSpec(JSON.stringify(previous));
+    expect(launch).toBeDisabled();
+    fireEvent.click(launch);
+    expect(apiClient.launchPipeline).not.toHaveBeenCalled();
+    expect(screen.queryByText('Spec valid')).not.toBeInTheDocument();
+    await waitFor(() => expect(apiClient.checkPipeline).toHaveBeenLastCalledWith(previous, undefined));
+    expect(launch).toBeDisabled();
+  });
+
+  it('invalidates the old verdict immediately when the budget changes', async () => {
+    render(<PipelineStudioPage />);
+    const launch = screen.getByRole('button', { name: /Launch/i });
+    await waitFor(() => expect(launch).toBeEnabled());
+    apiClient.checkPipeline.mockResolvedValue({ ...okCheck, budget: {
+      affordable: false, budget_seconds: 1, estimated_seconds: 180,
+      critical_path_seconds: 180, unpriced_tools: [],
+    } });
+    fireEvent.change(screen.getByLabelText('Budget (seconds)'), { target: { value: '1' } });
+    expect(launch).toBeDisabled();
+    await screen.findByText(/Needs 3 min/);
+    expect(launch).toBeDisabled();
+  });
+
+  it.each(['result', 'error'])('ignores an older check %s after the current check finishes', async (outcome) => {
+    let resolveOld!: (value: unknown) => void;
+    let rejectOld!: (error: unknown) => void;
+    apiClient.checkPipeline.mockImplementationOnce(() => new Promise((resolve, reject) => {
+      resolveOld = resolve; rejectOld = reject;
+    }));
+    render(<PipelineStudioPage />);
+    await waitFor(() => expect(apiClient.checkPipeline).toHaveBeenCalledTimes(1));
+    const next = { name: 'newer', stages: [{ id: 'newer', goal: 'Current work' }] };
+    typeSpec(JSON.stringify(next));
+    const launch = screen.getByRole('button', { name: /Launch/i });
+    await waitFor(() => expect(apiClient.checkPipeline).toHaveBeenCalledWith(next, undefined));
+    await waitFor(() => expect(launch).toBeEnabled());
+    await act(async () => {
+      if (outcome === 'result') resolveOld({ ...okCheck, valid: false, plan: null, problems: ['older spec failed'] });
+      else rejectOld({ response: { data: { detail: 'older check unavailable' } } });
+    });
+    expect(launch).toBeEnabled();
+    expect(screen.queryByText('older spec failed')).not.toBeInTheDocument();
+    expect(screen.queryByText('older check unavailable')).not.toBeInTheDocument();
+  });
+
+  it('does not accept an in-flight success for text edited into invalid JSON', async () => {
+    let resolveOld!: (value: unknown) => void;
+    apiClient.checkPipeline.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }));
+    render(<PipelineStudioPage />);
+    await waitFor(() => expect(apiClient.checkPipeline).toHaveBeenCalledTimes(1));
+    typeSpec('{ invalid');
+    await act(async () => { resolveOld(okCheck); });
+    expect(screen.getByRole('button', { name: /Launch/i })).toBeDisabled();
+    expect(screen.queryByText('Spec valid')).not.toBeInTheDocument();
+    await screen.findByText('Not valid JSON');
+  });
+
   it('does not offer to launch a pipeline the server would refuse', async () => {
     apiClient.checkPipeline.mockResolvedValue({
       ...okCheck,
@@ -339,6 +624,87 @@ describe('the library', () => {
     launch_count: 3,
     last_job_id: 'job-7',
   };
+
+  const withControls = {
+    name: 'portable', stages: [
+      { id: 'produce', goal: 'Produce' },
+      { id: 'consume', goal: 'Consume', depends_on: ['produce'], tools: ['p_data_fetch'],
+        tool_defaults: { p_data_fetch: { query: 'saved query' } },
+        tool_bindings: { p_data_fetch: { query: { stage: 'produce', path: '/query' } } },
+      },
+    ],
+  };
+
+  it('discards unapplied tool edits when opening a pipeline with the same stage ids', async () => {
+    apiClient.listSavedPipelines.mockResolvedValue([
+      { ...stored, spec: withControls, last_job_id: null },
+      { ...stored, id: 'p-2', name: 'Another survey', spec: withControls, last_job_id: null },
+    ]);
+    render(<PipelineStudioPage />);
+    fireEvent.click(await screen.findByText('Attention survey'));
+    fireEvent.click(document.querySelector('.react-flow__node[data-id="consume"]')!);
+    fireEvent.click(await screen.findByLabelText('Inspect tool p_data_fetch'));
+    fireEvent.change(await screen.findByLabelText('Argument defaults for p_data_fetch'), {
+      target: { value: '{"query":"unapplied defaults"}' },
+    });
+    fireEvent.change(screen.getByLabelText('Binding path 1 for p_data_fetch'), {
+      target: { value: '/unapplied' },
+    });
+
+    fireEvent.click(screen.getByText('Another survey'));
+    fireEvent.click(document.querySelector('.react-flow__node[data-id="consume"]')!);
+    if (!screen.queryByLabelText('Argument defaults for p_data_fetch')) {
+      fireEvent.click(await screen.findByLabelText('Inspect tool p_data_fetch'));
+    }
+    expect(await screen.findByLabelText('Argument defaults for p_data_fetch')).toHaveValue(
+      JSON.stringify({ query: 'saved query' }, null, 2)
+    );
+    expect(screen.getByLabelText('Binding path 1 for p_data_fetch')).toHaveValue('/query');
+    expect(JSON.parse((screen.getByLabelText('Pipeline specification') as HTMLTextAreaElement).value)).toEqual(withControls);
+  });
+
+  it('saves edited defaults and reopens them with the original tool selection and bindings', async () => {
+    let record = { ...stored, spec: withControls };
+    apiClient.listSavedPipelines.mockImplementation(async () => [record]);
+    apiClient.updateSavedPipeline.mockImplementationOnce(async (_id: string, update: { spec: typeof withControls }) => {
+      record = { ...record, spec: update.spec };
+      return record;
+    });
+    render(<PipelineStudioPage />);
+    fireEvent.click(await screen.findByText('Attention survey'));
+    fireEvent.click(document.querySelector('.react-flow__node[data-id="consume"]')!);
+    fireEvent.click(await screen.findByLabelText('Inspect tool p_data_fetch'));
+    fireEvent.change(await screen.findByLabelText('Argument defaults for p_data_fetch'), { target: { value: '{"query":"edited query"}' } });
+    fireEvent.click(screen.getByText('Apply defaults'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    const expected = { ...withControls, stages: [withControls.stages[0], {
+      ...withControls.stages[1], tool_defaults: { p_data_fetch: { query: 'edited query' } },
+    }] };
+    await waitFor(() => expect(apiClient.updateSavedPipeline).toHaveBeenCalledWith('p-1', { spec: expected }));
+    await waitFor(() => expect(apiClient.listSavedPipelines).toHaveBeenCalledTimes(2));
+    typeSpec('{"stages":[]}');
+    fireEvent.click(screen.getByText('Attention survey'));
+    expect(JSON.parse((screen.getByLabelText('Pipeline specification') as HTMLTextAreaElement).value)).toEqual(expected);
+  });
+
+  it('clears a saved run binding preview when the tool catalog refreshes', async () => {
+    apiClient.listSavedPipelines.mockResolvedValue([{ ...stored, spec: withControls }]);
+    apiClient.previewPipelineBindings.mockResolvedValue({ root_job_id: 'job-7', stage: 'consume', omitted: 0, items: [{
+      tool: 'p_data_fetch', argument: 'query', source_stage: 'produce', path: '/query',
+      status: 'resolved', value_type: 'string', value_json: '"previous catalog value"',
+    }] });
+    render(<PipelineStudioPage />);
+    fireEvent.click(await screen.findByText('Attention survey'));
+    fireEvent.click(document.querySelector('.react-flow__node[data-id="consume"]')!);
+    await waitFor(() => expect(screen.getByText('Preview applied bindings')).toBeEnabled());
+    fireEvent.click(screen.getByText('Preview applied bindings'));
+    await screen.findByText('"previous catalog value"');
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh tools and skills' }));
+    expect(screen.queryByText('"previous catalog value"')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Preview applied bindings')).toBeEnabled());
+    expect(screen.queryByText('"previous catalog value"')).not.toBeInTheDocument();
+    expect(apiClient.previewPipelineBindings).toHaveBeenCalledTimes(1);
+  });
 
   it('lists what has been saved, with how often it has run', async () => {
     apiClient.listSavedPipelines.mockResolvedValue([stored]);

@@ -521,6 +521,59 @@ class TestSavingOne:
         ).json()
         assert updated["last_check_valid"] == "invalid"
 
+    def test_tool_controls_round_trip_through_save_update_and_reopen(
+        self, client, auth_headers
+    ):
+        original = _spec(
+            _stage("produce", ["document"], tools=None),
+            _stage(
+                "consume",
+                ["document"],
+                depends_on=["produce"],
+                tools=["search_web"],
+                tool_defaults={
+                    "search_web": {
+                        "query": "saved query",
+                        "nested": {"enabled": False, "limit": 0},
+                    }
+                },
+                tool_bindings={
+                    "search_web": {
+                        "query": {
+                            "stage": "produce",
+                            "path": "/structured_output/query",
+                        }
+                    }
+                },
+            ),
+        )
+        created = client.post(
+            SAVED,
+            json={"name": "portable controls", "spec": original},
+            headers=auth_headers,
+        )
+        assert created.status_code == 201, created.text
+        path = f"{SAVED}/{created.json()['id']}"
+        assert client.get(path, headers=auth_headers).json()["spec"] == original
+        changed = {
+            **original,
+            "stages": [
+                original["stages"][0],
+                {
+                    **original["stages"][1],
+                    "tools": [],
+                    "tool_defaults": {"search_web": {"query": "edited query"}},
+                    "tool_bindings": {
+                        "search_web": {"query": {"stage": "produce", "path": ""}}
+                    },
+                },
+            ],
+        }
+        updated = client.patch(path, json={"spec": changed}, headers=auth_headers)
+        assert updated.status_code == 200, updated.text
+        assert client.get(path, headers=auth_headers).json()["spec"] == changed
+        assert client.get(SAVED, headers=auth_headers).json()[0]["spec"] == changed
+
     def test_renaming_leaves_the_spec_alone(self, client, auth_headers):
         created = client.post(
             SAVED,

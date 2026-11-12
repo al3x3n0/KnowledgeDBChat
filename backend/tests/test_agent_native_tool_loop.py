@@ -356,6 +356,44 @@ def _fake_job(**overrides):
 
 
 class TestThinkingServiceNativeGlue:
+    def test_approval_checks_include_stage_argument_defaults(self, monkeypatch):
+        from app.core.config import settings
+        from app.services.agent_native_tool_loop import NativeToolLoopResult
+        from app.services.agent_pipeline_tool_defaults import apply_defaults
+
+        executor = _fake_executor(FakeLLM([]))
+        executor._apply_default_scope_to_action = apply_defaults
+        executor._evaluate_approval_checkpoint = lambda job, state, action: {
+            "required": action["params"].get("query") == "baseline"
+        }
+        current = _fake_job(
+            config={
+                "native_tool_loop": True,
+                "pipeline_stage": "find",
+                "pipeline_tool_defaults": {"search_documents": {"query": "baseline"}},
+            }
+        )
+        monkeypatch.setattr(settings, "AGENT_DANGEROUS_TOOLS", [])
+
+        async def native_run(**kwargs):
+            assert kwargs["should_defer"]({"tool": "search_documents", "params": {}})
+            return NativeToolLoopResult(structured=DECISION, llm_calls_used=1)
+
+        monkeypatch.setattr(native_tool_loop_service, "run", native_run)
+        run(
+            AgentThinkingService()._maybe_run_native_tool_loop(
+                executor,
+                current,
+                {},
+                system_prompt="s",
+                user_message="u",
+                available_tools=["search_documents"],
+                user_settings=None,
+                routing=None,
+                db=None,
+            )
+        )
+
     @pytest.mark.parametrize("remaining", [0, 1, 2])
     def test_exhausted_budget_returns_a_decision_without_prompted_fallback(
         self, remaining

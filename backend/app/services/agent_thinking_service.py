@@ -332,6 +332,9 @@ Respond in JSON format:
             if tool in dangerous:
                 return True
             try:
+                action = executor._apply_default_scope_to_action(dict(action), job)
+                if action.get("_pipeline_binding_error"):
+                    return False
                 gate = executor._evaluate_approval_checkpoint(job, state, action)
                 return bool(gate.get("required"))
             except Exception:

@@ -35,6 +35,7 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 
 import type { PipelineCheck } from '../../types';
+import { removePipelineStages } from '../../utils/pipelineEditing';
 
 export interface PipelineStageSpec {
   id: string;
@@ -44,6 +45,9 @@ export interface PipelineStageSpec {
   contract?: Record<string, any>;
   checkpoint?: boolean;
   loop?: { max_iterations?: number; until?: string; dry_rounds?: number };
+  tools?: string[] | null;
+  tool_defaults?: Record<string, Record<string, unknown>>;
+  tool_bindings?: Record<string, Record<string, { stage: string; path: string }>>;
   [key: string]: any;
 }
 
@@ -310,19 +314,11 @@ const PipelineGraphInner: React.FC<PipelineGraphProps> = ({
 
   const onNodesDelete = useCallback(
     (removed: Node[]) => {
-      const gone = new Set(removed.map((n) => n.id));
-      writeStages(
-        stages
-          .filter((stage) => !gone.has(stage.id))
-          // A dependency on a deleted stage would be left dangling, which the
-          // checker would then report as a problem the user did not create.
-          .map((stage) => ({
-            ...stage,
-            depends_on: (stage.depends_on || []).filter((p) => !gone.has(p)),
-          }))
-      );
+      const gone = removed.map((node) => node.id);
+      onChange(removePipelineStages(spec, gone));
+      if (selectedStageId && gone.includes(selectedStageId)) onSelectStage(null);
     },
-    [stages, writeStages]
+    [spec, onChange, selectedStageId, onSelectStage]
   );
 
   return (

@@ -320,13 +320,24 @@ async def evidence_types_for_user(db: AsyncSession, user_id: Any) -> List[Any]:
     out = []
     for skill in await active_skills(db, user_id):
         name = sandbox_skill_manifest.evidence_type(skill.slug)
+        manifest = skill.manifest or {}
         out.append(
             EvidenceType(
                 name=name,
                 producers=tuple(agent_evidence_map.producers_of(name)),
                 typical_seconds=agent_evidence_map.estimate_chain_seconds([name]),
-                perishable=bool((skill.manifest or {}).get("perishable")),
+                perishable=bool(manifest.get("perishable")),
                 consumes=f"the sandbox skill {skill.name!r}: {skill.description}",
+                sandbox_skill={
+                    **describe_for_run(skill),
+                    "result_fields": dict(
+                        (manifest.get("result") or {}).get("fields") or {}
+                    ),
+                    "timeout_seconds": manifest.get(
+                        "timeout_seconds",
+                        sandbox_skill_manifest.DEFAULT_TIMEOUT_SECONDS,
+                    ),
+                },
             )
         )
     return out

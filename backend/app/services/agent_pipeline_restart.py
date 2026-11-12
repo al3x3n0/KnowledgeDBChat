@@ -41,6 +41,7 @@ anything if the ground under it is real:
 from __future__ import annotations
 
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -181,7 +182,7 @@ async def _rerun_the_head(
     verbatim, so the stages after it re-derive exactly as they did the first
     time.
     """
-    config = {**dict(head.config or {}), **dict(extra_config or {})}
+    config = deepcopy({**dict(head.config or {}), **dict(extra_config or {})})
     notes = [note.strip()] if note.strip() else []
     notes.extend(clue["note"] for clue in await _disputes_as_clues(head, db))
     if notes:
@@ -199,7 +200,7 @@ async def _rerun_the_head(
         job_type=head.job_type,
         status=AgentJobStatus.PENDING.value,
         config=config,
-        chain_config=head.chain_config,
+        chain_config=deepcopy(head.chain_config),
         max_iterations=head.max_iterations,
         max_tool_calls=head.max_tool_calls,
         max_llm_calls=head.max_llm_calls,
@@ -264,6 +265,92 @@ async def _disputes_as_clues(job: AgentJob, db: AsyncSession) -> List[Dict[str, 
         return []
 
 
+def _restart_source(
+    target: StageJob, stages: List[StageJob], by_stage: Dict[str, StageJob]
+) -> tuple[StageJob, Dict[str, Any]]:
+    """Resolve and check the evidence used by both restart and its UI state."""
+    stage_id = target.stage_id
+    parent_id = target.job.parent_job_id
+    parent = next((s for s in stages if s.job.id == parent_id), None)
+    if parent is None:
+        raise PipelineRestartError(
+            f"Stage {stage_id!r} has no parent stage in this run; it cannot be "
+            "restarted on evidence that is not there."
+        )
+    # The target remembers the attempt it originally followed. A later attempt
+    # of that same stage supersedes it; never silently reuse the old evidence.
+    parent = by_stage.get(parent.stage_id, parent)
+
+    spawning = _releases_on_findings(parent.job)
+    if spawning:
+        # A `spawn_on` stage releases what follows on evidence and may never
+        # complete -- a monitor is still monitoring. Requiring it to complete
+        # made every stage after it impossible to restart. What it must have
+        # done is what the first release required: reached its threshold,
+        # which `chain_triggered` records.
+        if str(parent.job.status or "") in _ENDED_BADLY:
+            raise PipelineRestartError(
+                f"Stage {parent.stage_id!r} is {parent.job.status}. Restart "
+                "from that stage instead."
+            )
+        if not parent.job.chain_triggered and not (
+            parent.completed and parent.contract_met
+        ):
+            raise PipelineRestartError(
+                f"Stage {parent.stage_id!r} has not yet produced the findings "
+                f"that release {stage_id!r}, so there is nothing for it to "
+                "start from."
+            )
+    elif not parent.completed:
+        raise PipelineRestartError(
+            f"Stage {parent.stage_id!r} is {parent.job.status}, not completed. "
+            f"Restarting {stage_id!r} on it would build on work that has not "
+            "finished."
+        )
+    elif not parent.contract_met:
+        raise PipelineRestartError(
+            f"Stage {parent.stage_id!r} completed without meeting its "
+            f"contract, so the evidence {stage_id!r} assumes was never "
+            "produced. Restart from that stage instead."
+        )
+
+    child_config = _child_config_for(parent.job, stage_id)
+    if child_config is None:
+        raise PipelineRestartError(
+            f"Stage {parent.stage_id!r} does not define {stage_id!r} as its "
+            "next stage in this run."
+        )
+    target_config = child_config.get("config") or {}
+    if target_config.get("origin") == "swarm_fan_in_aggregator":
+        for dependency in target_config.get("pipeline_depends_on") or []:
+            source = by_stage.get(dependency)
+            if source is None or not source.completed or not source.contract_met:
+                raise PipelineRestartError(
+                    f"Dependency {dependency!r} must complete and meet its contract before restarting {stage_id!r}."
+                )
+            if source.job.parent_job_id != parent.job.parent_job_id:
+                raise PipelineRestartError(
+                    "Fan-in dependencies belong to different attempts. Rerun the branching stage first."
+                )
+
+    return parent, child_config
+
+
+def can_restart(
+    target: StageJob, stages: List[StageJob], latest: Dict[str, StageJob]
+) -> bool:
+    """Whether restarting now has an eligible source, without changing the run."""
+    if str(target.job.status or "") == AgentJobStatus.RUNNING.value:
+        return False
+    if target.job.parent_job_id is None:
+        return True
+    try:
+        _restart_source(target, stages, latest)
+    except PipelineRestartError:
+        return False
+    return True
+
+
 async def restart_from_stage(
     *,
     root_job_id: uuid.UUID,
@@ -312,59 +399,13 @@ async def restart_from_stage(
         # only new input, and the chain re-derives every stage after it.
         return await _rerun_the_head(target.job, note, executor, db, extra_config)
 
-    parent = next((s for s in stages if s.job.id == parent_id), None)
-    if parent is None:
-        raise PipelineRestartError(
-            f"Stage {stage_id!r} has no parent stage in this run; it cannot be "
-            "restarted on evidence that is not there."
-        )
-
+    parent, child_config = _restart_source(target, stages, by_stage)
     spawning = _releases_on_findings(parent.job)
-    if spawning:
-        # A `spawn_on` stage releases what follows on evidence and may never
-        # complete -- a monitor is still monitoring. Requiring it to complete
-        # made every stage after it impossible to restart. What it must have
-        # done is what the first release required: reached its threshold,
-        # which `chain_triggered` records.
-        if str(parent.job.status or "") in _ENDED_BADLY:
-            raise PipelineRestartError(
-                f"Stage {parent.stage_id!r} is {parent.job.status}. Restart "
-                "from that stage instead."
-            )
-        if not parent.job.chain_triggered and not (
-            parent.completed and parent.contract_met
-        ):
-            raise PipelineRestartError(
-                f"Stage {parent.stage_id!r} has not yet produced the findings "
-                f"that release {stage_id!r}, so there is nothing for it to "
-                "start from."
-            )
-    elif not parent.completed:
-        raise PipelineRestartError(
-            f"Stage {parent.stage_id!r} is {parent.job.status}, not completed. "
-            f"Restarting {stage_id!r} on it would build on work that has not "
-            "finished."
-        )
-    elif not parent.contract_met:
-        raise PipelineRestartError(
-            f"Stage {parent.stage_id!r} completed without meeting its "
-            f"contract, so the evidence {stage_id!r} assumes was never "
-            "produced. Restart from that stage instead."
-        )
 
-    child_config = _child_config_for(parent.job, stage_id)
-    if child_config is None:
-        raise PipelineRestartError(
-            f"Stage {parent.stage_id!r} does not define {stage_id!r} as its "
-            "next stage in this run."
-        )
-
-    child_config = {
-        **child_config,
-        "config": {
-            **dict(child_config.get("config") or {}),
-            **dict(extra_config or {}),
-        },
+    child_config = deepcopy(child_config)
+    child_config["config"] = {
+        **dict(child_config.get("config") or {}),
+        **deepcopy(extra_config or {}),
     }
     if note.strip():
         _attach_correction(child_config, note.strip())
@@ -486,6 +527,15 @@ async def insert_stage_after(
     parent_chain = (
         parent.job.chain_config if isinstance(parent.job.chain_config, dict) else {}
     )
+    if any(
+        (child.get("config") or {}).get("origin") == "swarm_fan_in_aggregator"
+        for child in parent_chain.get("child_jobs") or []
+        if isinstance(child, dict)
+    ):
+        raise PipelineRestartError(
+            "Cannot insert inside a fan-in branch: the converging stages would no "
+            "longer be siblings. Reshape that graph in Pipeline Studio."
+        )
     displaced = [
         str((c.get("config") or {}).get("pipeline_stage") or "").strip()
         for c in (parent_chain.get("child_jobs") or [])
@@ -499,11 +549,48 @@ async def insert_stage_after(
                 "insertion. Cancel it first."
             )
 
+    from app.services import agent_pipeline_binding, agent_pipeline_spec
+
+    if stage.get("depends_on") and set(stage["depends_on"]) != {after_stage}:
+        raise PipelineRestartError(
+            "An inserted stage can depend only on the stage it is inserted after."
+        )
+    normalized = agent_pipeline_spec.normalize(
+        {
+            "name": str((parent.job.config or {}).get("pipeline") or "pipeline"),
+            "stages": [
+                {
+                    "id": after_stage,
+                    "goal": parent.job.goal,
+                    "contract": (parent.job.config or {}).get("goal_contract") or {},
+                },
+                {
+                    **stage,
+                    "job_type": stage.get("job_type")
+                    or parent.job.job_type
+                    or "research",
+                    "depends_on": [after_stage],
+                },
+            ],
+        }
+    )
+    inserted_stage = normalized.stages[1]
+    problems = agent_pipeline_spec._stage_problems(inserted_stage, normalized)
+    if problems:
+        raise PipelineRestartError("; ".join(problems))
+    compiled = agent_pipeline_binding.stage_job_spec(inserted_stage, normalized)
+    forward_dependencies: set[str] = set()
+    for child in parent_chain.get("child_jobs") or []:
+        child_settings = child.get("config") or {}
+        if child_settings.get("pipeline") == normalized.name:
+            forward_dependencies.update(child_settings.get("pipeline_depends_on") or [])
+            forward_dependencies.update(
+                child_settings.get("pipeline_forward_dependencies") or []
+            )
     config = {
         **(stage.get("config") or {}),
-        "pipeline": (parent.job.config or {}).get("pipeline"),
-        "pipeline_stage": new_id,
-        "goal_contract": contract,
+        **compiled["config"],
+        "pipeline_forward_dependencies": sorted(forward_dependencies),
         # What this insertion moved, recorded on the job itself so a caller
         # reads it rather than deriving it a second time -- two derivations
         # disagree the first time the rule changes.
@@ -513,16 +600,21 @@ async def insert_stage_after(
         config["operator_clues"] = [{"note": note.strip()[:2000], "iteration": 0}]
 
     child_config = {
+        **compiled,
         "name": f"{(parent.job.config or {}).get('pipeline') or 'pipeline'}: {new_id}",
         "goal": goal,
-        "job_type": str(stage.get("job_type") or parent.job.job_type or "research"),
+        "job_type": inserted_stage.job_type,
         "config": config,
-        "max_iterations": int(stage.get("max_iterations") or 6),
+        "max_iterations": int(
+            compiled.get("max_iterations") or stage.get("max_iterations") or 6
+        ),
         # The inserted stage takes over the parent's children, which is what
         # makes the rest of the chain re-derive beneath it instead of being
         # rebuilt by hand.
         "chain_config": {
             "trigger_condition": parent_chain.get("trigger_condition", "on_complete"),
+            "inherit_config": parent_chain.get("inherit_config", True),
+            "inherit_results": parent_chain.get("inherit_results", True),
             "child_jobs": parent_chain.get("child_jobs") or [],
         },
     }

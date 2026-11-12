@@ -6067,6 +6067,16 @@ export interface PipelineRun {
  *  evidence types drifts from the tools the first time one is added — and the
  *  failure that causes (a contract asking for evidence nothing produces) is
  *  the most common way an authored pipeline fails its own check. */
+export interface PipelineSandboxSkill {
+  skill: string;
+  name: string;
+  description: string;
+  produces: string;
+  image: string;
+  result_fields: Record<string, string>;
+  timeout_seconds: number;
+}
+
 export interface PipelineEvidenceType {
   name: string;
   producers: string[];
@@ -6079,11 +6089,30 @@ export interface PipelineEvidenceType {
    *  verdict it earned before its own edit. */
   perishable: boolean;
   consumes: string;
+  sandbox_skill?: PipelineSandboxSkill | null;
 }
 
 export interface PipelineVocabulary {
   evidence_types: PipelineEvidenceType[];
   job_types: string[];
+  tools?: PipelineTool[];
+}
+
+export interface PipelineTool {
+  name: string;
+  description: string;
+  source: string;
+  execution: string;
+  job_types: string[] | null;
+  produces: string[];
+  parameters?: Record<string, unknown>;
+  requires?: string[];
+  consumes?: string;
+  effects?: string;
+  network?: string;
+  cost_tier?: string;
+  image?: string | null;
+  program_images?: string[];
 }
 
 /** A pipeline drafted from a description. A starting point for the editor —
@@ -6100,6 +6129,28 @@ export interface PipelineStageRestart {
   stage: string;
   job_id: string;
   note_attached: boolean;
+}
+
+export interface PipelineBindingPreviewItem {
+  tool: string;
+  argument: string;
+  source_stage: string;
+  path: string;
+  source_job_id?: string | null;
+  source_status?: string | null;
+  source_contract_satisfied?: boolean | null;
+  status: string;
+  value_type?: string | null;
+  value_json?: string | null;
+  truncated: boolean;
+  error?: string | null;
+}
+
+export interface PipelineBindingPreview {
+  root_job_id: string;
+  stage: string;
+  items: PipelineBindingPreviewItem[];
+  omitted: number;
 }
 
 export interface PipelineStageInsertion {

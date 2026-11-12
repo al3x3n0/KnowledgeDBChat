@@ -2387,6 +2387,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agent-pipelines/runs/{root_job_id}/bindings/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Pipeline Bindings
+         * @description Inspect edited bindings against this owner's latest recorded stage results.
+         */
+        post: operations["preview_pipeline_bindings_api_v1_agent_pipelines_runs__root_job_id__bindings_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agent-pipelines/runs/{root_job_id}/insert-stage": {
         parameters: {
             query?: never;
@@ -23606,6 +23626,71 @@ export interface components {
             /** Name */
             name: string;
         };
+        /** PipelineBindingPreviewItem */
+        PipelineBindingPreviewItem: {
+            /** Argument */
+            argument: string;
+            /** Error */
+            error?: string | null;
+            /**
+             * Path
+             * @default
+             */
+            path: string;
+            /** Source Contract Satisfied */
+            source_contract_satisfied?: boolean | null;
+            /** Source Job Id */
+            source_job_id?: string | null;
+            /**
+             * Source Stage
+             * @default
+             */
+            source_stage: string;
+            /** Source Status */
+            source_status?: string | null;
+            /** Status */
+            status: string;
+            /** Tool */
+            tool: string;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+            /** Value Json */
+            value_json?: string | null;
+            /** Value Type */
+            value_type?: string | null;
+        };
+        /** PipelineBindingPreviewRequest */
+        PipelineBindingPreviewRequest: {
+            /**
+             * Budget Seconds
+             * @description If given, also check the plan fits this budget
+             */
+            budget_seconds?: number | null;
+            /**
+             * Spec
+             * @description The pipeline spec: name and stages
+             */
+            spec: Record<string, never>;
+            /** Stage */
+            stage: string;
+        };
+        /** PipelineBindingPreviewResponse */
+        PipelineBindingPreviewResponse: {
+            /** Items */
+            items?: components["schemas"]["PipelineBindingPreviewItem"][];
+            /**
+             * Omitted
+             * @default 0
+             */
+            omitted: number;
+            /** Root Job Id */
+            root_job_id: string;
+            /** Stage */
+            stage: string;
+        };
         /**
          * PipelineCheckResponse
          * @description What is wrong with a pipeline, before anything expensive runs.
@@ -23678,6 +23763,7 @@ export interface components {
             perishable: boolean;
             /** Producers */
             producers?: string[];
+            sandbox_skill?: components["schemas"]["PipelineSandboxSkill"] | null;
             /**
              * Typical Seconds
              * @default 0
@@ -23904,6 +23990,28 @@ export interface components {
             total_stages: number;
         };
         /**
+         * PipelineSandboxSkill
+         * @description Execution summary of an active skill belonging to the vocabulary owner.
+         */
+        PipelineSandboxSkill: {
+            /** Description */
+            description: string;
+            /** Image */
+            image: string;
+            /** Name */
+            name: string;
+            /** Produces */
+            produces: string;
+            /** Result Fields */
+            result_fields?: {
+                [key: string]: string;
+            };
+            /** Skill */
+            skill: string;
+            /** Timeout Seconds */
+            timeout_seconds: number;
+        };
+        /**
          * PipelineSpecRequest
          * @description A pipeline to check. `budget_seconds` is optional: a pipeline can be
          *     valid and still be unaffordable, and those are different answers.
@@ -23920,6 +24028,49 @@ export interface components {
              */
             spec: Record<string, never>;
         };
+        /** PipelineTool */
+        PipelineTool: {
+            /**
+             * Consumes
+             * @default
+             */
+            consumes: string;
+            /**
+             * Cost Tier
+             * @default unknown
+             */
+            cost_tier: string;
+            /** Description */
+            description: string;
+            /**
+             * Effects
+             * @default unknown
+             */
+            effects: string;
+            /** Execution */
+            execution: string;
+            /** Image */
+            image?: string | null;
+            /** Job Types */
+            job_types?: string[] | null;
+            /** Name */
+            name: string;
+            /**
+             * Network
+             * @default unknown
+             */
+            network: string;
+            /** Parameters */
+            parameters?: Record<string, never>;
+            /** Produces */
+            produces?: string[];
+            /** Program Images */
+            program_images?: string[];
+            /** Requires */
+            requires?: string[];
+            /** Source */
+            source: string;
+        };
         /**
          * PipelineVocabularyResponse
          * @description What a stage editor may offer, and a drafter may use.
@@ -23933,6 +24084,8 @@ export interface components {
             evidence_types?: components["schemas"]["PipelineEvidenceType"][];
             /** Job Types */
             job_types?: string[];
+            /** Tools */
+            tools?: components["schemas"]["PipelineTool"][];
         };
         /** PlanStep */
         PlanStep: {
@@ -34556,6 +34709,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PipelineLaunchResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_pipeline_bindings_api_v1_agent_pipelines_runs__root_job_id__bindings_preview_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path: {
+                root_job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PipelineBindingPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineBindingPreviewResponse"];
                 };
             };
             /** @description Validation Error */

@@ -62,6 +62,39 @@ def get_tools_for_job_type(
 
     cfg = config if isinstance(config, dict) else {}
 
+    if cfg.get("pipeline_stage") and isinstance(cfg.get("pipeline_tools"), list):
+        from app.services import agent_evidence_map, agent_pipeline_spec
+
+        required = agent_pipeline_spec._required_types(cfg.get("goal_contract") or {})
+        validity = (cfg.get("goal_contract") or {}).get("validity") or {}
+        if validity.get("predictions_measured"):
+            required.append("prediction_settled")
+        if validity.get("records_method"):
+            required.append("method_recorded")
+        attached = set(string_list(cfg.get("pipeline_tools")))
+        attached.update(agent_evidence_map.chain_for(required, job_type=job_type))
+        for name in required:
+            attached.update(agent_evidence_map.producers_of(name))
+        attached.update(
+            agent_pipeline_spec.required_result_tools(cfg.get("goal_contract") or {})
+        )
+        if string_list(cfg.get("may_revisit")):
+            attached.add("request_stage_rerun")
+        if any(agent_evidence_map.is_skill_evidence(name) for name in required):
+            attached.add("load_sandbox_skill")
+        # Extra tools and alternative evidence producers may have their own
+        # prerequisites. Keep those available too, without granting any tool
+        # the job type could not already call.
+        pending = list(attached)
+        while pending:
+            name = pending.pop()
+            declaration = catalog.spec_for(name) if name in proposed else None
+            for prerequisite in declaration.requires if declaration else ():
+                if prerequisite not in attached:
+                    attached.add(prerequisite)
+                    pending.append(prerequisite)
+        proposed = [name for name in proposed if name in attached]
+
     _as_list = string_list
 
     allowlist = set(_as_list(cfg.get("allowed_tools") or cfg.get("tool_allowlist")))

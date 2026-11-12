@@ -1021,6 +1021,29 @@ async def test_a_perishable_skill_marks_its_findings(
     assert entry.perishable is True
 
 
+async def test_pipeline_vocabulary_summarizes_only_the_owners_active_skill(
+    db_session, test_user, admin_user, active_skill
+):
+    from app.api.endpoints.agent_pipelines import get_pipeline_vocabulary
+
+    vocabulary = await get_pipeline_vocabulary(current_user=test_user, db=db_session)
+    (entry,) = [e for e in vocabulary.evidence_types if e.name == "skill_loop_trip"]
+    assert entry.sandbox_skill.model_dump() == {
+        "skill": "loop_trip",
+        "name": active_skill.name,
+        "description": active_skill.description,
+        "produces": "skill_loop_trip",
+        "image": IMAGE,
+        "result_fields": {"loops": "number", "hottest": "string"},
+        "timeout_seconds": sandbox_skill_manifest.DEFAULT_TIMEOUT_SECONDS,
+    }
+    other = await get_pipeline_vocabulary(current_user=admin_user, db=db_session)
+    assert not any(e.sandbox_skill for e in other.evidence_types)
+    await sandbox_skill_service.disable_skill(db_session, active_skill)
+    disabled = await get_pipeline_vocabulary(current_user=test_user, db=db_session)
+    assert "skill_loop_trip" not in [e.name for e in disabled.evidence_types]
+
+
 async def test_a_durable_skill_does_not_mark_its_findings(
     db_session, test_user, active_skill, sandbox
 ):

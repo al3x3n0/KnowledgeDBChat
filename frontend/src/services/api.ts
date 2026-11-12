@@ -283,6 +283,7 @@ import {
   PipelineDraft,
   PipelineLaunch,
   PipelineRun,
+  PipelineBindingPreview,
   PipelineStageInsertion,
   PipelineStageRestart,
   PipelineVocabulary,
@@ -859,6 +860,13 @@ class ApiClient {
   async getPipelineRun(rootJobId: string): Promise<PipelineRun> {
     const response = await this.client.get(
       `/api/v1/agent-pipelines/runs/${rootJobId}/stages`
+    );
+    return response.data;
+  }
+
+  async previewPipelineBindings(rootJobId: string, spec: Record<string, unknown>, stage: string): Promise<PipelineBindingPreview> {
+    const response = await this.client.post<PipelineBindingPreview>(
+      `/api/v1/agent-pipelines/runs/${rootJobId}/bindings/preview`, { spec, stage }
     );
     return response.data;
   }

@@ -476,11 +476,12 @@ class TestReplay:
         assert report["verdict"] == "reproduced"
 
     @pytest.mark.asyncio
-    async def test_a_benchmark_is_skipped_and_never_judged(self, tmp_path):
+    @pytest.mark.parametrize("tool", ["benchmark_c_snippet", "evaluate_restructuring"])
+    async def test_a_benchmark_is_skipped_and_never_judged(self, tmp_path, tool):
         """Two honest runs of a wall-clock benchmark disagree."""
         _record(
             tmp_path,
-            "benchmark_c_snippet",
+            tool,
             {"code": "x"},
             {"success": True, "data": {"fastest_ms": 126}},
         )
@@ -488,7 +489,7 @@ class TestReplay:
         report = await bundle.replay_bundle("job-1", self._executor([]), root=tmp_path)
 
         assert report["judged"] == 0
-        assert report["skipped"][0]["tool"] == "benchmark_c_snippet"
+        assert report["skipped"][0]["tool"] == tool
         assert "wall clock" in report["skipped"][0]["why"]
         assert report["verdict"] == "inconclusive"
 

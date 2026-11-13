@@ -876,6 +876,13 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   tool does not have. Required parameters with at most eight fixed strings
   are listed as `category*=key_insight|methodology|...`, 548 characters over
   the whole catalog.
+  **An evidence tool's description is shown whole** (`_tool_description`).
+  Every description was cut at 200 characters, mid-word, and the cut hid
+  the method: `check_implementation` lost its oracle protocol,
+  `compare_c_snippets` "instead of two benchmark_c_snippet calls". A tool
+  that produces evidence is now listed in full and any other is cut at a
+  sentence; the research list went from 33k to 51k characters of the
+  stable, cached prompt. **Not yet measured in an eval.**
 - **A stage that fails still stops the plan, but it no longer does so
   quietly or for the wrong reason.** Found by restarting the stage the first
   live plan stopped on (2026-10-14), each on the real stack:

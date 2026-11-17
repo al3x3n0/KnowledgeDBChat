@@ -23,6 +23,7 @@ external model and research-system access remains policy controlled.
 | Coding agents | Isolated workspaces, file and command tools, role-based swarms, verification gates, candidate snapshots, durable checkpoints, and recovery |
 | Research evidence | Evidence ledgers, provenance, external-system links, bounded response storage, verification plans, trajectory evaluation, and signed audit snapshots |
 | External systems | MCP, GitHub, GitLab, Confluence, web and arXiv connectors, CompOps compiler research, and MLflow experiment evidence |
+| Kubernetes execution | Helm deployment, optional KEDA worker scaling, isolated experiment Jobs, shared artifacts, and journal-based recovery |
 | Authoring | Research reports, presentations, diagrams, LaTeX projects, citation synchronization, and document generation |
 | Governance | Authentication, scoped secrets, tool policies, approval gates, execution budgets, audit trails, leases, fencing, and idempotency |
 
@@ -143,6 +144,17 @@ same policy and audit boundary.
 
 See [External Agent Gateway](docs/EXTERNAL_AGENT_GATEWAY.md).
 
+### Kubernetes
+
+Kubernetes hosts the application and can run sandbox experiments as independent
+Jobs. Celery workers submit bounded experiments, then supported journaled agent
+actions release their worker slot while waiting. Celery Beat polls completion
+and queues a continuation that restores the result and workspace. Optional KEDA
+scaling adjusts worker pools independently of experiment Jobs.
+
+See [Kubernetes integration](docs/KUBERNETES_INTEGRATION.md) for configuration,
+execution boundaries, recovery, and troubleshooting.
+
 ## Quick start
 
 ### Prerequisites
@@ -205,7 +217,11 @@ The chart is `deploy/helm/knowledgedbchat`. It ships every dependency
 self-contained, and each one can be switched off in favour of a managed service.
 Alembic runs in a hook Job rather than in the app containers, so replicas never
 race the schema and a failed migration aborts the upgrade before any pod rolls.
-See [deploy/README.md](deploy/README.md) for the production checklist.
+See [deploy/README.md](deploy/README.md) for the production checklist and
+[Kubernetes integration](docs/KUBERNETES_INTEGRATION.md) to enable independent
+experiment Jobs and optional worker autoscaling. The minikube profile alone
+does not enable those features; experiment Jobs require shared RWX storage and
+NetworkPolicy enforcement.
 
 ### Configuration
 
@@ -317,6 +333,7 @@ to that configured system.
 - [LDAP / Active Directory configuration](BUILD_AND_RUN.md#ldap--active-directory-configuration-optional)
 - [Architecture](docs/ARCHITECTURE_ASCII.md)
 - [Kubernetes / Helm deployment](deploy/README.md)
+- [Kubernetes integration and experiment Jobs](docs/KUBERNETES_INTEGRATION.md)
 - [Architecture diagrams](docs/ARCHITECTURE_DIAGRAMS.md)
 - [Autonomous R&D agents](docs/AUTONOMOUS_RND_AGENTS.md)
 - [CompOps integration](docs/COMPOPS_INTEGRATION.md)

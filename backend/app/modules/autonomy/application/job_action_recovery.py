@@ -9,6 +9,7 @@ from app.modules.autonomy.application.job_action_contracts import (
     JobActionError,
 )
 from app.modules.autonomy.application.job_action_dispatch import queue_job
+from app.services.sandbox_continuation_state import waiting
 
 RECOVERY_ACTIONS = frozenset({"restart", "relaunch"})
 
@@ -22,6 +23,11 @@ async def perform_recovery_action(
     db: AsyncSession,
     current_user: User,
 ) -> AgentJob:
+    if waiting(job):
+        raise JobActionError(
+            status_code=409,
+            detail="An experiment is still being reconciled. Wait for result collection or cancellation before restarting or relaunching.",
+        )
     if job.status not in {
         AgentJobStatus.COMPLETED.value,
         AgentJobStatus.FAILED.value,

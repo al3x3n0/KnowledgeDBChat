@@ -16,8 +16,8 @@ that idea where it is safe here:
   KEYED ON EVERYTHING THE RESULT DEPENDS ON. The image's content id (not its
   tag: a rebuilt image is a different simulator, which is how a fix stayed
   "absent" two rebuilds after it was made), the script, the resource limits,
-  and every file in the working directory by content hash. A change to any of
-  them is a different key. A run whose inputs cannot be read, or are larger
+  and every file in the working directory by content hash and permission bits.
+  A change to any of them is a different key. A run whose inputs cannot be read, or are larger
   than `MAX_INPUT_BYTES`, is simply not cached.
 
   ONLY A SUCCESS IS STORED. A timeout, a daemon that is not listening, or an
@@ -47,6 +47,7 @@ import io
 import json
 import os
 import shutil
+import stat
 import tarfile
 import tempfile
 import time
@@ -59,6 +60,7 @@ from loguru import logger
 
 from app.core.config import settings
 from app.services import agent_sandbox_runtime
+from app.services.sandbox_invocation import current
 
 ROOT_NAME = "kdbc-sandbox-result-cache"
 #: Larger inputs are not hashed on every call; such a run is not cached.
@@ -83,19 +85,36 @@ def bypassed() -> Iterator[None]:
         _BYPASS.reset(token)
 
 
+def is_bypassed() -> bool:
+    """Whether this task's context requires fresh execution for reproduction.
+
+    Stateful research evaluators must also reject their own saved assessments
+    during bundle reproduction; bypassing only the sandbox cache is insufficient.
+    This reports ``bypassed()``, independently of the global cache setting.
+    """
+    return _BYPASS.get()
+
+
 def root() -> Path:
     configured = str(getattr(settings, "SANDBOX_RESULT_CACHE_DIR", "") or "").strip()
+    if not configured and settings.SANDBOX_EXECUTION_BACKEND == "kubernetes":
+        return Path(settings.KUBERNETES_SANDBOX_ROOT).parent / "sandbox-result-cache"
     return Path(configured) if configured else Path(tempfile.gettempdir()) / ROOT_NAME
 
 
 def enabled() -> bool:
-    return bool(getattr(settings, "SANDBOX_RESULT_CACHE_ENABLED", True)) and not (
-        _BYPASS.get()
+    return (
+        bool(getattr(settings, "SANDBOX_RESULT_CACHE_ENABLED", True))
+        and not is_bypassed()
     )
 
 
 async def image_id(image: str) -> Optional[str]:
     """The image's content id from the daemon the sandbox uses, or None."""
+    if settings.SANDBOX_EXECUTION_BACKEND == "kubernetes":
+        # A registry digest is immutable across nodes. A mutable tag is not a
+        # reliable cache identity, and there is no local daemon to ask.
+        return image if "@sha256:" in image else None
     now = time.monotonic()
     known = _image_ids.get(image)
     if known and now - known[0] < IMAGE_ID_TTL_SECONDS:
@@ -126,19 +145,21 @@ async def image_id(image: str) -> Optional[str]:
 
 
 def snapshot(workdir: str) -> Optional[Dict[str, str]]:
-    """Every regular file under `workdir` by content hash, or None if too big."""
+    """Hash file contents and ordinary permission bits, or None if too big."""
     hashes: Dict[str, str] = {}
     total = 0
     base = Path(workdir)
     for path in sorted(base.rglob("*")):
         if path.is_symlink() or not path.is_file():
             continue
-        total += path.stat().st_size
+        info = path.stat()
+        total += info.st_size
         if total > MAX_INPUT_BYTES:
             return None
-        hashes[path.relative_to(base).as_posix()] = hashlib.sha256(
-            path.read_bytes()
-        ).hexdigest()
+        digest = hashlib.sha256()
+        digest.update((stat.S_IMODE(info.st_mode) & 0o777).to_bytes(2, "big"))
+        digest.update(path.read_bytes())
+        hashes[path.relative_to(base).as_posix()] = digest.hexdigest()
     return hashes
 
 
@@ -147,6 +168,9 @@ def cache_key(
 ) -> str:
     material = json.dumps(
         {
+            # Previous entries omitted deletions and modes. A new namespace
+            # prevents replaying those incomplete outputs after an upgrade.
+            "version": 2,
             "image": image,
             "script": script,
             "memory": memory,
@@ -168,20 +192,48 @@ def _restore(entry: Path, workdir: str) -> Optional[Tuple[int, str, str]]:
         return None
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     base = Path(workdir).resolve()
+    result = int(meta["returncode"]), str(meta["stdout"]), str(meta["stderr"])
+    removed = meta.get("removed", [])
+    if not isinstance(removed, list) or not all(isinstance(p, str) for p in removed):
+        raise ValueError("Invalid removed-file list in sandbox cache")
     archive = entry / "outputs.tar.gz"
-    if archive.is_file():
+    if not archive.is_file():
+        return None
+    # Fully read the archive before changing inputs. A corrupt/truncated entry
+    # must fall back to execution with the original workspace still intact.
+    with tempfile.TemporaryDirectory(prefix=".cache-restore-", dir=base) as temporary:
+        staged = []
+        size = 0
         with tarfile.open(archive, "r:gz") as tar:
             for member in tar.getmembers():
                 target = (base / member.name).resolve()
                 if not member.isfile() or base not in target.parents:
                     continue
+                size += member.size
+                if size > MAX_OUTPUT_BYTES:
+                    raise ValueError("Sandbox cache outputs exceed the size limit")
                 source = tar.extractfile(member)
                 if source is None:
                     continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(source.read())
-    os.utime(meta_path)  # most recently used, for trimming
-    return int(meta["returncode"]), str(meta["stdout"]), str(meta["stderr"])
+                path = Path(temporary) / str(len(staged))
+                with source, path.open("wb") as destination:
+                    shutil.copyfileobj(source, destination)
+                path.chmod(member.mode & 0o777)
+                staged.append((path, target))
+        for name in removed:
+            target = (base / name).resolve()
+            if base in target.parents and target.is_file():
+                target.unlink()
+        for path, target in staged:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.is_dir():
+                target.rmdir()  # only an empty directory can become a file
+            os.replace(path, target)
+    try:
+        os.utime(meta_path)  # most recently used, for trimming
+    except OSError:
+        pass  # eviction after staging does not invalidate a completed replay
+    return result
 
 
 def _store(
@@ -216,6 +268,7 @@ def _store(
                     "stdout": stdout,
                     "stderr": stderr,
                     "files": written,
+                    "removed": sorted(set(before) - set(after)),
                     "stored_at": time.time(),
                 }
             ),
@@ -262,6 +315,16 @@ async def run(
     Returns the usual (returncode, stdout, stderr) and whether it was a
     replay. Anything wrong with the cache itself runs the real thing.
     """
+    context = current.get()
+    step_identity = (
+        context.next_key()
+        if settings.SANDBOX_EXECUTION_BACKEND == "kubernetes"
+        and context
+        and context.key
+        else ""
+    )
+    if step_identity:
+        context.workspace_key(workdir)
     key = None
     before: Optional[Dict[str, str]] = None
     if enabled():
@@ -277,6 +340,7 @@ async def run(
             logger.warning(f"sandbox result cache unreadable, running: {exc}")
             key = None
 
+    identity_options = {"step_identity": step_identity} if step_identity else {}
     result = await agent_sandbox_runtime.run_in_sandbox(
         script,
         workdir,
@@ -284,6 +348,7 @@ async def run(
         timeout_seconds=timeout_seconds,
         memory=memory,
         cpus=cpus,
+        **identity_options,
     )
     if key is not None and before is not None and result[0] == 0:
         try:

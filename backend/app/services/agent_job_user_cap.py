@@ -10,9 +10,10 @@ Pipelines, chains, swarms and campaigns create jobs on a user's behalf, and
 refusing one of those would break the run that asked for it; holding it
 pending until one of the user's other jobs ends does not.
 
-"Running" means holding a live execution lease. The status column cannot say
-it: a job whose worker died stays ``running`` until the sweep notices, and
-counting it would hold a user's queue for work nobody is doing.
+"Running" means holding a live execution lease or waiting for an independent
+sandbox experiment. Cancelled experiments still count until the poller confirms
+deletion. The status column alone cannot say it: a job whose worker died stays
+``running`` until the sweep notices.
 
 The count and the claim are two statements, so on Postgres a lock on the
 user's row makes one user's claims take turns (`lock_user_claims`). Without
@@ -25,11 +26,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from app.core.config import settings
 from app.models.agent_job import AgentJob
 from app.models.user import User
+from app.services import sandbox_continuation_state
 from app.services.config_values import safe_int
 
 #: `queue_reason` in a job's scheduler state while it waits on this cap.
@@ -57,13 +59,17 @@ async def running_for_user(
     excluding: Any = None,
     now: Optional[datetime] = None,
 ) -> int:
-    """Jobs of this user some worker holds right now, other than `excluding`."""
+    """Worker-owned or remotely executing jobs, other than `excluding`."""
     # Compared by the database, as the lease itself is: the column comes back
     # timezone-aware from Postgres and this value is naive.
     moment = now or datetime.utcnow()
     statement = select(func.count(AgentJob.id)).where(
         AgentJob.user_id == user_id,
-        AgentJob.execution_lease_expires_at > moment,
+        or_(
+            AgentJob.execution_lease_expires_at > moment,
+            AgentJob.results[sandbox_continuation_state.RESULTS_KEY]["key"].as_string()
+            != "",
+        ),
     )
     if excluding is not None:
         statement = statement.where(AgentJob.id != excluding)
@@ -106,10 +112,28 @@ def is_waiting(state: Any, now: datetime) -> bool:
     return until + timedelta(seconds=REDELIVERY_GRACE_SECONDS) > now
 
 
+def clear_wait(job: Any) -> None:
+    """Clear only cap-wait bookkeeping, preserving results and scheduler history."""
+    results = dict(job.results) if isinstance(job.results, dict) else {}
+    execution = results.get("execution_strategy")
+    execution = dict(execution) if isinstance(execution, dict) else {}
+    state = execution.get("scheduler_state")
+    state = dict(state) if isinstance(state, dict) else {}
+    if state.get("queue_reason") != QUEUE_REASON:
+        return
+    for key in ("deferred_at", "deferred_until", "user_running_jobs", "user_job_cap"):
+        state.pop(key, None)
+    state["queue_reason"] = None
+    execution["scheduler_state"] = state
+    results["execution_strategy"] = execution
+    job.results = results
+
+
 __all__ = [
     "QUEUE_REASON",
     "REDELIVERY_GRACE_SECONDS",
     "is_waiting",
+    "clear_wait",
     "limit",
     "lock_user_claims",
     "retry_seconds",

@@ -17,7 +17,7 @@ import json
 import random
 import re
 from copy import deepcopy
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import partial
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from uuid import UUID
@@ -30,6 +30,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.agent_core import research_programs
 from app.agent_core.runtime import AgentRuntimeRunner
 from app.agent_core.tool_specs.spec import ToolSpec
+from app.core.config import settings
 from app.models.agent_definition import AgentDefinition
 from app.models.agent_job import (
     AgentJob,
@@ -53,6 +54,7 @@ from app.services import (
     agent_self_planned_pipeline,
     agent_tool_scoring,
     agent_unproductive_cycle,
+    sandbox_continuation_state,
 )
 from app.services.agent_action_service import AgentActionService
 from app.services.agent_chain_orchestration_service import (
@@ -266,6 +268,26 @@ class _AutonomousRuntimeAdapter:
         # verification, summarise and recovery -- are not made: the backbones
         # are compared on their choices, not on ours made on their behalf.
         self.externally_driven = False
+        self._resuming_sandbox = False
+
+    async def resume_sandbox_iteration(self) -> Optional[Dict[str, Any]]:
+        """Finish the suspended iteration without another observation or model decision."""
+        marker = sandbox_continuation_state.continuation(self.job, self.state)
+        if marker is None:
+            return None
+        decision = {"action": deepcopy(marker["action"])}
+        self._resuming_sandbox = True
+        try:
+            bundle = await self.act_phase(decision)
+        finally:
+            self._resuming_sandbox = False
+        if bundle.get("terminal_result") is not None:
+            return bundle
+        evaluation = await self.evaluate_phase(decision, bundle)
+        await self.on_iteration_complete({}, decision, bundle, evaluation)
+        if (evaluation or {}).get("should_stop"):
+            return {"terminal_result": await self.build_run_result()}
+        return {}
 
     #: Consecutive failures before the run is abandoned. Reaching it means the
     #: same thing goes wrong every time, and the iterations left will be spent
@@ -736,40 +758,54 @@ class _AutonomousRuntimeAdapter:
         return decision
 
     async def act_phase(self, decision: Dict[str, Any]) -> Dict[str, Any]:
-        self.counterfactual_candidates = []
-        self.selection_explainability = {}
-        cf_cfg = self.executor._get_counterfactual_config(self.job)
-        if bool(cf_cfg.get("enabled", True)):
-            self.counterfactual_candidates = (
-                self.executor._build_counterfactual_candidates(
-                    job=self.job,
+        if self._resuming_sandbox:
+            self.counterfactual_candidates = list(
+                self.state.get("counterfactual_last") or []
+            )
+            self.selection_explainability = dict(
+                self.state.get("selection_explainability_last") or {}
+            )
+        else:
+            self.counterfactual_candidates = []
+            self.selection_explainability = {}
+            cf_cfg = self.executor._get_counterfactual_config(self.job)
+            if bool(cf_cfg.get("enabled", True)):
+                self.counterfactual_candidates = (
+                    self.executor._build_counterfactual_candidates(
+                        job=self.job,
+                        state=self.state,
+                        selected_tool=str(
+                            ((decision.get("action") or {}).get("tool") or "")
+                        ).strip()
+                        or None,
+                        limit=int(cf_cfg.get("top_k", 3) or 3),
+                        context_tag="iteration_decision",
+                    )
+                )
+                self.state["counterfactual_last"] = self.counterfactual_candidates
+                self.state["counterfactual_logged_iterations"] = (
+                    int(self.state.get("counterfactual_logged_iterations", 0) or 0) + 1
+                )
+                self.state["counterfactual_last_iteration"] = int(
+                    self.job.iteration or 0
+                )
+            self.selection_explainability = (
+                self.executor._build_selection_explainability(
                     state=self.state,
                     selected_tool=str(
                         ((decision.get("action") or {}).get("tool") or "")
                     ).strip()
                     or None,
-                    limit=int(cf_cfg.get("top_k", 3) or 3),
-                    context_tag="iteration_decision",
+                    candidates=self.counterfactual_candidates,
                 )
             )
-            self.state["counterfactual_last"] = self.counterfactual_candidates
-            self.state["counterfactual_logged_iterations"] = (
-                int(self.state.get("counterfactual_logged_iterations", 0) or 0) + 1
+            self.state["selection_explainability_last"] = self.selection_explainability
+            self.state["selection_explainability_logged_iterations"] = (
+                int(
+                    self.state.get("selection_explainability_logged_iterations", 0) or 0
+                )
+                + 1
             )
-            self.state["counterfactual_last_iteration"] = int(self.job.iteration or 0)
-        self.selection_explainability = self.executor._build_selection_explainability(
-            state=self.state,
-            selected_tool=str(
-                ((decision.get("action") or {}).get("tool") or "")
-            ).strip()
-            or None,
-            candidates=self.counterfactual_candidates,
-        )
-        self.state["selection_explainability_last"] = self.selection_explainability
-        self.state["selection_explainability_logged_iterations"] = (
-            int(self.state.get("selection_explainability_logged_iterations", 0) or 0)
-            + 1
-        )
 
         action = decision.get("action")
         action_result = None
@@ -777,7 +813,7 @@ class _AutonomousRuntimeAdapter:
         verification_result = None
         summarize_action = None
         summarize_result = None
-        checkpoint_override_applied = False
+        checkpoint_override_applied = self._resuming_sandbox
         approved_override = self.state.get("approval_override_action")
         if isinstance(approved_override, dict) and approved_override:
             action = approved_override
@@ -856,7 +892,7 @@ class _AutonomousRuntimeAdapter:
             decision["action"] = action
             checkpoint_gate = (
                 {"required": False}
-                if action.get("_pipeline_binding_error")
+                if action.get("_pipeline_binding_error") or self._resuming_sandbox
                 else self.executor._evaluate_approval_checkpoint(
                     self.job, self.state, action
                 )
@@ -979,12 +1015,19 @@ class _AutonomousRuntimeAdapter:
                     }
                 }
 
+            defer_options = (
+                {"allow_sandbox_defer": True}
+                if settings.KUBERNETES_SANDBOX_DEFER_ENABLED
+                and not self.externally_driven
+                else {}
+            )
             action_result = await self.executor.action_service.act(
                 self.executor,
                 self.job,
                 action,
                 self.state,
                 self.db,
+                **defer_options,
             )
             # A repeated identical failure is the signal that the tool's own
             # message is not going to fix anything -- one run called the
@@ -1102,6 +1145,14 @@ class _AutonomousRuntimeAdapter:
             self.executor._update_skill_profile_metrics(
                 self.state, action, action_result
             )
+            if self._resuming_sandbox:
+                sandbox_continuation_state.clear(self.job, self.state)
+                await self.executor.checkpoint_service.save_checkpoint(
+                    job=self.job,
+                    state=self.state,
+                    db=self.db,
+                    reason="sandbox_resumed",
+                )
 
             if bool(action_result.get("deferred_external")):
                 await self.executor.checkpoint_service.save_checkpoint(
@@ -3551,6 +3602,19 @@ class AutonomousAgentExecutor:
         if checkpoint:
             logger.info(f"Resuming job {job.id} from iteration {checkpoint.iteration}")
         state = initialize_runtime_state(checkpoint.state if checkpoint else None)
+        if state.get("sandbox_run_started_at") == sandbox_continuation_state.run_epoch(
+            job
+        ):
+            budget_end = state.get("sandbox_deadline_at")
+            if isinstance(budget_end, (int, float)):
+                max_runtime = timedelta(
+                    seconds=max(
+                        0,
+                        budget_end
+                        - start_time.replace(tzinfo=timezone.utc).timestamp(),
+                    )
+                )
+        sandbox_resume = sandbox_continuation_state.continuation(job, state)
         # A restart sets the job's iteration back to zero and a resume does
         # not, so a checkpoint ahead of the job is a restarted run: it keeps
         # what it found and forgets that it was stuck.
@@ -3574,8 +3638,10 @@ class AutonomousAgentExecutor:
             state["operator_clues"] = merged[-8:]
         if not checkpoint:
             await self._inherit_assumed_findings(job, state, db)
-        recovered_completion = agent_execution_journal_service.recover_completed_action(
-            state=state
+        recovered_completion = (
+            False
+            if sandbox_resume
+            else agent_execution_journal_service.recover_completed_action(state=state)
         )
         if recovered_completion:
             job.add_log_entry(
@@ -3586,8 +3652,12 @@ class AutonomousAgentExecutor:
                     ),
                 }
             )
-        reconciliation = agent_execution_journal_service.reconcile_interrupted(
-            job=job, state=state
+        reconciliation = (
+            None
+            if sandbox_resume
+            else agent_execution_journal_service.reconcile_interrupted(
+                job=job, state=state
+            )
         )
         if reconciliation:
             job.status = AgentJobStatus.PAUSED.value
@@ -3952,6 +4022,9 @@ class AutonomousAgentExecutor:
             if fell_back:
                 entry["fallback_reason"] = fell_back
             job.add_log_entry(entry)
+        resumed = await adapter.resume_sandbox_iteration()
+        if resumed and resumed.get("terminal_result") is not None:
+            return resumed["terminal_result"]
         if backbone == agent_harness_backbone.DEEPSEEK_HARNESS:
             return await agent_harness_backbone.HarnessBackboneRunner().run(adapter)
         return await AgentRuntimeRunner().run(adapter)

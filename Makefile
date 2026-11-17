@@ -1,5 +1,5 @@
 .PHONY: help setup build start stop restart logs test clean validate-env check-health doctor fmt lint typecheck-frontend test-backend-coverage \
-	helm-lint helm-template helm-validate helm-smoke minikube-up minikube-reinstall minikube-down \
+	helm-lint helm-template helm-validate helm-test helm-smoke minikube-up minikube-reinstall minikube-down \
 	k8s-status k8s-logs-backend k8s-logs-celery k8s-logs-migrate k8s-test k8s-shell-backend k8s-uninstall
 
 # Prefer legacy `docker-compose` if installed, otherwise use `docker compose`.
@@ -236,11 +236,18 @@ helm-lint: ## Lint the Helm chart against every values profile
 	helm lint $(CHART)
 	helm lint $(CHART) -f $(CHART)/values-minikube.yaml
 	helm lint $(CHART) -f $(CHART)/values-prod.example.yaml
+	helm lint $(CHART) -f $(CHART)/values-prod.example.yaml -f $(CHART)/values-keda.yaml
+	helm lint $(CHART) -f $(CHART)/values-prod.example.yaml -f $(CHART)/values-keda.yaml -f $(CHART)/values-kubernetes-jobs.yaml
+
+helm-test: ## Check Celery worker/scaler integration (requires Python PyYAML and Helm)
+	python3 -m unittest discover -s deploy/tests -v
 
 helm-template: ## Render the chart for every values profile
 	@helm template $(K8S_RELEASE) $(CHART) > /dev/null && echo "✅ defaults render"
 	@helm template $(K8S_RELEASE) $(CHART) -f $(CHART)/values-minikube.yaml > /dev/null && echo "✅ minikube profile renders"
 	@helm template $(K8S_RELEASE) $(CHART) -f $(CHART)/values-prod.example.yaml > /dev/null && echo "✅ prod profile renders"
+	@helm template $(K8S_RELEASE) $(CHART) -f $(CHART)/values-prod.example.yaml -f $(CHART)/values-keda.yaml > /dev/null && echo "✅ KEDA profile renders"
+	@helm template $(K8S_RELEASE) $(CHART) -f $(CHART)/values-prod.example.yaml -f $(CHART)/values-keda.yaml -f $(CHART)/values-kubernetes-jobs.yaml > /dev/null && echo "✅ independent Jobs profile renders"
 
 helm-validate: helm-lint ## Render the chart and validate it against the Kubernetes API schemas
 	@command -v kubeconform >/dev/null 2>&1 || { echo "kubeconform not installed (brew install kubeconform)"; exit 1; }
@@ -260,7 +267,14 @@ helm-validate: helm-lint ## Render the chart and validate it against the Kuberne
 	@bash -o pipefail -c 'helm template $(K8S_RELEASE) $(CHART) -f $(CHART)/values-prod.example.yaml | kubeconform -strict -summary -kubernetes-version 1.31.0'
 	@# The KEDA ScaledObject's schema comes from the CRD catalog, pinned.
 	@bash -o pipefail -c 'helm template $(K8S_RELEASE) $(CHART) \
-		--set celeryAgents.autoscaling.enabled=true --set networkPolicy.enabled=true \
+		-f $(CHART)/values-keda.yaml --set networkPolicy.enabled=true \
+		--set celeryLatex.enabled=true --set celeryTranscription.enabled=true \
+		--set sandbox.enabled=true \
+		| kubeconform -strict -summary -kubernetes-version 1.31.0 -schema-location default \
+		-schema-location "https://raw.githubusercontent.com/datreeio/CRDs-catalog/63669a570e231d4f1f8396d229a1de512bcf0a34/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"'
+	@bash -o pipefail -c 'helm template $(K8S_RELEASE) $(CHART) \
+		-f $(CHART)/values-prod.example.yaml -f $(CHART)/values-keda.yaml \
+		-f $(CHART)/values-kubernetes-jobs.yaml \
 		| kubeconform -strict -summary -kubernetes-version 1.31.0 -schema-location default \
 		-schema-location "https://raw.githubusercontent.com/datreeio/CRDs-catalog/63669a570e231d4f1f8396d229a1de512bcf0a34/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"'
 

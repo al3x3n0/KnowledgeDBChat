@@ -27,6 +27,7 @@ from app.services.agent_job_creation_service import (
     AgentJobCreationError,
     agent_job_creation_service,
 )
+from app.services.sandbox_continuation_state import waiting
 
 JobSerializer = Callable[..., AgentJobResponse]
 JobVisibility = Callable[[AgentJob, User], bool]
@@ -257,6 +258,11 @@ def build_job_record_api(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cannot delete running job. Cancel it first.",
+            )
+        if waiting(job):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An experiment is still being reconciled. Wait for cancellation or result collection before deleting this job.",
             )
 
         await db.execute(

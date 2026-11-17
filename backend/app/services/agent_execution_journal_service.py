@@ -10,6 +10,8 @@ from uuid import uuid4
 
 from sqlalchemy.orm.attributes import flag_modified
 
+from app.services.sandbox_continuation_state import run_epoch
+
 _EMPTY_HASH = "0" * 64
 _SENSITIVE_KEY_PARTS = (
     "api_key",
@@ -151,7 +153,7 @@ class AgentExecutionJournalService:
         else:
             idempotency_key = hashlib.sha256(
                 (
-                    f"agent-job:{job.id}:iteration:{int(job.iteration or 0)}:"
+                    f"agent-job:{job.id}:run:{run_epoch(job)}:iteration:{int(job.iteration or 0)}:"
                     f"{raw_action_hash}"
                 ).encode("utf-8")
             ).hexdigest()

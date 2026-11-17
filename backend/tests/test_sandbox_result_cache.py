@@ -19,6 +19,52 @@ from app.services import sandbox_result_cache as cache
 
 pytestmark = pytest.mark.unit
 
+
+def test_stateful_consumers_can_detect_nested_reproduction_contexts():
+    assert cache.is_bypassed() is False
+    with cache.bypassed():
+        assert cache.is_bypassed() is True
+        with cache.bypassed():
+            assert cache.is_bypassed() is True
+        assert cache.is_bypassed() is True
+    assert cache.is_bypassed() is False
+
+
+async def test_bypass_is_inherited_by_child_work_without_leaking_to_other_jobs():
+    entered = asyncio.Event()
+    checked = asyncio.Event()
+
+    async def consumer():
+        await asyncio.sleep(0)
+        return cache.is_bypassed()
+
+    async def replay_job():
+        with cache.bypassed():
+            entered.set()
+            await checked.wait()
+            assert await asyncio.create_task(consumer()) is True
+        assert cache.is_bypassed() is False
+
+    async def normal_job():
+        await entered.wait()
+        try:
+            assert await consumer() is False
+        finally:
+            checked.set()
+
+    await asyncio.gather(replay_job(), normal_job())
+    assert cache.is_bypassed() is False
+
+
+def test_disabling_cache_storage_does_not_mark_a_call_as_reproduction(monkeypatch):
+    monkeypatch.setattr(settings, "SANDBOX_RESULT_CACHE_ENABLED", False)
+    assert cache.enabled() is False
+    assert cache.is_bypassed() is False
+    with cache.bypassed():
+        assert cache.is_bypassed() is True
+        assert cache.enabled() is False
+
+
 SCRIPT = "mkdir -p m5out && cat workload.c | wc -c > m5out/stats.txt && echo done"
 
 
@@ -62,6 +108,43 @@ async def simulate(path, script=SCRIPT):
 
 
 class TestReplay:
+    async def test_replay_removes_files_deleted_by_the_run(self, sandbox):
+        script = "rm stale.txt; echo current > result.txt"
+        first_dir = workdir(sandbox["tmp"], "a")
+        second_dir = workdir(sandbox["tmp"], "b")
+        for directory in (first_dir, second_dir):
+            Path(directory, "stale.txt").write_text("old measurement")
+        await simulate(first_dir, script)
+        second = await simulate(second_dir, script)
+        assert second[3] is True and len(sandbox["calls"]) == 1
+        assert not Path(second_dir, "stale.txt").exists()
+        assert Path(second_dir, "result.txt").read_text() == "current\n"
+
+    @pytest.mark.parametrize("existing", [False, True])
+    async def test_replay_preserves_executable_file_modes(self, sandbox, existing):
+        filename = "workload.c" if existing else "generated.sh"
+        script = (
+            "" if existing else "printf '#!/bin/sh\\necho ready\\n' > generated.sh; "
+        )
+        script += f"chmod 755 {filename}"
+        first_dir = workdir(sandbox["tmp"], "a")
+        second_dir = workdir(sandbox["tmp"], "b")
+        await simulate(first_dir, script)
+        second = await simulate(second_dir, script)
+        assert second[3] is True and len(sandbox["calls"]) == 1
+        assert Path(second_dir, filename).stat().st_mode & 0o777 == 0o755
+
+    async def test_changed_input_permissions_are_a_different_run(self, sandbox):
+        script = "test -x workload.c && echo executable || echo plain"
+        first_dir = workdir(sandbox["tmp"], "a")
+        second_dir = workdir(sandbox["tmp"], "b")
+        Path(first_dir, "workload.c").chmod(0o644)
+        Path(second_dir, "workload.c").chmod(0o755)
+        first = await simulate(first_dir, script)
+        second = await simulate(second_dir, script)
+        assert first[1] == "plain\n" and second[1] == "executable\n"
+        assert second[3] is False and len(sandbox["calls"]) == 2
+
     async def test_the_same_run_is_read_back_with_its_files(self, sandbox):
         first = await simulate(workdir(sandbox["tmp"], "a"))
         second_dir = workdir(sandbox["tmp"], "b")
@@ -139,6 +222,41 @@ class TestWhatIsNeverReplayed:
 
 
 class TestTheStore:
+    @pytest.mark.parametrize("missing", [False, True])
+    async def test_a_broken_entry_leaves_inputs_intact_for_fresh_execution(
+        self, sandbox, missing
+    ):
+        script = "cat stale.txt > result.txt; rm stale.txt"
+        first_dir = workdir(sandbox["tmp"], "a")
+        second_dir = workdir(sandbox["tmp"], "b")
+        for directory in (first_dir, second_dir):
+            Path(directory, "stale.txt").write_text("required input")
+        await simulate(first_dir, script)
+        archive = next(cache.root().glob("??/*/outputs.tar.gz"))
+        if missing:
+            archive.unlink()
+        else:
+            archive.write_bytes(b"broken cache")
+        result = await simulate(second_dir, script)
+        assert result[0] == 0 and result[3] is False
+        assert len(sandbox["calls"]) == 2
+        assert Path(second_dir, "result.txt").read_text() == "required input"
+
+    async def test_removed_file_metadata_cannot_delete_outside_the_workspace(
+        self, sandbox
+    ):
+        directory = workdir(sandbox["tmp"], "a")
+        await simulate(directory)
+        entry = next(cache.root().glob("??/*/meta.json")).parent
+        victim = sandbox["tmp"] / "victim.txt"
+        victim.write_text("keep")
+        Path(directory, "escape").symlink_to(victim)
+        meta = json.loads((entry / "meta.json").read_text())
+        meta["removed"] = ["../victim.txt", str(victim), "escape"]
+        (entry / "meta.json").write_text(json.dumps(meta))
+        cache._restore(entry, directory)
+        assert victim.read_text() == "keep"
+
     async def test_a_member_outside_the_working_directory_is_skipped(self, sandbox):
         path = workdir(sandbox["tmp"], "a")
         before = cache.snapshot(path)
@@ -173,11 +291,16 @@ class TestTheStore:
 
 
 class TestEvidenceReplay:
-    async def test_a_bundle_replay_never_reads_the_cache(self, monkeypatch, tmp_path):
+    @pytest.mark.parametrize("fails", [False, True])
+    async def test_a_bundle_replay_never_reads_the_cache(
+        self, monkeypatch, tmp_path, fails
+    ):
         seen = []
 
         async def execute(tool, params):
-            seen.append(cache._BYPASS.get())
+            seen.append(cache.is_bypassed())
+            if fails:
+                raise RuntimeError("replay failed")
             return {"success": True}
 
         directory = tmp_path / "job"
@@ -199,9 +322,11 @@ class TestEvidenceReplay:
             agent_evidence_bundle, "bundle_dir", lambda job_id, root=None: directory
         )
 
-        await agent_evidence_bundle.replay_bundle("job", execute)
+        report = await agent_evidence_bundle.replay_bundle("job", execute)
 
         assert seen == [True]
+        assert len(report["errored"]) == int(fails)
+        assert cache.is_bypassed() is False
 
     def test_a_replayed_result_hashes_like_a_computed_one(self):
         computed = {"data": {"cycles": 10, "replayed_from_cache": False}}

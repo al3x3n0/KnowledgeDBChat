@@ -316,7 +316,8 @@ network. The sidecar is privileged, which is why this is off by default.
 All four take (dict "ctx" . "component" "<values key>").
 */}}
 {{- define "kdbc.sandbox.on" -}}
-{{- if and .ctx.Values.sandbox.enabled (has .component .ctx.Values.sandbox.components) -}}true{{- end -}}
+{{- $independentWorker := and .ctx.Values.kubernetesSandbox.enabled (not .ctx.Values.kubernetesSandbox.keepDockerSidecar) (has .component (list "celery" "celeryAgents")) -}}
+{{- if and (not $independentWorker) .ctx.Values.sandbox.enabled (has .component .ctx.Values.sandbox.components) -}}true{{- end -}}
 {{- end }}
 
 {{- define "kdbc.sandbox.env" -}}
@@ -348,7 +349,14 @@ All four take (dict "ctx" . "component" "<values key>").
 
 {{- define "kdbc.sandbox.container" -}}
 {{- if include "kdbc.sandbox.on" . }}
+{{- if and .native (not (semverCompare ">=1.29-0" .ctx.Capabilities.KubeVersion.Version)) }}
+{{- fail "sandbox.workerNativeSidecar requires Kubernetes >=1.29 with SidecarContainers enabled" }}
+{{- end }}
 - name: sandbox-docker
+  {{- if .native }}
+  # Kubernetes stops restartable init containers after the main worker exits.
+  restartPolicy: Always
+  {{- end }}
   image: "{{ .ctx.Values.sandbox.image.repository }}:{{ .ctx.Values.sandbox.image.tag }}"
   imagePullPolicy: {{ .ctx.Values.sandbox.image.pullPolicy }}
   # A unix socket in a directory only this pod mounts: no TCP listener, so

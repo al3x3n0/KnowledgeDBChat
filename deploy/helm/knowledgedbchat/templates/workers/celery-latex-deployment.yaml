@@ -6,7 +6,9 @@ metadata:
   labels:
     {{- include "kdbc.componentLabels" (dict "ctx" . "component" "celery-latex") | nindent 4 }}
 spec:
+  {{- if not .Values.celeryLatex.autoscaling.enabled }}
   replicas: {{ .Values.celeryLatex.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "kdbc.componentSelectorLabels" (dict "ctx" . "component" "celery-latex") | nindent 6 }}
@@ -19,7 +21,7 @@ spec:
     spec:
       serviceAccountName: {{ include "kdbc.serviceAccountName" . }}
       {{- include "kdbc.imagePullSecrets" . | nindent 6 }}
-      terminationGracePeriodSeconds: 120
+      terminationGracePeriodSeconds: {{ .Values.celeryLatex.terminationGracePeriodSeconds }}
       containers:
         - name: celery-latex
           image: "{{ .Values.image.latexWorker.repository }}:{{ .Values.image.latexWorker.tag }}"
@@ -30,7 +32,7 @@ spec:
             - app.core.celery_latex
             - worker
             - -Q
-            - latex
+            - {{ include "kdbc.celeryLatex.queues" . | quote }}
             - --loglevel={{ lower .Values.config.logLevel }}
             - --concurrency={{ .Values.celeryLatex.concurrency }}
           env:

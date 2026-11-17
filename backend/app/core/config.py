@@ -494,6 +494,27 @@ class Settings(BaseSettings):
     # others. 0 turns it off. Soft: after the wait a run proceeds anyway.
     SANDBOX_MAX_CONCURRENT_RUNS: int = 4
     SANDBOX_SLOT_WAIT_SECONDS: float = 900.0
+    # The common compiler/skill/Python-tool sandbox can run each step as an
+    # independent Kubernetes Job. Direct Docker integrations keep their own
+    # backend. Kubernetes requires shared RWX storage and the chart's RBAC.
+    SANDBOX_EXECUTION_BACKEND: str = "docker"
+    KUBERNETES_SANDBOX_NAMESPACE: str = ""
+    KUBERNETES_SANDBOX_PVC: str = ""
+    KUBERNETES_SANDBOX_ROOT: str = "/app/data/kubernetes-sandbox"
+    KUBERNETES_SANDBOX_PVC_SUBPATH: str = "kubernetes-sandbox"
+    KUBERNETES_SANDBOX_OWNER: str = "kdbc"
+    KUBERNETES_SANDBOX_SERVICE_ACCOUNT: str = "default"
+    KUBERNETES_SANDBOX_PROFILES: str = "{}"
+    KUBERNETES_SANDBOX_IMAGE_PROFILES: str = "{}"
+    KUBERNETES_SANDBOX_POLL_SECONDS: float = 5.0
+    KUBERNETES_SANDBOX_TTL_SECONDS: int = 86400
+    KUBERNETES_SANDBOX_MAX_TIMEOUT_SECONDS: int = 21600
+    KUBERNETES_SANDBOX_MAX_INPUT_MB: int = 512
+    KUBERNETES_SANDBOX_MAX_OUTPUT_MB: int = 1024
+    KUBERNETES_SANDBOX_LOG_BYTES: int = 2097152
+    KUBERNETES_SANDBOX_DEFER_ENABLED: bool = False
+    KUBERNETES_SANDBOX_POLL_BATCH_SIZE: int = 20
+    KUBERNETES_SANDBOX_DEFER_TOOLS: str = ""
     # Deterministic sandbox runs (gem5 simulations) replayed from disk when
     # the image, script, limits and every input file are the same
     # (services/sandbox_result_cache.py). Never wall-clock benchmarks. Unset

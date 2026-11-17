@@ -100,14 +100,18 @@ celery:
     maxReplicas: 10
 
 celeryAgents:
-  # Scaled by replicas, by hand: agent jobs wait on a model, so CPU says
-  # nothing about how many are queued. Watch the agents queue length instead.
+  # Static unless values-keda.yaml is applied after this profile. Its scaler
+  # measures running and runnable jobs in Postgres, since CPU misses LLM waits.
   replicaCount: 2
   concurrency: 4
+  autoscaling:
+    minReplicas: 2
 
 celeryLatex:
   enabled: true
   replicaCount: 2
+  autoscaling:
+    minReplicas: 2
 
 celeryTranscription:
   # One is usually enough: transcription is CPU-bound and serialized per file,

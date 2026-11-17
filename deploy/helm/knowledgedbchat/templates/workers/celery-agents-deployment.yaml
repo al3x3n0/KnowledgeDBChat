@@ -24,12 +24,16 @@ spec:
       annotations:
         {{- include "kdbc.configChecksums" . | nindent 8 }}
     spec:
-      serviceAccountName: {{ include "kdbc.serviceAccountName" . }}
+      serviceAccountName: {{ include "kdbc.workerServiceAccountName" . }}
       {{- include "kdbc.imagePullSecrets" . | nindent 6 }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       # Celery drains in-flight tasks on SIGTERM; give it room before SIGKILL.
       terminationGracePeriodSeconds: {{ .Values.celeryAgents.terminationGracePeriodSeconds }}
+      {{- if and .Values.sandbox.workerNativeSidecar (include "kdbc.sandbox.on" (dict "ctx" . "component" "celeryAgents")) }}
+      initContainers:
+        {{- include "kdbc.sandbox.container" (dict "ctx" . "component" "celeryAgents" "native" true) | nindent 8 }}
+      {{- end }}
       containers:
         - name: celery-agents
           image: "{{ .Values.image.backend.repository }}:{{ .Values.image.backend.tag }}"
@@ -47,6 +51,7 @@ spec:
             - --hostname=agents@%h
           env:
             {{- include "kdbc.connectionEnv" . | nindent 12 }}
+            {{- include "kdbc.kubernetesSandbox.env" . | nindent 12 }}
             {{- include "kdbc.sandbox.env" (dict "ctx" . "component" "celeryAgents") | nindent 12 }}
             {{- with .Values.global.extraEnv }}
             {{- toYaml . | nindent 12 }}
@@ -68,7 +73,9 @@ spec:
             failureThreshold: 3
           resources:
             {{- toYaml .Values.celeryAgents.resources | nindent 12 }}
+        {{- if not .Values.sandbox.workerNativeSidecar }}
         {{- include "kdbc.sandbox.container" (dict "ctx" . "component" "celeryAgents") | nindent 8 }}
+        {{- end }}
       volumes:
         {{- include "kdbc.dataVolume" . | nindent 8 }}
         {{- include "kdbc.sandbox.volumes" (dict "ctx" . "component" "celeryAgents") | nindent 8 }}

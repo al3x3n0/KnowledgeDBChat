@@ -1,0 +1,23 @@
+# Opt-in overlay: apply AFTER your production values. Requires KEDA installed.
+# Dedicated worker images, registry credentials and external services come
+# from your environment's values file. Disabled workers remain disabled.
+# Replica bounds are inherited so enabling KEDA preserves environment sizing.
+sandbox:
+  workerNativeSidecar: true
+
+celery:
+  autoscaling:
+    enabled: true
+    mode: redis
+
+celeryAgents:
+  autoscaling:
+    enabled: true
+
+celeryLatex:
+  autoscaling:
+    enabled: true
+
+celeryTranscription:
+  autoscaling:
+    enabled: true

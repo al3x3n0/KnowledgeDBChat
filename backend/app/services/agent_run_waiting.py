@@ -117,6 +117,9 @@ def waiting_on(run: Sequence[Any]) -> Optional[str]:
                 waiting = waiting or WAITING_ON_JOB
             continue
         if status == AgentJobStatus.PAUSED.value:
+            if str(job.current_phase or "") == "waiting_sandbox":
+                waiting = waiting or WAITING_ON_JOB
+                continue
             if str(job.current_phase or "") == "awaiting_approval":
                 return WAITING_ON_APPROVAL
             waiting = WAITING_ON_PERSON

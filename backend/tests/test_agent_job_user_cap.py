@@ -338,6 +338,39 @@ class TestTheSweepAndAWaitingJob:
         sent = self._sweep(monkeypatch)
 
         assert sent and str(job.id) in sent[0]
+        _run(db_session.refresh(job))
+        assert _state(job).get("queue_reason") is None
+
+    def test_an_expired_wait_is_not_failed_or_requeued_while_the_owner_is_full(
+        self, db_session, monkeypatch
+    ):
+        monkeypatch.setattr(settings, "AGENT_JOBS_MAX_RUNNING_PER_USER", 2)
+        job = self._waiting(db_session, deferred_minutes_ago=30)
+        _seed(db_session, _job(job.user_id, held=True), _job(job.user_id, held=True))
+        job.execution_log = [
+            {"phase": agent_job_tasks.UNDISPATCHED_REQUEUE_PHASE}
+            for _ in range(agent_job_tasks.MAX_UNDISPATCHED_REQUEUES)
+        ]
+        _run(db_session.commit())
+        sent = self._sweep(monkeypatch)
+        _run(db_session.refresh(job))
+        assert sent == [] and job.status == "pending"
+        assert _state(job)["queue_reason"] == agent_job_user_cap.QUEUE_REASON
+
+    def test_available_capacity_is_exposed_even_when_the_message_is_already_queued(
+        self, db_session, monkeypatch
+    ):
+        job = self._waiting(db_session, deferred_minutes_ago=30)
+        monkeypatch.setattr(
+            agent_job_tasks.broker_queue,
+            "waiting_agent_job_ids",
+            lambda: {str(job.id)},
+        )
+        sent = self._sweep(monkeypatch)
+        _run(db_session.refresh(job))
+        assert sent == [] and job.status == "pending"
+        assert _state(job)["queue_reason"] is None
+        assert agent_job_tasks.count_undispatched_requeues(job) == 0
 
 
 class TestClaimsTakeTurns:

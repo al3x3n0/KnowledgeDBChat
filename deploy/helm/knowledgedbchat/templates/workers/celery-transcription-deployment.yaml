@@ -6,7 +6,9 @@ metadata:
   labels:
     {{- include "kdbc.componentLabels" (dict "ctx" . "component" "celery-transcription") | nindent 4 }}
 spec:
+  {{- if not .Values.celeryTranscription.autoscaling.enabled }}
   replicas: {{ .Values.celeryTranscription.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "kdbc.componentSelectorLabels" (dict "ctx" . "component" "celery-transcription") | nindent 6 }}
@@ -23,7 +25,7 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       # A transcription in flight is minutes of CPU that would have to start
       # over; drain rather than kill.
-      terminationGracePeriodSeconds: 300
+      terminationGracePeriodSeconds: {{ .Values.celeryTranscription.terminationGracePeriodSeconds }}
       containers:
         - name: celery-transcription
           image: "{{ .Values.image.transcriptionWorker.repository }}:{{ .Values.image.transcriptionWorker.tag }}"
@@ -37,7 +39,7 @@ spec:
             - app.core.celery_transcription
             - worker
             - -Q
-            - {{ .Values.config.extra.TRANSCRIPTION_CELERY_QUEUE | default "transcription" | quote }}
+            - {{ include "kdbc.celeryTranscription.queues" . | quote }}
             - --loglevel={{ lower .Values.config.logLevel }}
             - --concurrency={{ .Values.celeryTranscription.concurrency }}
           env:

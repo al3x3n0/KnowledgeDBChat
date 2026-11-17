@@ -46,6 +46,9 @@ podSecurityContext:
 # so), and each restarted pod pulls its images again.
 sandbox:
   enabled: false
+  # Keep worker daemons alive until Celery finishes draining. Requires K8s
+  # >=1.29 with SidecarContainers enabled. Enabled by the KEDA overlay.
+  workerNativeSidecar: false
   # Values keys of the workloads that get a daemon.
   components: [backend, celery, celeryAgents]
   image:
@@ -251,11 +254,48 @@ backend:
 # -----------------------------------------------------------------------------
 # Celery workers
 # -----------------------------------------------------------------------------
+celeryQueueAutoscaling:
+  # Namespace of the KEDA operator; used to allow access to in-chart Redis.
+  kedaNamespace: keda
+
+# Independent experiments launched by the common sandbox runtime. Does not
+# enable untrusted code execution or change the image allowlist. Requires an
+# enforcing NetworkPolicy CNI and a real shared ReadWriteMany data volume.
+kubernetesSandbox:
+  enabled: false
+  # Retain enabled worker Docker sidecars for tools that invoke Docker directly.
+  keepDockerSidecar: false
+  # Journaled primary actions can yield their worker slot and resume when a
+  # short Celery Beat task observes completion (every 30s).
+  defer:
+    enabled: true
+    pollBatchSize: 20
+    # Extra replay-safe tool names; built-in compiler/benchmark/skill/Python
+    # tools are supported by default. Tools with other side effects must be
+    # made idempotent before opting in here.
+    tools: []
+  pollSeconds: 5
+  ttlSecondsAfterFinished: 86400
+  maxTimeoutSeconds: 21600
+  maxInputMB: 512
+  maxOutputMB: 1024
+  logBytes: 2097152
+  # Merged with the default profile. Images must provide python3 and /bin/sh.
+  # Profiles may set nodeSelector, tolerations, runtimeClassName,
+  # imagePullSecrets, and extraResources (e.g. nvidia.com/gpu: "1").
+  profiles:
+    default: {}
+  # Exact allowlisted image name -> profile name. Pin registry digests for
+  # reproducibility and deterministic result caching across worker nodes.
+  imageProfiles: {}
+
 celery:
   enabled: true
   replicaCount: 1
   concurrency: 4
   queues: ""   # empty = default queue
+  # Allow the default 30-minute task limit plus shutdown overhead.
+  terminationGracePeriodSeconds: 1860
   resources:
     requests:
       cpu: 250m
@@ -264,9 +304,16 @@ celery:
       memory: 6Gi
   autoscaling:
     enabled: false
+    # cpu preserves the existing HPA; redis uses KEDA queue-depth scaling.
+    mode: cpu
     minReplicas: 1
     maxReplicas: 5
     targetCPUUtilizationPercentage: 80
+    # Zero means use worker concurrency as the target backlog per pod.
+    queueLength: 0
+    pollingIntervalSeconds: 30
+    scaleDownStabilizationSeconds: 1800
+    scaleDownPeriodSeconds: 300
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -323,6 +370,15 @@ celeryLatex:
   enabled: false
   replicaCount: 1
   concurrency: 1
+  terminationGracePeriodSeconds: 1860
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 5
+    queueLength: 0
+    pollingIntervalSeconds: 30
+    scaleDownStabilizationSeconds: 1800
+    scaleDownPeriodSeconds: 300
   resources:
     requests:
       cpu: 100m
@@ -342,6 +398,16 @@ celeryTranscription:
   enabled: false
   replicaCount: 1
   concurrency: 1
+  # Transcription tasks have a six-hour hard limit.
+  terminationGracePeriodSeconds: 21660
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 5
+    queueLength: 0
+    pollingIntervalSeconds: 30
+    scaleDownStabilizationSeconds: 1800
+    scaleDownPeriodSeconds: 300
   resources:
     requests:
       cpu: 250m

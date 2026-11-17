@@ -24,13 +24,19 @@ from sqlalchemy.orm import selectinload
 from app.core.celery import AGENT_JOB_SOFT_TIME_LIMIT_SECONDS, celery_app
 from app.core.database import create_celery_session
 from app.models.agent_job import AgentJob, AgentJobStatus
-from app.services import agent_job_user_cap, broker_queue
+from app.services import (
+    agent_job_user_cap,
+    broker_queue,
+    job_dispatch,
+    sandbox_continuation_state,
+)
 from app.services.agent_execution_lease_service import (
     ExecutionLeaseLostError,
     agent_execution_lease_service,
 )
 from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 from app.services.research_inbox_follow_up_service import sync_follow_up_outcome_for_job
+from app.services.sandbox_invocation import SandboxStepPending
 from app.tasks import job_support
 from app.utils.per_loop import close_running_loop_values
 
@@ -311,6 +317,11 @@ async def _hold_for_user_cap(db: Any, job: AgentJob) -> Optional[dict]:
         AgentJobStatus.RUNNING.value,
     ):
         return None
+    if sandbox_continuation_state.waiting(job):
+        # This run already owns a counted slot while its experiment waits.
+        # Blocking collection after a cap reduction can deadlock every such
+        # run: each waits for the others to finish and release their slots.
+        return None
     now = datetime.utcnow()
     if not is_orphaned(job, now):
         return None
@@ -352,13 +363,7 @@ async def _hold_for_user_cap(db: Any, job: AgentJob) -> Optional[dict]:
 
 
 def _clear_user_cap_wait(job: AgentJob) -> None:
-    state = _scheduler_state(job)
-    if state.get("queue_reason") != agent_job_user_cap.QUEUE_REASON:
-        return
-    for key in ("deferred_at", "deferred_until", "user_running_jobs", "user_job_cap"):
-        state.pop(key, None)
-    state["queue_reason"] = None
-    _write_scheduler_state(job, state)
+    agent_job_user_cap.clear_wait(job)
 
 
 async def _execute_agent_job_async(
@@ -571,6 +576,22 @@ async def _execute_agent_job_async(
 
             logger.info(f"Agent job {job_id} completed with status: {final_status}")
 
+        except SandboxStepPending:
+            # The action checkpoint already records its durable intent and
+            # remote Job. Returning releases both the Celery slot and lease.
+            try:
+                await _publish_job_progress(
+                    job_id=job_id,
+                    progress=job.progress,
+                    phase=sandbox_continuation_state.WAITING_PHASE,
+                    status=job.status,
+                )
+            except Exception as exc:
+                logger.warning(f"Could not publish sandbox wait for {job_id}: {exc}")
+            return {
+                "status": sandbox_continuation_state.WAITING_PHASE,
+                "job_id": job_id,
+            }
         except ExecutionLeaseLostError as e:
             await db.rollback()
             logger.error(f"Abandoning stale execution for job {job_id}: {e}")
@@ -831,6 +852,7 @@ def process_scheduled_agent_jobs():
                 .where(
                     and_(
                         AgentJob.schedule_type.isnot(None),
+                        AgentJob.results["sandbox_wait"]["key"].as_string().is_(None),
                         AgentJob.next_run_at <= now,
                         AgentJob.status.in_(
                             [
@@ -926,6 +948,11 @@ def resume_paused_agent_jobs():
             resumed_count = 0
             waiting_count = 0
             for job in paused_jobs:
+                if sandbox_continuation_state.waiting(job):
+                    # A short poller observes the actual remote Job. Time
+                    # without a worker is expected, not an idle pause.
+                    waiting_count += 1
+                    continue
                 # A job waiting on a person is not idle, and resuming it is not
                 # recovery -- it is walking through the gate. This sweep filtered
                 # on status alone, so a stage paused for approval was resumed
@@ -962,6 +989,26 @@ def resume_paused_agent_jobs():
 
 
 @celery_app.task
+def poll_sandbox_continuations():
+    """A short general-queue task; remote experiments hold no Celery slot."""
+    from app.core.config import settings
+    from app.services import sandbox_continuation_service
+
+    if not settings.KUBERNETES_SANDBOX_DEFER_ENABLED:
+        return {"status": "disabled"}
+
+    async def _poll():
+        try:
+            session_factory = create_celery_session()
+            async with session_factory() as db:
+                return await sandbox_continuation_service.poll_waiting(db)
+        finally:
+            await close_running_loop_values()
+
+    return asyncio.run(_poll())
+
+
+@celery_app.task
 def cleanup_old_agent_jobs(days: int = 30):
     """
     Cleanup task to remove old completed/failed agent jobs.
@@ -983,7 +1030,8 @@ def cleanup_old_agent_jobs(days: int = 30):
 
             # Find old completed/failed/cancelled jobs
             result = await db.execute(
-                select(AgentJob).where(
+                select(AgentJob)
+                .where(
                     and_(
                         AgentJob.created_at < cutoff_date,
                         AgentJob.status.in_(
@@ -993,8 +1041,24 @@ def cleanup_old_agent_jobs(days: int = 30):
                                 AgentJobStatus.CANCELLED.value,
                             ]
                         ),
+                        or_(
+                            AgentJob.results[sandbox_continuation_state.RESULTS_KEY][
+                                "key"
+                            ]
+                            .as_string()
+                            .is_(None),
+                            AgentJob.results[sandbox_continuation_state.RESULTS_KEY][
+                                "key"
+                            ].as_string()
+                            == "",
+                        ),
+                        or_(
+                            AgentJob.execution_lease_expires_at.is_(None),
+                            AgentJob.execution_lease_expires_at <= datetime.utcnow(),
+                        ),
                     )
                 )
+                .with_for_update(skip_locked=True)
             )
             old_jobs = result.scalars().all()
 
@@ -1089,7 +1153,8 @@ def check_stalled_agent_jobs(timeout_minutes: int = 30, undispatched_minutes: in
 
             # Find running jobs with no recent activity
             result = await db.execute(
-                select(AgentJob).where(
+                select(AgentJob)
+                .where(
                     and_(
                         AgentJob.status == AgentJobStatus.RUNNING.value,
                         or_(
@@ -1098,6 +1163,7 @@ def check_stalled_agent_jobs(timeout_minutes: int = 30, undispatched_minutes: in
                         ),
                     )
                 )
+                .with_for_update(skip_locked=True)
             )
             stalled_jobs = result.scalars().all()
 
@@ -1106,6 +1172,32 @@ def check_stalled_agent_jobs(timeout_minutes: int = 30, undispatched_minutes: in
             failed_count = 0
             for job in stalled_jobs:
                 recoveries = count_orphan_recoveries(job)
+                sandbox_wait = sandbox_continuation_state.waiting(job)
+                if (
+                    sandbox_wait
+                    and is_orphaned(job, now)
+                    and recoveries < MAX_ORPHAN_RECOVERIES
+                ):
+                    # Finish the saved action before enforcing limits on the
+                    # next iteration. Its experiment is independent of this
+                    # worker, and the poller owns readiness and redelivery.
+                    job.status = AgentJobStatus.PAUSED.value
+                    job.celery_task_id = None
+                    job.last_activity_at = now
+                    job.completed_at = None
+                    job.error = None
+                    if sandbox_wait.get("auto_resume"):
+                        job.current_phase = sandbox_continuation_state.WAITING_PHASE
+                        job.phase_details = "Waiting for an experiment to finish"
+                    job.add_log_entry(
+                        {
+                            "phase": ORPHAN_RECOVERY_PHASE,
+                            "reason": "execution lease expired during sandbox continuation",
+                            "recovery_attempt": recoveries + 1,
+                        }
+                    )
+                    recovered_count += 1
+                    continue
                 limited, limit_reason = job.is_resource_limited()
                 if (
                     is_orphaned(job, now)
@@ -1130,7 +1222,7 @@ def check_stalled_agent_jobs(timeout_minutes: int = 30, undispatched_minutes: in
                     # error; leaving either set describes a finished run.
                     job.completed_at = None
                     job.error = None
-                    execute_agent_job_task.delay(str(job.id), str(job.user_id))
+                    job_dispatch.enqueue_agent_job(db, job.id, job.user_id)
                     recovered_count += 1
                     await _publish_job_progress(
                         job_id=str(job.id),
@@ -1186,7 +1278,8 @@ def check_stalled_agent_jobs(timeout_minutes: int = 30, undispatched_minutes: in
             # other returns lease_conflict without running it.
             undispatched_cutoff = now - timedelta(minutes=undispatched_minutes)
             undispatched_result = await db.execute(
-                select(AgentJob).where(
+                select(AgentJob)
+                .where(
                     and_(
                         AgentJob.status == AgentJobStatus.PENDING.value,
                         AgentJob.celery_task_id.is_(None),
@@ -1194,11 +1287,26 @@ def check_stalled_agent_jobs(timeout_minutes: int = 30, undispatched_minutes: in
                         # A recurring job may sit pending between fires. Firing
                         # one early is not a recovery, it is a wrong run.
                         AgentJob.schedule_type.is_(None),
+                        # The sandbox poller already retries ready actions;
+                        # they have started and must not spend this counter.
+                        or_(
+                            AgentJob.results[sandbox_continuation_state.RESULTS_KEY][
+                                "key"
+                            ]
+                            .as_string()
+                            .is_(None),
+                            AgentJob.results[sandbox_continuation_state.RESULTS_KEY][
+                                "key"
+                            ].as_string()
+                            == "",
+                        ),
                     )
                 )
+                .with_for_update(skip_locked=True)
             )
             requeued_count = 0
             undispatched_jobs = undispatched_result.scalars().all()
+            recovered_job_ids = {job.id for job in stalled_jobs}
             # Waiting in the queue behind busy workers looks, from here, exactly
             # like a message the broker lost; only the broker can tell them
             # apart. None means it could not say, and the age rule decides.
@@ -1208,15 +1316,37 @@ def check_stalled_agent_jobs(timeout_minutes: int = 30, undispatched_minutes: in
                 else set()
             )
             for job in undispatched_jobs:
+                # An old orphan moved to pending above is already queued by
+                # this transaction; it was not also a never-started job.
+                if job.id in recovered_job_ids:
+                    continue
                 # A live lease means a worker has it after all; leave it alone.
                 if not is_orphaned(job, now):
-                    continue
-                # Its message is still queued: it is waiting, not lost.
-                if in_broker and str(job.id) in in_broker:
                     continue
                 # Waiting its turn behind its owner's other jobs, with a
                 # redelivery still due: not a job nobody picked up.
                 if agent_job_user_cap.is_waiting(_scheduler_state(job), now):
+                    continue
+                if (
+                    _scheduler_state(job).get("queue_reason")
+                    == agent_job_user_cap.QUEUE_REASON
+                ):
+                    cap = agent_job_user_cap.limit()
+                    if (
+                        cap
+                        and await agent_job_user_cap.running_for_user(
+                            db, job.user_id, excluding=job.id, now=now
+                        )
+                        >= cap
+                    ):
+                        # A cap-blocked run is not a lost execution. Wait for
+                        # actual capacity before waking scaled-down workers.
+                        continue
+                    # This is also needed when the redelivery already sits
+                    # in Redis: the stale reason must not hide worker demand.
+                    _clear_user_cap_wait(job)
+                # Its message is still queued: it is waiting, not lost.
+                if in_broker and str(job.id) in in_broker:
                     continue
 
                 attempts = count_undispatched_requeues(job)
@@ -1261,7 +1391,8 @@ def check_stalled_agent_jobs(timeout_minutes: int = 30, undispatched_minutes: in
                     }
                 )
                 job.last_activity_at = now
-                execute_agent_job_task.delay(str(job.id), str(job.user_id))
+                _clear_user_cap_wait(job)
+                job_dispatch.enqueue_agent_job(db, job.id, job.user_id)
                 requeued_count += 1
 
             await db.commit()

@@ -1,0 +1,6 @@
+# Apply after environment values (and values-keda.yaml, if desired).
+# Common sandbox steps run independently of the Celery pod. Requires shared
+# RWX storage, NetworkPolicy enforcement, and registry-accessible tool images.
+# Explicit execution enablement and allowlisted images remain operator settings.
+kubernetesSandbox:
+  enabled: true

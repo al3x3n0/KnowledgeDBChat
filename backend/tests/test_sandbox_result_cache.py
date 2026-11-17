@@ -108,6 +108,43 @@ async def simulate(path, script=SCRIPT):
 
 
 class TestReplay:
+    async def test_replay_removes_files_deleted_by_the_run(self, sandbox):
+        script = "rm stale.txt; echo current > result.txt"
+        first_dir = workdir(sandbox["tmp"], "a")
+        second_dir = workdir(sandbox["tmp"], "b")
+        for directory in (first_dir, second_dir):
+            Path(directory, "stale.txt").write_text("old measurement")
+        await simulate(first_dir, script)
+        second = await simulate(second_dir, script)
+        assert second[3] is True and len(sandbox["calls"]) == 1
+        assert not Path(second_dir, "stale.txt").exists()
+        assert Path(second_dir, "result.txt").read_text() == "current\n"
+
+    @pytest.mark.parametrize("existing", [False, True])
+    async def test_replay_preserves_executable_file_modes(self, sandbox, existing):
+        filename = "workload.c" if existing else "generated.sh"
+        script = (
+            "" if existing else "printf '#!/bin/sh\\necho ready\\n' > generated.sh; "
+        )
+        script += f"chmod 755 {filename}"
+        first_dir = workdir(sandbox["tmp"], "a")
+        second_dir = workdir(sandbox["tmp"], "b")
+        await simulate(first_dir, script)
+        second = await simulate(second_dir, script)
+        assert second[3] is True and len(sandbox["calls"]) == 1
+        assert Path(second_dir, filename).stat().st_mode & 0o777 == 0o755
+
+    async def test_changed_input_permissions_are_a_different_run(self, sandbox):
+        script = "test -x workload.c && echo executable || echo plain"
+        first_dir = workdir(sandbox["tmp"], "a")
+        second_dir = workdir(sandbox["tmp"], "b")
+        Path(first_dir, "workload.c").chmod(0o644)
+        Path(second_dir, "workload.c").chmod(0o755)
+        first = await simulate(first_dir, script)
+        second = await simulate(second_dir, script)
+        assert first[1] == "plain\n" and second[1] == "executable\n"
+        assert second[3] is False and len(sandbox["calls"]) == 2
+
     async def test_the_same_run_is_read_back_with_its_files(self, sandbox):
         first = await simulate(workdir(sandbox["tmp"], "a"))
         second_dir = workdir(sandbox["tmp"], "b")
@@ -185,6 +222,41 @@ class TestWhatIsNeverReplayed:
 
 
 class TestTheStore:
+    @pytest.mark.parametrize("missing", [False, True])
+    async def test_a_broken_entry_leaves_inputs_intact_for_fresh_execution(
+        self, sandbox, missing
+    ):
+        script = "cat stale.txt > result.txt; rm stale.txt"
+        first_dir = workdir(sandbox["tmp"], "a")
+        second_dir = workdir(sandbox["tmp"], "b")
+        for directory in (first_dir, second_dir):
+            Path(directory, "stale.txt").write_text("required input")
+        await simulate(first_dir, script)
+        archive = next(cache.root().glob("??/*/outputs.tar.gz"))
+        if missing:
+            archive.unlink()
+        else:
+            archive.write_bytes(b"broken cache")
+        result = await simulate(second_dir, script)
+        assert result[0] == 0 and result[3] is False
+        assert len(sandbox["calls"]) == 2
+        assert Path(second_dir, "result.txt").read_text() == "required input"
+
+    async def test_removed_file_metadata_cannot_delete_outside_the_workspace(
+        self, sandbox
+    ):
+        directory = workdir(sandbox["tmp"], "a")
+        await simulate(directory)
+        entry = next(cache.root().glob("??/*/meta.json")).parent
+        victim = sandbox["tmp"] / "victim.txt"
+        victim.write_text("keep")
+        Path(directory, "escape").symlink_to(victim)
+        meta = json.loads((entry / "meta.json").read_text())
+        meta["removed"] = ["../victim.txt", str(victim), "escape"]
+        (entry / "meta.json").write_text(json.dumps(meta))
+        cache._restore(entry, directory)
+        assert victim.read_text() == "keep"
+
     async def test_a_member_outside_the_working_directory_is_skipped(self, sandbox):
         path = workdir(sandbox["tmp"], "a")
         before = cache.snapshot(path)

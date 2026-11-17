@@ -18,6 +18,7 @@ Any other broker answers ``None``: unknown, never "empty".
 
 import base64
 import json
+import time
 from typing import Any, Iterable, Optional, Set
 
 from loguru import logger
@@ -70,6 +71,111 @@ def queued_first_args(client: Any, queue: str, task_name: str) -> Set[str]:
     return found
 
 
+def message_presence(
+    client: Any,
+    queue: str,
+    task_name: str,
+    job_ids: Set[str],
+    *,
+    max_messages: int = 10_000,
+    max_seconds: float = 2.0,
+) -> dict[str, Optional[bool]]:
+    """Bounded lookup: preserve positive sightings, return None if incomplete."""
+    result = {str(job_id): None for job_id in job_ids}
+    if not result or max_messages <= 0 or max_seconds <= 0:
+        return result
+    deadline = time.monotonic() + max_seconds
+    examined = 0
+
+    class Incomplete(Exception):
+        pass
+
+    def check_budget():
+        if examined >= max_messages or time.monotonic() >= deadline:
+            raise Incomplete()
+
+    def inspect(raw, *, reserved=False):
+        nonlocal examined
+        check_budget()
+        examined += 1
+        value = _decode(raw)
+        message = value
+        if reserved:
+            message = value[0] if isinstance(value, list) and value else None
+        job_id = _first_arg(message, task_name)
+        if job_id in result:
+            result[job_id] = True
+        return all(value is True for value in result.values())
+
+    def queue_keys():
+        yield queue
+        cursor, seen = 0, set()
+        while True:
+            check_budget()
+            cursor, keys = client.scan(
+                cursor=cursor, match=f"{queue}{PRIORITY_SEPARATOR}*", count=256
+            )
+            for key in keys:
+                if key not in seen:
+                    seen.add(key)
+                    yield key
+            if not cursor:
+                break
+
+    try:
+        for key in queue_keys():
+            start = 0
+            while True:
+                check_budget()
+                size = min(256, max_messages - examined)
+                page = client.lrange(key, start, start + size - 1)
+                for raw in page:
+                    if inspect(raw):
+                        return result
+                if len(page) < size:
+                    break
+                start += len(page)
+        cursor = 0
+        while True:
+            check_budget()
+            cursor, page = client.hscan(UNACKED_KEY, cursor=cursor, count=256)
+            for raw in page.values():
+                if inspect(raw, reserved=True):
+                    return result
+            if not cursor:
+                break
+    except Incomplete:
+        return result
+    except Exception as exc:
+        logger.warning(f"Could not finish checking broker messages: {exc}")
+        return result
+    return {job_id: bool(present) for job_id, present in result.items()}
+
+
+def agent_job_message_presence(job_ids: Set[str]) -> dict[str, Optional[bool]]:
+    """Check only this poll batch, without consuming messages or reading whole lists."""
+    unknown = {str(job_id): None for job_id in job_ids}
+    url = str(settings.CELERY_BROKER_URL or "")
+    if not unknown or not url.startswith(("redis://", "rediss://")):
+        return unknown
+    try:
+        import redis
+
+        client = redis.Redis.from_url(url, socket_connect_timeout=2, socket_timeout=2)
+        try:
+            return message_presence(
+                client,
+                settings.AGENT_JOB_CELERY_QUEUE,
+                "app.tasks.agent_job_tasks.execute_agent_job_task",
+                set(unknown),
+            )
+        finally:
+            client.close()
+    except Exception as exc:
+        logger.warning(f"Could not check the broker's agent messages: {exc}")
+        return unknown
+
+
 def waiting_agent_job_ids() -> Optional[Set[str]]:
     """Ids of agent jobs with a message in the broker; None when unknown."""
     url = str(settings.CELERY_BROKER_URL or "")
@@ -92,4 +198,9 @@ def waiting_agent_job_ids() -> Optional[Set[str]]:
         return None
 
 
-__all__ = ["queued_first_args", "waiting_agent_job_ids"]
+__all__ = [
+    "queued_first_args",
+    "waiting_agent_job_ids",
+    "message_presence",
+    "agent_job_message_presence",
+]

@@ -25,6 +25,7 @@ answers by assigning `output` (a dict) or `result`.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import shutil
 import uuid
@@ -32,6 +33,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from app.services import agent_sandbox_runtime, sandbox_skill_runtime
+from app.services.sandbox_invocation import current
 
 #: Where one call keeps its own files, inside the working directory.
 CALL_DIR = ".pytool"
@@ -97,9 +99,19 @@ def clamp_timeout(value: Any) -> int:
     return max(MIN_TIMEOUT, min(seconds, MAX_TIMEOUT))
 
 
-def _prepare(workdir: Path, code: str, inputs: Dict[str, Any]) -> Path:
-    call = workdir / CALL_DIR / uuid.uuid4().hex[:12]
-    call.mkdir(parents=True)
+def _prepare(
+    workdir: Path, code: str, inputs: Dict[str, Any], call_key: str = ""
+) -> Path:
+    name = (
+        hashlib.sha256(call_key.encode()).hexdigest()[:24]
+        if call_key
+        else uuid.uuid4().hex[:12]
+    )
+    call = workdir / CALL_DIR / name
+    if not call.resolve().is_relative_to(workdir.resolve()):
+        raise PythonToolFailed("Python tool call directory escapes its workspace")
+    call.mkdir(parents=True, exist_ok=bool(call_key))
+    (call / "output.json").unlink(missing_ok=True)
     (call / "tool.py").write_text(code, encoding="utf-8")
     (call / "runner.py").write_text(RUNNER, encoding="utf-8")
     (call / "input.json").write_text(json.dumps(inputs, default=str), encoding="utf-8")
@@ -164,7 +176,17 @@ async def run(
         workdir = await asyncio.to_thread(
             sandbox_skill_runtime.run_dir, f"pytool-{uuid.uuid4().hex[:12]}"
         )
-    call = await asyncio.to_thread(_prepare, workdir, code, dict(inputs or {}))
+    context = current.get()
+    call_key = (
+        context.preparation_key()
+        if context
+        and context.key
+        and agent_sandbox_runtime.settings.SANDBOX_EXECUTION_BACKEND == "kubernetes"
+        else ""
+    )
+    call = await asyncio.to_thread(
+        _prepare, workdir, code, dict(inputs or {}), call_key
+    )
     inside = f"/work/{CALL_DIR}/{call.name}"
     try:
         try:

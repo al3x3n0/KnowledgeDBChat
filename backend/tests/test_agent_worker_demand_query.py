@@ -83,6 +83,25 @@ async def test_it_counts_jobs_a_worker_holds_and_jobs_that_could_start(
         _job("pending", user_id=user),
         _job("pending", user_id=user, next_run_at=ago, schedule_type="recurring"),
         _job("pending", user_id=user, results=None),
+        # Continuation of the current run, independently of its next schedule.
+        _job(
+            "pending",
+            user_id=user,
+            next_run_at=soon,
+            schedule_type="recurring",
+            results={"sandbox_wait": {"key": "intent"}},
+        ),
+        # This continuation already owns a counted slot. A stale cap reason
+        # cannot prevent KEDA waking a worker to finish it.
+        _job(
+            "pending",
+            user_id=user,
+            next_run_at=soon,
+            results={
+                "sandbox_wait": {"key": "intent"},
+                "execution_strategy": {"scheduler_state": held_by_cap},
+            },
+        ),
     ]
     not_counted = [
         # Its worker died; the sweep will make it pending again.
@@ -95,7 +114,22 @@ async def test_it_counts_jobs_a_worker_holds_and_jobs_that_could_start(
             user_id=user,
             results={"execution_strategy": {"scheduler_state": held_by_cap}},
         ),
+        _job(
+            "pending",
+            user_id=user,
+            results={
+                "sandbox_wait": {"key": ""},
+                "execution_strategy": {"scheduler_state": held_by_cap},
+            },
+        ),
         _job("paused", user_id=user),
+        # The remote experiment holds no Celery worker slot.
+        _job(
+            "paused",
+            user_id=user,
+            current_phase="waiting_sandbox",
+            results={"sandbox_wait": {"key": "intent"}},
+        ),
         _job("completed", user_id=user),
         _job("failed", user_id=user),
     ]

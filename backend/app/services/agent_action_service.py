@@ -2,15 +2,30 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime
 from typing import Any, Dict
 
 from loguru import logger
 
+from app.core.config import settings
+from app.services import sandbox_continuation_state as continuation_state
 from app.services.agent_execution_journal_service import agent_execution_journal_service
 from app.services.agent_job_tool_policy import get_tools_for_job_type
 from app.services.agent_tool_providers.base import AgentToolExecutionContext
 from app.services.agent_tool_validation import coerce_tool_params, validate_tool_params
+from app.services.sandbox_invocation import SandboxStepPending, invocation
+
+DEFER_TOOLS = frozenset(
+    {
+        "compile_c_snippet",
+        "analyze_snippet_cycles",
+        "benchmark_c_snippet",
+        "compare_c_snippets",
+        "run_sandbox_skill",
+        "run_custom_tool",
+    }
+)
 
 
 def _surface_nested_error(result: Dict[str, Any]) -> None:
@@ -41,23 +56,116 @@ class AgentActionService:
         action: Dict[str, Any],
         state: Dict[str, Any],
         db: Any,
+        *,
+        allow_sandbox_defer: bool = False,
     ) -> Dict[str, Any]:
         """Execute the decided action and return normalized results."""
         original_action = action
         action = executor._apply_default_scope_to_action(dict(action), job)
-        intent = await agent_execution_journal_service.begin_tool_call(
-            executor=executor,
-            job=job,
-            state=state,
-            action=action,
-            db=db,
-        )
+        marker = continuation_state.continuation(job, state)
+        if marker:
+            if not continuation_state.action_matches(marker, action):
+                raise RuntimeError(
+                    "A sandbox continuation cannot be replaced with a different action"
+                )
+            if marker.get("phase") == "collected":
+                return deepcopy(marker["result"])
+            intent = marker["intent"]
+        else:
+            intent = await agent_execution_journal_service.begin_tool_call(
+                executor=executor,
+                job=job,
+                state=state,
+                action=action,
+                db=db,
+            )
         # Callers retain this key for retries and outbox correlation. Preparing
         # pipeline arguments must not hide the journal's bookkeeping from them.
         if "_idempotency_key" in action:
             original_action["_idempotency_key"] = action["_idempotency_key"]
+
+        async def cancelled():
+            await db.refresh(job, attribute_names=["status"])
+            return getattr(job.status, "value", job.status) == "cancelled"
+
+        tools = DEFER_TOOLS | {
+            name.strip()
+            for name in settings.KUBERNETES_SANDBOX_DEFER_TOOLS.split(",")
+            if name.strip()
+        }
+        defer = bool(
+            allow_sandbox_defer
+            and settings.KUBERNETES_SANDBOX_DEFER_ENABLED
+            and action.get("tool") in tools
+            and intent
+            and intent.get("retryable_from_journal")
+            and not intent.get("contains_redactions")
+        )
+        deadline_at = (
+            continuation_state.deadline(job, state) if defer or marker else None
+        )
         try:
-            result = await self._act_unjournaled(executor, job, action, state, db)
+            with invocation(
+                str(job.id),
+                str(action.get("_idempotency_key") or ""),
+                cancelled=cancelled,
+                defer=defer,
+                deadline_at=deadline_at,
+                resume_reference=marker.get("reference") if marker else None,
+            ) as sandbox_call:
+                result = await self._act_unjournaled(executor, job, action, state, db)
+                if sandbox_call.runs:
+                    result["sandbox_jobs"] = sandbox_call.runs
+                    if not isinstance(result.get("artifacts"), list):
+                        result["artifacts"] = []
+                    result.setdefault("artifacts", []).extend(
+                        {
+                            "type": "kubernetes_sandbox",
+                            "id": run["name"],
+                            "path": run["path"],
+                        }
+                        for run in sandbox_call.runs
+                    )
+        except SandboxStepPending as pending:
+            if not defer:
+                raise
+            # Serialize the transition with cancellation and fence changes.
+            # Recheck ownership after taking the row lock, not before it.
+            await db.refresh(
+                job, attribute_names=["status", "results"], with_for_update=True
+            )
+            lease = getattr(executor, "execution_lease", None)
+            if lease is not None:
+                from app.services.agent_execution_lease_service import (
+                    agent_execution_lease_service,
+                )
+
+                await agent_execution_lease_service.assert_owned(db=db, lease=lease)
+            marker = continuation_state.suspend(job, state, pending.reference)
+            auto_resume = job.status == "running"
+            continuation_state.write_wait(
+                job,
+                {
+                    "key": marker["key"],
+                    "reference": pending.reference,
+                    "deadline_at": marker["deadline_at"],
+                    "auto_resume": auto_resume,
+                    "last_polled_at": None,
+                    "dispatched_at": None,
+                },
+            )
+            if auto_resume:
+                job.status = "paused"
+                job.current_phase = continuation_state.WAITING_PHASE
+                job.phase_details = "Waiting for an experiment to finish"
+            job.last_activity_at = datetime.utcnow()
+            await executor.checkpoint_service.save_checkpoint(
+                job=job,
+                state=state,
+                db=db,
+                reason=continuation_state.WAITING_PHASE,
+            )
+            raise
         except Exception as exc:
             await agent_execution_journal_service.complete_tool_call(
                 executor=executor,
@@ -68,6 +176,8 @@ class AgentActionService:
                 db=db,
             )
             raise
+        if marker:
+            marker.update(phase="collected", result=result)
         await agent_execution_journal_service.complete_tool_call(
             executor=executor,
             job=job,

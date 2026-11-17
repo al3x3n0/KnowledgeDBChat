@@ -1,0 +1,74 @@
+{{- if .Values.kubernetesSandbox.enabled }}
+{{- if or (not .Values.backend.persistence.enabled) (ne .Values.backend.persistence.accessMode "ReadWriteMany") }}
+{{- fail "kubernetesSandbox requires backend.persistence.enabled=true and accessMode=ReadWriteMany" }}
+{{- end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ printf "%s-sandbox-runner" (include "kdbc.fullname" .) }}
+  labels:
+    {{- include "kdbc.labels" . | nindent 4 }}
+  {{- with .Values.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ printf "%s-sandbox-experiment" (include "kdbc.fullname" .) }}
+  labels:
+    {{- include "kdbc.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ printf "%s-sandbox-runner" (include "kdbc.fullname" .) }}
+  labels:
+    {{- include "kdbc.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [create, get, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ printf "%s-sandbox-runner" (include "kdbc.fullname" .) }}
+  labels:
+    {{- include "kdbc.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ printf "%s-sandbox-runner" (include "kdbc.fullname" .) }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ printf "%s-sandbox-runner" (include "kdbc.fullname" .) }}
+    namespace: {{ .Release.Namespace }}
+---
+# Runtime Jobs receive no application credentials, token, or network. This
+# policy is always rendered with the runner, independently of the optional
+# application policies. The cluster CNI must enforce it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ printf "%s-sandbox-experiments" (include "kdbc.fullname" .) }}
+  annotations:
+    # Independent experiments may outlive this Helm release. Keep confinement
+    # until an operator removes the policy after their Jobs have terminated.
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "kdbc.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      kdbc.io/runner: {{ include "kdbc.fullname" . }}
+      app.kubernetes.io/component: sandbox-job
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress: []
+{{- end }}

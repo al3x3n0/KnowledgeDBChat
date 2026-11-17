@@ -39,11 +39,14 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from typing import AsyncIterator, Optional
 
 from loguru import logger
+
+from app.core.config import settings
+from app.services.sandbox_invocation import synchronous_wait
 
 #: One key per host. Every worker in this deployment shares one Docker daemon
 #: and therefore one set of CPUs, so one key is the right granularity. A
@@ -159,18 +162,31 @@ async def exclusive_measurement(
         )
         return
 
+    kubernetes = settings.SANDBOX_EXECUTION_BACKEND == "kubernetes"
+    release_claim = True
     try:
-        yield LockOutcome(True, waited, "")
+        # A Celery continuation cannot own this process-scoped context. Keep
+        # the waiter until the experiment ends, rather than releasing a claim
+        # while the independently running Job still measures the machine.
+        with synchronous_wait() if kubernetes else nullcontext():
+            yield LockOutcome(True, waited, "")
+    except BaseException:
+        # Lease loss, worker shutdown, or a lost submit response can leave
+        # the Job alive. Its timeout bounds it; the existing TTL outlives that
+        # timeout. Keep the claim conservatively until it expires on its own.
+        release_claim = not kubernetes
+        raise
     finally:
         # Release only our own claim. If the TTL expired mid-measurement the
         # key now belongs to somebody else, and deleting it blindly would hand
         # the machine to a third run while the second is still timing.
-        try:
-            current = await redis.get(key)
-            if current is not None and _as_text(current) == token:
-                await redis.delete(key)
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning(f"Could not release the measurement lock: {exc}")
+        if release_claim:
+            try:
+                current = await redis.get(key)
+                if current is not None and _as_text(current) == token:
+                    await redis.delete(key)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(f"Could not release the measurement lock: {exc}")
 
 
 def _as_text(value) -> str:

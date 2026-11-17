@@ -19,12 +19,16 @@ spec:
       annotations:
         {{- include "kdbc.configChecksums" . | nindent 8 }}
     spec:
-      serviceAccountName: {{ include "kdbc.serviceAccountName" . }}
+      serviceAccountName: {{ include "kdbc.workerServiceAccountName" . }}
       {{- include "kdbc.imagePullSecrets" . | nindent 6 }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       # Celery drains in-flight tasks on SIGTERM; give it room before SIGKILL.
-      terminationGracePeriodSeconds: 120
+      terminationGracePeriodSeconds: {{ .Values.celery.terminationGracePeriodSeconds }}
+      {{- if and .Values.sandbox.workerNativeSidecar (include "kdbc.sandbox.on" (dict "ctx" . "component" "celery")) }}
+      initContainers:
+        {{- include "kdbc.sandbox.container" (dict "ctx" . "component" "celery" "native" true) | nindent 8 }}
+      {{- end }}
       containers:
         - name: celery
           image: "{{ .Values.image.backend.repository }}:{{ .Values.image.backend.tag }}"
@@ -36,17 +40,11 @@ spec:
             - worker
             - --loglevel={{ lower .Values.config.logLevel }}
             - --concurrency={{ .Values.celery.concurrency }}
-            {{- $queues := .Values.celery.queues }}
-            {{- if not .Values.celeryAgents.enabled }}
-            {{- /* Nothing else would consume agent jobs: they would wait forever. */}}
-            {{- $queues = printf "%s,%s" (.Values.celery.queues | default "celery") (.Values.config.extra.AGENT_JOB_CELERY_QUEUE | default "agents") }}
-            {{- end }}
-            {{- if $queues }}
             - -Q
-            - {{ $queues | quote }}
-            {{- end }}
+            - {{ include "kdbc.celery.queues" . | quote }}
           env:
             {{- include "kdbc.connectionEnv" . | nindent 12 }}
+            {{- include "kdbc.kubernetesSandbox.env" . | nindent 12 }}
             {{- include "kdbc.sandbox.env" (dict "ctx" . "component" "celery") | nindent 12 }}
             {{- with .Values.global.extraEnv }}
             {{- toYaml . | nindent 12 }}
@@ -68,7 +66,9 @@ spec:
             failureThreshold: 3
           resources:
             {{- toYaml .Values.celery.resources | nindent 12 }}
+        {{- if not .Values.sandbox.workerNativeSidecar }}
         {{- include "kdbc.sandbox.container" (dict "ctx" . "component" "celery") | nindent 8 }}
+        {{- end }}
       volumes:
         {{- include "kdbc.dataVolume" . | nindent 8 }}
         {{- include "kdbc.sandbox.volumes" (dict "ctx" . "component" "celery") | nindent 8 }}
@@ -89,7 +89,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
 {{- end }}
-{{- if and .Values.celery.enabled .Values.celery.autoscaling.enabled }}
+{{- if and .Values.celery.enabled .Values.celery.autoscaling.enabled (eq .Values.celery.autoscaling.mode "cpu") }}
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler

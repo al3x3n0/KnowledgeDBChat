@@ -152,6 +152,10 @@ celery_app.conf.update(
 
 # Periodic task schedule
 celery_app.conf.beat_schedule = {
+    "poll-sandbox-continuations": {
+        "task": "app.tasks.agent_job_tasks.poll_sandbox_continuations",
+        "schedule": 30.0,
+    },
     # Sync GitLab sources every hour
     "sync-gitlab-sources": {
         "task": "app.tasks.sync_tasks.sync_all_gitlab_sources",

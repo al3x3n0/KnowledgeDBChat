@@ -1,0 +1,82 @@
+{{- $ctx := . -}}
+{{- $redisScaling := false -}}
+{{- if not (has .Values.celery.autoscaling.mode (list "cpu" "redis")) -}}
+{{- fail "celery.autoscaling.mode must be cpu or redis" -}}
+{{- end -}}
+{{- range $key, $component := dict "celery" "celery" "celeryLatex" "celery-latex" "celeryTranscription" "celery-transcription" -}}
+{{- $worker := index $ctx.Values $key -}}
+{{- $auto := $worker.autoscaling -}}
+{{- if and $worker.enabled $auto.enabled (or (ne $key "celery") (eq $auto.mode "redis")) -}}
+{{- $redisScaling = true -}}
+{{- if or (lt (int $auto.minReplicas) 1) (lt (int $auto.maxReplicas) (int $auto.minReplicas)) -}}
+{{- fail (printf "%s.autoscaling requires 1 <= minReplicas <= maxReplicas; queue depth excludes running tasks" $key) -}}
+{{- end -}}
+{{- if or (lt (int $worker.concurrency) 1) (lt (int $auto.queueLength) 0) -}}
+{{- fail (printf "%s requires positive concurrency and non-negative autoscaling.queueLength" $key) -}}
+{{- end -}}
+{{- if or (lt (int $auto.pollingIntervalSeconds) 1) (lt (int $auto.scaleDownStabilizationSeconds) 0) (gt (int $auto.scaleDownStabilizationSeconds) 3600) (lt (int $auto.scaleDownPeriodSeconds) 1) (gt (int $auto.scaleDownPeriodSeconds) 1800) -}}
+{{- fail (printf "%s has invalid autoscaling timing: polling >= 1, stabilization 0..3600, period 1..1800 seconds" $key) -}}
+{{- end }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ printf "%s-%s" (include "kdbc.fullname" $ctx) $component }}
+  labels:
+    {{- include "kdbc.componentLabels" (dict "ctx" $ctx "component" $component) | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ printf "%s-%s" (include "kdbc.fullname" $ctx) $component }}
+    envSourceContainerName: {{ $component }}
+  minReplicaCount: {{ $auto.minReplicas }}
+  maxReplicaCount: {{ $auto.maxReplicas }}
+  pollingInterval: {{ $auto.pollingIntervalSeconds }}
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: {{ $auto.scaleDownStabilizationSeconds }}
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: {{ $auto.scaleDownPeriodSeconds }}
+  triggers:
+    {{- range $queue := splitList "," (include (printf "kdbc.%s.queues" $key) $ctx) | uniq }}
+    {{- if not (trim $queue) }}
+    {{- fail (printf "%s queues must not contain empty names" $key) }}
+    {{- end }}
+    - type: redis
+      metadata:
+        address: {{ printf "%s:%s" (include "kdbc.redis.host" $ctx) (include "kdbc.redis.port" $ctx) | quote }}
+        databaseIndex: "0"
+        listName: {{ trim $queue | quote }}
+        listLength: {{ $auto.queueLength | default $worker.concurrency | quote }}
+        {{- if $ctx.Values.secrets.redisPassword }}
+        # KEDA resolves the Secret reference from the worker environment.
+        passwordFromEnv: REDIS_PASSWORD
+        {{- end }}
+    {{- end }}
+{{- end -}}
+{{- end -}}
+{{- if and $redisScaling .Values.networkPolicy.enabled .Values.redis.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ printf "%s-redis-from-keda" (include "kdbc.fullname" .) }}
+  labels:
+    {{- include "kdbc.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kdbc.componentSelectorLabels" (dict "ctx" . "component" "redis") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.celeryQueueAutoscaling.kedaNamespace | quote }}
+      ports:
+        - protocol: TCP
+          port: 6379
+{{- end }}

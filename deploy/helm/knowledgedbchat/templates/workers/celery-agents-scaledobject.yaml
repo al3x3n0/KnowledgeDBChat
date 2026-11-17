@@ -9,7 +9,9 @@ Not queue depth alone: a running job has left the queue, so an empty queue
 would scale away the pods that are doing the work. The demand is the jobs a
 worker holds (a live execution lease) plus the pending jobs that could start
 now -- not one waiting for its schedule, and not one held back by its owner's
-job cap, which no number of pods would let run. files/agent-worker-demand.sql
+job cap, which no number of pods would let run. A ready sandbox continuation
+already owns its counted slot and can finish despite an old cap-wait reason.
+files/agent-worker-demand.sql
 holds the query; tests/test_agent_worker_demand_query.py runs it on Postgres.
 
 Scaling down removes a pod without asking which one. A job on it is given

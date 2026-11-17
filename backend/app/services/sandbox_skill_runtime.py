@@ -109,6 +109,10 @@ def _open_up(path: Path) -> None:
 
 
 def root_dir() -> Path:
+    from app.core.config import settings
+
+    if settings.SANDBOX_EXECUTION_BACKEND == "kubernetes":
+        return Path(settings.KUBERNETES_SANDBOX_ROOT).parent / "sandbox-workspaces"
     return Path(tempfile.gettempdir()) / ROOT_NAME
 
 
@@ -485,7 +489,7 @@ async def _sandbox(
     run.stdout = _tail(stdout)
     run.stderr = _tail(stderr)
     explained = agent_sandbox_runtime.explain_sandbox_exit(returncode, stderr, image)
-    if returncode == agent_sandbox_runtime.DOCKER_COULD_NOT_START:
+    if agent_sandbox_runtime.could_not_run(returncode, stderr, image):
         # The container never started: nothing about the command was tested.
         run.error = explained
         return False

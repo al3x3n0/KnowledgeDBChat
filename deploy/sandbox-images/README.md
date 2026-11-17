@@ -1,8 +1,9 @@
 # Sandbox images
 
 Each directory here builds one image that agent tools run submitted code in.
-Every one is invoked under the same posture, defined once in
-`app/services/agent_sandbox_runtime.py`:
+The shared runtime in `backend/app/services/agent_sandbox_runtime.py` selects
+Docker or Kubernetes through `SANDBOX_EXECUTION_BACKEND`. The Docker backend
+uses this posture:
 
 ```
 docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
@@ -10,9 +11,17 @@ docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
   -v <tmp>:/work -w /work <image> /bin/sh -lc "<command>"
 ```
 
-Two consequences shape every Dockerfile: there is **no network at run time**, so
-each toolchain must be baked in; and the command runs as `nobody`, so nothing
-may write outside `/work`.
+The Kubernetes backend runs an independent Job with uid/gid 65534, a read-only
+root filesystem, dropped capabilities, and a deny-all NetworkPolicy. Images
+must provide `python3` and `/bin/sh`; bake in the toolchain and dependencies
+because experiments have **no network at run time**. Write outputs under
+`/work`; Kubernetes also provides bounded scratch space at `/tmp`.
+
+Publish images to a registry reachable by every eligible cluster node. Pin
+digests for reproducibility and deterministic result caching across nodes;
+loading an image into the Compose sandbox daemon does not distribute it to
+Kubernetes. See [Kubernetes integration](../../docs/KUBERNETES_INTEGRATION.md)
+for storage, registry credentials, profiles, and execution settings.
 
 An image must also be listed in `SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES`
 (see `core/config.py`) or the tools refuse to run it.

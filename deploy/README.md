@@ -2,6 +2,11 @@
 
 Helm chart and minikube tooling for KnowledgeDBChat.
 
+For the execution architecture, an example sandbox configuration, recovery
+behavior, and troubleshooting, see
+[Kubernetes integration](../docs/KUBERNETES_INTEGRATION.md). This deployment
+runbook covers cluster installation and production operations.
+
 ```
 deploy/
   helm/knowledgedbchat/          # the chart

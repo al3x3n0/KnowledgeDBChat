@@ -31,6 +31,7 @@ from sqlalchemy import func, or_, select
 from app.core.config import settings
 from app.models.agent_job import AgentJob
 from app.models.user import User
+from app.services import sandbox_continuation_state
 from app.services.config_values import safe_int
 
 #: `queue_reason` in a job's scheduler state while it waits on this cap.
@@ -66,7 +67,8 @@ async def running_for_user(
         AgentJob.user_id == user_id,
         or_(
             AgentJob.execution_lease_expires_at > moment,
-            AgentJob.results["sandbox_wait"]["key"].as_string() != "",
+            AgentJob.results[sandbox_continuation_state.RESULTS_KEY]["key"].as_string()
+            != "",
         ),
     )
     if excluding is not None:

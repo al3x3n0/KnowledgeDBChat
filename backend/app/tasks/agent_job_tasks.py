@@ -852,7 +852,9 @@ def process_scheduled_agent_jobs():
                 .where(
                     and_(
                         AgentJob.schedule_type.isnot(None),
-                        AgentJob.results["sandbox_wait"]["key"].as_string().is_(None),
+                        AgentJob.results[sandbox_continuation_state.RESULTS_KEY]["key"]
+                        .as_string()
+                        .is_(None),
                         AgentJob.next_run_at <= now,
                         AgentJob.status.in_(
                             [

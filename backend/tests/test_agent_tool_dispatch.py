@@ -36,6 +36,49 @@ from app.services.arxiv_search_service import ArxivSearchResult
 
 
 @pytest.mark.asyncio
+async def test_compare_to_claim_records_original_units_and_citation():
+    from uuid import uuid4
+
+    paper_id = str(uuid4())
+    registry = AgentToolRegistry(
+        [build_autonomous_workspace_mutation_provider(_DummyService())]
+    )
+    handled, result = await registry.try_execute(
+        "compare_to_claim",
+        {
+            "subject": "Streaming kernel",
+            "metric": "speedup",
+            "claimed_value": 40,
+            "claimed_unit": "%",
+            "measured_value": 1.4,
+            "measured_unit": "x",
+            "claim_document_id": paper_id,
+            "claim_location": "Table 2",
+            "claimed_conditions": {"input_size": 64, "baseline": "original"},
+            "measured_conditions": {"input_size": 64, "baseline": "original"},
+            "measurement_source": "gem5 simulated cycles",
+        },
+        AgentToolExecutionContext(
+            mode="autonomous",
+            db=None,
+            service=None,
+            state={"findings": [{"type": "implementation_verified", "verified": True}]},
+        ),
+    )
+    assert handled is True
+    (finding,) = result["findings"]
+    assert finding["type"] == "reproduction_verdict"
+    assert finding["verdict"] == "reproduced"
+    assert (finding["claimed_value"], finding["claimed_unit"]) == (40, "%")
+    assert (finding["measured_value"], finding["measured_unit"]) == (1.4, "x")
+    assert finding["claim_document_id"] == paper_id
+    assert finding["claim_location"] == "Table 2"
+    assert finding["claimed_conditions"] == {"input_size": 64, "baseline": "original"}
+    assert finding["measured_conditions"] == finding["claimed_conditions"]
+    assert finding["measurement_source"] == "gem5 simulated cycles"
+
+
+@pytest.mark.asyncio
 async def test_registry_executes_matching_provider():
     provider = FunctionToolProvider(
         name="test",

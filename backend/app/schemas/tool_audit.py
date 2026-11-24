@@ -33,3 +33,4 @@ class ToolAuditResponse(BaseModel):
 
 class ToolApprovalRequest(BaseModel):
     note: Optional[str] = None
+    expected_final_approval: Optional[bool] = None

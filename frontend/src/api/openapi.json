@@ -479,6 +479,11 @@
             "title": "Is Active",
             "type": "boolean"
           },
+          "is_mcp_profile": {
+            "default": false,
+            "title": "Is Mcp Profile",
+            "type": "boolean"
+          },
           "key_prefix": {
             "title": "Key Prefix",
             "type": "string"
@@ -7376,6 +7381,16 @@
             "title": "Perishable",
             "type": "boolean"
           },
+          "reproduction": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentJobReproductionEvidence"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "title": {
             "default": "",
             "title": "Title",
@@ -10696,6 +10711,138 @@
           "root_job_id"
         ],
         "title": "AgentJobRelaunchLineageResponse",
+        "type": "object"
+      },
+      "AgentJobReproductionEvidence": {
+        "properties": {
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "caveats": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Caveats",
+            "type": "array"
+          },
+          "claim_document_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Document Id"
+          },
+          "claim_location": {
+            "default": "",
+            "title": "Claim Location",
+            "type": "string"
+          },
+          "claimed_conditions": {
+            "items": {
+              "$ref": "#/components/schemas/AgentJobEvidenceValue"
+            },
+            "title": "Claimed Conditions",
+            "type": "array"
+          },
+          "claimed_unit": {
+            "default": "",
+            "title": "Claimed Unit",
+            "type": "string"
+          },
+          "claimed_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claimed Value"
+          },
+          "measured_conditions": {
+            "items": {
+              "$ref": "#/components/schemas/AgentJobEvidenceValue"
+            },
+            "title": "Measured Conditions",
+            "type": "array"
+          },
+          "measured_unit": {
+            "default": "",
+            "title": "Measured Unit",
+            "type": "string"
+          },
+          "measured_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measured Value"
+          },
+          "measurement_source": {
+            "default": "",
+            "title": "Measurement Source",
+            "type": "string"
+          },
+          "metric": {
+            "default": "",
+            "title": "Metric",
+            "type": "string"
+          },
+          "relative_error": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Relative Error"
+          },
+          "summary": {
+            "default": "",
+            "title": "Summary",
+            "type": "string"
+          },
+          "tolerance": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tolerance"
+          },
+          "verdict": {
+            "enum": [
+              "reproduced",
+              "not_reproduced",
+              "incomparable"
+            ],
+            "title": "Verdict",
+            "type": "string"
+          }
+        },
+        "required": [
+          "verdict"
+        ],
+        "title": "AgentJobReproductionEvidence",
         "type": "object"
       },
       "AgentJobResponse": {
@@ -29266,6 +29413,45 @@
         "title": "LdapVouchResponse",
         "type": "object"
       },
+      "MCPCustomPrompt": {
+        "additionalProperties": false,
+        "properties": {
+          "include_resources": {
+            "default": true,
+            "title": "Include Resources",
+            "type": "boolean"
+          },
+          "instructions": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Instructions",
+            "type": "string"
+          },
+          "name": {
+            "pattern": "^[a-z][a-z0-9_-]{0,47}$",
+            "title": "Name",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "use_inputs": {
+            "default": false,
+            "title": "Use Inputs",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "title",
+          "instructions"
+        ],
+        "title": "MCPCustomPrompt",
+        "type": "object"
+      },
       "MCPKeyConfigResponse": {
         "description": "Full MCP configuration for an API key.",
         "properties": {
@@ -29295,6 +29481,34 @@
           "mcp_enabled": {
             "title": "Mcp Enabled",
             "type": "boolean"
+          },
+          "mcp_programs": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mcp Programs"
+          },
+          "prompts": {
+            "items": {
+              "$ref": "#/components/schemas/MCPCustomPrompt"
+            },
+            "title": "Prompts",
+            "type": "array"
+          },
+          "research_notes": {
+            "items": {
+              "$ref": "#/components/schemas/MCPNoteOption"
+            },
+            "title": "Research Notes",
+            "type": "array"
           },
           "source_access": {
             "items": {
@@ -29385,6 +29599,216 @@
           "tools"
         ],
         "title": "MCPListToolsResponse",
+        "type": "object"
+      },
+      "MCPNoteOption": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ],
+        "title": "MCPNoteOption",
+        "type": "object"
+      },
+      "MCPProfileCreate": {
+        "properties": {
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "note_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note Ids"
+          },
+          "programs": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Programs",
+            "type": "array"
+          },
+          "prompts": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/MCPCustomPrompt"
+                },
+                "maxItems": 10,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompts"
+          },
+          "source_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "maxItems": 500,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Ids"
+          },
+          "tools": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "MCPProfileCreate",
+        "type": "object"
+      },
+      "MCPProfileCreated": {
+        "properties": {
+          "api_key": {
+            "title": "Api Key",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "api_key"
+        ],
+        "title": "MCPProfileCreated",
+        "type": "object"
+      },
+      "MCPProfileOptions": {
+        "properties": {
+          "programs": {
+            "items": {
+              "$ref": "#/components/schemas/MCPProgramOption"
+            },
+            "title": "Programs",
+            "type": "array"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/MCPToolInfo"
+            },
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "programs",
+          "tools"
+        ],
+        "title": "MCPProfileOptions",
+        "type": "object"
+      },
+      "MCPProfileRotated": {
+        "properties": {
+          "api_key": {
+            "title": "Api Key",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "key_prefix": {
+            "title": "Key Prefix",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "api_key",
+          "key_prefix"
+        ],
+        "title": "MCPProfileRotated",
+        "type": "object"
+      },
+      "MCPProfileRotation": {
+        "properties": {
+          "key_prefix": {
+            "maxLength": 16,
+            "minLength": 1,
+            "title": "Key Prefix",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key_prefix"
+        ],
+        "title": "MCPProfileRotation",
+        "type": "object"
+      },
+      "MCPProgramOption": {
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "tools": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tools",
+            "type": "array"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "description",
+          "tools"
+        ],
+        "title": "MCPProgramOption",
         "type": "object"
       },
       "MCPServerInfo": {
@@ -32878,6 +33302,13 @@
             "title": "Expressible",
             "type": "boolean"
           },
+          "launch_problems": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Launch Problems",
+            "type": "array"
+          },
           "plan": {
             "anyOf": [
               {
@@ -36061,6 +36492,24 @@
           "change_request"
         ],
         "title": "RequiredFix",
+        "type": "object"
+      },
+      "ResearchCampaignAction": {
+        "properties": {
+          "action": {
+            "enum": [
+              "pause",
+              "resume",
+              "stop"
+            ],
+            "title": "Action",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "ResearchCampaignAction",
         "type": "object"
       },
       "ResearchCampaignCreate": {
@@ -41510,6 +41959,17 @@
             ],
             "title": "Detail"
           },
+          "final_approval": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Approval"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -44535,6 +44995,17 @@
       },
       "ToolApprovalRequest": {
         "properties": {
+          "expected_final_approval": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Final Approval"
+          },
           "note": {
             "anyOf": [
               {
@@ -53555,6 +54026,25 @@
             }
           },
           {
+            "description": "Filter by job ID",
+            "in": "query",
+            "name": "job_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by job ID",
+              "title": "Job Id"
+            }
+          },
+          {
             "in": "header",
             "name": "X-API-Key",
             "required": false,
@@ -62444,7 +62934,7 @@
         ]
       },
       "post": {
-        "description": "Create a new API key.\n\nThe API key will be shown only once in the response. Store it securely!\n\n**Scopes** (optional, None = full access):\n- `read`: Read-only access to documents and search\n- `write`: Create and modify documents\n- `chat`: Access chat/agent functionality\n- `documents`: Full document management\n- `workflows`: Execute workflows\n- `admin`: Full administrative access",
+        "description": "Create a new API key.\n\nThe API key will be shown only once in the response. Store it securely!\n\n**REST scopes** (omit scopes for full account access):\n- `read`: View documents and search\n- `write`: Upload, change, and delete documents\n- `chat`: Use chat and view agent information\n- `documents`: Manage documents and sources\n- `workflows`: View, run, and cancel existing workflows\n- `admin`: Use all API operations permitted by the account role\n\nMCP tools also require their tool-specific scope and configuration.",
         "operationId": "create_api_key_api_v1_api_keys__post",
         "parameters": [
           {
@@ -76912,6 +77402,25 @@
         ]
       }
     },
+    "/api/v1/mcp": {
+      "post": {
+        "operationId": "streamable_mcp_api_v1_mcp_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Streamable Mcp",
+        "tags": [
+          "MCP"
+        ]
+      }
+    },
     "/api/v1/mcp-config/keys/{key_id}/config": {
       "get": {
         "description": "Get MCP configuration for a specific API key.",
@@ -77349,6 +77858,358 @@
           }
         ],
         "summary": "Update Tool Config",
+        "tags": [
+          "mcp-config"
+        ]
+      }
+    },
+    "/api/v1/mcp-config/profile-notes": {
+      "get": {
+        "operationId": "list_mcp_profile_notes_api_v1_mcp_config_profile_notes_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 100,
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "note_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Note Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MCPNoteOption"
+                  },
+                  "title": "Response List Mcp Profile Notes Api V1 Mcp Config Profile Notes Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Mcp Profile Notes",
+        "tags": [
+          "mcp-config"
+        ]
+      }
+    },
+    "/api/v1/mcp-config/profile-options": {
+      "get": {
+        "operationId": "list_mcp_profile_options_api_v1_mcp_config_profile_options_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MCPProfileOptions"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Mcp Profile Options",
+        "tags": [
+          "mcp-config"
+        ]
+      }
+    },
+    "/api/v1/mcp-config/profiles": {
+      "post": {
+        "operationId": "create_mcp_profile_api_v1_mcp_config_profiles_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MCPProfileCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MCPProfileCreated"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Mcp Profile",
+        "tags": [
+          "mcp-config"
+        ]
+      }
+    },
+    "/api/v1/mcp-config/profiles/{key_id}": {
+      "put": {
+        "operationId": "update_mcp_profile_api_v1_mcp_config_profiles__key_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Key Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MCPProfileCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MCPKeyConfigResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Mcp Profile",
+        "tags": [
+          "mcp-config"
+        ]
+      }
+    },
+    "/api/v1/mcp-config/profiles/{key_id}/rotate": {
+      "post": {
+        "operationId": "rotate_mcp_profile_key_api_v1_mcp_config_profiles__key_id__rotate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Key Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MCPProfileRotation"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MCPProfileRotated"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Rotate Mcp Profile Key",
         "tags": [
           "mcp-config"
         ]
@@ -83050,6 +83911,71 @@
         ]
       }
     },
+    "/api/v1/research-notes/context-packs/{trace_id}": {
+      "post": {
+        "description": "Save an owned context pack and its evidence as a research note.",
+        "operationId": "save_context_pack_as_note_api_v1_research_notes_context_packs__trace_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "trace_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Trace Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchNoteResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Save Context Pack As Note",
+        "tags": [
+          "research-notes"
+        ]
+      }
+    },
     "/api/v1/research-notes/lint-recent": {
       "post": {
         "description": "Lint citations for recently updated notes for the current user (no LLM).\n\nThis updates `note.attribution.lint` for eligible notes.",
@@ -84655,6 +85581,80 @@
           }
         ],
         "summary": "Get Research Campaign",
+        "tags": [
+          "research-campaigns"
+        ]
+      }
+    },
+    "/api/v1/research/campaigns/{campaign_id}/action": {
+      "post": {
+        "operationId": "action_research_campaign_api_v1_research_campaigns__campaign_id__action_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResearchCampaignAction"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchCampaignResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Action Research Campaign",
         "tags": [
           "research-campaigns"
         ]

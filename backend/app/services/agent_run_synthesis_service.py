@@ -148,6 +148,49 @@ def _verdict_words(finding: Dict[str, Any]) -> str:
     return ", ".join(words)
 
 
+def _reproduction_line(finding: Dict[str, Any], title: str) -> Optional[str]:
+    from app.services.agent_evidence_view import reproduction_of
+
+    result = reproduction_of(finding)
+    if not result:
+        return None
+    subject = str(finding.get("subject") or title)[:MAX_FINDING_CHARS]
+    parts = [f"[reproduction_verdict] {subject} ({result['verdict']})"]
+    for label, key in (("Paper claim", "claimed"), ("Run measurement", "measured")):
+        value = result.get(f"{key}_value")
+        unit = result.get(f"{key}_unit", "")
+        if value is not None:
+            parts.append(f"{label}: {value:g} {unit}".rstrip())
+    if result["verdict"] != "incomparable":
+        for label, key in (
+            ("Relative error", "relative_error"),
+            ("Tolerance", "tolerance"),
+        ):
+            if result.get(key) is not None:
+                parts.append(f"{label}: {result[key]:.2%}")
+    for label, key in (("Blockers", "blockers"), ("Caveats", "caveats")):
+        if result.get(key):
+            parts.append(f"{label}: " + " | ".join(result[key])[:500])
+    for label, key in (
+        ("Paper document", "claim_document_id"),
+        ("Paper location", "claim_location"),
+        ("Measurement source", "measurement_source"),
+    ):
+        if result.get(key):
+            parts.append(f"{label}: {result[key]}")
+    for label, key in (
+        ("Paper conditions", "claimed_conditions"),
+        ("Run conditions", "measured_conditions"),
+    ):
+        conditions = result.get(key, [])
+        if conditions:
+            parts.append(
+                f"{label}: "
+                + ", ".join(f"{row['label']}={row['value']}" for row in conditions)
+            )
+    return " · ".join(parts)[:1800]
+
+
 def summarize_findings_for_prompt(findings: Any) -> List[str]:
     """Render findings as short lines, keeping whatever identifies them."""
     rows: List[str] = []
@@ -165,13 +208,21 @@ def summarize_findings_for_prompt(findings: Any) -> List[str]:
         if not title and not verdicts:
             continue
         kind = str(finding.get("type") or "finding").strip()
-        row = f"[{kind}] {title[:MAX_FINDING_CHARS]}".rstrip()
-        if verdicts:
-            row += f" ({verdicts})"
-        metrics = summarize_finding_metrics(finding)
-        if metrics:
-            row += f" | {metrics}"
-        rows.append(row)
+        evidence = (
+            _reproduction_line(finding, title)
+            if kind == "reproduction_verdict"
+            else None
+        )
+        if evidence:
+            rows.append(evidence)
+        else:
+            row = f"[{kind}] {title[:MAX_FINDING_CHARS]}".rstrip()
+            if verdicts:
+                row += f" ({verdicts})"
+            metrics = summarize_finding_metrics(finding)
+            if metrics:
+                row += f" | {metrics}"
+            rows.append(row)
         if len(rows) >= MAX_FINDINGS_IN_PROMPT:
             break
     return rows

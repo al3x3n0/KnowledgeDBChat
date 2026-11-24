@@ -105,6 +105,24 @@ async def _stages(db, job):
 
 
 class TestWithinItsLimits:
+    async def test_pausing_holds_automatic_approval_until_resume(
+        self, db_session, test_user
+    ):
+        campaign = await _campaign(db_session, test_user, plan_approval=GENEROUS)
+        job = await _held_with_a_plan(db_session, campaign)
+        campaigns.change_scheduling(campaign, "pause")
+        await db_session.commit()
+
+        assert (await _step(db_session, campaign))["action"] == "none"
+        assert job.status == AgentJobStatus.PAUSED.value
+        assert await _stages(db_session, job) == []
+
+        campaigns.change_scheduling(campaign, "resume")
+        await db_session.commit()
+        step = await _step(db_session, campaign)
+        assert step["plan_decisions"][0]["approved"]
+        assert len(await _stages(db_session, job)) == 1
+
     async def test_it_approves_and_the_first_stage_starts(self, db_session, test_user):
         campaign = await _campaign(db_session, test_user, plan_approval=GENEROUS)
         job = await _held_with_a_plan(db_session, campaign)

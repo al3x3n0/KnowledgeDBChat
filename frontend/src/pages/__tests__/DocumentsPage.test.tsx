@@ -3,7 +3,7 @@
  */
 
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from 'react-query';
 import DocumentsPage from '../DocumentsPage';
@@ -77,5 +77,26 @@ describe('DocumentsPage', () => {
     
     // Should show document list or empty state
     expect(await screen.findByRole('button', { name: /upload/i })).toBeInTheDocument();
+  });
+
+  it('links only the active source selected in the source filter to the MCP builder', async () => {
+    jest.mocked(apiClient.getDocumentSources).mockResolvedValue([
+      { id: 'source-1', name: 'Lab corpus', is_active: true, source_type: 'file', config: {}, created_at: '', updated_at: '' },
+      { id: 'source-2', name: 'Archived corpus', is_active: false, source_type: 'file', config: {}, created_at: '', updated_at: '' },
+    ]);
+    renderWithProviders(<DocumentsPage />);
+    await screen.findByRole('option', { name: 'Archived corpus' });
+    const sourceFilter = screen.getByRole('combobox', { name: 'Document source' });
+    expect(screen.queryByRole('link', { name: 'Create MCP from source' })).toBeNull();
+    await act(async () => {
+      fireEvent.change(sourceFilter, { target: { value: 'source-2' } });
+    });
+    expect(screen.queryByRole('link', { name: 'Create MCP from source' })).toBeNull();
+    await act(async () => {
+      fireEvent.change(sourceFilter, { target: { value: 'source-1' } });
+    });
+    expect(screen.getByRole('link', { name: 'Create MCP from source' })).toHaveAttribute(
+      'href', '/mcp-config?source=source-1'
+    );
   });
 });

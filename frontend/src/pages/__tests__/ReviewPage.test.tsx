@@ -50,7 +50,9 @@ const INBOX = {
     }),
     section('tool_approvals', 'Tool approvals', '/review', {
       count: 1,
-      items: [{ id: 'audit-1', title: 'delete_document', detail: 'Requested in your session' }],
+      items: [
+        { id: 'audit-1', title: 'delete_document', detail: 'Requested in your session', final_approval: true },
+      ],
     }),
     section('patches', 'Proposed patches', '/patch-prs', {
       count: 2,
@@ -83,7 +85,7 @@ describe('ReviewPage', () => {
   it('lists what is waiting and links each item to where it is handled', async () => {
     renderPage();
 
-    expect(await screen.findByText('4 things are waiting on you')).toBeInTheDocument();
+    expect(await screen.findByText('Review status is incomplete · 4 confirmed items')).toBeInTheDocument();
     const run = screen.getByRole('link', { name: 'attention-survey: writeup' });
     expect(run).toHaveAttribute('href', '/autonomous-agents?job=job-1');
     expect(screen.getByText('3 consecutive rounds produced no new findings')).toBeInTheDocument();
@@ -107,27 +109,47 @@ describe('ReviewPage', () => {
 
   it('runs an action once the last approval it needed is given', async () => {
     apiClient.approveToolAudit.mockResolvedValue({ approval_status: 'approved' });
-    apiClient.runToolAudit.mockResolvedValue({});
+    apiClient.runToolAudit.mockResolvedValue({ status: 'completed' });
     renderPage();
 
     const approvals = await screen.findByLabelText('Tool approvals');
-    fireEvent.click(within(approvals).getByRole('button', { name: /Approve/ }));
+    fireEvent.click(within(approvals).getByRole('button', { name: 'Approve and run' }));
 
     await waitFor(() => expect(apiClient.runToolAudit).toHaveBeenCalledWith('audit-1'));
+    expect(apiClient.approveToolAudit).toHaveBeenCalledWith('audit-1', undefined, true);
     expect(toast.success).toHaveBeenCalledWith('Approved and run');
     // And the list is read again, so the item is gone.
     await waitFor(() => expect(apiClient.getReviewInbox).toHaveBeenCalledTimes(2));
   });
 
   it('does not run an action an admin has still to approve', async () => {
+    apiClient.getReviewInbox.mockResolvedValue({
+      total: 1,
+      sections: [section('tool_approvals', 'Tool approvals', '/review', {
+        count: 1,
+        items: [{ id: 'audit-1', title: 'delete_document', final_approval: false }],
+      })],
+    });
     apiClient.approveToolAudit.mockResolvedValue({ approval_status: 'pending_admin' });
     renderPage();
 
     const approvals = await screen.findByLabelText('Tool approvals');
-    fireEvent.click(within(approvals).getByRole('button', { name: /Approve/ }));
+    fireEvent.click(within(approvals).getByRole('button', { name: 'Approve' }));
 
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Approved. Waiting for an admin.'));
+    expect(apiClient.approveToolAudit).toHaveBeenCalledWith('audit-1', undefined, false);
     expect(apiClient.runToolAudit).not.toHaveBeenCalled();
+  });
+
+  it('reports a failed tool run after approval', async () => {
+    apiClient.approveToolAudit.mockResolvedValue({ approval_status: 'approved' });
+    apiClient.runToolAudit.mockResolvedValue({ status: 'failed' });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve and run' }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Approved. The tool did not complete.'));
+    expect(toast.success).not.toHaveBeenCalled();
   });
 
   it('rejects without running', async () => {
@@ -149,5 +171,41 @@ describe('ReviewPage', () => {
     renderPage();
 
     expect(await screen.findByText('Nothing is waiting on you')).toBeInTheDocument();
+  });
+
+  it('reports an unavailable review status when the first load fails', async () => {
+    apiClient.getReviewInbox.mockRejectedValueOnce(new Error('service unavailable'));
+    renderPage();
+
+    expect(await screen.findByText('Review status unavailable')).toBeInTheDocument();
+    expect(screen.queryByText('Nothing is waiting on you')).not.toBeInTheDocument();
+  });
+
+  it('reports incomplete status when a section fails and the rest are empty', async () => {
+    apiClient.getReviewInbox.mockResolvedValue({
+      total: 0,
+      sections: [
+        section('runs', 'Runs', '/agent-control-plane'),
+        section('inbox', 'Research inbox', '/research/inbox', { error: 'This section could not be read.' }),
+      ],
+    });
+    renderPage();
+
+    expect(await screen.findByText('Review status is incomplete · 0 confirmed items')).toBeInTheDocument();
+    expect(screen.queryByText('Nothing is waiting on you')).not.toBeInTheDocument();
+  });
+
+  it('does not present a cached all-clear after a failed refresh', async () => {
+    apiClient.getReviewInbox.mockResolvedValueOnce({
+      total: 0,
+      sections: [section('runs', 'Runs', '/agent-control-plane')],
+    }).mockRejectedValueOnce(new Error('service unavailable'));
+    renderPage();
+
+    expect(await screen.findByText('Nothing is waiting on you')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    expect(await screen.findByText('Review status unavailable')).toBeInTheDocument();
+    expect(screen.queryByText('Nothing is waiting on you')).not.toBeInTheDocument();
   });
 });

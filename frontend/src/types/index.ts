@@ -235,6 +235,23 @@ export interface CampaignPlanApproval {
   max_minutes: number;
 }
 
+export type ResearchCampaignAction = 'pause' | 'resume' | 'stop';
+
+interface ResearchCampaignSummary {
+  waiting_on?: 'approval' | 'person' | 'job' | null;
+  plan_held?: string | null;
+  jobs_used?: number;
+  remaining_jobs?: number;
+  current_item?: { id: string; title: string; job_id: string } | null;
+  next_up?: { title: string; why?: string | null }[];
+  latest_result?: {
+    title: string;
+    job_id: string;
+    conclusion?: string | null;
+    finding_count: number;
+  } | null;
+}
+
 export interface ResearchCampaign {
   id: string;
   name: string;
@@ -248,7 +265,7 @@ export interface ResearchCampaign {
   created_at: string;
   updated_at?: string | null;
   completed_at?: string | null;
-  summary?: Record<string, any> | null;
+  summary?: ResearchCampaignSummary | null;
   /** The conclusion with its working: evidence, gaps, confidence. */
   conclusion_detail?: {
     answer?: string | null;
@@ -1547,6 +1564,7 @@ export interface APIKey {
   name: string;
   description?: string;
   key_prefix: string;
+  is_mcp_profile?: boolean;
   scopes?: string[];
   rate_limit_per_minute: number;
   rate_limit_per_day: number;
@@ -1573,7 +1591,7 @@ export interface APIKeyCreate {
 export interface APIKeyCreateResponse
   extends Omit<
     APIKey,
-    'is_active' | 'last_used_at' | 'last_used_ip' | 'usage_count' | 'revoked_at'
+    'is_active' | 'is_mcp_profile' | 'last_used_at' | 'last_used_ip' | 'usage_count' | 'revoked_at'
   > {
   api_key: string; // The actual key - only shown once!
   message: string;
@@ -1718,7 +1736,23 @@ export interface MCPSourceAccessResponse {
   can_chat: boolean;
 }
 
+export interface MCPNoteOption {
+  id: string;
+  title: string;
+}
+
+export interface MCPCustomPrompt {
+  name: string;
+  title: string;
+  instructions: string;
+  include_resources: boolean;
+  use_inputs: boolean;
+}
+
 export interface MCPKeyConfigResponse {
+  mcp_programs?: string[] | null;
+  research_notes?: MCPNoteOption[];
+  prompts?: MCPCustomPrompt[];
   api_key_id: string;
   api_key_name: string;
   mcp_enabled: boolean;
@@ -3164,6 +3198,25 @@ export interface AgentJobEvidenceValue {
   value: string;
 }
 
+export interface AgentJobReproductionEvidence {
+  verdict: 'reproduced' | 'not_reproduced' | 'incomparable';
+  metric: string;
+  claimed_value?: number | null;
+  claimed_unit: string;
+  measured_value?: number | null;
+  measured_unit: string;
+  relative_error?: number | null;
+  tolerance?: number | null;
+  claim_document_id?: string | null;
+  claim_location: string;
+  measurement_source: string;
+  claimed_conditions: AgentJobEvidenceValue[];
+  measured_conditions: AgentJobEvidenceValue[];
+  blockers: string[];
+  caveats: string[];
+  summary: string;
+}
+
 /** One finding, as a reader needs it to judge whether it holds.
  *
  *  The three fields that a count destroys: whether it carries a spread, the
@@ -3174,6 +3227,7 @@ export interface AgentJobEvidenceItem {
   type: string;
   title: string;
   values: AgentJobEvidenceValue[];
+  reproduction?: AgentJobReproductionEvidence | null;
   has_uncertainty: boolean;
   /** quiet | busy | saturated, where the producing tool recorded it. */
   measurement_environment: string;
@@ -5024,6 +5078,7 @@ export interface SynthesisJob {
   result_content?: string;
   result_metadata?: {
     documents_analyzed?: number;
+    agent_run_sources?: Array<{ id: string; name: string }>;
     word_count?: number;
     themes_found?: string[];
     key_findings?: string[];
@@ -5953,6 +6008,7 @@ export interface PipelineCheck {
   problems: string[];
   expressible: boolean;
   binding_problems: string[];
+  launch_problems?: string[];
   description: string[];
   plan?: PipelinePlan | null;
   budget?: {
@@ -6210,6 +6266,7 @@ export interface ReviewItem {
   waiting_since?: string | null;
   link?: string | null;
   kind?: string | null;
+  final_approval?: boolean | null;
 }
 
 /** One kind of decision and the page that owns it. */

@@ -39,13 +39,15 @@ async def create_api_key(
 
     The API key will be shown only once in the response. Store it securely!
 
-    **Scopes** (optional, None = full access):
-    - `read`: Read-only access to documents and search
-    - `write`: Create and modify documents
-    - `chat`: Access chat/agent functionality
-    - `documents`: Full document management
-    - `workflows`: Execute workflows
-    - `admin`: Full administrative access
+    **REST scopes** (omit scopes for full account access):
+    - `read`: View documents and search
+    - `write`: Upload, change, and delete documents
+    - `chat`: Use chat and view agent information
+    - `documents`: Manage documents and sources
+    - `workflows`: View, run, and cancel existing workflows
+    - `admin`: Use all API operations permitted by the account role
+
+    MCP tools also require their tool-specific scope and configuration.
     """
     try:
         api_key, plain_key = await api_key_service.create_api_key(

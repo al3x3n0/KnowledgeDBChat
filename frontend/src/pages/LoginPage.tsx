@@ -8,7 +8,6 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { Database, Mail, Lock, User } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
@@ -48,7 +47,6 @@ const LoginPage: React.FC = () => {
     };
   }, []);
   const { login, register } = useAuth();
-  const navigate = useNavigate();
 
   const loginForm = useForm<LoginForm>();
   const registerForm = useForm<RegisterForm>();
@@ -57,7 +55,6 @@ const LoginPage: React.FC = () => {
     try {
       setLoading(true);
       await login(data.username, data.password);
-      navigate('/chat');
     } catch (error) {
       // Error is handled in the auth context
     } finally {
@@ -82,7 +79,6 @@ const LoginPage: React.FC = () => {
         password: data.password,
         full_name: data.full_name,
       });
-      navigate('/chat');
     } catch (error) {
       // Error is handled in the auth context
     } finally {

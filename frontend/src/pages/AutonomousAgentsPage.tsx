@@ -14,10 +14,11 @@ import type {
 } from '../components/agent/autonomyShared';
 
 import { useQuery, useMutation, useQueryClient } from 'react-query';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   Activity,
   AlertCircle,
+  ArrowRight,
   BarChart3,
   Bot,
   Brain,
@@ -316,11 +317,6 @@ const TAB_GROUPS: Array<{
     ],
   },
   {
-    name: 'Portfolios',
-    tabs: [
-    ],
-  },
-  {
     name: 'Setup',
     tabs: [
       { id: 'profiles', label: 'Swarm Profiles', icon: Settings },
@@ -332,6 +328,8 @@ const TAB_GROUPS: Array<{
 const AutonomousAgentsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<AgentJobsTab>('jobs');
   const [showSystemMap, setShowSystemMap] = useState(false);
+  const [showRunDiagnostics, setShowRunDiagnostics] = useState(false);
+  const runDetailRef = useRef<HTMLDivElement>(null);
   const [selectedJob, setSelectedJob] = useState<AgentJob | null>(null);
   // The jobs filter row holds twelve controls and is collapsed by default.
   // Most visits to this page are "what is running", not "narrow this down",
@@ -485,6 +483,7 @@ const AutonomousAgentsPage: React.FC = () => {
   const deepLinkedTraceEventId = useMemo(() => String(new URLSearchParams(location.search).get('trace_event') || '').trim(), [location.search]);
   const deepLinkedHealthTab = useMemo(() => String(new URLSearchParams(location.search).get('tab') || '').trim().toLowerCase() === 'health', [location.search]);
   const deepLinkedQueueTab = useMemo(() => String(new URLSearchParams(location.search).get('tab') || '').trim().toLowerCase() === 'queue', [location.search]);
+  const queueCampaignId = deepLinkedQueueTab ? new URLSearchParams(location.search).get('campaign') : null;
   const deepLinkedQueueCustomer = useMemo(() => new URLSearchParams(location.search).get('queue_customer'), [location.search]);
   const deepLinkedQueueJobId = useMemo(() => new URLSearchParams(location.search).get('queue_job'), [location.search]);
   const deepLinkedQueueHealthDrilldown = useMemo(
@@ -642,9 +641,10 @@ const AutonomousAgentsPage: React.FC = () => {
   );
 
   const { data: checkpointQueueData, isLoading: checkpointQueueLoading, refetch: refetchCheckpointQueue } = useQuery(
-    ['agent-checkpoint-queue', queueItemTypeFilter, queueStatusFilter, queueCustomerFilter, queueJobTypeFilter, queueSlaBucketFilter, queueEscalationFilter, queueOverdueOnly, queueSortBy],
+    ['agent-checkpoint-queue', queueItemTypeFilter, queueStatusFilter, queueCustomerFilter, queueJobTypeFilter, queueSlaBucketFilter, queueEscalationFilter, queueOverdueOnly, queueSortBy, queueJobFilter],
     () => apiClient.getAgentCheckpointQueue({
       item_type: queueItemTypeFilter || undefined,
+      job_id: queueJobFilter || undefined,
       status: queueStatusFilter || undefined,
       customer: queueCustomerFilter || undefined,
       job_type: queueJobTypeFilter || undefined,
@@ -999,7 +999,17 @@ const AutonomousAgentsPage: React.FC = () => {
     }
   }, [deepLinkedTraceTab, deepLinkedHealthTab, deepLinkedJobId, deepLinkedJobData, deepLinkedJobError, deepLinkedQueueTab, deepLinkedQueueCustomer, deepLinkedQueueJobId, deepLinkedQueueHealthDrilldown, deepLinkedDomainTab, deepLinkedFleetTab, deepLinkedInboxTab, deepLinkedHealthCustomer, healthCustomerFilter, queueCustomerFilter, queueHealthDrilldown, queueJobFilter, jobsData, navigate, buildAutonomousAgentsUrl, location.search, location.pathname]);
 
+  useEffect(() => {
+    if (deepLinkedJobId) setDetailPanelCollapsed(false);
+  }, [deepLinkedJobId]);
 
+  useEffect(() => {
+    if (activeTab !== 'jobs' || detailPanelCollapsed || !deepLinkedJobId || selectedJob?.id !== deepLinkedJobId) return;
+    if (window.matchMedia?.('(max-width: 1279px)').matches) {
+      runDetailRef.current?.focus({ preventScroll: true });
+      runDetailRef.current?.scrollIntoView?.({ block: 'start' });
+    }
+  }, [activeTab, deepLinkedJobId, detailPanelCollapsed, selectedJob?.id]);
 
   useEffect(() => {
     if (deepLinkedJobId || selectedJob) return;
@@ -1378,21 +1388,23 @@ const AutonomousAgentsPage: React.FC = () => {
     ['agent-job-chains'],
     () => apiClient.listChainDefinitions()
   );
+  const openDomainResearch = () => {
+    setTemplateRecommendScope('research');
+    if (!templateRecommendGoal.trim()) {
+      setTemplateRecommendGoal(
+        'Research a technical domain, rank evidence-backed ideas, and generate notes'
+      );
+    }
+    setShowDomainResearchQuickStartModal(true);
+  };
+
   // The seven quick starts were seven near-identical JSX blocks differing in
   // three values. Declared once here; the tab renders whatever it is given
   // and knows nothing about scopes or modals.
   const templateQuickStarts: QuickStart[] = [
     {
       label: 'Start Domain Research',
-      onStart: () => {
-        setTemplateRecommendScope('research');
-        if (!templateRecommendGoal.trim()) {
-          setTemplateRecommendGoal(
-            'Research a technical domain, rank evidence-backed ideas, and generate notes'
-          );
-        }
-        setShowDomainResearchQuickStartModal(true);
-      },
+      onStart: openDomainResearch,
     },
     {
       label: 'Start Bug Triage Swarm',
@@ -2022,11 +2034,17 @@ const AutonomousAgentsPage: React.FC = () => {
 
 
 
+  const openNewRun = (job: AgentJob) => {
+    queryClient.setQueryData(['agent-job', job.id, 'deep-link'], job);
+    setActiveTab('jobs');
+    setSelectedJob(job);
+    navigate(`/autonomous-agents?job=${encodeURIComponent(job.id)}`);
+  };
+
   const createMutation = useCreateAgentJobMutation({
     onCreated: (job) => {
       setShowCreateModal(false);
-      setActiveTab('jobs');
-      setSelectedJob(job);
+      openNewRun(job);
     },
   });
 
@@ -2335,8 +2353,7 @@ const AutonomousAgentsPage: React.FC = () => {
         queryClient.invalidateQueries(['agent-jobs-stats']);
         toast.success('Domain research started');
         setShowDomainResearchQuickStartModal(false);
-        setActiveTab('jobs');
-        setSelectedJob(job);
+        openNewRun(job);
       },
       onError: (error: any) => {
         const detail = error?.response?.data?.detail;
@@ -2871,7 +2888,7 @@ const AutonomousAgentsPage: React.FC = () => {
     active = false,
   }) => (
     <div
-      className={`bg-white rounded-lg border p-4 ${
+      className={`bg-gray-100 rounded-lg border px-2 py-2 sm:px-3 sm:py-2.5 ${
         active ? 'border-indigo-300 ring-1 ring-indigo-200' : 'border-gray-200'
       } ${onClick ? 'cursor-pointer hover:shadow-sm' : ''}`}
       onClick={onClick}
@@ -2885,14 +2902,15 @@ const AutonomousAgentsPage: React.FC = () => {
       title={titleHint}
       role={onClick ? 'button' : undefined}
       tabIndex={onClick ? 0 : undefined}
+      aria-pressed={onClick ? active : undefined}
     >
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <div>
-          <p className="text-sm text-gray-500">{title}</p>
-          <p className="text-2xl font-semibold mt-1">{value}</p>
+          <p className="text-[11px] leading-tight text-gray-600 sm:text-xs">{title}</p>
+          <p className="font-mono text-lg font-semibold tabular-nums text-gray-900">{value}</p>
         </div>
-        <div className={`p-3 rounded-lg ${color}`}>
-          <Icon className="w-6 h-6" />
+        <div className={`hidden shrink-0 rounded-md p-2 sm:block ${color}`}>
+          <Icon className="h-4 w-4" />
         </div>
       </div>
     </div>
@@ -2908,28 +2926,45 @@ const AutonomousAgentsPage: React.FC = () => {
   // Create from template modal
 
   return (
-    <div className="p-6 h-full flex flex-col">
+    <div className="flex min-h-full min-w-0 flex-col p-4 lg:p-6 xl:h-full">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Autonomous Agents</h1>
-          <p className="text-gray-500">Manage background jobs that work autonomously toward goals</p>
+          <h1 className="text-2xl font-bold text-gray-900">Agent Runs</h1>
+          <p className="mt-0.5 text-sm text-gray-600">Start background work, follow its progress, and review results.</p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="secondary" onClick={() => setShowSystemMap((prev) => !prev)}>
-            <MapIcon className="w-4 h-4 mr-2" />
+        <nav aria-label="Related research pages" className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          <Link to="/campaigns" className="text-sm text-primary-700 hover:underline">Campaigns</Link>
+          <Link to="/research/inbox" className="text-sm text-primary-700 hover:underline">Research Inbox</Link>
+          <Link to="/research-notes" className="text-sm text-primary-700 hover:underline">Research Notes</Link>
+          <Button type="button" variant="ghost" size="sm" aria-expanded={showSystemMap} onClick={() => setShowSystemMap((prev) => !prev)}>
+            <MapIcon className="mr-2 h-4 w-4" aria-hidden="true" />
             {showSystemMap ? 'Hide System Map' : 'System Map'}
           </Button>
-          <Button variant="secondary" onClick={() => setShowNewCampaignModal(true)}>
-            <Rocket className="w-4 h-4 mr-2" />
-            New Campaign
-          </Button>
-          <Button onClick={() => setShowCreateModal(true)}>
-            <Plus className="w-4 h-4 mr-2" />
-            New Job
-          </Button>
-        </div>
+        </nav>
       </div>
+
+      <section aria-label="Start work" className="mb-4 grid grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))] gap-2.5">
+        {[
+          { label: 'Research a topic', description: 'Gather evidence and generate a research brief.', icon: Brain, onClick: openDomainResearch },
+          { label: 'New Campaign', description: 'Pursue a question across several agent jobs.', icon: Rocket, onClick: () => setShowNewCampaignModal(true) },
+          { label: 'New Job', description: 'Set up a single job with your own instructions.', icon: Plus, onClick: () => setShowCreateModal(true) },
+        ].map(({ label, description, icon: Icon, onClick }) => (
+          <button
+            key={label}
+            type="button"
+            onClick={onClick}
+            className="group flex min-w-0 items-start gap-3 rounded-lg border border-gray-300 bg-gray-100 p-3 text-left transition-colors hover:border-primary-500/70 hover:bg-primary-500/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-600"
+          >
+            <Icon className="mt-0.5 h-4 w-4 shrink-0 text-primary-700" aria-hidden="true" />
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-semibold text-gray-900">{label}</span>
+              <span className="mt-0.5 block text-xs leading-4 text-gray-600">{description}</span>
+            </span>
+            <ArrowRight className="mt-0.5 h-4 w-4 shrink-0 text-gray-500 group-hover:text-primary-700" aria-hidden="true" />
+          </button>
+        ))}
+      </section>
 
       {/* Anything an installed plugin contributes to this page. */}
       <PluginSlot slot="runs.header" compact={false} />
@@ -2954,13 +2989,29 @@ const AutonomousAgentsPage: React.FC = () => {
       )}
 
       {/* Stats */}
-      {stats && (
-        <div className="mb-6">
-          <div className="grid grid-cols-8 gap-4">
-            <StatsCard title="Total Jobs" value={stats.total_jobs} icon={FileText} color="bg-gray-100 text-gray-600" />
-            <StatsCard title="Running" value={stats.running_jobs} icon={Play} color="bg-blue-100 text-blue-600" />
-            <StatsCard title="Completed" value={stats.completed_jobs} icon={CheckCircle2} color="bg-green-100 text-green-600" />
-            <StatsCard title="Failed" value={stats.failed_jobs} icon={AlertCircle} color="bg-red-100 text-red-600" />
+      {stats && activeTab === 'jobs' && (
+        <div className="mb-4 space-y-2">
+          <div className="grid grid-cols-4 gap-1.5 sm:gap-2">
+            <StatsCard title="Total jobs" value={stats.total_jobs} icon={FileText} color="bg-gray-200 text-gray-600" />
+            <StatsCard title="Running" value={stats.running_jobs} icon={Play} color="bg-blue-500/10 text-blue-300" />
+            <StatsCard title="Completed" value={stats.completed_jobs} icon={CheckCircle2} color="bg-primary-500/10 text-primary-700" />
+            <StatsCard title="Failed" value={stats.failed_jobs} icon={AlertCircle} color="bg-red-500/10 text-red-300" />
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-expanded={showRunDiagnostics}
+            onClick={() => setShowRunDiagnostics((open) => !open)}
+          >
+            {showRunDiagnostics ? <ChevronUp className="mr-1.5 h-4 w-4" /> : <ChevronDown className="mr-1.5 h-4 w-4" />}
+            Run diagnostics
+          </Button>
+        </div>
+      )}
+      {stats && activeTab === 'jobs' && showRunDiagnostics && (
+        <div className="mb-4 space-y-2 border-l border-gray-300 pl-3">
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))] gap-2">
             <StatsCard
               title="Guard Blocks"
               value={jobCountSummary.scope_guard_blocked}
@@ -3028,7 +3079,7 @@ const AutonomousAgentsPage: React.FC = () => {
               titleHint="Jobs whose latest fallback attempt still did not end in fallback success"
             />
             <StatsCard
-              title="Claude QS"
+              title="Claude backend"
               value={Number((stats.launch_mode_counts || {}).quick_start_claude_backend || 0)}
               icon={Sparkles}
               color="bg-indigo-100 text-indigo-600"
@@ -3041,7 +3092,7 @@ const AutonomousAgentsPage: React.FC = () => {
               titleHint="Toggle filter: Quick Start Claude Backend"
             />
             <StatsCard
-              title="Domain QS"
+              title="Domain research"
               value={Number((stats.launch_mode_counts || {}).quick_start_domain_research || 0)}
               icon={Brain}
               color="bg-cyan-100 text-cyan-600"
@@ -3054,7 +3105,7 @@ const AutonomousAgentsPage: React.FC = () => {
               titleHint="Toggle filter: Quick Start Domain Research"
             />
             <StatsCard
-              title="Bug Swarm QS"
+              title="Bug triage swarm"
               value={Number((stats.launch_mode_counts || {}).quick_start_bug_triage_swarm || 0)}
               icon={GitBranch}
               color="bg-rose-100 text-rose-600"
@@ -3067,7 +3118,7 @@ const AutonomousAgentsPage: React.FC = () => {
               titleHint="Toggle filter: Quick Start Bug Triage Swarm"
             />
             <StatsCard
-              title="Build Swarm QS"
+              title="Build break swarm"
               value={Number((stats.launch_mode_counts || {}).quick_start_build_break_swarm || 0)}
               icon={Layers}
               color="bg-amber-100 text-amber-700"
@@ -3080,7 +3131,7 @@ const AutonomousAgentsPage: React.FC = () => {
               titleHint="Toggle filter: Quick Start Build Break Swarm"
             />
             <StatsCard
-              title="Frontend Swarm QS"
+              title="Frontend regression"
               value={Number((stats.launch_mode_counts || {}).quick_start_frontend_regression_swarm || 0)}
               icon={Sparkles}
               color="bg-cyan-100 text-cyan-700"
@@ -3093,7 +3144,7 @@ const AutonomousAgentsPage: React.FC = () => {
               titleHint="Toggle filter: Quick Start Frontend Regression Swarm"
             />
             <StatsCard
-              title="Bug Triage QS"
+              title="Repo bug triage"
               value={Number((stats.launch_mode_counts || {}).quick_start_repo_bug_triage || 0)}
               icon={Bug}
               color="bg-amber-100 text-amber-600"
@@ -3106,7 +3157,7 @@ const AutonomousAgentsPage: React.FC = () => {
               titleHint="Toggle filter: Quick Start Repo Bug Triage"
             />
             <StatsCard
-              title="Role QS"
+              title="Role workflow"
               value={Number((stats.launch_mode_counts || {}).quick_start_role_workflow || 0)}
               icon={Layers}
               color="bg-teal-100 text-teal-600"
@@ -3164,74 +3215,63 @@ const AutonomousAgentsPage: React.FC = () => {
       )}
 
       {/* Tabs */}
-        {/* The tabs, grouped by what you are doing.
-            Thirteen of them in one flat row mixed four different activities:
-            work to start, work waiting on you, understanding a run that
-            happened, and configuration. That is the same flat-list problem the
-            navigation had at thirty-one destinations — the grouping existed
-            and was invisible.
-
-            The counts also used to load only once you were already on the tab,
-            so "is anything waiting for me?" could not be answered without
-            clicking three of them. They load regardless now, slowly when you
-            are elsewhere. */}
-        <div className="mb-4 border-b border-gray-200">
-          <div className="flex flex-wrap items-end gap-x-5 gap-y-1">
-            {TAB_GROUPS.map((group, groupIndex) => (
-              <div key={group.name} className="flex items-end gap-1">
-                {groupIndex > 0 && (
-                  <span
-                    className="mx-1 mb-2 h-4 w-px bg-gray-300"
-                    aria-hidden="true"
-                  />
-                )}
-                <div className="flex flex-col">
-                  <span className="px-1 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
-                    {group.name}
-                  </span>
-                  <div className="flex gap-1">
-                    {group.tabs.map((tab) => {
-                      const Icon = tab.icon;
-                      const count = tabCounts[tab.id] || 0;
-                      const active = activeTab === tab.id;
-                      return (
-                        <button
-                          key={tab.id}
-                          type="button"
-                          aria-current={active ? 'page' : undefined}
-                          className={`pb-2 px-2 text-sm font-medium flex items-center gap-1.5 border-b-2
-                            transition-colors duration-fast ${
-                              active
-                                ? 'text-primary-600 border-primary-600'
-                                : 'text-gray-500 border-transparent hover:text-gray-700'
-                            }`}
-                          onClick={() => setActiveTab(tab.id)}
+      <nav aria-label="Agent run views" className="mb-4 border-b border-gray-200">
+        <div className="flex flex-wrap items-end gap-x-5 gap-y-1">
+          {TAB_GROUPS.map((group) => (
+            <div key={group.name} className="min-w-0">
+              <span className="px-1 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+                {group.name}
+              </span>
+              <div className="flex flex-wrap gap-1">
+                {group.tabs.map((tab) => {
+                  const Icon = tab.icon;
+                  const count = tabCounts[tab.id] || 0;
+                  const active = activeTab === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      aria-current={active ? 'page' : undefined}
+                      className={`pb-2 px-2 text-sm font-medium flex items-center gap-1.5 border-b-2
+                        transition-colors duration-fast ${
+                          active
+                            ? 'text-primary-600 border-primary-600'
+                            : 'text-gray-500 border-transparent hover:text-gray-700'
+                        }`}
+                      onClick={() => setActiveTab(tab.id)}
+                    >
+                      <Icon className="w-4 h-4" />
+                      {tab.label}
+                      {count > 0 && (
+                        <span
+                          className={`ml-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-mono ${
+                            tab.urgent
+                              ? 'bg-primary-500/20 text-primary-700'
+                              : 'bg-gray-200 text-gray-600'
+                          }`}
                         >
-                          <Icon className="w-4 h-4" />
-                          {tab.label}
-                          {count > 0 && (
-                            <span
-                              className={`ml-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-mono ${
-                                tab.urgent
-                                  ? 'bg-primary-500/20 text-primary-700'
-                                  : 'bg-gray-200 text-gray-600'
-                              }`}
-                            >
-                              {count}
-                            </span>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
+                          {count}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
-            ))}
-          </div>
+            </div>
+          ))}
         </div>
+      </nav>
 
+      {activeTab === 'queue' && queueCampaignId && (
+        <Link
+          to={`/campaigns?campaign=${encodeURIComponent(queueCampaignId)}`}
+          className="mb-3 self-start text-sm font-medium text-primary-700 hover:underline"
+        >
+          Back to campaign
+        </Link>
+      )}
       {/* Content */}
-      <div className="flex-1 flex gap-6 min-h-0">
+      <div className={`flex min-h-0 min-w-0 flex-1 gap-6 ${activeTab === 'jobs' ? 'xl:min-h-[24rem]' : ''}`}>
         {activeTab === 'queue' && (
           <Suspense fallback={<div className="p-6 text-sm text-gray-500">Loading…</div>}>
             <OperatorQueueTab
@@ -3484,9 +3524,9 @@ const AutonomousAgentsPage: React.FC = () => {
         )}
 
 
-        <div className={activeTab === 'jobs' ? 'flex gap-4 flex-1 min-h-0' : 'hidden'}>
+        <div className={activeTab === 'jobs' ? 'flex min-h-0 min-w-0 flex-1 flex-col gap-4 xl:flex-row' : 'hidden'}>
             {/* Jobs list */}
-            <div className="w-2/3 flex flex-col">
+            <div className="flex min-w-0 flex-1 flex-col">
               {/* Filters, collapsed by default.
                   Twelve controls in one row, and most visits to this page are
                   "what is running" rather than "narrow this down". The toggle
@@ -4055,10 +4095,12 @@ const AutonomousAgentsPage: React.FC = () => {
               {jobsLoading ? (
                 <SkeletonList rows={5} label="Loading jobs" className="flex-1" />
               ) : (Array.isArray((jobsData as any)?.jobs) ? (jobsData as any).jobs.length : 0) === 0 ? (
-                <div className="flex flex-col items-center justify-center flex-1 text-gray-500">
+                <div className="flex flex-1 flex-col items-center justify-center rounded-lg border border-dashed border-gray-300 px-4 py-8 text-center text-gray-600">
                   <Bot className="w-12 h-12 mb-3 text-gray-400" />
                   <p className="text-lg font-medium">No jobs yet</p>
-                  <p className="text-sm">Create a new job or use a template to get started</p>
+                  <Button type="button" variant="secondary" size="sm" className="mt-3" onClick={() => setActiveTab('templates')}>
+                    Browse job templates
+                  </Button>
                 </div>
               ) : jobsForDisplay.length === 0 ? (
                 <div className="flex flex-col items-center justify-center flex-1 text-gray-500">
@@ -4067,7 +4109,7 @@ const AutonomousAgentsPage: React.FC = () => {
                   <p className="text-sm">Try clearing graph health or swarm filters</p>
                 </div>
               ) : (
-                <div className="grid grid-cols-2 gap-4 overflow-y-auto flex-1">
+                <div className="grid max-h-[28rem] flex-1 grid-cols-[repeat(auto-fit,minmax(min(100%,18rem),1fr))] content-start gap-3 overflow-y-auto xl:max-h-none">
                   {jobsForDisplay.map((job) => (
                     <JobCard
                       key={job.id}
@@ -4129,7 +4171,7 @@ const AutonomousAgentsPage: React.FC = () => {
                 )}
               </div>
             ) : (
-            <div className="w-1/3 shrink-0 relative">
+            <div ref={runDetailRef} tabIndex={-1} className={`relative min-w-0 shrink-0 xl:w-1/3 ${selectedJob ? '' : 'hidden xl:block'}`}>
               <button
                 type="button"
                 aria-label="Collapse detail panel"
@@ -4283,9 +4325,11 @@ const AutonomousAgentsPage: React.FC = () => {
       {showNewCampaignModal && (
         <NewCampaignModal
           onClose={() => setShowNewCampaignModal(false)}
-          onCreated={() => {
+          onCreated={(campaign) => {
             queryClient.invalidateQueries(['agent-jobs']);
             queryClient.invalidateQueries(['agent-jobs-stats']);
+            queryClient.invalidateQueries(['research-campaigns']);
+            navigate(`/campaigns?campaign=${encodeURIComponent(campaign.id)}`);
           }}
         />
       )}

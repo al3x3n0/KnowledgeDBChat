@@ -1,7 +1,8 @@
 import asyncio
 import hashlib
 from datetime import datetime
-from uuid import UUID
+from unittest.mock import AsyncMock
+from uuid import UUID, uuid4
 
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.models.document import Document, DocumentSource
@@ -20,6 +21,86 @@ def test_synthesis_types_info_includes_decision_memo(client, auth_headers):
     payload = response.json()
     values = {item["value"] for item in payload["types"]}
     assert "decision_memo" in values
+
+
+def test_run_only_write_up_can_be_saved_with_its_sources(
+    client, db_session, test_user, admin_user, auth_headers, monkeypatch
+):
+    from app.services.synthesis_service import synthesis_service
+    from app.tasks.synthesis_tasks import execute_synthesis_task
+
+    run = AgentJob(
+        id=uuid4(),
+        user_id=test_user.id,
+        name="Cache validation run",
+        goal="Measure cycles",
+        status=AgentJobStatus.COMPLETED.value,
+        results={
+            "findings": [
+                {"type": "simulated_measurement", "title": "Cache trace", "cycles": 500}
+            ]
+        },
+    )
+    other_run = AgentJob(
+        id=uuid4(),
+        user_id=admin_user.id,
+        name="Another user's run",
+        goal="Private goal",
+    )
+
+    async def _seed():
+        db_session.add_all([run, other_run])
+        await db_session.commit()
+
+    asyncio.get_event_loop().run_until_complete(_seed())
+    queued = []
+    monkeypatch.setattr(
+        execute_synthesis_task, "delay", lambda *args: queued.append(args)
+    )
+    generate = AsyncMock(
+        return_value="# Cache study report\n\nThe trace took 500 cycles."
+    )
+    monkeypatch.setattr(synthesis_service.llm, "generate_response", generate)
+    request = {
+        "job_type": "research_report",
+        "title": "Write-up: Cache validation run",
+        "topic": "Measure cycles",
+        "document_ids": [],
+    }
+
+    rejected = client.post(
+        "/api/v1/synthesis",
+        headers=auth_headers,
+        json={**request, "agent_job_ids": [str(other_run.id)]},
+    )
+    assert rejected.status_code == 404
+    created = client.post(
+        "/api/v1/synthesis",
+        headers=auth_headers,
+        json={**request, "agent_job_ids": [str(run.id)] * 2},
+    )
+    assert created.status_code == 200
+    synthesis_id = created.json()["id"]
+    assert created.json()["agent_job_ids"] == [str(run.id)]
+    assert queued == [(synthesis_id, str(test_user.id))]
+
+    async def _execute():
+        job = await db_session.get(SynthesisJob, UUID(synthesis_id))
+        return await synthesis_service.execute_synthesis(db_session, job)
+
+    result = asyncio.get_event_loop().run_until_complete(_execute())
+    source_runs = [{"id": str(run.id), "name": run.name}]
+    assert result["metadata"]["agent_run_sources"] == source_runs
+    assert "cycles=500" in generate.await_args.kwargs["query"]
+    fetched = client.get(f"/api/v1/synthesis/{synthesis_id}", headers=auth_headers)
+    assert fetched.json()["result_content"].startswith("# Cache study report")
+    saved = client.post(
+        f"/api/v1/synthesis/{synthesis_id}/save-as-note", headers=auth_headers, json={}
+    )
+    assert saved.status_code == 201
+    saved_provenance = saved.json()["attribution"]["saved_from_synthesis"]
+    assert saved_provenance["job_id"] == synthesis_id
+    assert saved_provenance["result_metadata"]["agent_run_sources"] == source_runs
 
 
 def test_create_decision_memo_synthesis_job(

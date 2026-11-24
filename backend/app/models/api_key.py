@@ -74,9 +74,16 @@ class APIKey(Base):
         JSON, nullable=True
     )  # List of allowed tool names, null = all tools
     source_access_mode = Column(String(20), default="all")  # "all" or "restricted"
+    # A list identifies an MCP-only key and binds it to installed programs.
+    mcp_programs = Column(JSON(none_as_null=True), nullable=True)
+    mcp_prompts = Column(JSON(none_as_null=True), nullable=True)
 
     def __repr__(self):
         return f"<APIKey(id={self.id}, name='{self.name}', user_id={self.user_id})>"
+
+    @property
+    def is_mcp_profile(self) -> bool:
+        return self.mcp_programs is not None
 
     def is_valid(self) -> bool:
         """Check if the API key is currently valid."""

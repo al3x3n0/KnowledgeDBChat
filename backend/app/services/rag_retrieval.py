@@ -53,6 +53,7 @@ async def retrieve(
     user_settings: Optional[Any] = None,
     document_ids: Optional[List[str]] = None,
     max_results: Optional[int] = None,
+    include_knowledge_graph: bool = True,
 ) -> Retrieved:
     """Find and prepare the passages a question is answered from.
 
@@ -62,6 +63,9 @@ async def retrieve(
     `document_ids` restricts the search to those documents, in the store
     itself: filtering the best passages from anywhere afterwards lets other
     documents crowd out the ones asked about.
+
+    Callers enforcing document access can disable knowledge graph context,
+    whose relationships may span sources.
     """
     max_results = int(max_results or settings.MAX_SEARCH_RESULTS)
     # Process query
@@ -156,6 +160,14 @@ async def retrieve(
             "trace": one_trace,
         }
 
+    if document_ids is not None:
+        allowed = set(document_ids)
+        search_results = [
+            result
+            for result in search_results
+            if str((result.get("metadata") or {}).get("document_id")) in allowed
+        ]
+
     # Filter by relevance
     search_results = context_manager.filter_by_relevance(search_results)
 
@@ -190,7 +202,7 @@ async def retrieve(
 
     # Inject Knowledge Graph context if enabled
     kg_context = ""
-    if settings.RAG_KG_CONTEXT_ENABLED:
+    if include_knowledge_graph and settings.RAG_KG_CONTEXT_ENABLED:
         try:
             from app.services.knowledge_graph_service import KnowledgeGraphService
 
@@ -290,12 +302,14 @@ async def retrieve_for_answer(
     user_settings: Optional[Any] = None,
     document_ids: Optional[List[str]] = None,
     max_results: Optional[int] = None,
+    include_knowledge_graph: bool = True,
 ) -> Retrieved:
     """`retrieve`, for a caller that has no query processor of its own."""
     return await retrieve(
         query,
         document_ids=document_ids,
         max_results=max_results,
+        include_knowledge_graph=include_knowledge_graph,
         db=db,
         vector_store=vector_store,
         query_processor=_QUERY_PROCESSOR,

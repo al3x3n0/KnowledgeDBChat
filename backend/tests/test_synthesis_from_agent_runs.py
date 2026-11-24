@@ -11,6 +11,8 @@ import uuid
 import pytest
 
 from app.models.agent_job import AgentJob
+from app.models.agent_retraction import RetractionKind
+from app.services import agent_retraction_service
 from app.services.synthesis_service import synthesis_service
 
 pytestmark = pytest.mark.unit
@@ -35,6 +37,87 @@ async def _make_run(
 
 
 class TestAgentRunsAsSources:
+    @pytest.mark.asyncio
+    async def test_reproduction_conditions_and_blockers_survive_report_context(
+        self, db_session, test_user
+    ):
+        job = await _make_run(
+            db_session,
+            test_user.id,
+            findings=[
+                {"type": "simulated_measurement", "title": f"Trial {i}", "cycles": i}
+                for i in range(55)
+            ]
+            + [
+                {
+                    "type": "reproduction_verdict",
+                    "subject": "Streaming kernel",
+                    "verdict": "incomparable",
+                    "claimed_value": 40,
+                    "claimed_unit": "%",
+                    "measured_value": 1.4,
+                    "measured_unit": "×",
+                    "claimed_conditions": {"input_size": "64"},
+                    "measured_conditions": {"input_size": "128"},
+                    "measurement_source": "gem5, five trials",
+                    "claim_location": "Table 2",
+                    "blockers": ["The input sizes differ."],
+                }
+            ],
+        )
+
+        sources = await synthesis_service._load_agent_runs(
+            db_session, [str(job.id)], test_user.id
+        )
+        content = synthesis_service._prepare_document_context(sources)
+        assert "(incomparable)" in content
+        assert "Paper claim: 40 %" in content
+        assert "Run measurement: 1.4 ×" in content
+        assert "Paper conditions: input_size=64" in content
+        assert "Run conditions: input_size=128" in content
+        assert "Table 2" in content
+        assert "gem5, five trials" in content
+        assert "The input sizes differ." in content
+
+    @pytest.mark.asyncio
+    async def test_context_excludes_inherited_recalled_and_disputed_evidence(
+        self, db_session, test_user
+    ):
+        job = await _make_run(
+            db_session,
+            test_user.id,
+            findings=[
+                {"type": "benchmark_measurement", "title": "Rejected timing"},
+                {
+                    "type": "benchmark_measurement",
+                    "title": "Other stage timing",
+                    "inherited": True,
+                },
+                {
+                    "type": "benchmark_measurement",
+                    "title": "Old timing",
+                    "recalled": True,
+                },
+                {"type": "benchmark_measurement", "title": "Fresh timing"},
+            ],
+        )
+        await agent_retraction_service.retract(
+            db_session,
+            user_id=test_user.id,
+            kind=RetractionKind.FINDING,
+            ref=agent_retraction_service.finding_ref(job.id, 0),
+            reason="Bad timing setup",
+        )
+        await db_session.commit()
+
+        (source,) = await synthesis_service._load_agent_runs(
+            db_session, [str(job.id)], test_user.id
+        )
+        assert "Fresh timing" in source["content"]
+        assert "Rejected timing" not in source["content"]
+        assert "Other stage timing" not in source["content"]
+        assert "Old timing" not in source["content"]
+
     @pytest.mark.asyncio
     async def test_a_runs_measurements_reach_the_document(self, db_session, test_user):
         job = await _make_run(

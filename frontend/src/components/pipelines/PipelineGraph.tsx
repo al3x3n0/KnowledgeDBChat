@@ -191,7 +191,7 @@ const PipelineGraphInner: React.FC<PipelineGraphProps> = ({
   onSelectStage,
 }) => {
   const stages = useMemo(
-    () => (Array.isArray(spec.stages) ? spec.stages : []),
+    () => (Array.isArray(spec.stages) ? spec.stages.filter((stage) => stage && typeof stage === 'object') : []),
     [spec.stages]
   );
 

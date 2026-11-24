@@ -308,6 +308,41 @@ async def test_a_document_filter_is_applied_by_the_store(db_session, model):
     assert [r["metadata"]["title"] for r in retrieved.results] == ["Wanted"]
 
 
+async def test_scoped_retrieval_excludes_unexpected_hits_and_knowledge_graph(
+    db_session, model, monkeypatch
+):
+    from app.services.knowledge_graph_service import KnowledgeGraphService
+
+    wanted, other = await _documents(db_session, "Allowed paper", "Private paper")
+    store = _Store([_hit(other, 0.95), _hit(wanted, 0.9)])
+    graph_queries = []
+
+    async def unfiltered_search(**kwargs):
+        assert kwargs["document_ids"] == [str(wanted.id)]
+        return store.hits, {}
+
+    async def graph_query(*args, **kwargs):
+        graph_queries.append(True)
+        return {"kg_context": "Private graph context"}
+
+    monkeypatch.setattr(store, "search_with_trace", unfiltered_search)
+    monkeypatch.setattr(settings, "RAG_KG_CONTEXT_ENABLED", True)
+    monkeypatch.setattr(KnowledgeGraphService, "build_chat_context_pack", graph_query)
+    retrieved = await rag_retrieval.retrieve_for_answer(
+        "question",
+        db=db_session,
+        vector_store=store,
+        llm_service=LLMService(),
+        document_ids=[str(wanted.id)],
+        include_knowledge_graph=False,
+    )
+
+    assert [r["metadata"]["title"] for r in retrieved.results] == ["Allowed paper"]
+    assert "Private paper" not in retrieved.context
+    assert retrieved.kg_context == ""
+    assert graph_queries == []
+
+
 async def test_the_passage_budget_is_the_callers(db_session, model):
     docs = await _documents(db_session, *[f"Doc {i}" for i in range(6)])
     store = _Store([_hit(d, 0.9 - i * 0.01) for i, d in enumerate(docs)])

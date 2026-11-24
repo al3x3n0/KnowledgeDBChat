@@ -109,13 +109,12 @@ class ChatTool:
             # question about one source was answered "nothing relevant"
             # whenever other sources matched better; and a filter matching no
             # document was treated as no filter at all.
-            filtering = bool(source_ids or document_ids)
             accessible_doc_ids = await self._get_accessible_doc_ids(
                 auth, db, source_ids, document_ids
             )
             doc_id_set = (
-                set(str(doc_id) for doc_id in accessible_doc_ids or [])
-                if filtering
+                {str(doc_id) for doc_id in accessible_doc_ids}
+                if accessible_doc_ids is not None
                 else None
             )
 
@@ -138,6 +137,7 @@ class ChatTool:
                 user_settings=user_settings,
                 document_ids=sorted(doc_id_set) if doc_id_set else None,
                 max_results=max_context_chunks,
+                include_knowledge_graph=not auth.sources_restricted,
             )
             results = retrieved.results
 
@@ -217,6 +217,19 @@ class ChatTool:
         document_ids: Optional[List[str]] = None,
     ) -> Optional[List[UUID]]:
         """Get document IDs accessible to user based on filters."""
+        allowed_sources = auth.source_filter("chat")
+        if allowed_sources is not None:
+            query = select(Document.id).where(Document.source_id.in_(allowed_sources))
+            if source_ids:
+                query = query.where(
+                    Document.source_id.in_([UUID(sid) for sid in source_ids])
+                )
+            if document_ids:
+                query = query.where(
+                    Document.id.in_([UUID(did) for did in document_ids])
+                )
+            return list(await db.scalars(query))
+
         # If specific document IDs are provided, use those
         if document_ids:
             return [UUID(did) for did in document_ids]

@@ -88,6 +88,20 @@ def _roots(pipeline: Pipeline) -> List[str]:
     ]
 
 
+def launch_problems(pipeline: Pipeline) -> List[str]:
+    """Whether this pipeline can start from the one job the launcher needs."""
+    roots = _roots(pipeline)
+    if not roots:
+        return ["Pipeline compiled to no jobs"]
+    if len(roots) > 1:
+        names = ", ".join(roots)
+        return [
+            f"This pipeline has {len(roots)} independent starting stages ({names}). "
+            "Give them a common first stage."
+        ]
+    return []
+
+
 def expressible(pipeline: Pipeline) -> List[str]:
     """What the chain machinery cannot build from this pipeline.
 

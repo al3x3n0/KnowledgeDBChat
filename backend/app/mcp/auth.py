@@ -6,15 +6,24 @@ Handles API key validation and user context for MCP requests.
 
 import hashlib
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from fastapi import HTTPException, Request, status
 from loguru import logger
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.api_key import APIKey, APIKeyUsageLog
+from app.models.document import DocumentSource
+from app.models.mcp_config import (
+    MCP_PROFILE_TOOLS,
+    MCP_TOOLS,
+    RESEARCH_NOTES_TOOL,
+    RESEARCH_PROGRAM_TOOL,
+    MCPSourceAccess,
+    MCPToolConfig,
+)
 from app.models.user import User
 from app.services import viewer_access
 from app.services.auth_service import is_admin
@@ -60,6 +69,62 @@ class MCPAuthContext:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"API key missing required scope: {scope}",
             )
+
+    async def allowed_tools(self, db: AsyncSession) -> set[str]:
+        if not self.api_key.is_mcp_enabled():
+            return set()
+        disabled = set(
+            await db.scalars(
+                select(MCPToolConfig.tool_name).where(
+                    MCPToolConfig.api_key_id == self.api_key.id,
+                    MCPToolConfig.is_enabled.is_(False),
+                )
+            )
+        )
+        allowed = {
+            name
+            for name, tool in MCP_TOOLS.items()
+            if name not in disabled
+            and self.api_key.is_tool_allowed(name)
+            and self.has_scope(tool["required_scope"])
+        }
+        if not self.api_key.mcp_programs:
+            allowed.discard(RESEARCH_PROGRAM_TOOL)
+        if self.api_key.mcp_programs is not None:
+            return allowed.intersection(
+                (*MCP_PROFILE_TOOLS, RESEARCH_PROGRAM_TOOL, RESEARCH_NOTES_TOOL),
+                self.api_key.allowed_tools or (),
+            )
+        allowed.discard(RESEARCH_NOTES_TOOL)
+        return allowed
+
+    async def require_tool(self, name: str, db: AsyncSession) -> None:
+        if name not in await self.allowed_tools(db):
+            raise HTTPException(403, f"Tool '{name}' is not allowed for this API key")
+
+    @property
+    def sources_restricted(self) -> bool:
+        return getattr(self.api_key, "source_access_mode", None) == "restricted"
+
+    def source_filter(
+        self, operation: Literal["read", "search", "chat"]
+    ) -> Optional[Select[tuple[UUID]]]:
+        if not self.sources_restricted:
+            return None
+        permission = {
+            "read": MCPSourceAccess.can_read,
+            "search": MCPSourceAccess.can_search,
+            "chat": MCPSourceAccess.can_chat,
+        }[operation]
+        return (
+            select(MCPSourceAccess.source_id)
+            .join(DocumentSource, DocumentSource.id == MCPSourceAccess.source_id)
+            .where(
+                MCPSourceAccess.api_key_id == self.api_key.id,
+                permission.is_(True),
+                DocumentSource.is_active.is_(True),
+            )
+        )
 
 
 def hash_api_key(key: str) -> str:

@@ -1,5 +1,5 @@
 import React, { Suspense, lazy } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from 'react-query';
 import { Toaster } from 'react-hot-toast';
 
@@ -7,12 +7,14 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { NotificationProvider } from './contexts/NotificationContext';
 import Layout from './components/Layout';
 import LandingRedirect from './navigation/LandingRedirect';
+import { HOME_ROUTE } from './navigation/catalog';
 import PluginViewPage from './plugins/PluginViewPage';
 import LoadingSpinner from './components/common/LoadingSpinner';
 import ErrorBoundary from './components/common/ErrorBoundary';
 
 // Lazy load pages for code splitting
 const LoginPage = lazy(() => import('./pages/LoginPage'));
+const HomePage = lazy(() => import('./pages/HomePage'));
 const ChatPage = lazy(() => import('./pages/ChatPage'));
 const DocumentsPage = lazy(() => import('./pages/DocumentsPage'));
 const MemoryPage = lazy(() => import('./pages/MemoryPage'));
@@ -25,6 +27,7 @@ const KGAuditPage = lazy(() => import('./pages/KGAuditPage'));
 const DocumentGraphPage = lazy(() => import('./pages/DocumentGraphPage'));
 const TemplateFillPage = lazy(() => import('./pages/TemplateFillPage'));
 const WorkflowsPage = lazy(() => import('./pages/WorkflowsPage'));
+const WorkflowExecutionHistoryPage = lazy(() => import('./pages/WorkflowExecutionHistoryPage'));
 const PipelineStudioPage = lazy(() => import('./pages/PipelineStudioPage'));
 const WorkflowEditorPage = lazy(() => import('./pages/WorkflowEditorPage'));
 const ToolsPage = lazy(() => import('./pages/ToolsPage'));
@@ -54,6 +57,7 @@ const ArtifactDraftsPage = lazy(() => import('./pages/ArtifactDraftsPage'));
 const SynthesisPage = lazy(() => import('./pages/SynthesisPage'));
 const AIHubPage = lazy(() => import('./pages/AIHubPage'));
 const ResearchNotesPage = lazy(() => import('./pages/ResearchNotesPage'));
+const ExperimentComparisonPage = lazy(() => import('./pages/ExperimentComparisonPage'));
 
 // Create a client
 const queryClient = new QueryClient({
@@ -68,6 +72,7 @@ const queryClient = new QueryClient({
 // Protected Route component
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, loading } = useAuth();
+  const { pathname, search, hash } = useLocation();
 
   if (loading) {
     return (
@@ -78,15 +83,16 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =
   }
 
   if (!user) {
-    return <Navigate to="/login" replace />;
+    return <Navigate to="/login" replace state={{ returnTo: pathname + search + hash }} />;
   }
 
   return <>{children}</>;
 };
 
-// Public Route component (redirect to chat if already authenticated)
+// Public routes hand signed-in users back to their destination or landing page.
 const PublicRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, loading } = useAuth();
+  const { state } = useLocation();
 
   if (loading) {
     return (
@@ -97,10 +103,9 @@ const PublicRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   }
 
   if (user) {
-    // Via "/" rather than straight to /chat, so signing in lands where this
-    // account is configured to land. Hardcoding it here would make the
-    // preference hold for every route into the app except the front door.
-    return <Navigate to="/" replace />;
+    const returnTo = state?.returnTo;
+    const inApp = typeof returnTo === 'string' && /^\/(?![/\\])/.test(returnTo);
+    return <Navigate to={inApp ? returnTo : '/'} replace />;
   }
 
   return <>{children}</>;
@@ -139,6 +144,7 @@ const AppRoutes: React.FC = () => {
           }
         >
           <Route index element={<LandingRedirect />} />
+          <Route path={HOME_ROUTE} element={<HomePage />} />
           {/* Every contributed page lives under this one route shape. A
               manifest cannot choose its own path, or an installed plugin could
               claim /documents and shadow a first-party page. */}
@@ -371,6 +377,14 @@ const AppRoutes: React.FC = () => {
             }
           />
           <Route
+            path="workflows/:workflowId/executions"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <WorkflowExecutionHistoryPage />
+              </Suspense>
+            }
+          />
+          <Route
             path="pipelines"
             element={
               <Suspense fallback={<PageLoader />}>
@@ -471,6 +485,14 @@ const AppRoutes: React.FC = () => {
             element={
               <Suspense fallback={<PageLoader />}>
                 <ResearchNotesPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="research-notes/experiments/:planId/compare"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <ExperimentComparisonPage />
               </Suspense>
             }
           />

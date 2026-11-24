@@ -1,8 +1,10 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from 'react-query';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
+import HomePage from '../../pages/HomePage';
+import LandingRedirect from '../LandingRedirect';
 import NavigationSettings from '../NavigationSettings';
 
 jest.mock('react-hot-toast', () => ({
@@ -15,14 +17,14 @@ jest.mock('../../services/api', () => ({
     getMyPreferences: jest.fn(),
     updateMyPreferences: jest.fn(),
     getLatexStatus: jest.fn(),
+    getMyPluginUi: jest.fn(),
   },
 }));
 
-jest.mock('../../contexts/AuthContext', () => ({
-  useAuth: () => ({ user: { id: 'u1', role: 'user' } }),
-}));
+jest.mock('../../contexts/AuthContext', () => ({ useAuth: jest.fn() }));
 
 const apiClient = require('../../services/api').apiClient;
+const { useAuth } = require('../../contexts/AuthContext');
 
 function renderPanel() {
   const client = new QueryClient({
@@ -44,8 +46,10 @@ const savedNav = (call = 0) =>
 describe('NavigationSettings', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    useAuth.mockReturnValue({ user: { id: 'u1', role: 'user' } });
     apiClient.getMyPreferences.mockResolvedValue({ ui: null });
     apiClient.getLatexStatus.mockResolvedValue({ enabled: false });
+    apiClient.getMyPluginUi.mockResolvedValue({ plugins: [] });
     apiClient.updateMyPreferences.mockImplementation(async (body: any) => body);
   });
 
@@ -74,10 +78,10 @@ describe('NavigationSettings', () => {
     // Keys must stay stable across a rename or every other preference on that
     // entry -- the pin, the hide -- would be orphaned by it.
     renderPanel();
-    const runs = await screen.findByText('Runs');
+    const runs = await screen.findByText('Agent Runs');
 
     fireEvent.click(runs);
-    const input = screen.getByLabelText('Rename Runs');
+    const input = screen.getByLabelText('Rename Agent Runs');
     fireEvent.change(input, { target: { value: 'My Runs' } });
     fireEvent.keyDown(input, { key: 'Enter' });
 
@@ -93,7 +97,7 @@ describe('NavigationSettings', () => {
     const runs = await screen.findByText('My Runs');
 
     fireEvent.click(runs);
-    const input = screen.getByLabelText('Rename Runs');
+    const input = screen.getByLabelText('Rename Agent Runs');
     fireEvent.change(input, { target: { value: '   ' } });
     fireEvent.keyDown(input, { key: 'Enter' });
 
@@ -134,6 +138,45 @@ describe('NavigationSettings', () => {
     await screen.findByText('Papers');
 
     expect(screen.queryByLabelText('Move Settings up')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Move R&D up')).toBeInTheDocument();
+    expect(screen.getByLabelText('Move Research & Agents up')).toBeInTheDocument();
+  });
+
+  function renderLanding() {
+    return render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <Routes>
+            <Route index element={<LandingRedirect />} />
+            <Route path="/home" element={<HomePage />} />
+            <Route path="/chat" element={<h1>Saved chat landing page</h1>} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+  }
+
+  it('offers task entry points on the default landing page', async () => {
+    renderLanding();
+
+    expect(await screen.findByRole('link', { name: /ask the library/i })).toHaveAttribute('href', '/chat');
+    expect(screen.getByRole('link', { name: /run an investigation/i })).toHaveAttribute('href', '/campaigns');
+    expect(screen.getByRole('link', { name: /monitor a topic/i })).toHaveAttribute('href', '/settings/domain-profiles');
+    expect(screen.getByRole('link', { name: /share context/i })).toHaveAttribute('href', '/mcp-config');
+  });
+
+  it('honors an existing landing preference', async () => {
+    apiClient.getMyPreferences.mockResolvedValue({ ui: { nav: { landing: '/chat' } } });
+    renderLanding();
+
+    expect(await screen.findByRole('heading', { name: 'Saved chat landing page' })).toBeInTheDocument();
+  });
+
+  it('offers tasks that a viewer can perform', async () => {
+    useAuth.mockReturnValue({ user: { id: 'viewer', role: 'viewer' } });
+    renderLanding();
+
+    expect(await screen.findByRole('link', { name: /browse documents/i })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /run an investigation/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /share context/i })).not.toBeInTheDocument();
   });
 });

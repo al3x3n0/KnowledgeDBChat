@@ -42,6 +42,7 @@ from app.core.database import Base
 
 class CampaignStatus:
     ACTIVE = "active"
+    PAUSED = "paused"
     COMPLETED = "completed"
     EXHAUSTED = "exhausted"
     CANCELLED = "cancelled"

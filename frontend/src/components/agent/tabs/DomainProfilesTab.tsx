@@ -226,7 +226,7 @@ export const DomainProfilesTab: React.FC<DomainProfilesTabProps> = ({
         queryClient.invalidateQueries(['domain-research-profiles']);
         queryClient.invalidateQueries(['agent-jobs']);
         queryClient.invalidateQueries(['agent-jobs-stats']);
-        toast.success('Domain profile created');
+        toast.success('Topic monitor started');
         setDomainProfileTitle('');
         setDomainProfileTopic('');
         setDomainProfileObjective('');
@@ -239,7 +239,7 @@ export const DomainProfilesTab: React.FC<DomainProfilesTabProps> = ({
         setDomainProfileSandboxProfileId(resolveSandboxProfileId('compiler'));
       },
       onError: (error: any) => {
-        toast.error(error.message || 'Failed to create domain profile');
+        toast.error(error.message || 'Failed to start topic monitor');
       },
     }
   );
@@ -259,7 +259,7 @@ export const DomainProfilesTab: React.FC<DomainProfilesTabProps> = ({
         queryClient.invalidateQueries(['agent-jobs-stats']);
       },
       onError: (error: any) => {
-        toast.error(error.message || 'Domain profile action failed');
+        toast.error(error.message || 'Topic monitor action failed');
       },
     }
   );
@@ -299,8 +299,8 @@ export const DomainProfilesTab: React.FC<DomainProfilesTabProps> = ({
       <div className="grid grid-cols-3 gap-4">
         <div className="col-span-1 bg-white border border-gray-200 rounded-lg p-4 space-y-3">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900">Domain Profiles</h2>
-            <p className="text-sm text-gray-500">Saved R&D research monitors that persist notes, delta summaries, and experiment plans.</p>
+            <h2 className="text-lg font-semibold text-gray-900">Topic Monitors</h2>
+            <p className="text-sm text-gray-500">Check a research topic on a schedule and save findings, changes, and experiment plans.</p>
           </div>
           <Button
             variant="secondary"
@@ -312,7 +312,7 @@ export const DomainProfilesTab: React.FC<DomainProfilesTabProps> = ({
           {renderScientificSandboxManagementPanel()}
           <input
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
-            placeholder="Profile title"
+            placeholder="Monitor title"
             value={domainProfileTitle}
             onChange={(e) => setDomainProfileTitle(e.target.value)}
           />
@@ -916,7 +916,7 @@ export const DomainProfilesTab: React.FC<DomainProfilesTabProps> = ({
                 );
               })}
               {!(((domainProfilesData as any)?.items || []) as DomainResearchProfile[]).length ? (
-                <div className="text-sm text-gray-500">No domain profiles yet.</div>
+                <div className="text-sm text-gray-500">No topic monitors yet.</div>
               ) : null}
             </div>
           )}

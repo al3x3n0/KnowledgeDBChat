@@ -124,19 +124,22 @@ describe('renaming', () => {
 });
 
 describe('the landing page', () => {
-  it('defaults to chat', () => {
-    expect(landingPath(catalog(), undefined)).toBe('/chat');
+  it('defaults to Home', () => {
+    expect(landingPath(catalog(), undefined)).toBe('/home');
   });
 
   it('honours a reachable choice', () => {
     expect(landingPath(catalog(), { landing: '/documents' })).toBe('/documents');
+    expect(landingPath(catalog(), { landing: '/chat' })).toBe('/chat');
+    expect(landingPath(catalog(), { landing: '/research/fleet' })).toBe('/research/fleet');
+    expect(landingPath(catalog(), { landing: '/settings/domain-profiles' })).toBe('/settings/domain-profiles');
   });
 
   it('falls back when the choice is no longer reachable', () => {
     // A page they lost admin for, or that was removed. The alternative is an
     // account that opens on a 404 with no way back but typing a URL.
-    expect(landingPath(catalog(), { landing: '/usage' })).toBe('/chat');
-    expect(landingPath(catalog(), { landing: '/gone' })).toBe('/chat');
+    expect(landingPath(catalog(), { landing: '/usage' })).toBe('/home');
+    expect(landingPath(catalog(), { landing: '/gone' })).toBe('/home');
   });
 
   it('allows an admin the page a non-admin cannot land on', () => {

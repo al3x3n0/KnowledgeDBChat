@@ -1,6 +1,7 @@
 import React from 'react';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from 'react-query';
+import { MemoryRouter } from 'react-router-dom';
 
 import ResearchProgramsPanel from '../ResearchProgramsPanel';
 import { apiClient } from '../../../services/api';
@@ -18,7 +19,9 @@ function renderPanel() {
   });
   return render(
     <QueryClientProvider client={client}>
-      <ResearchProgramsPanel />
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <ResearchProgramsPanel />
+      </MemoryRouter>
     </QueryClientProvider>
   );
 }
@@ -52,6 +55,10 @@ it('shows loaded contributions alongside failures and disabled programs', async 
   const loaded = await screen.findByRole('region', { name: 'Loaded programs' });
   expect(within(loaded).getByText('uarch_lab · 0.1')).toBeInTheDocument();
   expect(within(loaded).getByText('Microarchitecture experiments')).toBeInTheDocument();
+  expect(within(loaded).getByRole('link', { name: 'Create MCP from program' })).toHaveAttribute(
+    'href',
+    '/mcp-config?program=uarch_lab'
+  );
   fireEvent.click(within(loaded).getByText('Tools (1)'));
   expect(within(loaded).getByText('run_simulator')).toBeVisible();
   fireEvent.click(within(loaded).getByText('Sandbox images (1)'));

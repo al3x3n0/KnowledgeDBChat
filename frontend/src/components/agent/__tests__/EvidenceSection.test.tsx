@@ -8,12 +8,12 @@
  * of evidence a later change invalidates.
  */
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from 'react-query';
 
 import EvidenceSection from '../EvidenceSection';
-import type { AgentJob, AgentJobEvidence } from '../../../types';
+import type { AgentJob, AgentJobEvidence, AgentJobEvidenceItem } from '../../../types';
 
 jest.mock('../../../services/api', () => ({
   apiClient: {
@@ -69,12 +69,12 @@ const evidence = (over: Partial<AgentJobEvidence> = {}): AgentJobEvidence => ({
   ...over,
 });
 
-const renderSection = () =>
+const renderSection = (onOpenDocument?: (id: string) => void) =>
   render(
     <QueryClientProvider
       client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
     >
-      <EvidenceSection job={{ id: 'job-1' } as AgentJob} />
+      <EvidenceSection job={{ id: 'job-1' } as AgentJob} onOpenDocument={onOpenDocument} />
     </QueryClientProvider>
   );
 
@@ -99,8 +99,91 @@ it('shows a requirement that nothing answered', async () => {
 
   renderSection();
 
-  expect(await screen.findByText('reproduction_verdict')).toBeInTheDocument();
-  expect(screen.getByText(/Nothing of this type was produced/)).toBeInTheDocument();
+  expect(await screen.findByText('Paper reproduction')).toBeInTheDocument();
+  expect(screen.getByText(/A reproduction verdict has yet to be recorded/)).toBeInTheDocument();
+});
+
+const reproduction: AgentJobEvidenceItem = {
+  ...benchmark({
+    index: 1, type: 'reproduction_verdict', title: 'Streaming kernel', values: [],
+    has_uncertainty: false, measurement_environment: '',
+  }),
+  reproduction: {
+    verdict: 'reproduced',
+    metric: 'Speedup',
+    claimed_value: 40,
+    claimed_unit: '%',
+    measured_value: 1.38,
+    measured_unit: '×',
+    relative_error: 0.0143,
+    tolerance: 0.2,
+    claim_document_id: 'paper-1',
+    claim_location: 'Table 2',
+    measurement_source: 'Gem5 simulator, 5 trials',
+    claimed_conditions: [{ label: 'input_size', value: '64 tokens' }],
+    measured_conditions: [{ label: 'input_size', value: '64 tokens' }],
+    blockers: [],
+    caveats: ['The hardware differs.'],
+    summary: '',
+  },
+};
+
+it('surfaces an unrequested paper verdict with the recorded numbers, caveats and citation', async () => {
+  const openPaper = jest.fn();
+  apiClient.getJobEvidence.mockResolvedValue(evidence({
+    evidence: [reproduction],
+    requirements: [],
+    unrequested: [1],
+    unrequested_total: 1,
+  }));
+  renderSection(openPaper);
+
+  const card = within(await screen.findByRole('region', { name: 'Paper reproduction' }));
+  expect(card.getByText('Reproduced')).toBeInTheDocument();
+  expect(card.getByText('Paper claim').nextElementSibling).toHaveTextContent('40%');
+  expect(card.getByText('Run measurement').nextElementSibling).toHaveTextContent('1.38×');
+  expect(card.getByText('1.43%')).toBeInTheDocument();
+  expect(card.getByText('20%')).toBeInTheDocument();
+  expect(card.getByText('The hardware differs.')).toBeInTheDocument();
+  expect(card.getByText('Table 2')).toBeInTheDocument();
+  expect(card.getByText(/Gem5 simulator, 5 trials/)).toBeInTheDocument();
+  fireEvent.click(card.getByText('Recorded conditions'));
+  expect(card.getAllByText('64 tokens')).toHaveLength(2);
+  fireEvent.click(card.getByRole('button', { name: 'Open source paper' }));
+  expect(openPaper).toHaveBeenCalledWith('paper-1');
+  expect(card.queryByText('no spread')).not.toBeInTheDocument();
+  expect(screen.queryByText(/finding nothing asked for/)).not.toBeInTheDocument();
+});
+
+it('keeps an incomparable verdict distinct from a failed reproduction and shows every blocker', async () => {
+  apiClient.getJobEvidence.mockResolvedValue(evidence({
+    evidence: [{
+      ...reproduction,
+      reproduction: {
+        ...reproduction.reproduction!,
+        verdict: 'incomparable',
+        blockers: ['The input sizes differ.', 'The correctness check failed.'],
+        measured_value: 0,
+        claimed_unit: '',
+        measured_unit: '',
+        claim_document_id: null,
+        claim_location: '',
+      },
+    }],
+    requirements: [{
+      finding_type: 'reproduction_verdict', satisfied: true, satisfied_by: [1],
+      uncertainty_required: false, missing_uncertainty: [],
+    }],
+  }));
+  renderSection();
+
+  expect(await screen.findByText('Incomparable')).toBeInTheDocument();
+  expect(screen.getByText('The input sizes differ.')).toBeInTheDocument();
+  expect(screen.getByText('The correctness check failed.')).toBeInTheDocument();
+  expect(screen.getByText('Run measurement').nextElementSibling).toHaveTextContent('0');
+  expect(screen.getAllByText('Unit unrecorded')).toHaveLength(2);
+  expect(screen.getByText('Paper source unrecorded')).toBeInTheDocument();
+  expect(screen.queryByText('Relative error')).not.toBeInTheDocument();
 });
 
 it('names the finding that arrived without its required spread', async () => {

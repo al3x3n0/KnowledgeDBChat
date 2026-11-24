@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.endpoints.research_notes import _to_response as research_note_to_response
 from app.core.database import get_db
+from app.models.agent_job import AgentJob
 from app.models.document import DocumentSource
 from app.models.experiment import ExperimentRun
 from app.models.research_note import ResearchNote
@@ -1033,10 +1034,31 @@ async def create_synthesis_job(
         source = await db.get(DocumentSource, UUID(source_id))
         if not source:
             raise HTTPException(status_code=404, detail="Document source not found")
-    elif not request.document_ids and not search_query:
+    elif not (request.document_ids or request.agent_job_ids or search_query):
         raise HTTPException(
-            status_code=400, detail="Provide at least one document_id or a search_query"
+            status_code=400,
+            detail="Provide at least one document, agent run, or search query",
         )
+
+    try:
+        agent_job_ids = list(
+            dict.fromkeys(UUID(raw.strip()) for raw in request.agent_job_ids)
+        )
+    except (ValueError, AttributeError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid agent run ID") from exc
+    if agent_job_ids:
+        owned_ids = set(
+            (
+                await db.scalars(
+                    select(AgentJob.id).where(
+                        AgentJob.user_id == current_user.id,
+                        AgentJob.id.in_(agent_job_ids),
+                    )
+                )
+            ).all()
+        )
+        if len(owned_ids) != len(agent_job_ids):
+            raise HTTPException(status_code=404, detail="Agent run not found")
 
     if len(request.document_ids) > 50:
         raise HTTPException(status_code=400, detail="Maximum 50 documents allowed")
@@ -1051,7 +1073,7 @@ async def create_synthesis_job(
         title=request.title,
         document_ids=request.document_ids,
         paper_ids=request.paper_ids,
-        agent_job_ids=request.agent_job_ids,
+        agent_job_ids=[str(run_id) for run_id in agent_job_ids],
         research_note_id=UUID(research_note_id) if research_note_id else None,
         description=request.description,
         search_query=search_query or None,

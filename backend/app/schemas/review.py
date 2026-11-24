@@ -15,6 +15,7 @@ class ReviewItemResponse(BaseModel):
     waiting_since: Optional[datetime] = None
     link: Optional[str] = None
     kind: Optional[str] = None
+    final_approval: Optional[bool] = None
 
 
 class ReviewSectionResponse(BaseModel):

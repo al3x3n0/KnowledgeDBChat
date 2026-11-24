@@ -103,8 +103,28 @@ class MCPSourceAccess(Base):
         return f"<MCPSourceAccess(api_key_id={self.api_key_id}, source_id={self.source_id})>"
 
 
+RESEARCH_PROGRAM_TOOL = "get_research_programs"
+RESEARCH_NOTES_TOOL = "get_research_notes"
+MCP_PROFILE_TOOLS = ("search", "list_documents", "get_document", "list_sources", "chat")
+
 # Available MCP tools definition
 MCP_TOOLS = {
+    RESEARCH_NOTES_TOOL: {
+        "name": RESEARCH_NOTES_TOOL,
+        "display_name": "Research Notes",
+        "description": "List selected research notes or read one by ID",
+        "category": "read",
+        "required_scope": "read",
+        "config_schema": {},
+    },
+    RESEARCH_PROGRAM_TOOL: {
+        "name": RESEARCH_PROGRAM_TOOL,
+        "display_name": "Research Program Context",
+        "description": "Read selected research program descriptions and tool schemas",
+        "category": "read",
+        "required_scope": "read",
+        "config_schema": {},
+    },
     "search": {
         "name": "search",
         "display_name": "Semantic Search",

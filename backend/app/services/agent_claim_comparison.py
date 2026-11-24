@@ -284,7 +284,7 @@ def normalize_unit(unit: Optional[str]) -> str:
     text = str(unit or "").strip().lower()
     if not text:
         return ""
-    text = text.replace("times", "x").replace(" ", "")
+    text = text.replace("times", "x").replace("×", "x").replace(" ", "")
     text = re.sub(r"^(a|the)", "", text)
     # "1.8x" or "x1.8" written into the unit field: keep the unit, drop the
     # number, which belongs in the value.

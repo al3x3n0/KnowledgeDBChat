@@ -11,8 +11,12 @@ taken on a saturated host, evidence the contract asked for against evidence it
 merely happens to have.
 """
 
+from uuid import uuid4
+
 import pytest
 
+from app.models.agent_job import AgentJob
+from app.modules.autonomy.api.job_evidence import get_job_evidence
 from app.services import agent_evidence_view as view
 
 pytestmark = pytest.mark.unit
@@ -45,6 +49,84 @@ def _benchmark(**over):
 def _results(findings, **contract):
     block = {"enabled": True, "satisfied": False, "missing": [], "contract": contract}
     return {"findings": findings, "goal_contract": block}
+
+
+@pytest.mark.asyncio
+async def test_recent_reproduction_verdict_exposes_conditions_and_reasons(
+    db_session, test_user
+):
+    document_id = uuid4()
+    findings = [{"type": "document", "title": str(i)} for i in range(75)]
+    findings.append(
+        {
+            "type": "reproduction_verdict",
+            "subject": "Streaming kernel",
+            "metric": "cycles",
+            "verdict": "incomparable",
+            "claimed_value": 1800,
+            "measured_value": 0,
+            "claimed_unit": "cycles",
+            "measured_unit": "cycles",
+            "claim_document_id": str(document_id),
+            "claim_location": "Table 2",
+            "measurement_source": "gem5 statistics",
+            "claimed_conditions": {"hardware": "Core A", "input_size": 64},
+            "measured_conditions": {"hardware": "Core B"},
+            "blockers": ["Absolute cycle counts were measured on different machines."],
+            "caveats": ["Only one trial was recorded."],
+        }
+    )
+    job = AgentJob(
+        user_id=test_user.id,
+        name="Paper reproduction",
+        goal="Evaluate the paper's claim",
+        results=_results(findings),
+    )
+    db_session.add(job)
+    await db_session.commit()
+    response = await get_job_evidence(job.id, db_session, test_user)
+
+    assert len(response.evidence) == 51
+    assert response.unrequested_total == 76
+    item = response.evidence[-1]
+    assert item.index == 75 and item.index in response.unrequested
+    result = item.reproduction
+    assert result.verdict == "incomparable"
+    assert result.claim_document_id == document_id
+    assert result.claim_location == "Table 2"
+    assert (result.claimed_value, result.measured_value) == (1800, 0)
+    assert result.measured_unit == "cycles"
+    assert [(row.label, row.value) for row in result.claimed_conditions] == [
+        ("hardware", "Core A"),
+        ("input_size", "64"),
+    ]
+    assert result.blockers == [
+        "Absolute cycle counts were measured on different machines."
+    ]
+    assert result.caveats == ["Only one trial was recorded."]
+
+
+def test_legacy_reproduction_keeps_recorded_values_without_inventing_provenance():
+    response = view.build(
+        _Job(
+            _results(
+                [
+                    {
+                        "type": "reproduction_verdict",
+                        "verdict": "reproduced",
+                        "claimed_value": 3,
+                        "measured_value": 2.9,
+                        "claim_document_id": "invalid",
+                    }
+                ]
+            )
+        )
+    )
+    assert response["evidence"][0]["reproduction"] == {
+        "verdict": "reproduced",
+        "claimed_value": 3,
+        "measured_value": 2.9,
+    }
 
 
 class TestWhatACountDestroys:

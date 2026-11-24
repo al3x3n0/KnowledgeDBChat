@@ -1,9 +1,10 @@
 import React from 'react';
-import { useMutation, useQuery } from 'react-query';
+import { useMutation, useQuery, useQueryClient } from 'react-query';
 import { useNavigate, useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { ArrowLeft, Copy, Network, Eye, MessageCircle } from 'lucide-react';
+import { ArrowLeft, Copy, Network, Eye, MessageCircle, StickyNote } from 'lucide-react';
 
+import { useAuth } from '../contexts/AuthContext';
 import { apiClient } from '../services/api';
 import { RetrievalTrace } from '../types';
 
@@ -24,6 +25,8 @@ const extractArxivId = (raw: string): string | null => {
 const ContextPackPage: React.FC = () => {
   const { traceId } = useParams<{ traceId: string }>();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
 
   const { data, isLoading, isError, refetch } = useQuery(
     ['retrieval-trace', traceId],
@@ -33,7 +36,8 @@ const ContextPackPage: React.FC = () => {
 
   const trace = data as RetrievalTrace | undefined;
   const pack: any = (trace?.trace as any)?.kg_context_pack || null;
-  const kgContext: string | null = (pack?.kg_context as string) || null;
+  const kgContext = typeof pack?.kg_context === 'string' ? pack.kg_context.trim() : '';
+  const canSave = Boolean(user && user.id === trace?.user_id && user.role !== 'viewer');
 
   const entities: any[] = React.useMemo(
     () => (Array.isArray(pack?.entities) ? pack.entities : []),
@@ -49,6 +53,16 @@ const ContextPackPage: React.FC = () => {
     },
     onError: (e: any) => {
       toast.error(e?.response?.data?.detail || e?.message || 'Failed to create chat session');
+    },
+  });
+  const saveNote = useMutation({
+    mutationFn: (id: string) => apiClient.saveContextPackAsNote(id),
+    onSuccess: (note) => {
+      void queryClient.invalidateQueries(['research-notes']);
+      navigate(`/research-notes?note=${encodeURIComponent(note.id)}`);
+    },
+    onError: () => {
+      toast.error('Could not save the context pack. Try again.');
     },
   });
 
@@ -88,14 +102,14 @@ const ContextPackPage: React.FC = () => {
 
   return (
     <div className="p-6 h-full min-h-0 flex flex-col gap-4 flex-1">
-      <div className="flex items-center justify-between flex-none">
+      <div className="flex flex-wrap items-center justify-between gap-2 flex-none">
         <button
           className="inline-flex items-center text-sm text-gray-700 hover:text-gray-900"
           onClick={() => navigate(-1)}
         >
           <ArrowLeft className="w-4 h-4 mr-1" /> Back
         </button>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             className="inline-flex items-center gap-1 px-3 py-1.5 text-sm rounded bg-gray-100 hover:bg-gray-200"
@@ -103,6 +117,16 @@ const ContextPackPage: React.FC = () => {
           >
             Refresh
           </button>
+          {canSave && kgContext && traceId && (
+            <button type="button"
+              className="inline-flex items-center gap-1 rounded bg-primary-600 px-3 py-1.5 text-sm text-white hover:bg-primary-700 disabled:opacity-50"
+              disabled={saveNote.isLoading || isError}
+              onClick={() => saveNote.mutate(traceId)}
+            >
+              <StickyNote aria-hidden="true" className="h-4 w-4" />
+              {saveNote.isLoading ? 'Saving note…' : 'Save as Research Note'}
+            </button>
+          )}
           <button
             type="button"
             className="inline-flex items-center gap-1 px-3 py-1.5 text-sm rounded bg-gray-100 hover:bg-gray-200 disabled:opacity-50"
@@ -114,7 +138,7 @@ const ContextPackPage: React.FC = () => {
           </button>
           <button
             type="button"
-            className="inline-flex items-center gap-1 px-3 py-1.5 text-sm rounded bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50"
+            className="inline-flex items-center gap-1 px-3 py-1.5 text-sm rounded bg-gray-100 hover:bg-gray-200 disabled:opacity-50"
             disabled={!traceId || createSessionMutation.isLoading}
             onClick={async () => {
               const session = await createSessionMutation.mutateAsync();

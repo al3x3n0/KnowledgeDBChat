@@ -27,7 +27,7 @@
  */
 
 import type { NavDoor, NavItem } from './catalog';
-import { navKey } from './catalog';
+import { HOME_ROUTE, navKey } from './catalog';
 
 export interface NavPreferences {
   doorOrder?: string[];
@@ -100,7 +100,7 @@ export function catalogItems(catalog: NavDoor[]): NavItem[] {
 /**
  * Where "/" should land.
  *
- * Falls back to `/chat` when the stored landing page is one this user can no
+ * Falls back to Home when the stored landing page is one this user can no
  * longer reach -- a page they lost admin for, or that was removed -- because
  * the alternative is an account that opens on a 404 with no way back except
  * typing a URL.
@@ -108,7 +108,7 @@ export function catalogItems(catalog: NavDoor[]): NavItem[] {
 export function landingPath(
   catalog: NavDoor[],
   prefs: NavPreferences | undefined,
-  fallback = '/chat'
+  fallback = HOME_ROUTE
 ): string {
   const wanted = prefs?.landing;
   if (!wanted) return fallback;

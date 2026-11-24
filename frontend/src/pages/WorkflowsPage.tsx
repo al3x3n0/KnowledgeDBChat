@@ -5,9 +5,12 @@
  */
 
 import React, { useState, useEffect, useMemo } from 'react';
+import { useQuery } from 'react-query';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Calendar, Clock, Edit, Loader2, MoreVertical, Package, Pause, Play, Plus, Search, Trash2, Workflow } from 'lucide-react';
 import toast from 'react-hot-toast';
+import type { components } from '../api/schema';
+import WorkflowRunButton from '../components/workflows/WorkflowRunButton';
 import api from '../services/api';
 
 interface WorkflowItem {
@@ -28,28 +31,12 @@ interface WorkflowItem {
   origin_plugin_slug?: string | null;
 }
 
-interface ExecutionItem {
-  id: string;
-  workflow_id: string;
-  workflow_name: string | null;
-  trigger_type: string;
-  status: string;
-  progress: number;
-  error: string | null;
-  created_at: string;
-  started_at: string | null;
-  completed_at: string | null;
-  current_node_id?: string | null;
-  context?: Record<string, any>;
-}
-
 const WorkflowsPage: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const selectedExecutionId = String(searchParams.get('executionId') || '').trim();
   const [workflows, setWorkflows] = useState<WorkflowItem[]>([]);
-  const [selectedExecution, setSelectedExecution] = useState<ExecutionItem | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
@@ -59,13 +46,21 @@ const WorkflowsPage: React.FC = () => {
     loadWorkflows();
   }, []);
 
-  useEffect(() => {
-    if (!selectedExecutionId) {
-      setSelectedExecution(null);
-      return;
+  const execution = useQuery(
+    ['workflow-execution', selectedExecutionId],
+    async ({ signal }) => {
+      const response = await api.get<components['schemas']['WorkflowExecutionResponse']>(
+        `/workflows/executions/${encodeURIComponent(selectedExecutionId)}`, { signal }
+      );
+      return response.data;
+    },
+    {
+      enabled: Boolean(selectedExecutionId),
+      retry: false,
+      refetchInterval: (data) => data?.status === 'pending' || data?.status === 'running' ? 5000 : false,
     }
-    loadExecution(selectedExecutionId);
-  }, [selectedExecutionId]);
+  );
+  const selectedExecution = execution.data;
 
   const loadWorkflows = async () => {
     setIsLoading(true);
@@ -76,30 +71,6 @@ const WorkflowsPage: React.FC = () => {
       toast.error('Failed to load workflows');
     } finally {
       setIsLoading(false);
-    }
-  };
-
-  const loadExecution = async (executionId: string) => {
-    try {
-      const response = await api.get(`/workflows/executions/${executionId}`);
-      const payload = response.data || {};
-      setSelectedExecution({
-        id: String(payload.id || ''),
-        workflow_id: String(payload.workflow_id || ''),
-        workflow_name: null,
-        trigger_type: String(payload.trigger_type || ''),
-        status: String(payload.status || ''),
-        progress: Number(payload.progress || 0),
-        error: payload.error || null,
-        created_at: String(payload.created_at || ''),
-        started_at: payload.started_at || null,
-        completed_at: payload.completed_at || null,
-        current_node_id: payload.current_node_id || null,
-        context: payload.context || {},
-      });
-    } catch (_error: any) {
-      setSelectedExecution(null);
-      toast.error('Workflow execution could not be loaded');
     }
   };
 
@@ -153,20 +124,6 @@ const WorkflowsPage: React.FC = () => {
       loadWorkflows();
     } catch (error: any) {
       toast.error('Failed to update workflow');
-    }
-    setActiveMenuId(null);
-  };
-
-  const executeWorkflow = async (id: string) => {
-    try {
-      await api.post(`/workflows/${id}/execute/async`, {
-        trigger_type: 'manual',
-        trigger_data: {},
-        inputs: {},
-      });
-      toast.success('Workflow execution started');
-    } catch (error: any) {
-      toast.error('Failed to start workflow');
     }
     setActiveMenuId(null);
   };
@@ -238,8 +195,8 @@ const WorkflowsPage: React.FC = () => {
                     <h2 className="mt-2 text-lg font-semibold text-gray-900">
                       {selectedExecutionWorkflow?.name || 'Workflow execution'} · {selectedExecution.id}
                     </h2>
-                    <div className="mt-2 text-sm text-gray-700">
-                      Status: <span className="font-medium">{selectedExecution.status}</span> · Trigger: {selectedExecution.trigger_type} · Progress: {selectedExecution.progress}%
+                    <div className="mt-2 text-sm text-gray-700" role="status">
+                      Status: <span className="font-medium">{selectedExecution.status === 'pending' ? 'Queued' : selectedExecution.status}</span> · Trigger: {selectedExecution.trigger_type} · Progress: {selectedExecution.progress}%
                     </div>
                     <div className="mt-1 text-sm text-gray-600">
                       Current node: {selectedExecution.current_node_id || '—'} · Started: {selectedExecution.started_at ? formatDate(selectedExecution.started_at) : '—'}
@@ -248,8 +205,14 @@ const WorkflowsPage: React.FC = () => {
                       <div className="mt-2 text-sm text-rose-700">Error: {selectedExecution.error}</div>
                     ) : null}
                   </>
-                ) : (
-                  <div className="mt-2 text-sm text-gray-600">Execution not found or no longer available.</div>
+                ) : execution.isLoading && (
+                  <p className="mt-2 text-sm text-gray-600" role="status">Loading execution…</p>
+                )}
+                {execution.isError && (
+                  <p className="mt-2 text-sm text-rose-700" role="alert">
+                    {selectedExecution ? 'Could not refresh this execution.' : 'Could not load this execution.'}{' '}
+                    <button type="button" className="underline" onClick={() => execution.refetch()}>Retry</button>
+                  </p>
                 )}
               </div>
               {selectedExecutionWorkflow ? (
@@ -337,15 +300,7 @@ const WorkflowsPage: React.FC = () => {
 
                     {/* Actions */}
                     <div className="flex items-center space-x-2">
-                      {workflow.is_active && (
-                        <button
-                          onClick={() => executeWorkflow(workflow.id)}
-                          className="p-2 text-green-600 hover:bg-green-50 rounded"
-                          title="Run workflow"
-                        >
-                          <Play className="w-5 h-5" />
-                        </button>
-                      )}
+                      {workflow.is_active && <WorkflowRunButton workflowId={workflow.id} />}
                       <button
                         onClick={() => navigate(`/workflows/${workflow.id}/edit`)}
                         className="p-2 text-blue-600 hover:bg-blue-50 rounded"

@@ -248,12 +248,15 @@ async def check_pipeline(
     # Only ask the later questions once the earlier ones are settled: binding
     # and planning a spec that is already invalid produces noise, not answers.
     binding_problems: list[str] = []
+    launch_problems: list[str] = []
     plan_response = None
     budget = None
     description: list[str] = []
 
     if valid:
         binding_problems = agent_pipeline_binding.expressible(pipeline)
+        if not binding_problems:
+            launch_problems = agent_pipeline_binding.launch_problems(pipeline)
         description = agent_pipeline_spec.describe(pipeline)
         compiled = agent_pipeline_spec.plan(pipeline)
         plan_response = PipelinePlanResponse(
@@ -281,6 +284,7 @@ async def check_pipeline(
         problems=problems,
         expressible=valid and not binding_problems,
         binding_problems=binding_problems,
+        launch_problems=launch_problems,
         description=description,
         plan=plan_response,
         budget=budget,
@@ -443,21 +447,11 @@ async def launch_pipeline(
             ),
         )
 
-    bound = agent_pipeline_binding.bind(pipeline)
-    if not bound.roots:
-        raise HTTPException(status_code=422, detail="Pipeline compiled to no jobs")
-    if len(bound.roots) > 1:
-        # A chain has one head. A pipeline with several independent roots is a
-        # real shape, and launching only the first of them silently would run
-        # part of what was asked for.
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"This pipeline has {len(bound.roots)} independent starting stages; "
-                "a chain runs from one. Give them a common first stage."
-            ),
-        )
+    launch_problems = agent_pipeline_binding.launch_problems(pipeline)
+    if launch_problems:
+        raise HTTPException(status_code=422, detail=launch_problems[0])
 
+    bound = agent_pipeline_binding.bind(pipeline)
     saved = None
     if payload.pipeline_id is not None:
         # Refuses a pipeline that is not this user's, the same as any other

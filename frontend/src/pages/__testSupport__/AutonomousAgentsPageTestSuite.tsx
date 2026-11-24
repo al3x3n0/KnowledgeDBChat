@@ -98,6 +98,7 @@ jest.mock('../../services/api', () => ({
     listAgentJobTemplates: jest.fn(),
     getDocumentSources: jest.fn(),
     getResearchInboxStats: jest.fn(),
+    createResearchCampaign: jest.fn(),
     getMyPreferences: jest.fn(),
     updateMyPreferences: jest.fn(),
     getUnsafeExecAvailability: jest.fn(),
@@ -2428,6 +2429,10 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     await renderWithProviders('/autonomous-agents');
 
     await expectJobHeading('Autonomous Runtime Job');
+    const diagnostics = screen.getByRole('button', { name: 'Run diagnostics' });
+    expect(diagnostics).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('Guard Blocks')).not.toBeInTheDocument();
+    fireEvent.click(diagnostics);
     expect(screen.getByText('Guard Blocks')).toBeInTheDocument();
     expect(screen.getByText('Failed Cmds')).toBeInTheDocument();
     expect(screen.getByText('Open Failures')).toBeInTheDocument();
@@ -2469,6 +2474,23 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     expect(screen.getByText(/docs\/ARCHITECTURE_ASCII\.md/i)).toBeInTheDocument();
     expect(screen.getByText(/Canonical autonomy:/i)).toBeInTheDocument();
     expect(screen.getByText(/autonomous_agent_executor/i)).toBeInTheDocument();
+  });
+
+  shardIt('opens the new research campaign after starting it from Agent Runs', async () => {
+    apiClient.createResearchCampaign.mockResolvedValue({ id: 'campaign-1', name: 'Core study' });
+    await renderWithProviders('/autonomous-agents');
+
+    fireEvent.click(screen.getByRole('button', { name: /New Campaign/ }));
+    const modal = within(screen.getByRole('dialog', { name: 'New Campaign' }));
+    fireEvent.change(modal.getByPlaceholderText(/stride prefetcher speeds up/), {
+      target: { value: 'Measure the effect of prefetching on dot product throughput' },
+    });
+    fireEvent.click(modal.getByRole('button', { name: 'Start campaign' }));
+
+    await waitFor(() => expect(lastLocation).toEqual({
+      pathname: '/campaigns',
+      search: '?campaign=campaign-1',
+    }));
   });
 
   shardIt('renders the decision trace tab with canonical events', async () => {
@@ -3511,6 +3533,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     await expectJobHeading('Autonomous Runtime Job');
     await expectJobHeading('Unresolved Recovery Job');
 
+    fireEvent.click(screen.getByRole('button', { name: 'Run diagnostics' }));
     fireEvent.click(screen.getByText('Open Recovery Jobs'));
 
     await waitFor(() => {
@@ -3528,6 +3551,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     await expectJobHeading('Autonomous Runtime Job');
     await expectJobHeading('Clean Scope Job');
 
+    fireEvent.click(screen.getByRole('button', { name: 'Run diagnostics' }));
     fireEvent.click(screen.getAllByRole('button', { name: /Bootstrap/i })[0]);
 
     await waitFor(() => {
@@ -4005,6 +4029,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
 
     await renderInboxPage('/research/inbox', { documentSources: defaultDocumentSources });
     expect(await screen.findByText('Queued compiler follow-up A')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Approve Follow-ups' })).not.toBeInTheDocument();
     selectInboxRow('Queued compiler follow-up A');
     selectInboxRow('Queued compiler follow-up B');
     fireEvent.change(screen.getByPlaceholderText('Bulk follow-up note (optional)'), {
@@ -6329,13 +6354,10 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     });
   });
 
-  shardIt('shows domain research quick start with repo-aware scientific defaults', async () => {
+  shardIt('opens domain research from Agent Runs with repo-aware scientific defaults', async () => {
     await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
 
-    fireEvent.click(screen.getByText('Templates'));
-    expect(await screen.findByText('Start Domain Research')).toBeInTheDocument();
-
-    fireEvent.click(screen.getByText('Start Domain Research'));
+    fireEvent.click(screen.getByRole('button', { name: /Research a topic/ }));
     const title = await screen.findByText('Quick Start Domain Research');
     const modal = title.closest('.fixed') as HTMLElement;
     expect(modal).toBeTruthy();
@@ -6407,6 +6429,12 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       auto_create_experiment_plans: true,
       start_immediately: true,
     });
+
+    fireEvent.change(within(modal).getByPlaceholderText('Compiler optimization and code generation'), {
+      target: { value: 'CPU cache research' },
+    });
+    fireEvent.click(within(modal).getByRole('button', { name: 'Start Research' }));
+    await waitFor(() => expect(lastLocation.search).toBe('?job=job-domain-research'));
   });
 
   shardIt('shows bug triage swarm quick start with coding defaults', async () => {
@@ -7017,7 +7045,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     await renderDomainProfilesPage({ documentSources: defaultDocumentSources });
     expect(await screen.findByText('Start Monitor')).toBeInTheDocument();
 
-    fireEvent.input(screen.getByPlaceholderText('Profile title'), {
+    fireEvent.input(screen.getByPlaceholderText('Monitor title'), {
       target: { value: 'Retrieval R&D Monitor' },
     });
     fireEvent.input(screen.getByPlaceholderText('Domain or topic'), {
@@ -7101,7 +7129,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     fireEvent.change(promotionSelectsBefore[promotionSelectsBefore.length - 1], {
       target: { value: 'profile_with_portfolio' },
     });
-    fireEvent.change(screen.getByDisplayValue('Compiler optimization Fleet'), {
+    fireEvent.change(screen.getByDisplayValue('Compiler optimization Portfolio'), {
       target: { value: 'Compiler Research Fleet' },
     });
     fireEvent.click(screen.getByText('Create monitor'));
@@ -7201,17 +7229,17 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       target: { value: 'profile_with_portfolio' },
     });
     await waitFor(() => {
-      expect(screen.getByText('Fleet target')).toBeInTheDocument();
+      expect(screen.getByText('Portfolio target')).toBeInTheDocument();
     });
-    fireEvent.change(getPromotionSelect('Fleet target'), {
+    fireEvent.change(getPromotionSelect('Portfolio target'), {
       target: { value: 'existing' },
     });
     await waitFor(() => {
       expect(apiClient.listResearchPortfolios).toHaveBeenCalledWith({ limit: 100, offset: 0 });
-      expect(screen.getByText('Existing fleet')).toBeInTheDocument();
-      expect(within(getPromotionSelect('Existing fleet')).getByRole('option', { name: 'Compiler Research Fleet' })).toBeInTheDocument();
+      expect(screen.getByText('Existing portfolio')).toBeInTheDocument();
+      expect(within(getPromotionSelect('Existing portfolio')).getByRole('option', { name: 'Compiler Research Fleet' })).toBeInTheDocument();
     });
-    fireEvent.change(getPromotionSelect('Existing fleet'), {
+    fireEvent.change(getPromotionSelect('Existing portfolio'), {
       target: { value: 'portfolio-1' },
     });
     fireEvent.click(screen.getByText('Create monitor'));
@@ -7260,7 +7288,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     await renderWithProviders('/autonomous-agents?job=job-promoted', { documentSources: defaultDocumentSources });
 
     expect(await screen.findByText('Open monitor')).toBeInTheDocument();
-    expect(screen.getByText('Open fleet')).toBeInTheDocument();
+    expect(screen.getByText('Open portfolio')).toBeInTheDocument();
     expect(screen.queryByText('Promote to Monitor')).not.toBeInTheDocument();
   });
 
@@ -7845,7 +7873,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     // you are facing when a run ends.
     apiClient.createSynthesisJob.mockResolvedValueOnce({
       id: 'syn-writeup-1',
-      job_type: 'report',
+      job_type: 'research_report',
       status: 'pending',
     });
     const finished = makeJob({
@@ -7869,7 +7897,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     await waitFor(() =>
       expect(apiClient.createSynthesisJob).toHaveBeenCalledWith(
         expect.objectContaining({
-          job_type: 'report',
+          job_type: 'research_report',
           agent_job_ids: ['job-done'],
           title: 'Write-up: INT8 attention ceiling',
         })
@@ -8635,7 +8663,16 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     });
   });
 
-  shardIt('creates a research fleet portfolio with the expected payload', async () => {
+  shardIt('links from an empty portfolio monitor list to monitor setup', async () => {
+    apiClient.listDomainResearchProfiles.mockResolvedValueOnce({ items: [], total: 0 });
+    await renderResearchFleetPage({ documentSources: defaultDocumentSources });
+
+    expect(await screen.findByRole('link', { name: 'Set up a topic monitor' }))
+      .toHaveAttribute('href', '/settings/domain-profiles');
+    expect(screen.getByRole('button', { name: 'Start Portfolio' })).toBeDisabled();
+  });
+
+  shardIt('creates a research portfolio with the expected payload', async () => {
     apiClient.listDomainResearchProfiles.mockResolvedValueOnce({
       items: [
         {
@@ -8674,7 +8711,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     });
 
     await renderResearchFleetPage({ documentSources: defaultDocumentSources });
-    expect(await screen.findByText('Start Fleet')).toBeInTheDocument();
+    expect(await screen.findByText('Start Portfolio')).toBeInTheDocument();
 
     fireEvent.input(screen.getByPlaceholderText('Portfolio title'), {
       target: { value: 'Retrieval Experiment Portfolio' },
@@ -8683,7 +8720,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       target: { value: 'Continuously rank research ideas and convert the strongest ones into experiment plans.' },
     });
     fireEvent.click(screen.getByLabelText(/Retrieval Monitor/i));
-    fireEvent.click(screen.getByText('Start Fleet'));
+    fireEvent.click(screen.getByText('Start Portfolio'));
 
     await waitFor(() => {
       expect(apiClient.createResearchPortfolio).toHaveBeenCalledWith({

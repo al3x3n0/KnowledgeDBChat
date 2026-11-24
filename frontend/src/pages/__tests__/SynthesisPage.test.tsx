@@ -1,6 +1,6 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from 'react-query';
 import SynthesisPage from '../SynthesisPage';
 
@@ -15,6 +15,7 @@ jest.mock('react-hot-toast', () => ({
 jest.mock('../../services/api', () => ({
   apiClient: {
     listSynthesisJobs: jest.fn(),
+    getSynthesisJob: jest.fn(),
     getSynthesisTypesInfo: jest.fn(),
     getResearchNote: jest.fn(),
     saveSynthesisJobAsResearchNote: jest.fn(),
@@ -33,6 +34,10 @@ jest.mock('../../contexts/NotificationContext', () => ({
 }));
 
 const apiClient = require('../../services/api').apiClient;
+const LocationProbe = () => {
+  const { pathname, search } = useLocation();
+  return <output aria-label="Current route">{pathname}{search}</output>;
+};
 
 const renderWithProviders = (initialEntry: string = '/synthesis?job=job-1') => {
   const queryClient = new QueryClient({
@@ -48,6 +53,7 @@ const renderWithProviders = (initialEntry: string = '/synthesis?job=job-1') => {
     >
       <QueryClientProvider client={queryClient}>
         <SynthesisPage />
+        <LocationProbe />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -67,6 +73,7 @@ describe('SynthesisPage', () => {
       output_formats: [],
       output_styles: [],
     });
+    apiClient.getSynthesisJob.mockResolvedValue(null);
     apiClient.deleteSynthesisJob.mockResolvedValue({ success: true });
     apiClient.cancelSynthesisJob.mockResolvedValue({ success: true });
     apiClient.downloadSynthesisResult.mockResolvedValue(undefined);
@@ -77,6 +84,27 @@ describe('SynthesisPage', () => {
       can_apply: false,
       can_dismiss: false,
     });
+  });
+
+  it('opens a run write-up outside the list and saves it to its exact note', async () => {
+    apiClient.listSynthesisJobs.mockResolvedValue({ jobs: [], total: 0, page: 1, page_size: 50 });
+    apiClient.getSynthesisJob.mockResolvedValue({
+      id: 'writeup', job_type: 'research_report', title: 'Write-up of a cache run',
+      document_ids: [], agent_job_ids: ['cache-run'], output_format: 'markdown',
+      status: 'completed', progress: 100, result_content: '# Report\n\nCached results',
+      result_metadata: { agent_run_sources: [{ id: 'cache-run', name: 'Cache validation run' }] },
+    });
+    apiClient.saveSynthesisJobAsResearchNote.mockResolvedValue({ id: 'writeup-note' });
+    renderWithProviders('/synthesis?job=writeup');
+
+    expect(await screen.findByRole('link', { name: 'Cache validation run' })).toHaveAttribute('href', '/autonomous-agents?job=cache-run');
+    expect(apiClient.getSynthesisJob).toHaveBeenCalledWith('writeup');
+    fireEvent.click(screen.getByRole('button', { name: 'Save and open note' }));
+
+    await waitFor(() => expect(screen.getByLabelText('Current route')).toHaveTextContent('/research-notes?note=writeup-note'));
+    expect(apiClient.saveSynthesisJobAsResearchNote).toHaveBeenCalledWith('writeup', expect.objectContaining({
+      title: 'Write-up of a cache run',
+    }));
   });
 
   afterEach(() => {

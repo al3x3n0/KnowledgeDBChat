@@ -18,9 +18,7 @@ import { Navigate } from 'react-router-dom';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import { useNavigation } from './useNavigation';
 
-export const LandingRedirect: React.FC<{ fallback?: string }> = ({
-  fallback = '/chat',
-}) => {
+export const LandingRedirect: React.FC = () => {
   const { landing, isLoading } = useNavigation();
 
   if (isLoading) {
@@ -31,7 +29,7 @@ export const LandingRedirect: React.FC<{ fallback?: string }> = ({
     );
   }
 
-  return <Navigate to={landing || fallback} replace />;
+  return <Navigate to={landing} replace />;
 };
 
 export default LandingRedirect;

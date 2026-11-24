@@ -19,7 +19,7 @@ import NotificationBell from './notifications/NotificationBell';
 import { useQuery } from 'react-query';
 import { apiClient } from '../services/api';
 import type { NavItem } from '../navigation/catalog';
-import { REVIEW_ROUTE } from '../navigation/catalog';
+import { HOME_ROUTE, REVIEW_ROUTE } from '../navigation/catalog';
 import {
   isActiveNavItem as isActiveItem,
   useNavigation,
@@ -59,7 +59,7 @@ const Layout: React.FC = () => {
       key: '3',
       ctrlKey: true,
       handler: () => navigate('/autonomous-agents'),
-      description: 'Go to R&D',
+      description: 'Go to Agent Runs',
     },
     {
       key: '4',
@@ -208,10 +208,10 @@ const Layout: React.FC = () => {
         {/* Doors. The deepest plane in the app: everything else sits above it. */}
         <div className="w-[184px] flex-shrink-0 flex flex-col border-r border-gray-200 bg-gray-50">
           <div className="flex items-center h-16 px-4 border-b border-gray-200">
-            <div className="flex items-center space-x-2 min-w-0 group">
+            <Link to={HOME_ROUTE} onClick={() => setSidebarOpen(false)} aria-label="Home" className="flex items-center space-x-2 min-w-0 group">
               <Database className="w-6 h-6 text-primary-700 flex-shrink-0 transition-transform duration-base ease-ui group-hover:scale-110" />
               <span className="text-gray-900 font-semibold text-sm truncate tracking-tight">Knowledge DB</span>
-            </div>
+            </Link>
           </div>
 
           <nav className="flex-1 px-3 py-3 space-y-1 overflow-y-auto">
@@ -235,7 +235,7 @@ const Layout: React.FC = () => {
                     className={`w-5 h-5 flex-shrink-0 transition-transform duration-fast ease-ui
                       ${isActive ? '' : 'group-hover:scale-110'}`}
                   />
-                  <span className="truncate">{door.name}</span>
+                  <span className="min-w-0 leading-tight">{door.name}</span>
                   {door.sections.map((item) => (
                     <React.Fragment key={item.key}>{waitingBadge(item)}</React.Fragment>
                   ))}
@@ -305,12 +305,12 @@ const Layout: React.FC = () => {
             One plane above the door rail, so the two read as depth rather
             than as a single panel split by a line. */}
         <div className="flex-1 min-w-0 flex flex-col bg-gray-100">
-          <div className="flex items-center justify-between h-16 px-4 border-b border-gray-200">
-            <span className="text-xs font-semibold tracking-wide uppercase text-gray-500 truncate">
+          <div className="flex h-16 shrink-0 items-center justify-between gap-2 border-b border-gray-200 px-4">
+            <span className="min-w-0 text-xs font-semibold uppercase leading-tight tracking-wide text-gray-600">
               {filterResults ? 'Results' : activeDoor?.name}
             </span>
             <button
-              className="md:hidden text-gray-700 hover:text-gray-900"
+              className="shrink-0 text-gray-700 hover:text-gray-900 md:hidden"
               onClick={() => setSidebarOpen(false)}
             >
               <X className="w-5 h-5" />
@@ -362,7 +362,7 @@ const Layout: React.FC = () => {
                           `}
                         >
                           <Icon className="w-4 h-4 flex-shrink-0" />
-                          <span className="truncate">{item.name}</span>
+                          <span className="min-w-0 break-words leading-tight">{item.name}</span>
                           {waitingBadge(item)}
                         </Link>
                       );
@@ -388,7 +388,7 @@ const Layout: React.FC = () => {
                       `}
                     >
                       <Icon className="w-4 h-4 flex-shrink-0" />
-                      <span className="truncate">{item.name}</span>
+                      <span className="min-w-0 break-words leading-tight">{item.name}</span>
                       {waitingBadge(item)}
                     </Link>
                   );

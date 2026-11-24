@@ -81,3 +81,14 @@ class ToolExecutionAudit(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+    @property
+    def requires_owner_and_admin(self) -> bool:
+        return str(self.approval_mode or "").strip().lower() == "owner_and_admin"
+
+    def is_final_approval(self, *, owner: bool, admin: bool) -> bool:
+        if not self.requires_owner_and_admin:
+            return owner or admin
+        return (owner or self.owner_approved_at is not None) and (
+            admin or self.admin_approved_at is not None
+        )

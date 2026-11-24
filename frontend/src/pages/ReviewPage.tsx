@@ -30,18 +30,33 @@ const ReviewPage: React.FC = () => {
 
   const refresh = () => queryClient.invalidateQueries(REVIEW_QUERY);
 
-  // Approving is consent for the action to happen, so once nobody else's
-  // approval is outstanding it runs. With an admin's half still owed, it waits.
   const approve = useMutation(
-    async (auditId: string) => {
-      const approved = await apiClient.approveToolAudit(auditId);
-      if (approved.approval_status !== 'approved') return { ran: false };
-      await apiClient.runToolAudit(auditId);
-      return { ran: true };
+    async ({ id, final_approval }: ReviewItem) => {
+      const runAfterApproval = final_approval === true;
+      const approved = await apiClient.approveToolAudit(id, undefined, runAfterApproval);
+      if (approved.approval_status === 'pending_admin') {
+        return { message: 'Approved. Waiting for an admin.' };
+      }
+      if (approved.approval_status === 'pending_owner') {
+        return { message: 'Approved. Waiting for the owner.' };
+      }
+      if (!runAfterApproval || approved.approval_status !== 'approved') {
+        return { message: 'Approval recorded.' };
+      }
+
+      try {
+        const run = await apiClient.runToolAudit(id);
+        if (run.status === 'completed') return { message: 'Approved and run' };
+        if (run.status === 'running') return { message: 'Approved. The tool is running.' };
+        return { message: 'Approved. The tool did not complete.', error: true };
+      } catch {
+        return { message: 'Approved. The tool run could not be confirmed.', error: true };
+      }
     },
     {
       onSuccess: (result) => {
-        toast.success(result.ran ? 'Approved and run' : 'Approved. Waiting for an admin.');
+        if (result.error) toast.error(result.message);
+        else toast.success(result.message);
         refresh();
       },
       onError: (e: any) => {
@@ -65,19 +80,23 @@ const ReviewPage: React.FC = () => {
   const waiting = sections.filter((s) => s.count > 0 || s.error);
   const clear = sections.filter((s) => s.count === 0 && !s.error);
   const busy = approve.isLoading || reject.isLoading;
+  const total = data?.total ?? 0;
+  const summary = isLoading
+    ? 'Checking what is waiting on you…'
+    : isError
+    ? 'Review status unavailable'
+    : sections.some((section) => section.error)
+    ? `Review status is incomplete · ${total} confirmed ${total === 1 ? 'item' : 'items'}`
+    : total > 0
+    ? `${total} ${total === 1 ? 'thing is' : 'things are'} waiting on you`
+    : 'Nothing is waiting on you';
 
   return (
-    <div className="max-w-4xl mx-auto p-6">
-      <div className="flex items-center justify-between mb-6">
+    <div className="mx-auto w-full min-w-0 max-w-4xl p-4 sm:p-6">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Review</h1>
-          <p className="text-gray-600">
-            {isLoading
-              ? 'Checking what is waiting on you…'
-              : data && data.total > 0
-              ? `${data.total} ${data.total === 1 ? 'thing is' : 'things are'} waiting on you`
-              : 'Nothing is waiting on you'}
-          </p>
+          <p className="text-gray-600" role="status">{summary}</p>
         </div>
         <button
           type="button"
@@ -93,15 +112,15 @@ const ReviewPage: React.FC = () => {
       {isError && (
         <div className="mb-4 flex items-center gap-2 rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-700">
           <AlertTriangle className="w-4 h-4" />
-          The review list could not be loaded.
+          {data ? 'The review list could not be refreshed. Showing the last results.' : 'The review list could not be loaded.'}
         </div>
       )}
 
       <div className="space-y-4">
         {waiting.map((section) => (
           <section key={section.key} className="rounded-lg border border-gray-200 bg-white" aria-label={section.title}>
-            <header className="flex items-start justify-between gap-4 p-4 border-b border-gray-200">
-              <div>
+            <header className="flex flex-wrap items-start justify-between gap-3 border-b border-gray-200 p-4">
+              <div className="min-w-0">
                 <h2 className="text-base font-semibold text-gray-900">
                   {section.title}
                   {!section.error && (
@@ -133,7 +152,7 @@ const ReviewPage: React.FC = () => {
                     key={item.id}
                     item={item}
                     busy={busy}
-                    onApprove={section.key === 'tool_approvals' ? () => approve.mutate(item.id) : undefined}
+                    onApprove={section.key === 'tool_approvals' ? () => approve.mutate(item) : undefined}
                     onReject={section.key === 'tool_approvals' ? () => reject.mutate(item.id) : undefined}
                   />
                 ))}
@@ -148,7 +167,7 @@ const ReviewPage: React.FC = () => {
         ))}
       </div>
 
-      {clear.length > 0 && !isLoading && (
+      {clear.length > 0 && !isLoading && !isError && (
         <p className="mt-6 text-sm text-gray-500">
           Nothing waiting in: {clear.map((s) => s.title).join(', ')}.
         </p>
@@ -173,12 +192,12 @@ const ReviewRow: React.FC<{
   );
 
   return (
-    <li className="flex items-center justify-between gap-4 px-4 py-3">
+    <li className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
       <div className="min-w-0">
-        <div className="truncate text-sm">{title}</div>
-        {item.detail && <div className="truncate text-xs text-gray-600">{item.detail}</div>}
+        <div className="break-words text-sm">{title}</div>
+        {item.detail && <div className="break-words text-xs text-gray-600">{item.detail}</div>}
       </div>
-      <div className="flex shrink-0 items-center gap-3">
+      <div className="flex flex-wrap items-center gap-2 sm:shrink-0 sm:gap-3">
         {waited && <span className="text-xs text-gray-500">{waited}</span>}
         {onApprove && onReject && (
           <>
@@ -188,7 +207,7 @@ const ReviewRow: React.FC<{
               onClick={onApprove}
               className="inline-flex items-center gap-1 rounded-lg bg-primary-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-primary-700 disabled:opacity-50"
             >
-              <Check className="w-3 h-3" /> Approve
+              <Check className="w-3 h-3" /> {item.final_approval ? 'Approve and run' : 'Approve'}
             </button>
             <button
               type="button"

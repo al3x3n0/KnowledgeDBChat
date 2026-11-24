@@ -6,7 +6,7 @@ only from inside the process. These are what let a person start one.
 """
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -43,6 +43,10 @@ class ResearchCampaignCreate(BaseModel):
     job_template: Optional[Dict[str, Any]] = None
     #: Unset: a person approves every plan this campaign's jobs propose.
     plan_approval: Optional[CampaignPlanApproval] = None
+
+
+class ResearchCampaignAction(BaseModel):
+    action: Literal["pause", "resume", "stop"]
 
 
 class ResearchCampaignItemResponse(BaseModel):

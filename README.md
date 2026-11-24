@@ -1,14 +1,16 @@
 # KnowledgeOps Lab
 
-KnowledgeOps Lab is a self-hosted platform for knowledge operations and
-autonomous research and development. It connects organizational knowledge,
-research agents, coding harnesses, scientific verification, and external
-engineering systems in one governed workspace.
+KnowledgeOps Lab is a self-hosted platform for organizational knowledge retrieval
+and autonomous research and development. It provides context to external AI
+agents through an MCP-compatible tool API. Authenticated agents can search the
+knowledge base, retrieve documents, and ask questions grounded in that material.
 
-The platform can ingest and search technical material, run long-lived research
-programs, execute bounded coding workflows, collect experimental evidence, and
-produce auditable reports. Local models are supported through Ollama, while
-external model and research-system access remains policy controlled.
+Research agents can run scheduled campaigns, use findings to prioritize
+follow-up work, and track validation experiments within configured budgets and
+approval rules. The platform can also execute bounded coding workflows, collect
+experimental evidence, and produce auditable reports. Local models are
+supported through Ollama, and policies govern access to external models and
+research systems.
 
 > Status: active development. The product name is KnowledgeOps Lab; some
 > internal package, database, container, and repository identifiers still use
@@ -135,14 +137,66 @@ granting model-registry mutation authority.
 
 See [MLflow integration](docs/MLFLOW_INTEGRATION.md).
 
-### MCP and custom tools
+### MCP context and custom tools
 
-The backend exposes an MCP-compatible tool surface for authenticated external
-clients. User tools can also represent external agents, webhooks, transforms,
-containers, prompts, and workflow runners. Every tool call passes through the
-same policy and audit boundary.
+Open **MCP Profiles → New MCP profile** to name a profile, pick installed
+research programs, and choose knowledge tools. Use the generated URL
+(`/api/v1/mcp`) with a Streamable HTTP client and send the one-time key in the
+`Authorization: Bearer <key>` header. The key works on MCP routes and can be
+revoked under **API Keys**.
 
-See [External Agent Gateway](docs/EXTERNAL_AGENT_GATEWAY.md).
+In a **Context Pack**, choose **Save as Research Note** to keep the retrieved
+context and its source citations. Review the note and choose **Publish as MCP
+profile** to open the builder with that note selected.
+From **Admin → Research Programs**, use the program’s **Create MCP** link.
+In **Documents**, select an active source and choose **Create MCP from source**
+to start with search and document browsing scoped to that source.
+Expand **Access preview** in the builder to review the selected tools,
+resources, and document scope before saving.
+
+`get_research_programs` returns the selected programs' descriptions, versions,
+and tool schemas. Each selected program also appears as a JSON resource in
+clients with resource browsing. Choose semantic search, document
+retrieval, source listing, or knowledge-base chat. Use **Limit to selected
+sources** to restrict those tools to specific document sources. The profile's
+**Sources** tab lets you adjust read, search, and chat permissions after creation.
+Use **Edit profile** in the profile's **General** tab to update the name,
+programs, research notes, tools, and source selection. The **Connection** tab has
+the endpoint, client setup, and key rotation.
+Clients can call `get_research_notes` to list the selected notes or pass a
+`note_id` to read that note's current Markdown. Clients with resource browsing
+can also attach selected notes as Markdown resources. [MCP resources specification](https://modelcontextprotocol.io/specification/2025-11-25/server/resources).
+Clients with prompt support can select **Research brief** to work from the
+profile’s available resources or **Compare research notes** when at least two
+notes are available. [MCP prompts specification](https://modelcontextprotocol.io/specification/2025-11-25/server/prompts).
+In the builder’s **Custom prompts** section, add a title, client-facing name,
+and instructions to publish your own prompt. Each prompt can optionally
+reference the resources the profile is allowed to share.
+Turn on **Enable prompt inputs** and use placeholders such as `{{topic}}` in the
+instructions to ask for new values each time the prompt is used.
+
+Open **Client setup** after creating a profile or in its **General** tab to
+copy a configuration for GitHub Copilot or Cursor. Set the displayed environment
+variable to the profile key on the host running the client. The copied JSON
+references that variable. [GitHub Copilot configuration](https://code.visualstudio.com/docs/agents/reference/mcp-configuration), [Cursor configuration](https://cursor.com/docs/mcp).
+Use **Test connection** in the same panel to check the endpoint from the browser
+and see the tools, resources, and prompts the key can discover.
+Use **Rotate key** in the profile’s **General** tab to replace its credential.
+Save the replacement when it appears and update each connected client. The old
+key stops authenticating after rotation.
+The profile’s **Usage** tab shows request counts and frequent MCP operations,
+including tool calls, resource discovery, and resource reads.
+
+HTTP integrations can also discover tools at `GET /api/v1/mcp/tools` and invoke
+them at `POST /api/v1/mcp/tools/call`.
+
+For autonomous research campaigns, recurring monitoring, and validation, see
+the [Autonomous R&D guide](docs/AUTONOMOUS_RND_AGENTS.md).
+
+The platform can also invoke registered external agents, webhooks, transforms,
+containers, prompts, and workflows as user tools. See the
+[External Agent Gateway](docs/EXTERNAL_AGENT_GATEWAY.md) for agent registration
+and invocation.
 
 ### Kubernetes
 

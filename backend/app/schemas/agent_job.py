@@ -3,7 +3,7 @@ Pydantic schemas for autonomous agent jobs.
 """
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -1149,6 +1149,25 @@ class AgentJobEvidenceValue(BaseModel):
     value: str
 
 
+class AgentJobReproductionEvidence(BaseModel):
+    verdict: Literal["reproduced", "not_reproduced", "incomparable"]
+    metric: str = ""
+    claimed_value: Optional[float] = None
+    claimed_unit: str = ""
+    measured_value: Optional[float] = None
+    measured_unit: str = ""
+    relative_error: Optional[float] = None
+    tolerance: Optional[float] = None
+    claim_document_id: Optional[UUID] = None
+    claim_location: str = ""
+    measurement_source: str = ""
+    claimed_conditions: List[AgentJobEvidenceValue] = Field(default_factory=list)
+    measured_conditions: List[AgentJobEvidenceValue] = Field(default_factory=list)
+    blockers: List[str] = Field(default_factory=list)
+    caveats: List[str] = Field(default_factory=list)
+    summary: str = ""
+
+
 class AgentJobEvidenceItem(BaseModel):
     """One finding, as a reader needs it to judge whether it holds."""
 
@@ -1156,6 +1175,7 @@ class AgentJobEvidenceItem(BaseModel):
     type: str
     title: str = ""
     values: List[AgentJobEvidenceValue] = Field(default_factory=list)
+    reproduction: Optional[AgentJobReproductionEvidence] = None
     #: Whether it reports a spread. Answered by the validity service, which is
     #: the same authority `require_uncertainty` uses -- never a second one.
     has_uncertainty: bool = False

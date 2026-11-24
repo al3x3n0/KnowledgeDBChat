@@ -48,9 +48,11 @@ import { useNavigate } from 'react-router-dom';
 
 import Button from '../components/common/Button';
 import PipelineGraph from '../components/pipelines/PipelineGraph';
+import PipelineLaunchReview, { formatPipelineTime } from '../components/pipelines/PipelineLaunchReview';
 import PipelineRunProgress from '../components/pipelines/PipelineRunProgress';
 import StageInspector from '../components/pipelines/StageInspector';
 import BindingPreviewPanel from '../components/pipelines/BindingPreviewPanel';
+import { CPU_CO_DESIGN_PIPELINE } from '../utils/cpuCoDesignStudy';
 import { removePipelineStages, replacePipelineStage } from '../utils/pipelineEditing';
 import { apiClient } from '../services/api';
 import type {
@@ -62,6 +64,7 @@ import type {
 } from '../types';
 
 const STORAGE_KEY = 'pipeline_studio_draft_v1';
+const DRAFT_RECOVERY_KEY = 'pipeline_studio_recoverable_drafts_v1';
 
 /** Worked examples rather than an empty box: the shape is unfamiliar enough
  *  that a blank editor is a worse starting point than something to edit.
@@ -134,17 +137,18 @@ const REPRODUCE_PAPER = `{
     },
     {
       "id": "compare",
-      "goal": "Score the measurement against the paper's claim, or say which condition makes them incomparable",
+      "goal": "Score the measurement against the paper's claim, or say which condition makes them incomparable. Provide the source document ID and the claim's location in the paper when recorded. Record units, conditions, and the measurement source for the comparison.",
       "depends_on": ["measure"],
-      "assumes": ["benchmark_measurement", "implementation_verified"],
+      "assumes": ["algorithm_spec", "benchmark_measurement", "implementation_verified"],
       "checkpoint": true,
       "contract": { "required_finding_types": ["reproduction_verdict"] }
     }
   ]
 }`;
 
-const STARTERS: { label: string; source: string }[] = [
+const STARTERS: { label: string; source: string; initialStage?: string }[] = [
   { label: 'Bottleneck study', source: EXAMPLE },
+  { label: 'CPU co-design', source: JSON.stringify(CPU_CO_DESIGN_PIPELINE, null, 2), initialStage: 'validate-baseline' },
   { label: 'Reproduce a paper', source: REPRODUCE_PAPER },
 ];
 
@@ -156,6 +160,35 @@ const readDraft = (): string => {
   }
 };
 
+interface RecoverableDraft {
+  source: string;
+  budget: string;
+  openId: string | null;
+  storedAt: number;
+}
+
+function readRecoverableDrafts(): RecoverableDraft[] {
+  try {
+    const drafts: unknown = JSON.parse(window.localStorage.getItem(DRAFT_RECOVERY_KEY) || '[]');
+    return Array.isArray(drafts) ? drafts.filter((draft): draft is RecoverableDraft =>
+      draft && typeof draft.source === 'string' && typeof draft.budget === 'string' &&
+      (draft.openId === null || typeof draft.openId === 'string') &&
+      Number.isFinite(draft.storedAt)
+    ) : [];
+  } catch {
+    return [];
+  }
+}
+
+function draftName(source: string): string {
+  try {
+    const name: unknown = JSON.parse(source)?.name;
+    return typeof name === 'string' && name.trim() ? name : 'Untitled pipeline';
+  } catch {
+    return 'Untitled pipeline';
+  }
+}
+
 const minutes = (seconds: number) =>
   seconds < 60 ? `${seconds}s` : `${Math.round(seconds / 60)} min`;
 
@@ -163,6 +196,12 @@ const PipelineStudioPage: React.FC = () => {
   const navigate = useNavigate();
   const [source, setSource] = useState<string>(readDraft);
   const [budget, setBudget] = useState<string>('');
+  const enteredBudget = budget.trim();
+  const budgetNumber = Number(enteredBudget);
+  const budgetError = Boolean(enteredBudget) &&
+    (!/^\d+$/.test(enteredBudget) || !Number.isSafeInteger(budgetNumber) || budgetNumber < 1);
+  const budgetSeconds = enteredBudget && !budgetError ? budgetNumber : undefined;
+  const [recoverableDrafts, setRecoverableDrafts] = useState(readRecoverableDrafts);
   const [catalogRevision, setCatalogRevision] = useState(0);
   const checkKey = JSON.stringify([source, budget, catalogRevision]);
   const [checked, setChecked] = useState<{ key: string; result: PipelineCheck } | null>(null);
@@ -174,6 +213,7 @@ const PipelineStudioPage: React.FC = () => {
   const [serverError, setServerError] = useState<string>('');
   const [checking, setChecking] = useState(false);
   const [launching, setLaunching] = useState(false);
+  const [launchReview, setLaunchReview] = useState<{ key: string; pipelineId: string | null } | null>(null);
   const [view, setView] = useState<'split' | 'text' | 'graph'>(() => {
     try {
       return (window.localStorage.getItem('pipeline_studio_view') as any) || 'split';
@@ -199,6 +239,14 @@ const PipelineStudioPage: React.FC = () => {
     }
   }, [source]);
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(DRAFT_RECOVERY_KEY, JSON.stringify(recoverableDrafts));
+    } catch {
+      // The drafts remain available for the current editor session.
+    }
+  }, [recoverableDrafts]);
+
   const parsed = useMemo(() => {
     try {
       const value = JSON.parse(source);
@@ -217,17 +265,18 @@ const PipelineStudioPage: React.FC = () => {
     setParseError(parsed.error);
     setServerError('');
     setChecked(null);
-    if (parsed.error || !parsed.value) {
+    if (parsed.error) {
+      setChecking(false);
+      return;
+    }
+    if (!parsed.value || typeof parsed.value !== 'object' || Array.isArray(parsed.value)) {
+      setServerError('The pipeline specification must be a JSON object.');
       setChecking(false);
       return;
     }
     setChecking(true);
     try {
-      const budgetSeconds = budget.trim() ? Number(budget.trim()) : undefined;
-      const result = await apiClient.checkPipeline(
-        parsed.value,
-        Number.isFinite(budgetSeconds) && budgetSeconds ? budgetSeconds : undefined
-      );
+      const result = await apiClient.checkPipeline(parsed.value, budgetSeconds);
       if (isCurrent()) setChecked({ key: checkKey, result });
     } catch (error: any) {
       // A 400 here means the shape is wrong in a way the parser accepted —
@@ -239,7 +288,7 @@ const PipelineStudioPage: React.FC = () => {
     } finally {
       if (request === checkRequest.current) setChecking(false);
     }
-  }, [parsed, budget, checkKey]);
+  }, [parsed, budgetSeconds, checkKey]);
 
   useEffect(() => () => { checkRequest.current += 1; }, []);
   useEffect(() => { setParseError(''); setServerError(''); }, [checkKey]);
@@ -249,6 +298,26 @@ const PipelineStudioPage: React.FC = () => {
   // draft has never been saved, which is why Save asks for a name and Update
   // does not.
   const [openId, setOpenId] = useState<string | null>(null);
+
+  const rememberDraft = (restored?: RecoverableDraft) => {
+    const uneditedExample = !budget && !openId && STARTERS.some((starter) => starter.source === source);
+    const snapshot = { source, budget, openId, storedAt: Date.now() };
+    setRecoverableDrafts((drafts) => {
+      const remaining = drafts.filter((draft) => draft !== restored);
+      if (uneditedExample || remaining.some((draft) =>
+        draft.source === source && draft.budget === budget && draft.openId === openId
+      )) return remaining;
+      return [snapshot, ...remaining];
+    });
+  };
+
+  const resumeDraft = (draft: RecoverableDraft) => {
+    rememberDraft(draft);
+    setOpenId(draft.openId);
+    setSelectedStage(null);
+    setSource(draft.source);
+    setBudget(draft.budget);
+  };
 
   /** The current owner's tools and active skills may change in another tab.
    *  Refresh metadata without replacing the spec or remounting its editors. */
@@ -297,11 +366,7 @@ const PipelineStudioPage: React.FC = () => {
     if (!wanted) return;
     setDrafting(true);
     try {
-      const budgetSeconds = budget.trim() ? Number(budget.trim()) : undefined;
-      const result = await apiClient.draftPipeline(
-        wanted,
-        Number.isFinite(budgetSeconds) && budgetSeconds ? budgetSeconds : undefined
-      );
+      const result = await apiClient.draftPipeline(wanted, budgetSeconds);
       setOpenId(null);
       setSelectedStage(null);
       setSource(JSON.stringify(result.spec, null, 2));
@@ -322,7 +387,7 @@ const PipelineStudioPage: React.FC = () => {
     } finally {
       setDrafting(false);
     }
-  }, [describing, budget]);
+  }, [describing, budgetSeconds]);
 
   /** The saved pipeline currently in the editor, when there is one. Its last
    *  run is the only thing on this page that already cost something. */
@@ -503,6 +568,9 @@ const PipelineStudioPage: React.FC = () => {
       try {
         await apiClient.deleteSavedPipeline(pipeline.id);
         if (openId === pipeline.id) setOpenId(null);
+        setRecoverableDrafts((drafts) => drafts.map((draft) =>
+          draft.openId === pipeline.id ? { ...draft, openId: null } : draft
+        ));
         refreshSaved();
       } catch (error: any) {
         toast.error(error?.response?.data?.detail || 'Could not delete');
@@ -522,47 +590,44 @@ const PipelineStudioPage: React.FC = () => {
   // chain, or cannot afford its own budget, must not offer a Launch button
   // that the server is only going to refuse.
   const canLaunch = Boolean(
-    !checking && !vocabularyLoading && check?.valid &&
+    !budgetError && !checking && !vocabularyLoading && check?.valid &&
       check.expressible &&
       check.plan &&
+      !check.launch_problems?.length &&
       (!check.budget || check.budget.affordable)
   );
+  const reviewIsCurrent = launchReview?.key === checkKey && launchReview.pipelineId === openId;
+  const closeLaunchReview = useCallback(() => setLaunchReview(null), []);
+  useEffect(() => closeLaunchReview(), [checkKey, openId, closeLaunchReview]);
 
   const handleLaunch = useCallback(async () => {
-    if (!canLaunch || !parsed.value || !check?.plan) return;
+    if (!reviewIsCurrent || !canLaunch || launching || !parsed.value || !check?.plan) return;
     const total = check.plan.total_seconds;
-    const stops = check.plan.checkpoints.length
-      ? `\n\nIt will stop for you at: ${check.plan.checkpoints.join(', ')}.`
-      : '';
-    // The one place in this feature that spends anything, so the number and
-    // the stopping points are said out loud before it does.
-    const ok = window.confirm(
-      `Start "${parsed.value.name || 'this pipeline'}"?\n\n` +
-        `${check.plan.order.length} stages, about ${minutes(total)} of work.${stops}`
-    );
-    if (!ok) return;
-
     setLaunching(true);
     try {
-      const budgetSeconds = budget.trim() ? Number(budget.trim()) : undefined;
       const started = await apiClient.launchPipeline(parsed.value, {
-        budgetSeconds: budgetSeconds || undefined,
+        budgetSeconds,
         // The estimate shown above is the estimate being agreed to. If the
         // price changed on the server since the check, it refuses rather than
         // running something nobody saw costed.
         acknowledgedSeconds: total,
         pipelineId: openId || undefined,
       });
+      closeLaunchReview();
       toast.success(`Started ${started.name}`);
       refreshSaved();
       navigate(`/autonomous-agents?job=${started.job_id}`);
     } catch (error: any) {
       toast.error(error?.response?.data?.detail || 'Could not start the pipeline');
+      if ([409, 422].includes(error?.response?.status)) {
+        closeLaunchReview();
+        void runCheck();
+      }
     } finally {
       setLaunching(false);
     }
     // openId so the run and the pipeline each know about the other.
-  }, [canLaunch, parsed, check, budget, navigate, openId, refreshSaved]);
+  }, [reviewIsCurrent, canLaunch, launching, parsed, check, budgetSeconds, navigate, openId, refreshSaved, closeLaunchReview, runCheck]);
 
   // The graph never holds a model of its own: it hands back a whole spec and
   // that is serialised straight into the text. Two views of one document
@@ -578,33 +643,52 @@ const PipelineStudioPage: React.FC = () => {
    *  stored: the spec is the only source of truth, so a selection that
    *  survived a rename or a delete would point at something gone. */
   const selectedStageObject = useMemo(() => {
-    if (!selectedStage || !parsed.value) return null;
+    if (!selectedStage || !Array.isArray(parsed.value?.stages)) return null;
     const found = (parsed.value.stages || []).find(
-      (st: any) => String(st.id) === selectedStage
+      (st: any) => String(st?.id) === selectedStage
     );
     return found || null;
   }, [selectedStage, parsed]);
 
   const problems = check?.problems || [];
   const bindingProblems = check?.binding_problems || [];
+  const launchProblems = check?.launch_problems || [];
   const plan = check?.plan;
   const budgetResult = check?.budget;
+  let readiness = 'Checking launch requirements…';
+  if (budgetError) {
+    readiness = 'Enter a whole number of seconds greater than zero.';
+  } else if (parsed.error) {
+    readiness = 'Fix the specification JSON to review launch.';
+  } else if (serverError) {
+    readiness = 'The check could not evaluate this pipeline.';
+  } else if (budgetResult && !budgetResult.affordable) {
+    readiness = `Estimated work is ${formatPipelineTime(budgetResult.estimated_seconds)} against a ${formatPipelineTime(budgetResult.budget_seconds)} budget.`;
+  } else if (canLaunch && plan) {
+    const count = plan.order.length;
+    readiness = `${count} ${count === 1 ? 'stage' : 'stages'} · ${formatPipelineTime(plan.total_seconds)} estimated work`;
+  } else if (check && !vocabularyLoading) {
+    readiness = 'Resolve the issues in the check results to review launch.';
+  }
 
   return (
-    <div className="p-6 h-full min-h-0 flex flex-col gap-4">
-      <div className="flex items-center justify-between flex-none">
+    <div className="flex min-h-full min-w-0 flex-col gap-4 p-4 lg:h-full lg:p-6">
+      <div className="flex flex-none flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <Workflow className="w-5 h-5 text-primary-600" />
           <h1 className="text-xl font-semibold text-gray-900">Pipeline Studio</h1>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <label className="text-xs text-gray-500" htmlFor="pipeline-budget">
             Budget (seconds)
           </label>
           <input
             id="pipeline-budget"
             value={budget}
-            onChange={(e) => setBudget(e.target.value.replace(/[^0-9]/g, ''))}
+            inputMode="numeric"
+            aria-invalid={budgetError}
+            aria-describedby="pipeline-readiness"
+            onChange={(e) => setBudget(e.target.value)}
             placeholder="optional"
             className="w-28 px-2 py-1 text-sm rounded-md bg-gray-50 border border-gray-300
               shadow-[inset_0_1px_2px_0_rgb(0_0_0_/_0.35)]
@@ -642,9 +726,11 @@ const PipelineStudioPage: React.FC = () => {
             onChange={(e) => {
               const starter = STARTERS.find((s) => s.label === e.target.value);
               if (!starter) return;
+              rememberDraft();
               setOpenId(null);
-              setSelectedStage(null);
+              setSelectedStage(starter.initialStage ?? null);
               setSource(starter.source);
+              setBudget('');
             }}
           >
             <option value="">New…</option>
@@ -658,24 +744,55 @@ const PipelineStudioPage: React.FC = () => {
             size="sm"
             disabled={!canLaunch || launching}
             loading={launching}
-            title={
-              canLaunch
-                ? 'Start this pipeline'
-                : 'Fix the problems above before launching'
-            }
-            onClick={handleLaunch}
+            aria-describedby="pipeline-readiness"
+            onClick={() => setLaunchReview({ key: checkKey, pipelineId: openId })}
           >
             <Play className="w-4 h-4 mr-1" />
-            Launch
+            Review launch
           </Button>
         </div>
       </div>
 
-      <p className="text-sm text-gray-500 flex-none max-w-3xl">
-        Set each stage’s goal and required evidence, then choose any extra tools
-        it needs. Evidence tools are derived automatically. Checks and estimates
-        appear before launch; the run panel shows the latest execution.
-      </p>
+      <div className="flex flex-none flex-wrap items-baseline gap-x-2 gap-y-1 rounded-md border border-gray-200 px-3 py-2 text-sm">
+        <span className="font-medium text-gray-900">Launch readiness</span>
+        <span id="pipeline-readiness" role="status" className="min-w-0 break-words text-gray-600">{readiness}</span>
+      </div>
+      {reviewIsCurrent && canLaunch && parsed.value && plan && (
+        <PipelineLaunchReview
+          spec={parsed.value}
+          plan={plan}
+          budgetSeconds={budgetSeconds}
+          launching={launching}
+          onClose={closeLaunchReview}
+          onLaunch={handleLaunch}
+        />
+      )}
+      {recoverableDrafts.length > 0 && (
+        <details className="max-w-3xl flex-none rounded-md border border-gray-300 bg-gray-100 px-3 py-2 text-sm">
+          <summary className="cursor-pointer font-medium text-primary-700">Recover drafts ({recoverableDrafts.length})</summary>
+          <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto">
+            {recoverableDrafts.map((draft) => (
+              <li key={JSON.stringify([draft.storedAt, draft.source, draft.budget, draft.openId])} className="flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0 break-words">
+                  <span className="font-medium text-gray-900">{draftName(draft.source)}</span>
+                  <span className="ml-2 text-xs text-gray-600">{new Date(draft.storedAt).toLocaleString()}</span>
+                </div>
+                <Button type="button" variant="secondary" size="sm" onClick={() => resumeDraft(draft)}>
+                  Resume draft
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {parsed.value?.name === CPU_CO_DESIGN_PIPELINE.name && (
+        <div className="max-w-3xl flex-none space-y-1 rounded-md border border-gray-300 bg-gray-100 px-3 py-2 text-xs text-gray-600">
+          <p>Edit the baseline stage with your kernel revisions and two input shapes. This example uses gem5 from the microarchitecture research program.</p>
+          {vocabulary && !vocabulary.evidence_types.some((entry) => entry.name === 'simulated_measurement') && (
+            <p className="text-amber-300">Simulation evidence is unavailable. Enable the microarchitecture research program before launching.</p>
+          )}
+        </div>
+      )}
 
       {/* Say what you want. The other way into a format nobody knows: the
           starters only help an author whose question resembles one of them. */}
@@ -848,11 +965,11 @@ const PipelineStudioPage: React.FC = () => {
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 flex-1 min-h-0">
+      <div className="grid grid-cols-1 gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-2">
         {/* The spec, as text and/or as a graph. Both edit the same document:
             the graph hands back a whole spec and it is serialised into the
             text, so neither view holds state the other cannot see. */}
-        <div className="flex flex-col min-h-0 gap-3">
+        <div className="flex min-w-0 flex-col gap-3 lg:min-h-0">
           <div className="flex items-center justify-between">
             <h2 className="section-heading mb-0">
               {view === 'graph' ? 'Shape' : 'Specification'}
@@ -870,14 +987,14 @@ const PipelineStudioPage: React.FC = () => {
                 px-3 py-2 font-mono text-xs leading-relaxed text-gray-900
                 shadow-[inset_0_1px_2px_0_rgb(0_0_0_/_0.35)]
                 focus:outline-none focus:border-primary-600 focus:shadow-accent-glow
-                ${view === 'split' ? 'h-1/2 min-h-[200px]' : 'flex-1 min-h-[320px]'}`}
+                ${view === 'split' ? 'h-56 min-h-[200px] lg:h-1/2' : 'min-h-[320px] lg:flex-1'}`}
             />
           )}
 
           {view !== 'text' && (
             <div
               className={`rounded-lg border border-gray-200 overflow-hidden bg-gray-50
-                ${view === 'split' ? 'flex-1 min-h-[220px]' : 'flex-1 min-h-[320px]'}`}
+                ${view === 'split' ? 'h-64 min-h-[220px] lg:h-auto lg:flex-1' : 'h-[320px] min-h-[320px] lg:h-auto lg:flex-1'}`}
             >
               {parsed.value && !parsed.error ? (
                 <PipelineGraph
@@ -902,7 +1019,7 @@ const PipelineStudioPage: React.FC = () => {
         </div>
 
         {/* What is wrong with it, and what it will cost */}
-        <div className="flex flex-col min-h-0 overflow-y-auto scrollbar-thin space-y-3">
+        <div className="flex min-w-0 flex-col space-y-3 scrollbar-thin lg:min-h-0 lg:overflow-y-auto">
           <section aria-label="Tool catalog" className="rounded-lg border border-gray-300 p-3 space-y-2">
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-medium text-gray-700">Tool catalog</span>
@@ -922,7 +1039,7 @@ const PipelineStudioPage: React.FC = () => {
           {selectedStageObject && (
             <StageInspector
               stage={selectedStageObject}
-              allStageIds={(parsed.value?.stages || []).map((st: any) => String(st.id))}
+              allStageIds={parsed.value.stages.filter((st: any) => st?.id).map((st: any) => String(st.id))}
               vocabulary={vocabulary}
               vocabularyLoading={vocabularyLoading}
               onChange={(next) => {
@@ -1059,6 +1176,15 @@ const PipelineStudioPage: React.FC = () => {
                       <li key={p} className="text-xs text-red-200">
                         {p}
                       </li>
+                    ))}
+                  </ul>
+                </Panel>
+              )}
+              {launchProblems.length > 0 && (
+                <Panel title="Launch blockers" tone="bad">
+                  <ul className="space-y-1.5">
+                    {launchProblems.map((problem) => (
+                      <li key={problem} className="text-xs text-red-200">{problem}</li>
                     ))}
                   </ul>
                 </Panel>

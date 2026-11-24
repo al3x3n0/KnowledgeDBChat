@@ -187,6 +187,31 @@ async def test_the_question_is_not_settled_while_its_stages_run(db_session, test
     assert campaign.jobs_launched == 1
 
 
+async def test_campaign_summary_targets_the_stage_that_needs_approval(
+    db_session, test_user
+):
+    campaign = await _campaign(db_session, test_user)
+    root = await _launched(db_session, campaign)
+    await _proposes_and_completes(db_session, root)
+    root.status = AgentJobStatus.COMPLETED.value
+    await _start_next(db_session, root, "approval")
+    stage = await _stage_of(db_session, root)
+    stage.status = AgentJobStatus.PAUSED.value
+    stage.current_phase = "awaiting_approval"
+    await db_session.commit()
+
+    summary = await campaigns.summarize(db_session, campaign)
+
+    assert summary["waiting_on"] == "approval"
+    assert summary["current_item"]["job_id"] == str(stage.id)
+    assert (
+        summary["current_item"]["title"]
+        == (await campaigns._items(db_session, campaign))[0].title
+    )
+    assert summary["jobs_used"] == 2
+    assert summary["remaining_jobs"] == campaign.max_jobs - 2
+
+
 async def test_a_stage_that_just_ended_is_given_time_to_start_the_next(
     db_session, test_user
 ):

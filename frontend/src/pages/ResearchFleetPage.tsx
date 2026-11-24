@@ -101,6 +101,8 @@ const ResearchFleetPage: React.FC = () => {
     cancelOpportunityAction,
     createScientificResearchPackMutation,
     domainProfilesData,
+    domainProfilesLoading,
+    refetchDomainProfiles,
     highlightedAutonomyCardKey,
     highlightedAutonomyRowKey,
     opportunityNoteDraft,
@@ -136,10 +138,10 @@ const ResearchFleetPage: React.FC = () => {
     {
       onSuccess: () => {
         queryClient.invalidateQueries(['research-portfolios']);
-        toast.success('Research fleet settings updated');
+        toast.success('Research portfolio settings updated');
       },
       onError: (error: any) => {
-        toast.error(error.message || 'Failed to update research fleet');
+        toast.error(error.message || 'Failed to update research portfolio');
       },
     }
   );
@@ -166,6 +168,8 @@ const ResearchFleetPage: React.FC = () => {
   return (
       <ResearchFleetTab
         domainProfilesData={domainProfilesData}
+        domainProfilesLoading={domainProfilesLoading}
+        refetchDomainProfiles={refetchDomainProfiles}
         refetchResearchPortfolios={refetchResearchPortfolios}
         researchPortfoliosData={researchPortfoliosData}
         researchPortfoliosLoading={researchPortfoliosLoading}

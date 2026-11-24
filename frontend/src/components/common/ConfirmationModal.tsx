@@ -2,7 +2,7 @@
  * Reusable confirmation modal component to replace window.confirm()
  */
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useId, useRef } from 'react';
 import { X, AlertTriangle } from 'lucide-react';
 import Button from './Button';
 
@@ -11,7 +11,8 @@ interface ConfirmationModalProps {
   onClose: () => void;
   onConfirm: () => void;
   title: string;
-  message: string;
+  message?: string;
+  children?: React.ReactNode;
   confirmText?: string;
   cancelText?: string;
   variant?: 'danger' | 'warning' | 'info';
@@ -24,6 +25,7 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
   onConfirm,
   title,
   message,
+  children,
   confirmText = 'Confirm',
   cancelText = 'Cancel',
   variant = 'warning',
@@ -31,7 +33,16 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
 }) => {
   const modalRef = useRef<HTMLDivElement>(null);
   const cancelButtonRef = useRef<HTMLButtonElement>(null);
-  const confirmButtonRef = useRef<HTMLButtonElement>(null);
+  const titleId = useId();
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const previousFocus = document.activeElement;
+    cancelButtonRef.current?.focus();
+    return () => {
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+    };
+  }, [isOpen]);
 
   // Handle escape key
   useEffect(() => {
@@ -43,10 +54,6 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
 
     if (isOpen) {
       document.addEventListener('keydown', handleEscape);
-      // Focus the cancel button on open
-      setTimeout(() => {
-        cancelButtonRef.current?.focus();
-      }, 100);
     }
 
     return () => {
@@ -61,31 +68,23 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
     const modal = modalRef.current;
     if (!modal) return;
 
-    const focusableElements = modal.querySelectorAll(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-    );
-    const firstElement = focusableElements[0] as HTMLElement;
-    const lastElement = focusableElements[focusableElements.length - 1] as HTMLElement;
-
     const handleTab = (e: KeyboardEvent) => {
       if (e.key !== 'Tab') return;
-
-      if (e.shiftKey) {
-        if (document.activeElement === firstElement) {
-          e.preventDefault();
-          lastElement.focus();
-        }
-      } else {
-        if (document.activeElement === lastElement) {
-          e.preventDefault();
-          firstElement.focus();
-        }
+      const focusable = modal.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]'
+      );
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !modal.contains(document.activeElement) ||
+        document.activeElement === (e.shiftKey ? first : last)) {
+        e.preventDefault();
+        (e.shiftKey ? last : first)?.focus();
       }
     };
 
-    modal.addEventListener('keydown', handleTab);
+    document.addEventListener('keydown', handleTab);
     return () => {
-      modal.removeEventListener('keydown', handleTab);
+      document.removeEventListener('keydown', handleTab);
     };
   }, [isOpen]);
 
@@ -113,8 +112,8 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 overflow-y-auto"
-      aria-labelledby="modal-title"
+      className="fixed inset-0 z-[60] overflow-y-auto"
+      aria-labelledby={titleId}
       role="dialog"
       aria-modal="true"
     >
@@ -139,7 +138,7 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
                 <AlertTriangle className={`w-5 h-5 ${styles.icon}`} />
               </div>
               <h3
-                id="modal-title"
+                id={titleId}
                 className="text-lg font-semibold text-gray-900"
               >
                 {title}
@@ -157,23 +156,25 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
           </div>
 
           {/* Body */}
-          <div className="p-6">
-            <p className="text-gray-700">{message}</p>
+          <div className="max-h-[60vh] overflow-y-auto p-6" tabIndex={children ? 0 : undefined}>
+            {message && <p className="text-gray-700">{message}</p>}
+            {children}
           </div>
 
           {/* Footer */}
-          <div className="flex items-center justify-end space-x-3 p-6 border-t border-gray-200 bg-gray-50">
+          <div className="flex flex-wrap items-center justify-end gap-2 border-t border-gray-200 bg-gray-50 px-4 py-4 sm:px-6">
             <Button
               ref={cancelButtonRef}
               variant="ghost"
+              className="whitespace-nowrap"
               onClick={onClose}
               disabled={isLoading}
             >
               {cancelText}
             </Button>
             <Button
-              ref={confirmButtonRef}
               variant={styles.button}
+              className="whitespace-nowrap"
               onClick={onConfirm}
               loading={isLoading}
             >

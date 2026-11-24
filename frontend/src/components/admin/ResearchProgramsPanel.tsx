@@ -1,6 +1,7 @@
 import React from 'react';
 import { useQuery } from 'react-query';
-import { RefreshCw } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { RefreshCw, Server } from 'lucide-react';
 
 import { apiClient } from '../../services/api';
 import Button from '../common/Button';
@@ -53,11 +54,20 @@ const ResearchProgramsPanel: React.FC = () => {
                 )}
                 {data.loaded.map((program) => (
                   <article key={program.name} className="bg-white rounded-lg shadow p-6 space-y-4">
-                    <div>
-                      <h4 className="font-semibold text-gray-900">
-                        {program.name}{program.version && ` · ${program.version}`}
-                      </h4>
-                      {program.description && <p className="text-sm text-gray-600">{program.description}</p>}
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <h4 className="font-semibold text-gray-900">
+                          {program.name}{program.version && ` · ${program.version}`}
+                        </h4>
+                        {program.description && <p className="text-sm text-gray-600">{program.description}</p>}
+                      </div>
+                      <Link
+                        to={`/mcp-config?program=${encodeURIComponent(program.name)}`}
+                        className="inline-flex items-center gap-2 rounded-md border border-gray-300 bg-gray-100 px-3 py-1.5 text-sm font-medium text-gray-900 hover:bg-gray-200"
+                      >
+                        <Server className="h-4 w-4" aria-hidden="true" />
+                        Create MCP from program
+                      </Link>
                     </div>
                     <details>
                       <summary className="cursor-pointer text-sm font-medium text-gray-900">

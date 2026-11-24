@@ -319,9 +319,15 @@ class TestLaunchingOne:
                 _stage("two", ["codegen_measurement"]),
             )
         }
+        check = client.post(CHECK, json=payload, headers=auth_headers)
+        assert check.status_code == 200
+        assert check.json()["valid"] is True
+        assert check.json()["expressible"] is True
+        (problem,) = check.json()["launch_problems"]
+        assert "starting stages (one, two)" in problem
         response = client.post(LAUNCH, json=payload, headers=auth_headers)
         assert response.status_code == 422
-        assert "starting stages" in response.json()["detail"]
+        assert response.json()["detail"] == problem
 
     def test_it_needs_a_caller(self, client):
         response = client.post(LAUNCH, json={"spec": self._good()})

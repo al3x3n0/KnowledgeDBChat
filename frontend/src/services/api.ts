@@ -305,6 +305,7 @@ import {
   ContributedToolsResponse,
   PluginUiResponse,
   ResearchCampaign,
+  ResearchCampaignAction,
 } from '../types';
 
 // CRA substitutes the *bare identifier* `process.env.REACT_APP_X` at build
@@ -1773,8 +1774,11 @@ class ApiClient {
     return response.data;
   }
 
-  async approveToolAudit(auditId: string, note?: string): Promise<ToolAudit> {
-    const response = await this.client.post(`/api/v1/audit/tools/${auditId}/approve`, { note });
+  async approveToolAudit(auditId: string, note?: string, expectedFinalApproval?: boolean): Promise<ToolAudit> {
+    const response = await this.client.post(`/api/v1/audit/tools/${auditId}/approve`, {
+      note,
+      expected_final_approval: expectedFinalApproval,
+    });
     return response.data;
   }
 
@@ -2866,6 +2870,11 @@ class ApiClient {
     return response.data;
   }
 
+  async listWorkflowExecutions(workflowId: string, params: { limit: number; offset: number }): Promise<components['schemas']['WorkflowExecutionListResponse']> {
+    const response = await this.client.get(`/api/v1/workflows/${encodeURIComponent(workflowId)}/executions`, { params });
+    return response.data;
+  }
+
   async getWorkflowsForSelection(excludeId?: string): Promise<Array<{
     id: string;
     name: string;
@@ -3187,6 +3196,50 @@ class ApiClient {
   }
 
   // ==================== MCP Configuration endpoints ====================
+
+  getMCPEndpoint(): string {
+    return new URL('/api/v1/mcp', new URL(API_BASE_URL, window.location.origin)).href;
+  }
+
+  async getMCPProfileOptions(): Promise<components['schemas']['MCPProfileOptions']> {
+    const response = await this.client.get('/api/v1/mcp-config/profile-options');
+    return response.data;
+  }
+
+  async listMCPProfileNotes(
+    query: string,
+    noteId?: string
+  ): Promise<components['schemas']['MCPNoteOption'][]> {
+    const response = await this.client.get('/api/v1/mcp-config/profile-notes', {
+      params: { q: query, note_id: noteId },
+    });
+    return response.data;
+  }
+
+  async createMCPProfile(
+    profile: components['schemas']['MCPProfileCreate']
+  ): Promise<components['schemas']['MCPProfileCreated']> {
+    const response = await this.client.post('/api/v1/mcp-config/profiles', profile);
+    return response.data;
+  }
+
+  async updateMCPProfile(
+    id: string,
+    profile: components['schemas']['MCPProfileCreate']
+  ): Promise<MCPKeyConfigResponse> {
+    const response = await this.client.put(`/api/v1/mcp-config/profiles/${id}`, profile);
+    return response.data;
+  }
+
+  async rotateMCPProfileKey(
+    id: string,
+    keyPrefix: string
+  ): Promise<components['schemas']['MCPProfileRotated']> {
+    const response = await this.client.post(`/api/v1/mcp-config/profiles/${id}/rotate`, {
+      key_prefix: keyPrefix,
+    });
+    return response.data;
+  }
 
   async listMCPTools(): Promise<MCPToolInfo[]> {
     const response = await this.client.get('/api/v1/mcp-config/tools');
@@ -3594,6 +3647,7 @@ class ApiClient {
 
   async getAgentCheckpointQueue(params?: {
     item_type?: string;
+    job_id?: string;
     status?: string;
     customer?: string;
     job_type?: string;
@@ -4996,6 +5050,21 @@ class ApiClient {
 
   async getResearchCampaign(campaignId: string): Promise<ResearchCampaign> {
     const response = await this.client.get(`/api/v1/research/campaigns/${campaignId}`);
+    return response.data;
+  }
+
+  async actionResearchCampaign(campaignId: string, action: ResearchCampaignAction): Promise<ResearchCampaign> {
+    const response = await this.client.post(
+      `/api/v1/research/campaigns/${encodeURIComponent(campaignId)}/action`,
+      { action }
+    );
+    return response.data;
+  }
+
+  async saveContextPackAsNote(traceId: string): Promise<ResearchNote> {
+    const response = await this.client.post(
+      `/api/v1/research-notes/context-packs/${encodeURIComponent(traceId)}`
+    );
     return response.data;
   }
 

@@ -80,12 +80,12 @@ export const buildDomainResearchPromotionDraft = (
   const cfg = ((job?.config || {}) as Record<string, any>) || {};
   const domain = String(cfg.domain || '').trim();
   return {
-    title: String(job?.name || '').trim() || (domain ? `${domain} Monitor` : 'Domain Research Monitor'),
+    title: String(job?.name || '').trim() || (domain ? `${domain} Monitor` : 'Topic Monitor'),
     interval_minutes: String(cfg.interval_minutes ?? 1440),
     target_mode: 'profile_only',
     portfolio_mode: 'new',
     portfolio_id: '',
-    portfolio_title: domain ? `${domain} Fleet` : 'Research Fleet',
+    portfolio_title: domain ? `${domain} Portfolio` : 'Research Portfolio',
     start_profile_now: true,
     run_portfolio_now: false,
   };

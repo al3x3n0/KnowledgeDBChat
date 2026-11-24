@@ -31,7 +31,9 @@ shows what that verdict was reached from.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import isfinite
 from typing import Any, Dict, List, Mapping, Optional
+from uuid import UUID
 
 from app.services import agent_evidence_map, agent_measurement_validity
 
@@ -121,6 +123,7 @@ class EvidenceItem:
     type: str
     title: str
     values: List[EvidenceValue] = field(default_factory=list)
+    reproduction: Optional[Dict[str, Any]] = None
     #: Whether it reports a spread. Asked of the validity service, not decided
     #: here.
     has_uncertainty: bool = False
@@ -145,6 +148,7 @@ class EvidenceItem:
             "type": self.type,
             "title": self.title,
             "values": [v.as_dict() for v in self.values],
+            "reproduction": self.reproduction,
             "has_uncertainty": self.has_uncertainty,
             "measurement_environment": self.measurement_environment,
             "warning": self.warning,
@@ -185,6 +189,8 @@ class RequirementView:
 #: How many findings nobody asked for to render. Beyond this the page is
 #: showing a sample, and says so.
 _MAX_UNREQUESTED = 50
+_MAX_UNREQUESTED_REPRODUCTIONS = 10
+_REPRODUCTION_VERDICTS = ("reproduced", "not_reproduced", "incomparable")
 
 #: How many fields to lift out of one nested container. A tool result nested
 #: whole would bury the finding it belongs to.
@@ -234,6 +240,62 @@ def _values_of(finding: Mapping[str, Any]) -> List[EvidenceValue]:
     for name in sorted(candidates):
         ordered.append(EvidenceValue(label=name, value=candidates[name]))
     return ordered[:_MAX_VALUES]
+
+
+def reproduction_of(finding: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    verdict = finding.get("verdict")
+    if verdict not in _REPRODUCTION_VERDICTS:
+        return None
+
+    values: Dict[str, Any] = {"verdict": verdict}
+    for key in ("claimed_value", "measured_value", "relative_error", "tolerance"):
+        raw = finding.get(key)
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            try:
+                if isfinite(raw):
+                    values[key] = raw
+            except OverflowError:
+                continue
+
+    for key, max_length in (
+        ("metric", 160),
+        ("claimed_unit", 80),
+        ("measured_unit", 80),
+        ("measurement_source", 500),
+        ("claim_location", 240),
+        ("summary", 700),
+    ):
+        raw = finding.get(key)
+        if isinstance(raw, str):
+            values[key] = raw.strip()[:max_length]
+
+    document_id = finding.get("claim_document_id")
+    if isinstance(document_id, str):
+        try:
+            values["claim_document_id"] = str(UUID(document_id.strip()))
+        except ValueError:
+            pass
+
+    for key in ("claimed_conditions", "measured_conditions"):
+        conditions = finding.get(key)
+        if not isinstance(conditions, Mapping):
+            continue
+        fields = dict.fromkeys(("hardware", "input_size", "baseline", *conditions))
+        values[key] = [
+            {"label": str(field)[:100], "value": rendered}
+            for field in fields
+            if (rendered := _render(conditions.get(field))) is not None
+        ][:_MAX_VALUES]
+
+    for key in ("blockers", "caveats"):
+        lines = finding.get(key)
+        if isinstance(lines, (list, tuple)):
+            values[key] = [
+                line.strip()[:700]
+                for line in lines
+                if isinstance(line, str) and line.strip()
+            ][:_MAX_VALUES]
+    return values
 
 
 def _contract_of(results: Mapping[str, Any]) -> Dict[str, Any]:
@@ -297,6 +359,7 @@ def build(job: Any, disputes: Optional[Mapping[int, str]] = None) -> Dict[str, A
     # truncated requirement would read as a requirement nothing answered --
     # the one message this view must never get wrong.
     rendered_indices: List[int] = []
+    reproduction_indices: List[int] = []
     unrequested_total = 0
     for index, finding in enumerate(findings):
         finding_type = str(finding.get("type") or "").strip()
@@ -304,12 +367,23 @@ def build(job: Any, disputes: Optional[Mapping[int, str]] = None) -> Dict[str, A
             rendered_indices.append(index)
             continue
         unrequested_total += 1
+        if (
+            finding_type == "reproduction_verdict"
+            and finding.get("verdict") in _REPRODUCTION_VERDICTS
+        ):
+            reproduction_indices.append(index)
         if unrequested_total <= _MAX_UNREQUESTED or index in rejected:
             # A rejected finding is always shown, wherever it falls: someone
             # went to the trouble of rejecting it, and hiding it behind a cap
             # would make the rejection unreachable.
             rendered_indices.append(index)
 
+    # Keep recent verdicts visible even after the ordinary sample fills up.
+    rendered_indices = sorted(
+        set(rendered_indices).union(
+            reproduction_indices[-_MAX_UNREQUESTED_REPRODUCTIONS:]
+        )
+    )
     items: List[EvidenceItem] = []
     for index in rendered_indices:
         finding = findings[index]
@@ -320,6 +394,11 @@ def build(job: Any, disputes: Optional[Mapping[int, str]] = None) -> Dict[str, A
                 type=finding_type,
                 title=str(finding.get("title") or finding.get("subject") or "").strip(),
                 values=_values_of(finding),
+                reproduction=(
+                    reproduction_of(finding)
+                    if finding_type == "reproduction_verdict"
+                    else None
+                ),
                 has_uncertainty=agent_measurement_validity.has_uncertainty(finding),
                 measurement_environment=str(
                     finding.get("measurement_environment") or ""

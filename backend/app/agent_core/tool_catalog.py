@@ -142,6 +142,19 @@ def iter_mcp_tools() -> Dict[str, ToolMetadata]:
     where two mutating tools were found classified read-safe.
     """
     return {
+        "get_research_notes": _default_metadata(
+            name="mcp:get_research_notes",
+            description="List selected research notes or read one by ID",
+            input_schema={
+                "type": "object",
+                "properties": {"note_id": {"type": "string", "format": "uuid"}},
+            },
+        ),
+        "get_research_programs": _default_metadata(
+            name="mcp:get_research_programs",
+            description="Read selected research program descriptions and tool schemas",
+            input_schema={"type": "object", "properties": {}},
+        ),
         "search": _default_metadata(
             name="mcp:search",
             description="Semantic search over the knowledge base",

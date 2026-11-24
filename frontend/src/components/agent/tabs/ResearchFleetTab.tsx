@@ -25,7 +25,6 @@ import {
 } from '../../../pages/autonomousAgentQuickStarts';
 import type {
   ScientificSandboxProfile,
-  DomainResearchProfile,
   ResearchOpportunity,
   ResearchPortfolio,
   ResearchPortfolioCreate,
@@ -42,6 +41,7 @@ import { apiClient } from '../../../services/api';
 import toast from 'react-hot-toast';
 import React, { useCallback, useMemo } from 'react';
 import { useMutation } from 'react-query';
+import { Link } from 'react-router-dom';
 
 const buildResearchPortfolioPolicyDraft = (portfolio?: Partial<ResearchPortfolio> | null): ResearchPortfolioPolicyDraft => {
   const policy = ((portfolio?.effective_policy || portfolio?.automation_policy || {}) as Record<string, any>) || {};
@@ -86,6 +86,8 @@ const buildResearchPortfolioUpdatePayload = (draft: ResearchPortfolioPolicyDraft
 
 export interface ResearchFleetTabProps {
   domainProfilesData: OpportunitySurface['domainProfilesData'];
+  domainProfilesLoading: boolean;
+  refetchDomainProfiles: Refetch;
   refetchResearchPortfolios: Refetch;
   researchPortfoliosData: OpportunitySurface['researchPortfoliosData'];
   researchPortfoliosLoading: boolean;
@@ -136,6 +138,8 @@ export interface ResearchFleetTabProps {
 
 export const ResearchFleetTab: React.FC<ResearchFleetTabProps> = ({
   domainProfilesData,
+  domainProfilesLoading,
+  refetchDomainProfiles,
   refetchResearchPortfolios,
   researchPortfoliosData,
   researchPortfoliosLoading,
@@ -195,7 +199,7 @@ export const ResearchFleetTab: React.FC<ResearchFleetTabProps> = ({
         queryClient.invalidateQueries(['research-portfolios']);
         queryClient.invalidateQueries(['agent-jobs']);
         queryClient.invalidateQueries(['agent-jobs-stats']);
-        toast.success('Research fleet portfolio created');
+        toast.success('Research portfolio started');
         setPortfolioTitle('');
         setPortfolioObjective('');
         setPortfolioProfileSelection({});
@@ -262,8 +266,8 @@ export const ResearchFleetTab: React.FC<ResearchFleetTabProps> = ({
       <div className="grid grid-cols-3 gap-4">
         <div className="col-span-1 bg-white border border-gray-200 rounded-lg p-4 space-y-3">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900">Research Fleet</h2>
-            <p className="text-sm text-gray-500">Coordinate multiple domain profiles into a mostly automatic experiment portfolio.</p>
+            <h2 className="text-lg font-semibold text-gray-900">Research Portfolios</h2>
+            <p className="text-sm text-gray-500">Combine findings from topic monitors and prioritize experiments around a shared objective.</p>
           </div>
           <input
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
@@ -279,9 +283,9 @@ export const ResearchFleetTab: React.FC<ResearchFleetTabProps> = ({
             onChange={(e) => setPortfolioObjective(e.target.value)}
           />
           <div className="border border-gray-200 rounded-lg p-3 bg-gray-50">
-            <div className="text-xs font-medium text-gray-800 mb-2">Linked domain profiles</div>
+            <div className="text-xs font-medium text-gray-800 mb-2">Topic monitors</div>
             <div className="space-y-2 max-h-56 overflow-auto">
-              {(((domainProfilesData as any)?.items || []) as DomainResearchProfile[]).map((profile) => (
+              {domainProfilesData?.items.map((profile) => (
                 <label key={profile.id} className="flex items-start gap-2 text-sm text-gray-700">
                   <input
                     type="checkbox"
@@ -294,9 +298,19 @@ export const ResearchFleetTab: React.FC<ResearchFleetTabProps> = ({
                   </span>
                 </label>
               ))}
-              {!(((domainProfilesData as any)?.items || []) as DomainResearchProfile[]).length ? (
-                <div className="text-xs text-gray-500">Create domain profiles first.</div>
-              ) : null}
+              {domainProfilesLoading ? (
+                <p className="text-xs text-gray-500" role="status">Loading topic monitors…</p>
+              ) : !domainProfilesData ? (
+                <p className="text-xs text-gray-600">
+                  Could not load topic monitors.{' '}
+                  <button type="button" onClick={() => refetchDomainProfiles()} className="text-primary-700 underline">Retry</button>
+                </p>
+              ) : domainProfilesData.items.length === 0 && (
+                <div className="space-y-1 text-xs">
+                  <p className="text-gray-600">A portfolio needs at least one topic monitor.</p>
+                  <Link to="/settings/domain-profiles" className="font-medium text-primary-700 underline">Set up a topic monitor</Link>
+                </div>
+              )}
             </div>
           </div>
           {renderScientificSandboxManagementPanel()}
@@ -337,7 +351,7 @@ export const ResearchFleetTab: React.FC<ResearchFleetTabProps> = ({
                 })
               }
             >
-              Start Fleet
+              Start Portfolio
             </Button>
             <Button variant="ghost" onClick={() => refetchResearchPortfolios()}>
               <RefreshCw className="w-4 h-4" />

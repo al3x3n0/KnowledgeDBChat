@@ -12,6 +12,8 @@ without a second request:
 
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -19,6 +21,8 @@ from fastapi import HTTPException
 from app.mcp import server as mcp_server
 from app.mcp.auth import enforce_rate_limits, validate_api_key
 from app.models.api_key import APIKey, APIKeyUsageLog
+from app.models.mcp_config import MCPToolConfig
+from app.models.tool_policy import ToolPolicy
 from app.services.api_key_service import api_key_service
 
 pytestmark = pytest.mark.unit
@@ -73,6 +77,126 @@ async def test_a_revoked_or_expired_key_is_refused(db_session, test_user):
         db_session, revoked.id, test_user.id, is_active=True
     )
     assert await validate_api_key(revoked_plain, db_session) is None
+
+
+async def test_rest_key_scopes_are_enforced_at_the_operation(
+    client, db_session, test_user, monkeypatch
+):
+    from app.api.endpoints.workflows import WorkflowEngine
+
+    execution_id = uuid4()
+    queue = AsyncMock(return_value=SimpleNamespace(id=execution_id))
+    monkeypatch.setattr(WorkflowEngine, "queue_workflow", queue)
+
+    async def headers(scopes):
+        _, plain = await _key(db_session, test_user, scopes=scopes)
+        return {"X-API-Key": plain}
+
+    read = await headers(["read"])
+    assert client.get("/api/v1/documents/", headers=read).status_code == 200
+    assert client.get("/api/v1/auth/me", headers=read).status_code == 200
+    document = f"/api/v1/documents/{uuid4()}"
+    assert client.delete(document, headers=read).status_code == 403
+    assert client.get("/api/v1/chat/sessions", headers=read).status_code == 403
+    assert (
+        client.post(
+            "/api/v1/api-keys", headers=read, json={"name": "more-permissions"}
+        ).status_code
+        == 403
+    )
+
+    write = await headers(["write"])
+    assert client.delete(document, headers=write).status_code == 404
+    assert client.get("/api/v1/documents/", headers=write).status_code == 403
+    documents = await headers(["documents"])
+    assert client.get("/api/v1/documents/", headers=documents).status_code == 200
+    assert client.delete(document, headers=documents).status_code == 404
+
+    chat = await headers(["chat"])
+    assert client.get("/api/v1/chat/sessions", headers=chat).status_code == 200
+    assert (
+        client.post(
+            "/api/v1/agent/chat", headers=chat, json={"message": "hello"}
+        ).status_code
+        == 403
+    )
+
+    workflow = f"/api/v1/workflows/{uuid4()}/execute/async"
+    assert client.post(workflow, headers=read, json={}).status_code == 403
+    queue.assert_not_awaited()
+    workflows = await headers(["workflows"])
+    queued = client.post(workflow, headers=workflows, json={})
+    assert queued.status_code == 202
+    assert queued.json()["execution_id"] == str(execution_id)
+    queue.assert_awaited_once()
+
+    full = await headers(["admin"])
+    assert client.get("/api/v1/workflows", headers=full).status_code == 200
+    assert client.get("/api/v1/api-keys/admin/all", headers=full).status_code == 403
+
+
+async def test_mcp_compatibility_routes_share_tool_access(
+    client, db_session, test_user
+):
+    key, plain = await _key(db_session, test_user, scopes=["read"])
+    headers = {"X-API-Key": plain}
+    path = "/api/v1/mcp/documents"
+
+    raw = client.get(path, headers=headers)
+    call = client.post(
+        "/api/v1/mcp/tools/call", headers=headers, json={"name": "list_documents"}
+    )
+    assert raw.status_code == call.status_code == 200
+    assert raw.json() == call.json()["content"][0]["text"]
+    assert (
+        client.post(
+            "/api/v1/mcp/chat", headers=headers, json={"question": "hello"}
+        ).status_code
+        == 403
+    )
+
+    key.allowed_tools = ["search"]
+    await db_session.commit()
+    assert client.get(path, headers=headers).status_code == 403
+
+    key.allowed_tools = None
+    db_session.add(
+        MCPToolConfig(api_key_id=key.id, tool_name="list_documents", is_enabled=False)
+    )
+    await db_session.commit()
+    assert client.get(path, headers=headers).status_code == 403
+
+    key.mcp_enabled = False
+    await db_session.commit()
+    assert client.get("/api/v1/mcp/sources", headers=headers).status_code == 403
+
+
+async def test_mcp_compatibility_routes_honor_policy_and_report_approval(
+    client, db_session, test_user, monkeypatch
+):
+    execute = AsyncMock()
+    monkeypatch.setattr(mcp_server.DocumentsTool, "list_documents", execute)
+    key, plain = await _key(db_session, test_user, scopes=["read"])
+    headers = {"X-API-Key": plain}
+    policy = ToolPolicy(
+        subject_type="api_key",
+        subject_id=key.id,
+        tool_name="mcp:list_documents",
+        effect="deny",
+    )
+    db_session.add(policy)
+    await db_session.commit()
+
+    path = "/api/v1/mcp/documents"
+    assert client.get(path, headers=headers).status_code == 403
+    policy.effect = "allow"
+    policy.require_approval = True
+    await db_session.commit()
+    pending = client.get(path, headers=headers)
+    assert pending.status_code == 409
+    assert pending.json()["detail"]["status"] == "approval_required"
+    assert pending.json()["detail"]["approval_id"]
+    execute.assert_not_awaited()
 
 
 async def test_a_key_is_its_owners_to_read_and_revoke(

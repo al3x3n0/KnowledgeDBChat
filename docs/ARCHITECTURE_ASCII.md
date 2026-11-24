@@ -10,6 +10,11 @@ for compatibility.
 
 ## Architectural intent
 
+External AI agents retrieve organizational knowledge through the authenticated
+MCP-compatible HTTP tool API. The autonomous R&D runtime runs scheduled research
+campaigns and uses findings to prioritize follow-up work. Configured budgets and
+approval rules govern follow-up jobs and validation experiments.
+
 KnowledgeOps Lab combines four systems that share governance and evidence:
 
 ```text
@@ -97,7 +102,7 @@ backend/app/
 ├── agent_core/             Runtime contracts, planning, routing, graph types
 ├── models/                 SQLAlchemy persistence entities
 ├── tasks/                  Celery jobs and recurring workers
-├── mcp/                    Authenticated MCP server and tool adapters
+├── mcp/                    Authenticated MCP-compatible HTTP API and tool adapters
 ├── core/                   Configuration, DB, Celery, middleware, logging
 └── utils/                  Shared infrastructure helpers
 ```

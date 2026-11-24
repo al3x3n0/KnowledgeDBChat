@@ -780,6 +780,15 @@ SPECS: tuple[ToolSpec, ...] = (
                     "type": "string",
                     "description": "Its unit, e.g. 'x', 'percent', 'ms', 'cycles_per_element'",
                 },
+                "claim_document_id": {
+                    "type": "string",
+                    "description": "ID of the ingested paper containing this exact claim, when known.",
+                },
+                "claim_location": {
+                    "type": "string",
+                    "maxLength": 240,
+                    "description": "Where the claim appears in the paper, such as a table, figure, or section.",
+                },
                 "measured_value": {
                     "type": "number",
                     "description": "What this run measured",

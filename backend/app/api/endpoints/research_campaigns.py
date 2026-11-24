@@ -1,14 +1,4 @@
-"""Research campaigns over HTTP.
-
-The campaign subsystem shipped without any of this: `create_campaign` and
-`advance` existed as service functions, a beat task drove active campaigns,
-and nothing outside the process could start or see one. These routes are the
-smallest surface that makes campaigns usable by a person -- create, list, read
--- and they are what the chat's campaign widget posts to.
-
-Scoped by user like every other resource here; a campaign belongs to whoever
-started it.
-"""
+"""Create, inspect and control scheduling for a user's research campaigns."""
 
 from typing import Any, Dict, List
 from uuid import UUID
@@ -23,6 +13,7 @@ from app.core.database import get_db
 from app.models.research_campaign import ResearchCampaign, ResearchCampaignItem
 from app.models.user import User
 from app.schemas.research_campaign import (
+    ResearchCampaignAction,
     ResearchCampaignCreate,
     ResearchCampaignItemResponse,
     ResearchCampaignListResponse,
@@ -44,7 +35,9 @@ async def _respond(
     """
     base = ResearchCampaignResponse.model_validate(campaign)
     try:
-        summary = await research_campaign_service.summarize(db, campaign)
+        summary = await research_campaign_service.summarize(
+            db, campaign, with_evidence=with_items
+        )
     except Exception as exc:  # pragma: no cover - defensive
         # A campaign that cannot be summarised is still a campaign; losing the
         # whole response over a progress figure would be the wrong trade.
@@ -148,4 +141,33 @@ async def get_research_campaign(
     ).scalar_one_or_none()
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    return await _respond(campaign, db, with_items=True)
+
+
+@router.post("/{campaign_id}/action", response_model=ResearchCampaignResponse)
+async def action_research_campaign(
+    campaign_id: UUID,
+    payload: ResearchCampaignAction,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    campaign = (
+        await db.execute(
+            select(ResearchCampaign)
+            .where(
+                ResearchCampaign.id == campaign_id,
+                ResearchCampaign.user_id == current_user.id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        research_campaign_service.change_scheduling(campaign, payload.action)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await db.commit()
+    await db.refresh(campaign)
     return await _respond(campaign, db, with_items=True)

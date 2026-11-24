@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.document import Document
 from app.models.research_note import ResearchNote
+from app.models.retrieval_trace import RetrievalTrace
 from app.models.synthesis_job import SynthesisJob, SynthesisJobStatus, SynthesisJobType
 from app.models.user import User
 from app.schemas.research_note import (
@@ -34,6 +35,7 @@ from app.schemas.research_note import (
 from app.services import llm_json
 from app.services.auth_service import get_current_user
 from app.services.citation_lines import is_line_citable as _is_line_citable
+from app.services.context_pack_notes import build_context_pack_note
 from app.services.llm_service import LLMService, load_user_llm_settings
 from app.services.research_note_reevaluation_notification_service import (
     maybe_emit_reevaluation_notification,
@@ -421,6 +423,43 @@ async def create_research_note(
         raise HTTPException(status_code=500, detail="Failed to create research note")
 
 
+@router.post("/context-packs/{trace_id}", response_model=ResearchNoteResponse)
+async def save_context_pack_as_note(
+    trace_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save an owned context pack and its evidence as a research note."""
+    trace = await db.scalar(
+        select(RetrievalTrace)
+        .where(RetrievalTrace.id == trace_id, RetrievalTrace.user_id == current_user.id)
+        .with_for_update()
+    )
+    if trace is None:
+        raise HTTPException(404, "Retrieval trace not found")
+    pack = trace.trace.get("kg_context_pack") if isinstance(trace.trace, dict) else None
+    context = pack.get("kg_context") if isinstance(pack, dict) else None
+    if not isinstance(context, str) or not context.strip():
+        raise HTTPException(422, "This retrieval trace has no context pack")
+
+    note = await db.scalar(
+        select(ResearchNote)
+        .where(
+            ResearchNote.user_id == current_user.id,
+            ResearchNote.attribution["saved_from_context_pack"]["trace_id"].as_string()
+            == str(trace_id),
+        )
+        .order_by(ResearchNote.created_at, ResearchNote.id)
+        .limit(1)
+    )
+    if note is None:
+        note = await build_context_pack_note(db, trace, pack, current_user.id)
+        db.add(note)
+        await db.commit()
+        await db.refresh(note)
+    return _to_response(note)
+
+
 @router.get("/{note_id}", response_model=ResearchNoteResponse)
 async def get_research_note(
     note_id: UUID,
@@ -697,6 +736,12 @@ async def enforce_research_note_citations(
         "generated_markdown": final_markdown,
     }
 
+    previous_attribution = (
+        note.attribution if isinstance(note.attribution, dict) else {}
+    )
+    for key in ("saved_from_synthesis", "saved_from_context_pack"):
+        if key in previous_attribution:
+            report[key] = previous_attribution[key]
     note.attribution = report
     if payload.update_content and final_markdown:
         note.content_markdown = final_markdown

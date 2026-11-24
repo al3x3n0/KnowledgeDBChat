@@ -43,6 +43,7 @@ import toast from 'react-hot-toast';
 import { useQuery } from 'react-query';
 
 import { apiClient } from '../../services/api';
+import PaperReproduction from './PaperReproduction';
 import type {
   AgentJob,
   AgentJobEvidence,
@@ -51,6 +52,7 @@ import type {
 
 export interface EvidenceSectionProps {
   job: AgentJob;
+  onOpenDocument?: (id: string) => void;
 }
 
 /** Environments the producing tool distinguishes, and how much they should
@@ -66,7 +68,8 @@ const EvidenceCard: React.FC<{
   item: AgentJobEvidenceItem;
   onDispute: (index: number, reason: string) => Promise<void>;
   onWithdraw: (index: number) => Promise<void>;
-}> = ({ item, onDispute, onWithdraw }) => {
+  onOpenDocument?: (id: string) => void;
+}> = ({ item, onDispute, onWithdraw, onOpenDocument }) => {
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
@@ -95,7 +98,7 @@ const EvidenceCard: React.FC<{
     )}
   >
     <div className="flex flex-wrap items-center gap-1.5 mb-1">
-      <span className="text-[11px] font-mono text-gray-800">{item.type}</span>
+      {!item.reproduction && <span className="text-[11px] font-mono text-gray-800">{item.type}</span>}
       {item.measurement_environment && (
         <span
           className={clsx(
@@ -108,7 +111,7 @@ const EvidenceCard: React.FC<{
           {item.measurement_environment}
         </span>
       )}
-      {!item.has_uncertainty && (
+      {!item.reproduction && !item.has_uncertainty && (
         <span
           className="text-[10px] px-1.5 py-0.5 rounded-full border border-gray-300 text-gray-500 inline-flex items-center gap-0.5"
           title="No spread reported. A single trial says nothing about dispersion, so this is a value rather than a result."
@@ -155,9 +158,11 @@ const EvidenceCard: React.FC<{
       </span>
     </div>
 
-    {item.title && <p className="text-xs text-gray-700 mb-1">{item.title}</p>}
+    {item.title && <p className="mb-1 break-words text-xs font-medium text-gray-800">{item.title}</p>}
 
-    {item.values.length > 0 && (
+    {item.reproduction ? (
+      <PaperReproduction result={item.reproduction} disputed={item.disputed} onOpenDocument={onOpenDocument} />
+    ) : item.values.length > 0 && (
       <dl className="flex flex-wrap gap-x-3 gap-y-0.5">
         {item.values.map((value) => (
           <div key={value.label} className="flex items-baseline gap-1">
@@ -226,7 +231,7 @@ const EvidenceCard: React.FC<{
   );
 };
 
-export const EvidenceSection: React.FC<EvidenceSectionProps> = ({ job }) => {
+export const EvidenceSection: React.FC<EvidenceSectionProps> = ({ job, onOpenDocument }) => {
   const [showUnrequested, setShowUnrequested] = useState(false);
 
   const { data, isLoading, error, refetch } = useQuery<AgentJobEvidence>(
@@ -283,6 +288,18 @@ export const EvidenceSection: React.FC<EvidenceSectionProps> = ({ job }) => {
   const unrequested = data.unrequested
     .map((index) => byIndex[index])
     .filter(Boolean);
+  const unrequestedReproductions = unrequested.filter((item) => item.reproduction).reverse();
+  const otherUnrequested = unrequested.filter((item) => !item.reproduction);
+  const otherUnrequestedTotal = data.unrequested_total - unrequestedReproductions.length;
+  const renderCard = (item: AgentJobEvidenceItem) => (
+    <EvidenceCard
+      key={item.index}
+      item={item}
+      onDispute={handleDispute}
+      onWithdraw={handleWithdraw}
+      onOpenDocument={onOpenDocument}
+    />
+  );
 
   return (
     <div className="mb-4" data-testid="evidence-section">
@@ -316,11 +333,24 @@ export const EvidenceSection: React.FC<EvidenceSectionProps> = ({ job }) => {
       </div>
 
       <div className="bg-gray-100 border border-gray-300 rounded-lg p-3 space-y-3">
+        {unrequestedReproductions.length > 0 && (
+          <section className="space-y-1.5" aria-label="Paper reproduction">
+            <h4 className="text-xs font-medium text-gray-800">Paper reproduction</h4>
+            {renderCard(unrequestedReproductions[0])}
+            {unrequestedReproductions.length > 1 && (
+              <details className="text-xs text-gray-600">
+                <summary className="cursor-pointer text-primary-700">More recorded verdicts ({unrequestedReproductions.length - 1})</summary>
+                <div className="mt-1.5 space-y-1.5">{unrequestedReproductions.slice(1).map(renderCard)}</div>
+              </details>
+            )}
+          </section>
+        )}
         {data.requirements.map((requirement) => {
           const found = requirement.satisfied_by
             .map((index) => byIndex[index])
             .filter(Boolean);
           const shortOfSpread = requirement.missing_uncertainty.length > 0;
+          const isReproduction = requirement.finding_type === 'reproduction_verdict';
           return (
             <div key={requirement.finding_type}>
               <div className="flex flex-wrap items-center gap-1.5 mb-1">
@@ -333,8 +363,8 @@ export const EvidenceSection: React.FC<EvidenceSectionProps> = ({ job }) => {
                 ) : (
                   <CircleDashed className="w-3.5 h-3.5 text-gray-400" />
                 )}
-                <span className="text-xs font-mono text-gray-800">
-                  {requirement.finding_type}
+                <span className={clsx('text-xs text-gray-800', isReproduction ? 'font-medium' : 'font-mono')}>
+                  {isReproduction ? 'Paper reproduction' : requirement.finding_type}
                 </span>
                 {requirement.uncertainty_required && (
                   <span
@@ -350,7 +380,7 @@ export const EvidenceSection: React.FC<EvidenceSectionProps> = ({ job }) => {
                 // The most important row on the screen: the thing that was
                 // asked for is not there.
                 <p className="text-[11px] text-gray-500 pl-5">
-                  Nothing of this type was produced.
+                  {isReproduction ? 'A reproduction verdict has yet to be recorded.' : 'Nothing of this type was produced.'}
                 </p>
               )}
 
@@ -362,14 +392,7 @@ export const EvidenceSection: React.FC<EvidenceSectionProps> = ({ job }) => {
               )}
 
               <div className="pl-5 space-y-1.5">
-                {found.map((item) => (
-                  <EvidenceCard
-                    key={item.index}
-                    item={item}
-                    onDispute={handleDispute}
-                    onWithdraw={handleWithdraw}
-                  />
-                ))}
+                {found.map(renderCard)}
               </div>
             </div>
           );
@@ -400,28 +423,21 @@ export const EvidenceSection: React.FC<EvidenceSectionProps> = ({ job }) => {
           </p>
         )}
 
-        {unrequested.length > 0 && (
+        {otherUnrequested.length > 0 && (
           <div>
             <button
               type="button"
               className="text-[11px] text-gray-500 hover:text-gray-800"
               onClick={() => setShowUnrequested((open) => !open)}
             >
-              {showUnrequested ? 'Hide' : 'Show'} {unrequested.length} finding
-              {unrequested.length === 1 ? '' : 's'} nothing asked for
-              {data.unrequested_total > unrequested.length &&
-                ` (of ${data.unrequested_total})`}
+              {showUnrequested ? 'Hide' : 'Show'} {otherUnrequested.length} finding
+              {otherUnrequested.length === 1 ? '' : 's'} nothing asked for
+              {otherUnrequestedTotal > otherUnrequested.length &&
+                ` (of ${otherUnrequestedTotal})`}
             </button>
             {showUnrequested && (
               <div className="space-y-1.5 mt-1.5">
-                {unrequested.map((item) => (
-                  <EvidenceCard
-                    key={item.index}
-                    item={item}
-                    onDispute={handleDispute}
-                    onWithdraw={handleWithdraw}
-                  />
-                ))}
+                {otherUnrequested.map(renderCard)}
               </div>
             )}
           </div>

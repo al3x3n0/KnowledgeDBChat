@@ -434,7 +434,7 @@ export const ResearchInboxTab: React.FC<ResearchInboxTabProps> = ({
     if (ownerIds.length !== 1) {
       return {
         enabled: false,
-        disabledReason: 'Inbox bulk follow-up actions must stay within one domain profile or research fleet.',
+        disabledReason: 'Select items from a single topic monitor or research portfolio.',
         ownerKind: '' as '' | 'domain' | 'fleet',
         ownerId: '',
         opportunityIds: [] as string[],
@@ -648,16 +648,16 @@ export const ResearchInboxTab: React.FC<ResearchInboxTabProps> = ({
   };
 
   return (
-    <div className="w-full flex flex-col min-h-0">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-3 text-sm text-gray-600">
+    <div className="flex min-h-0 w-full min-w-0 flex-col p-3 sm:p-4 lg:p-6">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2 text-sm text-gray-600 sm:gap-3">
           <span className="font-medium text-gray-900">Research Inbox</span>
           <span className="bg-gray-100 text-gray-700 px-2 py-1 rounded">Total: {inboxStats?.total ?? '-'}</span>
           <span className="bg-primary-100 text-primary-700 px-2 py-1 rounded">New: {inboxStats?.new ?? '-'}</span>
           <span className="bg-green-100 text-green-700 px-2 py-1 rounded">Accepted: {inboxStats?.accepted ?? '-'}</span>
           <span className="bg-red-100 text-red-700 px-2 py-1 rounded">Rejected: {inboxStats?.rejected ?? '-'}</span>
         </div>
-        <div className="flex gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <label className="flex items-center gap-2 text-xs text-gray-600 select-none" title={paperAlgoDefaultToggleTitle}>
             <input
               type="checkbox"
@@ -676,13 +676,13 @@ export const ResearchInboxTab: React.FC<ResearchInboxTabProps> = ({
             <Settings className="w-4 h-4 mr-2" />
             Profiles
           </Button>
-          <Button variant="ghost" onClick={() => refetchInbox()}>
+          <Button variant="ghost" aria-label="Refresh research inbox" onClick={() => refetchInbox()}>
             <RefreshCw className="w-4 h-4" />
           </Button>
         </div>
       </div>
 
-      <div className="flex gap-3 mb-4">
+      <div className="mb-4 flex flex-wrap gap-2 sm:gap-3">
         <select
           className="border border-gray-300 rounded-lg px-3 py-2 text-sm"
           value={inboxStatusFilter}
@@ -714,7 +714,7 @@ export const ResearchInboxTab: React.FC<ResearchInboxTabProps> = ({
             </option>
           ))}
         </select>
-          <div className="flex-1 relative">
+          <div className="relative min-w-0 basis-full lg:flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
             <input
               className="w-full border border-gray-300 rounded-lg pl-9 pr-3 py-2 text-sm"
@@ -808,10 +808,11 @@ export const ResearchInboxTab: React.FC<ResearchInboxTabProps> = ({
         const allSelected = items.length > 0 && selectedIds.length === items.length;
         if (items.length === 0) return null;
         return (
-          <div className="flex items-center justify-between mb-3 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
-            <div className="flex items-center gap-2">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+            <div className="flex flex-wrap items-center gap-2">
               <input
                 type="checkbox"
+                aria-label="Select all inbox items"
                 checked={allSelected}
                 onChange={(e) => {
                   const next: Record<string, boolean> = {};
@@ -825,7 +826,9 @@ export const ResearchInboxTab: React.FC<ResearchInboxTabProps> = ({
                 Selected: {selectedIds.length}/{items.length}
               </span>
             </div>
-            <div className="flex items-center gap-2">
+            {selectedIds.length > 0 && (
+            <>
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
             <Button
               size="sm"
               variant="secondary"
@@ -1022,7 +1025,7 @@ export const ResearchInboxTab: React.FC<ResearchInboxTabProps> = ({
             value={inboxResearchGoalDraft}
             onChange={(e) => setInboxResearchGoalDraft(e.target.value)}
           />
-          <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+          <div className="mt-3 grid min-w-0 basis-full gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
             <input
               className="border border-gray-300 rounded-lg px-3 py-2 text-sm"
               placeholder="Bulk follow-up note (optional)"
@@ -1037,7 +1040,7 @@ export const ResearchInboxTab: React.FC<ResearchInboxTabProps> = ({
                   : inboxBulkFollowUpState.disabledReason || inboxBulkRelaunchState.disabledReason}
             </div>
           </div>
-          <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+          <div className="mt-3 grid min-w-0 basis-full gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
             <input
               className="border border-gray-300 rounded-lg px-3 py-2 text-sm"
               placeholder="Bulk reject reason (optional)"
@@ -1048,6 +1051,8 @@ export const ResearchInboxTab: React.FC<ResearchInboxTabProps> = ({
               Applies when rejecting selected inbox items
             </div>
           </div>
+          </>
+          )}
         </div>
         );
       })()}
@@ -1073,7 +1078,7 @@ export const ResearchInboxTab: React.FC<ResearchInboxTabProps> = ({
                   : 'border-gray-200'
               }`}
             >
-              <div className="flex items-start justify-between gap-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <input
@@ -1207,11 +1212,11 @@ export const ResearchInboxTab: React.FC<ResearchInboxTabProps> = ({
                   ) : null}
                   {item.origin_source_kind && item.origin_source_id && item.origin_opportunity_id ? (
                     <p className="text-xs text-gray-500 mt-2">
-                      Target: {String(item.origin_source_kind).trim().toLowerCase() === 'profile' ? 'Domain profile' : 'Research fleet'}
+                      Target: {String(item.origin_source_kind).trim().toLowerCase() === 'profile' ? 'Topic monitor' : 'Research portfolio'}
                     </p>
                   ) : null}
                 </div>
-                <div className="flex flex-col gap-2 shrink-0">
+                <div className="flex shrink-0 flex-wrap gap-2 lg:flex-col">
                   {item.origin_source_kind && item.origin_source_id && item.origin_opportunity_id ? (
                     <Button
                       size="sm"

@@ -84,6 +84,7 @@ class PipelineCheckResponse(BaseModel):
     #: Whether the pipeline can be expressed as a job chain at all, and why not.
     expressible: bool = False
     binding_problems: List[str] = Field(default_factory=list)
+    launch_problems: List[str] = Field(default_factory=list)
     #: Human-readable account of the pipeline, stage by stage.
     description: List[str] = Field(default_factory=list)
     plan: Optional[PipelinePlanResponse] = None

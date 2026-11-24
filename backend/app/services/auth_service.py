@@ -20,6 +20,7 @@ from app.core.database import get_db
 from app.core.tokens import create_access_token, decode_access_token
 from app.models.user import User
 from app.services import viewer_access
+from app.services.api_key_access import require_api_key_access
 from app.services.ldap_service import LdapError, LdapUnavailable, ldap_service
 
 
@@ -227,7 +228,7 @@ class AuthService:
         db: AsyncSession,
         request: Optional[Request] = None,
     ) -> User:
-        """Who these credentials belong to; no check of what they may do."""
+        """Identify the caller and enforce the API key's access to this route."""
         credentials_exception = HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
@@ -280,6 +281,7 @@ class AuthService:
             return None
 
         key_obj, user = result
+        require_api_key_access(key_obj, user, request)
 
         # Update usage statistics
         ip_address = None
@@ -397,6 +399,8 @@ async def get_current_user_optional(
     try:
         user = await auth_service.identify(credentials, api_key, db, request)
     except HTTPException:
+        if api_key:
+            raise
         return None
     # Outside the try: a viewer refused is not an anonymous caller.
     viewer_access.refuse_writes(user, request)
@@ -406,55 +410,3 @@ async def get_current_user_optional(
 async def require_admin(current_user: User = Depends(get_current_user)) -> User:
     """Dependency for requiring admin privileges."""
     return await auth_service.require_admin(current_user)
-
-
-async def require_scope(scope: str):
-    """
-    Factory for creating a dependency that requires a specific API key scope.
-
-    Usage:
-        @router.get("/protected")
-        async def protected_endpoint(user: User = Depends(require_scope("documents"))):
-            ...
-    """
-
-    async def _require_scope(
-        credentials: Optional[HTTPAuthorizationCredentials] = Depends(
-            HTTPBearer(auto_error=False)
-        ),
-        api_key: Optional[str] = Header(None, alias="X-API-Key"),
-        db: AsyncSession = Depends(get_db),
-        request: Request = None,
-    ) -> User:
-        # If using API key, verify scope
-        if api_key:
-            from app.services.api_key_service import api_key_service
-
-            result = await api_key_service.validate_api_key(
-                db, api_key, required_scope=scope
-            )
-            if not result:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"API key lacks required scope: {scope}",
-                )
-            key_obj, user = result
-
-            # Update usage
-            if request:
-                await api_key_service.update_usage(
-                    db=db,
-                    api_key=key_obj,
-                    ip_address=request.client.host if request.client else None,
-                    endpoint=str(request.url.path),
-                    method=request.method,
-                    user_agent=request.headers.get("user-agent"),
-                )
-
-            viewer_access.refuse_writes(user, request)
-            return user
-
-        # JWT tokens have full access (scopes don't apply)
-        return await auth_service.get_current_user(credentials, api_key, db, request)
-
-    return _require_scope

@@ -2,7 +2,8 @@
 
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Optional
+from typing import Annotated, Any, Awaitable, Callable, Optional
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import and_, select
@@ -91,6 +92,7 @@ def build_checkpoint_queue_api(
         offset: int = Query(0, ge=0, description="Queue offset"),
         db: AsyncSession = Depends(get_db),
         current_user: User = Depends(get_current_active_user),
+        job_id: Annotated[Optional[UUID], Query(description="Filter by job ID")] = None,
     ):
         inbox_items = list(
             (
@@ -194,6 +196,8 @@ def build_checkpoint_queue_api(
         }
         filtered_items = []
         for row in all_items:
+            if job_id is not None and row.job_id != job_id:
+                continue
             if filters["item_type"] and (
                 str(row.item_type or "").strip().lower() != filters["item_type"]
             ):

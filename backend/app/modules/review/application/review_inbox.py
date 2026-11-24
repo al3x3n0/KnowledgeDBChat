@@ -55,6 +55,7 @@ class ReviewItem:
     #: Where in the application this one item is handled, when it has a place.
     link: Optional[str] = None
     kind: Optional[str] = None
+    final_approval: Optional[bool] = None
 
 
 @dataclass
@@ -119,7 +120,7 @@ def approval_waits_on(row: ToolExecutionAudit, user: User) -> bool:
         return False
     owner = str(row.user_id) == str(user.id)
     admin = is_admin(user)
-    if str(row.approval_mode or "").strip().lower() == "owner_or_admin":
+    if not row.requires_owner_and_admin:
         return owner or admin
     return (owner and row.owner_approved_at is None) or (
         admin and row.admin_approved_at is None
@@ -151,6 +152,9 @@ async def _tool_approvals(db: AsyncSession, user: User, section: ReviewSection) 
                 detail=_approval_detail(row, user),
                 waiting_since=row.created_at,
                 kind="tool_approval",
+                final_approval=row.is_final_approval(
+                    owner=row.user_id == user.id, admin=is_admin(user)
+                ),
             )
             for row in rows
             if approval_waits_on(row, user)

@@ -19,15 +19,43 @@ const vocabulary: PipelineVocabulary = {
   job_types: ['research'], tools: [],
 };
 
-function Editor({ required = [], catalog = vocabulary }: { required?: string[]; catalog?: PipelineVocabulary | null }) {
+function Editor({ required = [], catalog = vocabulary, contract }: {
+  required?: string[];
+  catalog?: PipelineVocabulary | null;
+  contract?: PipelineStageSpec['contract'];
+}) {
   const [stage, setStage] = useState<PipelineStageSpec>({
-    id: 'convert', goal: 'Convert input', contract: { required_finding_types: required },
+    id: 'convert', goal: 'Convert input', contract: contract ?? { required_finding_types: required },
   });
   return <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
     <StageInspector stage={stage} allStageIds={['convert']} vocabulary={catalog} onChange={setStage} onDelete={jest.fn()} onClose={jest.fn()} />
     <output data-testid="spec">{JSON.stringify(stage)}</output>
   </MemoryRouter>;
 }
+
+it('shows counted evidence and preserves its count when adding another requirement', () => {
+  const catalog = {
+    ...vocabulary,
+    evidence_types: [...vocabulary.evidence_types, {
+      name: 'simulated_measurement', producers: ['simulate_c_workload'], typical_seconds: 60,
+      job_types: [], perishable: false, consumes: 'a runnable kernel',
+    }],
+  };
+  render(<Editor catalog={catalog} contract={{
+    required_finding_type_counts: { simulated_measurement: 4 },
+    required_result_keys: ['formatted_outputs'],
+  }} />);
+  const evidence = screen.getByRole('button', { name: /simulated_measurement/ });
+  expect(evidence).toHaveAttribute('aria-pressed', 'true');
+  expect(evidence).toHaveTextContent('×4');
+  expect(screen.getByText('formatted outputs')).toBeVisible();
+
+  fireEvent.click(screen.getByRole('button', { name: /skill_transform/ }));
+  expect(JSON.parse(screen.getByTestId('spec').textContent || '{}').contract).toEqual({
+    required_finding_type_counts: { simulated_measurement: 4, skill_transform: 1 },
+    required_result_keys: ['formatted_outputs'],
+  });
+});
 
 it('shows the selected skill image and result contract without setting tool arguments', () => {
   render(<Editor />);

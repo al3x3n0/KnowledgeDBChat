@@ -15,6 +15,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.api_key import APIKey, APIKeyUsageLog
+from app.models.mcp_config import RESEARCH_NOTES_TOOL, MCPSourceAccess, MCPToolConfig
 from app.models.user import User
 
 
@@ -61,6 +62,12 @@ class APIKeyService:
         expires_in_days: Optional[int] = None,
         rate_limit_per_minute: int = 60,
         rate_limit_per_day: int = 10000,
+        *,
+        allowed_tools: Optional[List[str]] = None,
+        mcp_programs: Optional[List[str]] = None,
+        mcp_source_ids: Optional[List[UUID]] = None,
+        mcp_note_ids: Optional[List[UUID]] = None,
+        mcp_prompts: Optional[List[dict]] = None,
     ) -> Tuple[APIKey, str]:
         """
         Create a new API key for a user.
@@ -99,9 +106,28 @@ class APIKeyService:
             rate_limit_per_minute=rate_limit_per_minute,
             rate_limit_per_day=rate_limit_per_day,
             is_active=True,
+            allowed_tools=allowed_tools,
+            mcp_programs=mcp_programs,
+            mcp_prompts=mcp_prompts,
+            source_access_mode="restricted" if mcp_source_ids is not None else "all",
         )
 
         db.add(api_key)
+        if mcp_source_ids or mcp_note_ids:
+            await db.flush()
+        if mcp_source_ids:
+            db.add_all(
+                MCPSourceAccess(api_key_id=api_key.id, source_id=source_id)
+                for source_id in mcp_source_ids
+            )
+        if mcp_note_ids:
+            db.add(
+                MCPToolConfig(
+                    api_key_id=api_key.id,
+                    tool_name=RESEARCH_NOTES_TOOL,
+                    config={"note_ids": [str(note_id) for note_id in mcp_note_ids]},
+                )
+            )
         await db.commit()
         await db.refresh(api_key)
 
@@ -144,6 +170,9 @@ class APIKeyService:
             return None
 
         api_key, user = row
+
+        if api_key.mcp_programs is not None:
+            return None
 
         # Check if key is valid
         if not api_key.is_valid():

@@ -229,6 +229,7 @@ async def test_an_approval_waits_on_each_person_who_still_owes_one(
                 approval_mode="owner_or_admin",
                 approval_status="pending",
             ),
+            _approval(admin_user, tool_name="admin_owns_action"),
         ]
     )
     await db_session.commit()
@@ -236,8 +237,45 @@ async def test_an_approval_waits_on_each_person_who_still_owes_one(
     owner = (await _sections(db_session, test_user))["tool_approvals"]
     admin = (await _sections(db_session, admin_user))["tool_approvals"]
 
-    assert sorted(i.title for i in owner.items) == ["both", "either"]
-    assert sorted(i.title for i in admin.items) == ["admin_only", "both", "either"]
+    assert {i.title: i.final_approval for i in owner.items} == {
+        "both": False,
+        "either": True,
+    }
+    assert {i.title: i.final_approval for i in admin.items} == {
+        "admin_only": True,
+        "admin_owns_action": True,
+        "both": False,
+        "either": True,
+    }
+
+
+async def test_approval_requires_a_fresh_action_when_other_party_approves(
+    client, db_session, auth_headers, admin_headers, test_user
+):
+    row = _approval(test_user)
+    db_session.add(row)
+    await db_session.commit()
+    path = f"/api/v1/audit/tools/{row.id}/approve"
+
+    admin = client.post(
+        path, headers=admin_headers, json={"expected_final_approval": False}
+    )
+    assert admin.status_code == 200
+    assert admin.json()["approval_status"] == "pending_owner"
+
+    stale = client.post(
+        path, headers=auth_headers, json={"expected_final_approval": False}
+    )
+    assert stale.status_code == 409
+    inbox = client.get("/api/v1/review", headers=auth_headers).json()
+    approvals = next(s for s in inbox["sections"] if s["key"] == "tool_approvals")
+    assert approvals["items"][0]["final_approval"] is True
+
+    current = client.post(
+        path, headers=auth_headers, json={"expected_final_approval": True}
+    )
+    assert current.status_code == 200
+    assert current.json()["approval_status"] == "approved"
 
 
 async def test_a_section_names_its_oldest_items_and_counts_them_all(

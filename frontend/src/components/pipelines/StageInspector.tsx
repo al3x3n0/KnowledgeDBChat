@@ -64,10 +64,18 @@ export const StageInspector: React.FC<StageInspectorProps> = ({
   const [idError, setIdError] = useState('');
   useEffect(() => { setIdDraft(stage.id); setIdError(''); }, [stage.id]);
 
-  const required: string[] = useMemo(
-    () => (stage.contract?.required_finding_types as string[]) || [],
-    [stage.contract]
-  );
+  const countRequirements = useMemo<Record<string, number> | null>(() => {
+    const requirements = stage.contract?.required_finding_type_counts ?? stage.contract?.required_finding_types;
+    return requirements && typeof requirements === 'object' && !Array.isArray(requirements) ? requirements : null;
+  }, [stage.contract]);
+  const required: string[] = useMemo(() => {
+    if (countRequirements) return Object.keys(countRequirements);
+    const requirements = stage.contract?.required_finding_types;
+    return Array.isArray(requirements) ? requirements : [];
+  }, [countRequirements, stage.contract]);
+  const requiredOutputs: string[] = Array.isArray(stage.contract?.required_result_keys)
+    ? stage.contract.required_result_keys.filter((name: unknown): name is string => typeof name === 'string')
+    : [];
 
   const byName = useMemo(() => {
     const map: Record<string, PipelineEvidenceType> = {};
@@ -95,6 +103,18 @@ export const StageInspector: React.FC<StageInspectorProps> = ({
   const patch = (fields: Partial<PipelineStageSpec>) => onChange({ ...stage, ...fields });
 
   const toggleEvidence = (name: string) => {
+    if (countRequirements) {
+      const counts = { ...countRequirements };
+      if (required.includes(name)) delete counts[name];
+      else counts[name] = 1;
+      const contract: NonNullable<PipelineStageSpec['contract']> = {
+        ...stage.contract,
+        required_finding_type_counts: counts,
+      };
+      delete contract.required_finding_types;
+      patch({ contract });
+      return;
+    }
     const next = required.includes(name)
       ? required.filter((n) => n !== name)
       : [...required, name];
@@ -219,7 +239,7 @@ export const StageInspector: React.FC<StageInspectorProps> = ({
       <div>
         <div className="flex items-center justify-between mb-1">
           <span className="text-[11px] text-gray-500">
-            Must produce {required.length > 0 && `(${required.length})`}
+            Must produce
           </span>
           {totalSeconds > 0 && (
             <span className="text-[10px] text-gray-500 inline-flex items-center gap-0.5">
@@ -247,6 +267,7 @@ export const StageInspector: React.FC<StageInspectorProps> = ({
               <button
                 key={entry.name}
                 type="button"
+                aria-pressed={chosen}
                 onClick={() => toggleEvidence(entry.name)}
                 className={clsx(
                   'w-full text-left px-2 py-1.5 flex items-start gap-2 transition-colors duration-fast',
@@ -259,6 +280,9 @@ export const StageInspector: React.FC<StageInspectorProps> = ({
                 <span className="min-w-0 flex-1">
                   <span className="block text-[11px] font-mono text-gray-800">
                     {entry.name}
+                    {countRequirements && countRequirements[entry.name] > 1 && (
+                      <span className="ml-1.5 rounded bg-gray-200 px-1 text-gray-700">×{countRequirements[entry.name]}</span>
+                    )}
                   </span>
                   <span className="block text-[10px] text-gray-500 truncate">
                     {entry.producers.join(', ')}
@@ -274,6 +298,11 @@ export const StageInspector: React.FC<StageInspectorProps> = ({
             );
           })}
         </div>
+        {requiredOutputs.length > 0 && (
+          <p className="mt-2 text-[11px] text-gray-600">
+            Required outputs <span className="ml-1 font-medium text-gray-800">{requiredOutputs.map((name) => name.replace(/_/g, ' ')).join(', ')}</span>
+          </p>
+        )}
       </div>
 
       <StageSkillDetails required={required} evidence={byName} loading={loadingVocabulary} />

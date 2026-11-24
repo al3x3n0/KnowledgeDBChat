@@ -3286,13 +3286,15 @@ export interface paths {
          *
          *     The API key will be shown only once in the response. Store it securely!
          *
-         *     **Scopes** (optional, None = full access):
-         *     - `read`: Read-only access to documents and search
-         *     - `write`: Create and modify documents
-         *     - `chat`: Access chat/agent functionality
-         *     - `documents`: Full document management
-         *     - `workflows`: Execute workflows
-         *     - `admin`: Full administrative access
+         *     **REST scopes** (omit scopes for full account access):
+         *     - `read`: View documents and search
+         *     - `write`: Upload, change, and delete documents
+         *     - `chat`: Use chat and view agent information
+         *     - `documents`: Manage documents and sources
+         *     - `workflows`: View, run, and cancel existing workflows
+         *     - `admin`: Use all API operations permitted by the account role
+         *
+         *     MCP tools also require their tool-specific scope and configuration.
          */
         post: operations["create_api_key_api_v1_api_keys__post"];
         delete?: never;
@@ -6674,6 +6676,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/mcp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Streamable Mcp */
+        post: operations["streamable_mcp_api_v1_mcp_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/mcp-config/keys/{key_id}/config": {
         parameters: {
             query?: never;
@@ -6756,6 +6775,91 @@ export interface paths {
          */
         put: operations["update_tool_config_api_v1_mcp_config_keys__key_id__tools__tool_name__put"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp-config/profile-notes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Mcp Profile Notes */
+        get: operations["list_mcp_profile_notes_api_v1_mcp_config_profile_notes_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp-config/profile-options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Mcp Profile Options */
+        get: operations["list_mcp_profile_options_api_v1_mcp_config_profile_options_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp-config/profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Mcp Profile */
+        post: operations["create_mcp_profile_api_v1_mcp_config_profiles_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp-config/profiles/{key_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Mcp Profile */
+        put: operations["update_mcp_profile_api_v1_mcp_config_profiles__key_id__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp-config/profiles/{key_id}/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rotate Mcp Profile Key */
+        post: operations["rotate_mcp_profile_key_api_v1_mcp_config_profiles__key_id__rotate_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -8148,6 +8252,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/research-notes/context-packs/{trace_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Save Context Pack As Note
+         * @description Save an owned context pack and its evidence as a research note.
+         */
+        post: operations["save_context_pack_as_note_api_v1_research_notes_context_packs__trace_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/research-notes/lint-recent": {
         parameters: {
             query?: never;
@@ -8464,6 +8588,23 @@ export interface paths {
         get: operations["get_research_campaign_api_v1_research_campaigns__campaign_id__get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/research/campaigns/{campaign_id}/action": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Action Research Campaign */
+        post: operations["action_research_campaign_api_v1_research_campaigns__campaign_id__action_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -11532,6 +11673,11 @@ export interface components {
             id: string;
             /** Is Active */
             is_active: boolean;
+            /**
+             * Is Mcp Profile
+             * @default false
+             */
+            is_mcp_profile: boolean;
             /** Key Prefix */
             key_prefix: string;
             /** Last Used At */
@@ -13870,6 +14016,7 @@ export interface components {
              * @default false
              */
             perishable: boolean;
+            reproduction?: components["schemas"]["AgentJobReproductionEvidence"] | null;
             /**
              * Title
              * @default
@@ -15197,6 +15344,62 @@ export interface components {
              * Format: uuid
              */
             root_job_id: string;
+        };
+        /** AgentJobReproductionEvidence */
+        AgentJobReproductionEvidence: {
+            /** Blockers */
+            blockers?: string[];
+            /** Caveats */
+            caveats?: string[];
+            /** Claim Document Id */
+            claim_document_id?: string | null;
+            /**
+             * Claim Location
+             * @default
+             */
+            claim_location: string;
+            /** Claimed Conditions */
+            claimed_conditions?: components["schemas"]["AgentJobEvidenceValue"][];
+            /**
+             * Claimed Unit
+             * @default
+             */
+            claimed_unit: string;
+            /** Claimed Value */
+            claimed_value?: number | null;
+            /** Measured Conditions */
+            measured_conditions?: components["schemas"]["AgentJobEvidenceValue"][];
+            /**
+             * Measured Unit
+             * @default
+             */
+            measured_unit: string;
+            /** Measured Value */
+            measured_value?: number | null;
+            /**
+             * Measurement Source
+             * @default
+             */
+            measurement_source: string;
+            /**
+             * Metric
+             * @default
+             */
+            metric: string;
+            /** Relative Error */
+            relative_error?: number | null;
+            /**
+             * Summary
+             * @default
+             */
+            summary: string;
+            /** Tolerance */
+            tolerance?: number | null;
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "reproduced" | "not_reproduced" | "incomparable";
         };
         /**
          * AgentJobResponse
@@ -22232,6 +22435,25 @@ export interface components {
             /** Username */
             username: string;
         };
+        /** MCPCustomPrompt */
+        MCPCustomPrompt: {
+            /**
+             * Include Resources
+             * @default true
+             */
+            include_resources: boolean;
+            /** Instructions */
+            instructions: string;
+            /** Name */
+            name: string;
+            /** Title */
+            title: string;
+            /**
+             * Use Inputs
+             * @default false
+             */
+            use_inputs: boolean;
+        };
         /**
          * MCPKeyConfigResponse
          * @description Full MCP configuration for an API key.
@@ -22248,6 +22470,12 @@ export interface components {
             api_key_name: string;
             /** Mcp Enabled */
             mcp_enabled: boolean;
+            /** Mcp Programs */
+            mcp_programs?: string[] | null;
+            /** Prompts */
+            prompts?: components["schemas"]["MCPCustomPrompt"][];
+            /** Research Notes */
+            research_notes?: components["schemas"]["MCPNoteOption"][];
             /** Source Access */
             source_access: components["schemas"]["MCPSourceAccessResponse"][];
             /** Source Access Mode */
@@ -22274,6 +22502,76 @@ export interface components {
         MCPListToolsResponse: {
             /** Tools */
             tools: components["schemas"]["MCPToolDefinition"][];
+        };
+        /** MCPNoteOption */
+        MCPNoteOption: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Title */
+            title: string;
+        };
+        /** MCPProfileCreate */
+        MCPProfileCreate: {
+            /** Name */
+            name: string;
+            /** Note Ids */
+            note_ids?: string[] | null;
+            /** Programs */
+            programs?: string[];
+            /** Prompts */
+            prompts?: components["schemas"]["MCPCustomPrompt"][] | null;
+            /** Source Ids */
+            source_ids?: string[] | null;
+            /** Tools */
+            tools?: string[];
+        };
+        /** MCPProfileCreated */
+        MCPProfileCreated: {
+            /** Api Key */
+            api_key: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+        };
+        /** MCPProfileOptions */
+        MCPProfileOptions: {
+            /** Programs */
+            programs: components["schemas"]["MCPProgramOption"][];
+            /** Tools */
+            tools: components["schemas"]["MCPToolInfo"][];
+        };
+        /** MCPProfileRotated */
+        MCPProfileRotated: {
+            /** Api Key */
+            api_key: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Key Prefix */
+            key_prefix: string;
+        };
+        /** MCPProfileRotation */
+        MCPProfileRotation: {
+            /** Key Prefix */
+            key_prefix: string;
+        };
+        /** MCPProgramOption */
+        MCPProgramOption: {
+            /** Description */
+            description: string;
+            /** Name */
+            name: string;
+            /** Tools */
+            tools: string[];
+            /** Version */
+            version: string;
         };
         /**
          * MCPServerInfo
@@ -23711,6 +24009,8 @@ export interface components {
              * @default false
              */
             expressible: boolean;
+            /** Launch Problems */
+            launch_problems?: string[];
             plan?: components["schemas"]["PipelinePlanResponse"] | null;
             /** Problems */
             problems?: string[];
@@ -25008,6 +25308,14 @@ export interface components {
             change_request: string;
             /** File */
             file: string;
+        };
+        /** ResearchCampaignAction */
+        ResearchCampaignAction: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "pause" | "resume" | "stop";
         };
         /**
          * ResearchCampaignCreate
@@ -27185,6 +27493,8 @@ export interface components {
         ReviewItemResponse: {
             /** Detail */
             detail?: string | null;
+            /** Final Approval */
+            final_approval?: boolean | null;
             /** Id */
             id: string;
             /** Kind */
@@ -28263,6 +28573,8 @@ export interface components {
         };
         /** ToolApprovalRequest */
         ToolApprovalRequest: {
+            /** Expected Final Approval */
+            expected_final_approval?: boolean | null;
             /** Note */
             note?: string | null;
         };
@@ -32348,6 +32660,8 @@ export interface operations {
                 limit?: number;
                 /** @description Queue offset */
                 offset?: number;
+                /** @description Filter by job ID */
+                job_id?: string | null;
             };
             header?: {
                 "X-API-Key"?: string | null;
@@ -43435,6 +43749,26 @@ export interface operations {
             };
         };
     };
+    streamable_mcp_api_v1_mcp_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
     get_mcp_key_config_api_v1_mcp_config_keys__key_id__config_get: {
         parameters: {
             query?: never;
@@ -43633,6 +43967,180 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MCPToolConfigResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_mcp_profile_notes_api_v1_mcp_config_profile_notes_get: {
+        parameters: {
+            query?: {
+                q?: string;
+                note_id?: string | null;
+            };
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPNoteOption"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_mcp_profile_options_api_v1_mcp_config_profile_options_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPProfileOptions"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_mcp_profile_api_v1_mcp_config_profiles_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MCPProfileCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPProfileCreated"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_mcp_profile_api_v1_mcp_config_profiles__key_id__put: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path: {
+                key_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MCPProfileCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPKeyConfigResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rotate_mcp_profile_key_api_v1_mcp_config_profiles__key_id__rotate_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path: {
+                key_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MCPProfileRotation"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPProfileRotated"];
                 };
             };
             /** @description Validation Error */
@@ -46527,6 +47035,39 @@ export interface operations {
             };
         };
     };
+    save_context_pack_as_note_api_v1_research_notes_context_packs__trace_id__post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path: {
+                trace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResearchNoteResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     lint_recent_research_notes_api_v1_research_notes_lint_recent_post: {
         parameters: {
             query?: never;
@@ -47289,6 +47830,43 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResearchCampaignResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    action_research_campaign_api_v1_research_campaigns__campaign_id__action_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResearchCampaignAction"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

@@ -6,7 +6,7 @@
  */
 
 import React, { useMemo, useRef, useState, useEffect } from 'react';
-import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { useIsMutating, useQuery, useMutation, useQueryClient } from 'react-query';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   FileText,
@@ -40,6 +40,7 @@ import Button from '../components/common/Button';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import SkeletonList from '../components/common/SkeletonList';
 import { useNotifications } from '../contexts/NotificationContext';
+import AgentRunSourceLinks from '../components/agent/AgentRunSourceLinks';
 
 // Job type configuration
 const JOB_TYPE_CONFIG: Record<SynthesisJobType, { icon: React.ComponentType<any>; label: string; color: string; description: string }> = {
@@ -147,12 +148,17 @@ const SynthesisPage: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [selectedJob, setSelectedJob] = useState<SynthesisJob | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [typeFilter, setTypeFilter] = useState<string>('');
   const queryClient = useQueryClient();
   const { fetchNotifications, refreshUnreadCount } = useNotifications();
   const focusedJobId = useMemo(() => new URLSearchParams(location.search).get('job'), [location.search]);
+  const selectJob = (jobId: string | null) => {
+    const params = new URLSearchParams(location.search);
+    if (jobId) params.set('job', jobId);
+    else params.delete('job');
+    navigate({ pathname: location.pathname, search: params.toString() });
+  };
 
   // Fetch jobs
   const { data: jobsData, isLoading: jobsLoading, refetch: refetchJobs } = useQuery(
@@ -166,15 +172,25 @@ const SynthesisPage: React.FC = () => {
       refetchInterval: 5000, // Auto-refresh every 5 seconds
     }
   );
+  const detailQuery = useQuery(
+    ['synthesis-job', focusedJobId],
+    () => apiClient.getSynthesisJob(focusedJobId!),
+    {
+      enabled: Boolean(focusedJobId),
+      retry: false,
+      refetchInterval: (job) => job && ['completed', 'failed', 'cancelled'].includes(job.status) ? false : 5000,
+    }
+  );
+  const selectedJob = detailQuery.data ?? jobsData?.jobs.find((job) => job.id === focusedJobId);
 
   // Mutations
   const deleteMutation = useMutation(
     (jobId: string) => apiClient.deleteSynthesisJob(jobId),
     {
-      onSuccess: () => {
+      onSuccess: (_result, jobId) => {
         queryClient.invalidateQueries(['synthesis-jobs']);
         toast.success('Job deleted');
-        setSelectedJob(null);
+        if (focusedJobId === jobId) selectJob(null);
       },
       onError: (error: any) => {
         toast.error(error.message || 'Delete failed');
@@ -185,8 +201,9 @@ const SynthesisPage: React.FC = () => {
   const cancelMutation = useMutation(
     (jobId: string) => apiClient.cancelSynthesisJob(jobId),
     {
-      onSuccess: () => {
+      onSuccess: (_result, jobId) => {
         queryClient.invalidateQueries(['synthesis-jobs']);
+        queryClient.invalidateQueries(['synthesis-job', jobId]);
         toast.success('Job cancelled');
       },
       onError: (error: any) => {
@@ -201,6 +218,7 @@ const SynthesisPage: React.FC = () => {
     {
       onSuccess: (job) => {
         queryClient.invalidateQueries(['synthesis-jobs']);
+        queryClient.invalidateQueries(['synthesis-job', job.id]);
         queryClient.invalidateQueries(['research-notes']);
         void fetchNotifications();
         void refreshUnreadCount();
@@ -227,15 +245,20 @@ const SynthesisPage: React.FC = () => {
     const TypeIcon = typeConfig.icon;
     const isRunning = ['analyzing', 'synthesizing', 'generating'].includes(job.status);
 
-    const sourceCount = job.research_note_id ? 1 : (job.paper_ids?.length ? job.paper_ids.length : job.document_ids.length);
-    const sourceLabel = job.research_note_id ? 'note' : (job.paper_ids?.length ? 'papers' : 'docs');
+    const runCount = job.agent_job_ids?.length || 0;
+    const documentCount = job.document_ids.length;
+    const sourceCount = job.research_note_id ? 1 : (job.paper_ids?.length || documentCount + runCount);
+    const sourceLabel = job.research_note_id ? 'note'
+      : job.paper_ids?.length ? 'papers'
+        : runCount ? documentCount ? 'sources' : runCount === 1 ? 'run' : 'runs'
+          : 'docs';
 
     return (
       <div
         className={`bg-white border rounded-lg p-4 transition-all duration-fast ease-ui hover:shadow-level-2 hover:-translate-y-px hover:border-gray-400 active:translate-y-0 active:shadow-level-1 cursor-pointer ${
           selectedJob?.id === job.id ? 'border-primary-500 ring-2 ring-primary-200' : 'border-gray-200'
         }`}
-        onClick={() => setSelectedJob(job)}
+        onClick={() => selectJob(job.id)}
       >
         <div className="flex items-start justify-between mb-3">
           <div className="flex items-center gap-2">
@@ -292,12 +315,6 @@ const SynthesisPage: React.FC = () => {
       </div>
     );
   };
-
-  useEffect(() => {
-    if (!focusedJobId || !jobsData?.jobs?.length) return;
-    const match = jobsData.jobs.find((job) => job.id === focusedJobId);
-    if (match) setSelectedJob(match);
-  }, [focusedJobId, jobsData?.jobs]);
 
   // Job detail panel
   const JobDetailPanel: React.FC<{ job: SynthesisJob }> = ({ job }) => {
@@ -506,37 +523,40 @@ const SynthesisPage: React.FC = () => {
       }
     };
 
-    const handleSaveAsResearchNote = async (targetNoteId?: string) => {
-      if (!job.result_content) return;
-      try {
-        const suggestedTags = DEFAULT_NOTE_TAGS[job.job_type].join(', ');
-        const tags = suggestedTags
-          .split(',')
-          .map((t) => t.trim())
-          .filter(Boolean);
-        await apiClient.saveSynthesisJobAsResearchNote(job.id, {
-          title: job.title || JOB_TYPE_CONFIG[job.job_type].label,
-          tags: tags.length > 0 ? tags : undefined,
-          target_note_id: targetNoteId,
-        });
-        toast.success(targetNoteId ? 'Applied reevaluation to source note' : 'Saved as new note');
-        queryClient.invalidateQueries(['synthesis-jobs']);
-        queryClient.invalidateQueries(['research-notes']);
-        void fetchNotifications();
-        void refreshUnreadCount();
-        if (job.research_note_id) {
-          queryClient.invalidateQueries(['synthesis-source-note', job.id, job.research_note_id]);
-        }
-        if (primaryAutonomousOpportunityTarget?.sourceKind === 'profile') {
-          queryClient.invalidateQueries(['domain-research-profiles']);
-        }
-        if (primaryAutonomousOpportunityTarget?.sourceKind === 'portfolio') {
-          queryClient.invalidateQueries(['research-portfolios']);
-        }
-      } catch (e: any) {
-        toast.error(e?.message || 'Failed to save note');
+    const isRunWriteUp = job.job_type === 'research_report' && Boolean(job.agent_job_ids?.length);
+    const saveNoteKey = ['save-synthesis-note', job.id];
+    const savingNote = useIsMutating({ mutationKey: saveNoteKey }) > 0;
+    const saveNote = useMutation(
+      saveNoteKey,
+      (targetNoteId?: string) => apiClient.saveSynthesisJobAsResearchNote(job.id, {
+        title: job.title || typeConfig.label,
+        tags: DEFAULT_NOTE_TAGS[job.job_type] ?? ['synthesis'],
+        target_note_id: targetNoteId,
+      }),
+      {
+        onSuccess: (note, targetNoteId) => {
+          toast.success(targetNoteId ? 'Applied reevaluation to source note' : 'Saved as new note');
+          queryClient.invalidateQueries(['synthesis-jobs']);
+          queryClient.invalidateQueries(['synthesis-job', job.id]);
+          queryClient.invalidateQueries(['research-notes']);
+          void fetchNotifications();
+          void refreshUnreadCount();
+          if (job.research_note_id) {
+            queryClient.invalidateQueries(['synthesis-source-note', job.id, job.research_note_id]);
+          }
+          if (primaryAutonomousOpportunityTarget?.sourceKind === 'profile') {
+            queryClient.invalidateQueries(['domain-research-profiles']);
+          }
+          if (primaryAutonomousOpportunityTarget?.sourceKind === 'portfolio') {
+            queryClient.invalidateQueries(['research-portfolios']);
+          }
+          if (isRunWriteUp) navigate(`/research-notes?note=${encodeURIComponent(note.id)}`);
+        },
+        onError: (e: any) => {
+          toast.error(e?.response?.data?.detail || e?.message || 'Failed to save note');
+        },
       }
-    };
+    );
 
     const renderReevaluationHandoffActions = (includeSavedTarget: boolean) => {
       if (!sourceNote && !primaryAutonomousOpportunityTarget && !(includeSavedTarget && shouldShowSavedNoteLink)) {
@@ -592,13 +612,13 @@ const SynthesisPage: React.FC = () => {
       <div className="bg-white border border-gray-200 rounded-lg h-full overflow-hidden flex flex-col">
         {/* Header */}
         <div className="p-4 border-b border-gray-200">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-3">
-              <div className={`p-2 rounded-lg ${typeConfig.color}`}>
+          <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className={`shrink-0 p-2 rounded-lg ${typeConfig.color}`}>
                 <TypeIcon className="w-5 h-5" />
               </div>
-              <div>
-                <h2 className="text-lg font-semibold">{job.title}</h2>
+              <div className="min-w-0">
+                <h2 className="break-words text-lg font-semibold">{job.title}</h2>
                 <p className="text-sm text-gray-500">{typeConfig.label}</p>
               </div>
             </div>
@@ -609,7 +629,7 @@ const SynthesisPage: React.FC = () => {
           </div>
 
           {/* Actions */}
-          <div className="flex items-center gap-2 mt-3">
+          <div className="mt-3 flex flex-wrap items-center gap-2">
             {isRunning && (
               <Button
                 size="sm"
@@ -628,11 +648,11 @@ const SynthesisPage: React.FC = () => {
             ) : null}
             {isCompletedReevaluationDraft ? (
               <>
-                <Button size="sm" variant="primary" onClick={() => handleSaveAsResearchNote(job.research_note_id || undefined)}>
+                <Button size="sm" variant="primary" loading={savingNote} onClick={() => saveNote.mutate(job.research_note_id || undefined)}>
                   <Save className="w-4 h-4 mr-1" />
                   Apply to source note
                 </Button>
-                <Button size="sm" variant="secondary" onClick={() => handleSaveAsResearchNote(undefined)}>
+                <Button size="sm" variant="secondary" loading={savingNote} onClick={() => saveNote.mutate(undefined)}>
                   <Save className="w-4 h-4 mr-1" />
                   Save as new note
                 </Button>
@@ -647,7 +667,7 @@ const SynthesisPage: React.FC = () => {
                 </Button>
               </>
             ) : job.status === 'completed' && job.result_content ? (
-              <Button size="sm" variant="secondary" onClick={() => handleSaveAsResearchNote()}>
+              <Button size="sm" variant="secondary" loading={savingNote} onClick={() => saveNote.mutate(undefined)}>
                 <Save className="w-4 h-4 mr-1" />
                 {job.job_type === 'decision_memo'
                   ? 'Save Memo Note'
@@ -657,7 +677,7 @@ const SynthesisPage: React.FC = () => {
                       ? 'Save Proposal Note'
                       : job.job_type === 'compiler_patch_draft'
                         ? 'Save Patch Draft Note'
-                      : 'Save Note'}
+                        : isRunWriteUp ? 'Save and open note' : 'Save Note'}
               </Button>
             ) : null}
             {job.status === 'completed' && job.result_content && (
@@ -696,6 +716,11 @@ const SynthesisPage: React.FC = () => {
               Delete
             </Button>
           </div>
+          {Boolean(job.result_metadata?.agent_run_sources?.length) && (
+            <div className="mt-3 rounded-md bg-gray-50 p-2">
+              <AgentRunSourceLinks sources={job.result_metadata?.agent_run_sources} />
+            </div>
+          )}
           {isReevaluationJob && reviewOutcomeLabel ? (
             <div className="mt-3 rounded border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-700">
               <div className="font-medium text-gray-900">Review outcome</div>
@@ -1703,9 +1728,9 @@ const SynthesisPage: React.FC = () => {
   };
 
   return (
-    <div className="p-6 h-full flex flex-col">
+    <div className="flex min-h-full min-w-0 flex-col p-4 pb-20 lg:h-full lg:p-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3 lg:mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Document Synthesis</h1>
           <p className="text-gray-500">Generate multi-document summaries, comparisons, and reports</p>
@@ -1717,7 +1742,7 @@ const SynthesisPage: React.FC = () => {
       </div>
 
       {/* Filters */}
-      <div className="flex gap-3 mb-4">
+      <div className={`mb-4 flex-wrap gap-3 ${focusedJobId ? 'hidden lg:flex' : 'flex'}`}>
         <select
           className="border border-gray-300 rounded-lg px-3 py-2 text-sm"
           value={statusFilter}
@@ -1748,9 +1773,9 @@ const SynthesisPage: React.FC = () => {
       </div>
 
       {/* Content */}
-      <div className="flex-1 flex gap-6 min-h-0">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 lg:flex-row lg:gap-6">
         {/* Jobs list */}
-        <div className="w-2/3 overflow-y-auto">
+        <div className={`min-w-0 flex-1 lg:overflow-y-auto ${focusedJobId ? 'hidden lg:block' : ''}`}>
           {jobsLoading ? (
             <div className="flex justify-center items-center h-full">
               <LoadingSpinner />
@@ -1762,7 +1787,7 @@ const SynthesisPage: React.FC = () => {
               <p className="text-sm">Create a new synthesis to get started</p>
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid gap-4 sm:grid-cols-2">
               {jobsData?.jobs.map((job) => (
                 <JobCard key={job.id} job={job} />
               ))}
@@ -1771,9 +1796,21 @@ const SynthesisPage: React.FC = () => {
         </div>
 
         {/* Detail panel */}
-        <div className="w-1/3">
-          {selectedJob ? (
+        <div className={`min-w-0 lg:w-2/5 ${focusedJobId ? '' : 'hidden lg:block'}`}>
+          {focusedJobId && (
+            <Button type="button" variant="ghost" size="sm" className="mb-2 lg:hidden" onClick={() => selectJob(null)}>
+              Back to reports
+            </Button>
+          )}
+          {detailQuery.isError ? (
+            <div role="alert" className="flex flex-wrap items-center gap-2 text-sm">
+              <p>Could not open the selected synthesis.</p>
+              <Button type="button" size="sm" variant="secondary" onClick={() => detailQuery.refetch()}>Try again</Button>
+            </div>
+          ) : selectedJob ? (
             <JobDetailPanel job={selectedJob} />
+          ) : focusedJobId ? (
+            <p role="status" className="text-sm text-gray-600">Opening synthesis…</p>
           ) : (
             <div className="bg-gray-50 border border-gray-200 rounded-lg h-full flex flex-col items-center justify-center text-gray-500">
               <Eye className="w-10 h-10 mb-3 text-gray-400" />

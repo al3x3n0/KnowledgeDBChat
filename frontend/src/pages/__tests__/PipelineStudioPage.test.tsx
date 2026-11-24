@@ -7,7 +7,7 @@
  * unaffordable one.
  */
 
-import { act, fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render as rtlRender, screen, waitFor, within } from '@testing-library/react';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from 'react-query';
 import { MemoryRouter } from 'react-router-dom';
@@ -573,22 +573,22 @@ describe('launching', () => {
   });
 
   it('names the price and the stops before spending anything', async () => {
-    const confirm = jest.spyOn(window, 'confirm').mockReturnValue(false);
     render(<PipelineStudioPage />);
     await screen.findAllByText('profile_c_workload');
 
-    fireEvent.click(screen.getByRole('button', { name: /Launch/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Review launch' }));
+    const review = within(screen.getByRole('dialog', { name: 'Review pipeline launch' }));
 
-    const asked = confirm.mock.calls[0][0] as string;
-    expect(asked).toContain('3 min');
-    expect(asked).toContain('measure'); // the checkpoint it will stop at
-    // Declining means nothing was started.
+    expect(review.getByText('3 min')).toBeInTheDocument();
+    expect(review.getByText('Approval checkpoints').nextElementSibling).toHaveTextContent('measure');
+    expect(review.getByText(/Required evidence · dynamic_profile/)).toBeInTheDocument();
+    expect(review.getByText(/Upstream evidence · dynamic_profile/)).toBeInTheDocument();
+    fireEvent.click(review.getByRole('button', { name: 'Keep editing' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(apiClient.launchPipeline).not.toHaveBeenCalled();
-    confirm.mockRestore();
   });
 
   it('sends the estimate it showed, so an edited spec is refused', async () => {
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
     apiClient.launchPipeline.mockResolvedValue({
       job_id: 'job-9',
       name: 'study',
@@ -600,6 +600,8 @@ describe('launching', () => {
     await screen.findAllByText('profile_c_workload');
 
     fireEvent.click(screen.getByRole('button', { name: /Launch/i }));
+    expect(apiClient.launchPipeline).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Start pipeline' }));
 
     await waitFor(() =>
       expect(apiClient.launchPipeline).toHaveBeenCalledWith(
@@ -610,6 +612,54 @@ describe('launching', () => {
     // And it goes to the run it just started, rather than leaving the user on
     // an editor with no sign anything happened.
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/autonomous-agents?job=job-9'));
+  });
+
+  it('identifies a launch-only blocker before opening the review', async () => {
+    apiClient.checkPipeline.mockResolvedValue({
+      ...okCheck,
+      launch_problems: ['This pipeline has 2 independent starting stages (one, two). Give them a common first stage.'],
+    });
+    render(<PipelineStudioPage />);
+
+    expect(await screen.findByText('Launch blockers')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Review launch' })).toBeDisabled();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('blocks an invalid budget and closes review when the checked draft changes', async () => {
+    render(<PipelineStudioPage />);
+    const review = screen.getByRole('button', { name: 'Review launch' });
+    await waitFor(() => expect(review).toBeEnabled());
+    fireEvent.click(review);
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+    const budget = screen.getByLabelText('Budget (seconds)');
+    fireEvent.change(budget, { target: { value: '0' } });
+    expect(budget).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByText('Enter a whole number of seconds greater than zero.')).toBeInTheDocument();
+    expect(review).toBeDisabled();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(apiClient.launchPipeline).not.toHaveBeenCalled();
+  });
+
+  it('requires a second review when the server updates the cost', async () => {
+    apiClient.launchPipeline.mockRejectedValueOnce({ response: { status: 409, data: { detail: 'Estimate changed.' } } });
+    render(<PipelineStudioPage />);
+    const review = screen.getByRole('button', { name: 'Review launch' });
+    await waitFor(() => expect(review).toBeEnabled());
+    fireEvent.click(review);
+    const firstReview = within(screen.getByRole('dialog', { name: 'Review pipeline launch' }));
+    expect(firstReview.getByText('3 min')).toBeInTheDocument();
+
+    apiClient.checkPipeline.mockResolvedValue({ ...okCheck, plan: { ...okCheck.plan, total_seconds: 240 } });
+    fireEvent.click(firstReview.getByRole('button', { name: 'Start pipeline' }));
+    await screen.findByText(/4 min estimated work/);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(apiClient.launchPipeline).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(review);
+    expect(within(screen.getByRole('dialog')).getByText('4 min')).toBeInTheDocument();
+    expect(apiClient.launchPipeline).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -730,7 +780,6 @@ describe('the library', () => {
   });
 
   it('records which saved pipeline a launch came from', async () => {
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
     apiClient.listSavedPipelines.mockResolvedValue([stored]);
     apiClient.launchPipeline.mockResolvedValue({
       job_id: 'job-9',
@@ -744,6 +793,7 @@ describe('the library', () => {
     await screen.findAllByText('profile_c_workload');
 
     fireEvent.click(screen.getByRole('button', { name: /Launch/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Start pipeline' }));
 
     await waitFor(() =>
       expect(apiClient.launchPipeline).toHaveBeenCalledWith(
@@ -778,6 +828,46 @@ describe('the starters', () => {
     render(<PipelineStudioPage />);
     const picker = screen.getByLabelText('Start from a worked example');
     expect(picker).toHaveTextContent('Reproduce a paper');
+  });
+
+  it('keeps the original specification and budget recoverable across examples and reload', async () => {
+    const original = JSON.stringify({ name: 'In-progress study', stages: [{ id: 'measure' }] });
+    const firstView = render(<PipelineStudioPage />);
+    fireEvent.change(screen.getByLabelText('Pipeline specification'), { target: { value: original } });
+    fireEvent.change(screen.getByLabelText('Budget (seconds)'), { target: { value: '540' } });
+    const examples = screen.getByLabelText('Start from a worked example');
+    fireEvent.change(examples, { target: { value: 'CPU co-design' } });
+    expect(screen.getByLabelText('Budget (seconds)')).toHaveValue('');
+    fireEvent.change(examples, { target: { value: 'Reproduce a paper' } });
+    firstView.unmount();
+
+    render(<PipelineStudioPage />);
+    fireEvent.click(await screen.findByText('Recover drafts (1)'));
+    expect(screen.getByText('In-progress study')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Resume draft' }));
+    expect(screen.getByLabelText('Pipeline specification')).toHaveValue(original);
+    expect(screen.getByLabelText('Budget (seconds)')).toHaveValue('540');
+  });
+
+  it('checks the ordered CPU co-design stages and their evidence requirements without launching', async () => {
+    render(<PipelineStudioPage />);
+    fireEvent.change(screen.getByLabelText('Start from a worked example'), { target: { value: 'CPU co-design' } });
+
+    expect(screen.getByText(/Edit the baseline stage with your kernel revisions/)).toBeInTheDocument();
+    expect(await screen.findByText(/Enable the microarchitecture research program before launching/)).toBeInTheDocument();
+    expect((screen.getByLabelText('Stage goal') as HTMLTextAreaElement).value).toContain('kernel revisions');
+    await waitFor(() => {
+      const spec = apiClient.checkPipeline.mock.calls.at(-1)?.[0];
+      expect(spec?.name).toBe('cpu-co-design');
+      expect(spec.stages).toMatchObject([
+        { id: 'validate-baseline', contract: { required_finding_types: ['implementation_verified'] } },
+        { id: 'run-matrix', depends_on: ['validate-baseline'], contract: { required_finding_type_counts: { simulated_measurement: 4 } } },
+        { id: 'analyze-and-replicate', depends_on: ['run-matrix'], contract: {
+          required_finding_type_counts: { simulated_measurement: 4 }, required_result_keys: ['formatted_outputs'],
+        } },
+      ]);
+    });
+    expect(apiClient.launchPipeline).not.toHaveBeenCalled();
   });
 
   it('loads a starter that is itself a valid pipeline', async () => {

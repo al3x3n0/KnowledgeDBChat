@@ -262,6 +262,75 @@ async def test_a_finished_campaign_is_left_alone(db_session):
     assert campaign.jobs_launched == 0
 
 
+async def test_paused_and_stopped_campaigns_leave_launched_runs_available(db_session):
+    campaign = await _campaign(db_session)
+    launched = (await campaigns.advance_all(db_session))[0]["launched_job"]
+    campaigns.change_scheduling(campaign, "pause")
+    await db_session.commit()
+    job = await _finish(
+        db_session,
+        launched,
+        results={
+            "conclusion": "The baseline is memory-bound.",
+            "findings": [{"type": "note", "title": "Measured memory stalls"}],
+        },
+    )
+
+    assert await campaigns.advance_all(db_session) == []
+    summary = await campaigns.summarize(db_session, campaign)
+    assert summary["waiting_on"] is None
+    assert summary["latest_result"]["conclusion"] == "The baseline is memory-bound."
+    assert summary["latest_result"]["finding_count"] == 1
+    assert summary["latest_result"]["job_id"] == launched
+    assert summary["remaining_jobs"] == 4
+
+    campaigns.change_scheduling(campaign, "resume")
+    await db_session.commit()
+    resumed = (await campaigns.advance_all(db_session))[0]
+    assert resumed["settled"] == 1 and resumed["action"] == "launched"
+
+    campaigns.change_scheduling(campaign, "stop")
+    await db_session.commit()
+    assert await campaigns.advance_all(db_session) == []
+    assert job.status == "completed"
+    assert campaign.jobs_launched == 2
+    assert campaign.completed_at is not None
+
+
+def test_campaign_actions_are_owner_scoped_and_retryable(
+    client, auth_headers, admin_headers
+):
+    response = client.post(
+        "/api/v1/research/campaigns",
+        json={
+            "name": "Cache study",
+            "goal": "Evaluate throughput",
+            "items": [{"title": "Measure baseline"}],
+        },
+        headers=auth_headers,
+    )
+    assert response.status_code == 201
+    url = f"/api/v1/research/campaigns/{response.json()['id']}/action"
+
+    forbidden = client.post(url, json={"action": "stop"}, headers=admin_headers)
+    assert forbidden.status_code == 404
+
+    for action, expected in (
+        ("pause", "paused"),
+        ("resume", "active"),
+        ("stop", "cancelled"),
+    ):
+        first = client.post(url, json={"action": action}, headers=auth_headers)
+        repeated = client.post(url, json={"action": action}, headers=auth_headers)
+        assert first.status_code == repeated.status_code == 200
+        assert first.json()["status"] == repeated.json()["status"] == expected
+        assert first.json()["updated_at"] == repeated.json()["updated_at"]
+        assert first.json()["items"][0]["title"] == "Measure baseline"
+
+    invalid = client.post(url, json={"action": "resume"}, headers=auth_headers)
+    assert invalid.status_code == 409
+
+
 @pytest.mark.asyncio
 async def test_a_summary_says_what_the_campaign_has_done(db_session):
     campaign = await _campaign(db_session)

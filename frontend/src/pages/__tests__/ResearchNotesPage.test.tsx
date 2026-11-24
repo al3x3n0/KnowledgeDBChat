@@ -21,6 +21,7 @@ jest.mock('../../services/api', () => ({
     enforceResearchNoteCitations: jest.fn(),
     lintResearchNoteCitations: jest.fn(),
     listExperimentPlansForNote: jest.fn(),
+    getExperimentPlan: jest.fn(),
     listBenchmarkSuites: jest.fn(),
     searchGitDocumentSources: jest.fn(),
     getActiveGitSources: jest.fn(),
@@ -280,6 +281,21 @@ describe('ResearchNotesPage', () => {
     jest.clearAllMocks();
   });
 
+  it('links a selected research note to a prefilled MCP profile', async () => {
+    apiClient.getResearchNote.mockResolvedValue({
+      ...makeNote(),
+      attribution: { saved_from_context_pack: {
+        trace_id: 'trace-1',
+        citations: [{ key: 'S1', doc_id: 'doc-1', chunk_id: 'chunk-1', excerpt: 'Observed improvement' }],
+      } },
+    });
+    renderWithProviders();
+    const link = await screen.findByRole('link', { name: 'Publish as MCP profile' });
+    expect(link).toHaveAttribute('href', '/mcp-config?note=note-1');
+    expect(await screen.findByRole('link', { name: 'Open source context pack' })).toHaveAttribute('href', '/context-packs/trace-1');
+    expect(screen.getByText('S1 · Observed improvement')).toHaveAttribute('href', '/documents');
+  });
+
   it('highlights deep-linked experiment plan and run targets', async () => {
     renderWithProviders('/research-notes?note=note-1&plan=plan-1&run=run-1');
 
@@ -288,6 +304,37 @@ describe('ResearchNotesPage', () => {
 
     expect(latestPlan).toHaveClass('border-primary-400');
     expect(run).toHaveClass('border-primary-400');
+  });
+
+  it('links a saved write-up to its source synthesis and contributing run', async () => {
+    apiClient.getResearchNote.mockResolvedValue({
+      ...makeNote(),
+      source_synthesis_job_id: 'writeup',
+      attribution: { saved_from_synthesis: { result_metadata: {
+        agent_run_sources: [{ id: 'cache-run', name: 'Cache validation run' }],
+      } } },
+    });
+    renderWithProviders();
+
+    expect(await screen.findByRole('link', { name: 'Cache validation run' })).toHaveAttribute('href', '/autonomous-agents?job=cache-run');
+    expect(screen.getByRole('link', { name: 'Open source synthesis' })).toHaveAttribute('href', '/synthesis?job=writeup');
+  });
+
+  it('opens a linked older plan and keeps an older source run visible', async () => {
+    apiClient.getExperimentPlan.mockResolvedValue({
+      id: 'plan-old', research_note_id: 'note-1', title: 'Earlier validation plan', plan: {},
+    });
+    apiClient.listExperimentRuns.mockImplementation(async (planId: string) => ({
+      runs: planId === 'plan-old' ? Array.from({ length: 12 }, (_, index) => ({
+        id: `old-${index}`, name: `Run ${index}`, status: 'completed', progress: 100,
+      })) : [],
+    }));
+
+    renderWithProviders('/research-notes?note=note-1&plan=plan-old&run=old-11');
+    const run = await screen.findByRole('article', { name: 'Experiment run Run 11' });
+    expect(run).toHaveClass('border-primary-400');
+    expect(screen.getByRole('region', { name: 'Experiment plan Earlier validation plan' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Compare runs' })).toHaveAttribute('href', '/research-notes/experiments/plan-old/compare');
   });
 
   it('renders typed experiment run bootstrap and fallback summary', async () => {
@@ -533,7 +580,9 @@ describe('ResearchNotesPage', () => {
     renderWithProviders();
 
     expect(await screen.findByText('Compiler Run New')).toBeInTheDocument();
-    expect(screen.getByText('Comparison run run-old')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Compare with Compiler Run Old' })).toHaveAttribute(
+      'href', '/research-notes/experiments/plan-1/compare?baseline=run-old&candidate=run-new'
+    );
 
     fireEvent.click(
       screen.getByTitle('Compare against run-old and generate a compiler regression explanation')

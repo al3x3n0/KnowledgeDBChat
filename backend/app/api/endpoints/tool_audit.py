@@ -21,17 +21,10 @@ from app.services.auth_service import get_current_user
 router = APIRouter()
 
 
-def _approval_mode(row: ToolExecutionAudit) -> str:
-    mode = str(row.approval_mode or "").strip().lower()
-    if mode in {"owner_or_admin", "owner_and_admin"}:
-        return mode
-    # Back-compat with old rows
-    return "owner_or_admin"
-
-
 def _recompute_approval_status(row: ToolExecutionAudit) -> None:
-    mode = _approval_mode(row)
-    if mode == "owner_and_admin":
+    if row.approval_status == "rejected":
+        return
+    if row.requires_owner_and_admin:
         has_owner = bool(row.owner_approved_at)
         has_admin = bool(row.admin_approved_at)
         if has_owner and has_admin:
@@ -107,7 +100,9 @@ async def approve_tool(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(ToolExecutionAudit).where(ToolExecutionAudit.id == audit_id)
+        select(ToolExecutionAudit)
+        .where(ToolExecutionAudit.id == audit_id)
+        .with_for_update()
     )
     row = result.scalar_one_or_none()
     if not row:
@@ -126,12 +121,19 @@ async def approve_tool(
             status_code=400, detail="No pending approval for this record"
         )
 
-    now = datetime.utcnow()
-    mode = _approval_mode(row)
     is_owner = row.user_id == current_user.id
     is_admin = current_user.is_admin()
+    if (
+        payload.expected_final_approval is not None
+        and payload.expected_final_approval
+        != row.is_final_approval(owner=is_owner, admin=is_admin)
+    ):
+        raise HTTPException(
+            409, "Approval requirements changed. Review the updated action."
+        )
 
-    if mode == "owner_and_admin":
+    now = datetime.utcnow()
+    if row.requires_owner_and_admin:
         # If the owner is also an admin, a single approval satisfies both.
         if is_owner:
             row.owner_approved_by = current_user.id
@@ -164,7 +166,9 @@ async def reject_tool(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(ToolExecutionAudit).where(ToolExecutionAudit.id == audit_id)
+        select(ToolExecutionAudit)
+        .where(ToolExecutionAudit.id == audit_id)
+        .with_for_update()
     )
     row = result.scalar_one_or_none()
     if not row:
@@ -253,11 +257,11 @@ async def run_tool(
             )
 
         api_key = await db.get(APIKey, api_key_id)
-        if not api_key or api_key.user_id != row.user_id:
+        if not api_key or api_key.user_id != row.user_id or not api_key.is_valid():
             raise HTTPException(status_code=404, detail="API key not found")
 
         owner = await db.get(User, row.user_id)
-        if owner is None:
+        if owner is None or not owner.is_active:
             raise HTTPException(status_code=404, detail="Tool owner not found")
 
         auth = MCPAuthContext(user=owner, api_key=api_key, scopes=api_key.scopes or [])

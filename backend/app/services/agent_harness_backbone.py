@@ -195,6 +195,10 @@ def driver_environment(api_key: str) -> Dict[str, str]:
 # --------------------------------------------------------------------------
 
 ToolCall = Callable[[str, Dict[str, Any]], Awaitable[Dict[str, Any]]]
+ListResources = Callable[[], Awaitable[List[Dict[str, Any]]]]
+ReadResource = Callable[[str], Awaitable[Optional[Dict[str, Any]]]]
+ListPrompts = Callable[[], Awaitable[List[Dict[str, Any]]]]
+GetPrompt = Callable[[str, Dict[str, Any]], Awaitable[Optional[Dict[str, Any]]]]
 
 
 def mcp_tool(definition: Dict[str, Any]) -> Dict[str, Any]:
@@ -218,7 +222,14 @@ def _rpc_error(msg_id: Any, code: int, message: str) -> Dict[str, Any]:
 
 
 async def handle_rpc(
-    message: Any, *, tools: List[Dict[str, Any]], call: ToolCall
+    message: Any,
+    *,
+    tools: List[Dict[str, Any]],
+    call: ToolCall,
+    list_resources: Optional[ListResources] = None,
+    read_resource: Optional[ReadResource] = None,
+    list_prompts: Optional[ListPrompts] = None,
+    get_prompt: Optional[GetPrompt] = None,
 ) -> Optional[Dict[str, Any]]:
     """Answer one JSON-RPC message, or None for a notification."""
     if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
@@ -228,15 +239,21 @@ async def handle_rpc(
     params = message.get("params") if isinstance(message.get("params"), dict) else {}
     if "id" not in message:
         return None  # notifications/initialized and the like
+    has_resources = list_resources is not None and read_resource is not None
     if method == "initialize":
         asked = str(params.get("protocolVersion") or "")
+        capabilities: Dict[str, Any] = {"tools": {"listChanged": False}}
+        if has_resources:
+            capabilities["resources"] = {}
+        if list_prompts is not None and get_prompt is not None:
+            capabilities["prompts"] = {}
         return _rpc_result(
             msg_id,
             {
                 "protocolVersion": asked
                 if asked in PROTOCOL_VERSIONS
                 else PROTOCOL_VERSIONS[1],
-                "capabilities": {"tools": {"listChanged": False}},
+                "capabilities": capabilities,
                 "serverInfo": {"name": SERVER_NAME, "version": "1"},
             },
         )
@@ -244,6 +261,54 @@ async def handle_rpc(
         return _rpc_result(msg_id, {})
     if method == "tools/list":
         return _rpc_result(msg_id, {"tools": tools})
+    if list_resources is not None and method in (
+        "resources/list",
+        "resources/templates/list",
+    ):
+        if params.get("cursor") is not None:
+            return _rpc_error(msg_id, -32602, "Invalid resource cursor")
+        if method == "resources/templates/list":
+            return _rpc_result(msg_id, {"resourceTemplates": []})
+        try:
+            return _rpc_result(msg_id, {"resources": await list_resources()})
+        except Exception:
+            logger.exception("Unable to list MCP resources")
+            return _rpc_error(msg_id, -32603, "Could not list resources")
+    if read_resource is not None and method == "resources/read":
+        uri = params.get("uri")
+        if not isinstance(uri, str) or not uri:
+            return _rpc_error(msg_id, -32602, "A resource URI is required")
+        try:
+            contents = await read_resource(uri)
+        except Exception:
+            logger.exception("Unable to read MCP resource")
+            return _rpc_error(msg_id, -32603, "Could not read resource")
+        if contents is None:
+            return _rpc_error(msg_id, -32002, "Resource not found")
+        return _rpc_result(msg_id, {"contents": [contents]})
+    if list_prompts is not None and method == "prompts/list":
+        if params.get("cursor") is not None:
+            return _rpc_error(msg_id, -32602, "Invalid prompt cursor")
+        try:
+            return _rpc_result(msg_id, {"prompts": await list_prompts()})
+        except Exception:
+            logger.exception("Unable to list MCP prompts")
+            return _rpc_error(msg_id, -32603, "Could not list prompts")
+    if get_prompt is not None and method == "prompts/get":
+        name = params.get("name")
+        arguments = params.get("arguments", {})
+        if not isinstance(name, str) or not isinstance(arguments, dict):
+            return _rpc_error(
+                msg_id, -32602, "A prompt name and valid arguments are required"
+            )
+        try:
+            prompt = await get_prompt(name, arguments)
+        except Exception:
+            logger.exception("Unable to retrieve MCP prompt")
+            return _rpc_error(msg_id, -32603, "Could not retrieve prompt")
+        if prompt is None:
+            return _rpc_error(msg_id, -32602, "Prompt unavailable or arguments invalid")
+        return _rpc_result(msg_id, prompt)
     if method == "tools/call":
         name = str(params.get("name") or "")
         if name not in {tool["name"] for tool in tools}:

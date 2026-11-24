@@ -3,7 +3,7 @@
  */
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 // Use built distribution to avoid ESM fully specified resolution issues
 import videojs from 'video.js';
@@ -33,6 +33,7 @@ import {
   Edit,
   Copy,
   Link2,
+  Server,
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 
@@ -170,6 +171,8 @@ const DocumentsPage: React.FC = () => {
       return 'all';
     }
   });
+  const [showMobileFolders, setShowMobileFolders] = useState(false);
+  const [showPersonaFilters, setShowPersonaFilters] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [showIngestUrlModal, setShowIngestUrlModal] = useState(false);
   const [selectedDocument, setSelectedDocument] = useState<KnowledgeDocument | null>(null);
@@ -810,6 +813,7 @@ const DocumentsPage: React.FC = () => {
       refetchOnWindowFocus: false,
     }
   );
+  const activeSelectedSource = sources?.find((source) => source.id === selectedSource && source.is_active);
   const { data: activeGitStatuses, refetch: refetchActiveGitStatuses } = useQuery<ActiveGitSource[]>(
     'activeGitSources',
     () => apiClient.getActiveGitSources(),
@@ -2028,15 +2032,15 @@ const DocumentsPage: React.FC = () => {
   }, [activeTab, highlightIngestionSourceId, activeGitStatuses, activeGitRequests, combinedPendingSourceIds, sourceProgress]);
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="flex h-full min-w-0 flex-col">
       {/* Header */}
-      <div className="bg-white border-b border-gray-200 p-6">
-        <div className="flex items-center justify-between mb-4">
+      <div className="border-b border-gray-200 bg-white p-4 lg:p-6">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h1 className="text-2xl font-bold text-gray-900">
             {tabTitle}
           </h1>
           {(activeTab === 'documents' || activeTab === 'videos') && (
-            <div className="flex items-center space-x-3">
+            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
               <Button
                 onClick={() => refetchDocuments()}
                 variant="ghost"
@@ -2064,7 +2068,7 @@ const DocumentsPage: React.FC = () => {
         </div>
 
         {/* Tabs */}
-        <div className="flex space-x-1 border-b border-gray-200 mb-4">
+        <div className="mb-4 flex flex-wrap gap-x-1 border-b border-gray-200">
           {tabs.map((tab) => {
             const Icon = tab.icon;
             return (
@@ -2096,7 +2100,7 @@ const DocumentsPage: React.FC = () => {
 
         {(activeTab === 'documents' || activeTab === 'videos') && (
           <div className="flex flex-wrap items-center gap-4">
-            <div className="flex-1 min-w-[220px]">
+            <div className="min-w-0 basis-full sm:flex-1 sm:min-w-[min(100%,220px)]">
               <Input
                 placeholder="Search documents..."
                 value={searchQuery}
@@ -2104,8 +2108,9 @@ const DocumentsPage: React.FC = () => {
                 leftIcon={<Search className="w-4 h-4" />}
               />
             </div>
-            <div className="w-48 min-w-[180px]">
+            <div className="w-full min-w-0 sm:w-48">
               <select
+                aria-label="Document source"
                 value={selectedSource}
                 onChange={(e) => setSelectedSource(e.target.value)}
                 className="block w-full rounded-lg border-gray-300 shadow-sm bg-white text-gray-900 focus:border-primary-500 focus:ring-primary-500"
@@ -2118,34 +2123,46 @@ const DocumentsPage: React.FC = () => {
                 ))}
               </select>
             </div>
-            <PersonaFilterAutosuggest
-              label="Owner persona"
-              placeholder="All owners"
-              value={ownerPersonaFilter}
-              onChange={setOwnerPersonaFilter}
-              options={personaOptions}
-              loading={personasLoading}
-            />
-            <PersonaFilterAutosuggest
-              label="Speaker persona"
-              placeholder="All speakers"
-              value={speakerPersonaFilter}
-              onChange={setSpeakerPersonaFilter}
-              options={personaOptions}
-              loading={personasLoading}
-            />
-            {(ownerPersonaFilter || speakerPersonaFilter) && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
+            {user && user.role !== 'viewer' && activeSelectedSource && (
+              <Link
+                to={`/mcp-config?source=${encodeURIComponent(activeSelectedSource.id)}`}
+                className="inline-flex items-center gap-2 rounded-md border border-gray-300 bg-gray-100 px-3 py-1.5 text-sm font-medium text-gray-900 hover:bg-gray-200"
+              >
+                <Server className="h-4 w-4" aria-hidden="true" />
+                Create MCP from source
+              </Link>
+            )}
+            <Button type="button" size="sm" variant="secondary" className="lg:hidden"
+              aria-expanded={showPersonaFilters} aria-controls="document-persona-filters"
+              onClick={() => setShowPersonaFilters((show) => !show)}>
+              Persona filters{ownerPersonaFilter || speakerPersonaFilter ? ' (active)' : ''}
+            </Button>
+            <div id="document-persona-filters" className={`${showPersonaFilters ? 'flex' : 'hidden'} w-full flex-wrap items-center gap-4 lg:contents`}>
+              <PersonaFilterAutosuggest
+                label="Owner persona"
+                placeholder="All owners"
+                value={ownerPersonaFilter}
+                onChange={setOwnerPersonaFilter}
+                options={personaOptions}
+                loading={personasLoading}
+              />
+              <PersonaFilterAutosuggest
+                label="Speaker persona"
+                placeholder="All speakers"
+                value={speakerPersonaFilter}
+                onChange={setSpeakerPersonaFilter}
+                options={personaOptions}
+                loading={personasLoading}
+              />
+              {(ownerPersonaFilter || speakerPersonaFilter) && (
+                <Button variant="ghost" size="sm" onClick={() => {
                   setOwnerPersonaFilter('');
                   setSpeakerPersonaFilter('');
-                }}
-              >
-                Clear persona filters
-              </Button>
-            )}
+                }}>
+                  Clear persona filters
+                </Button>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -2645,19 +2662,29 @@ const DocumentsPage: React.FC = () => {
           // The folder tree and the list are one region: the tree
           // hands out a key and the list is a query on that key, so
           // they cannot disagree about what a folder contains.
-          <div className="flex min-h-0 flex-1 overflow-hidden">
-            <aside className="w-64 shrink-0 overflow-y-auto border-r border-gray-200 bg-gray-100 p-3 scrollbar-thin">
-              <FolderTree
-                system={folderTree?.system || []}
-                folders={folderTree?.folders || []}
-                loading={folderTreeLoading}
-                selectedKey={selectedFolderKey}
-                onSelect={(key) => setSelectedFolderKey(key)}
-                onCreate={handleCreateFolder}
-                onRename={handleRenameFolder}
-                onDelete={handleDeleteFolder}
-                onDropDocuments={handleFileDocuments}
-              />
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col xl:flex-row">
+            <aside className="shrink-0 border-b border-gray-200 bg-gray-100 p-3 xl:w-64 xl:border-b-0 xl:border-r">
+              <Button type="button" variant="secondary" size="sm" className="xl:hidden"
+                aria-expanded={showMobileFolders} aria-controls="document-folder-tree"
+                onClick={() => setShowMobileFolders((show) => !show)}>
+                {showMobileFolders ? 'Hide folders' : 'Show folders'}
+              </Button>
+              <div id="document-folder-tree" className={`${showMobileFolders ? 'mt-2' : 'hidden'} max-h-56 overflow-y-auto scrollbar-thin xl:mt-0 xl:block xl:max-h-none`}>
+                <FolderTree
+                  system={folderTree?.system || []}
+                  folders={folderTree?.folders || []}
+                  loading={folderTreeLoading}
+                  selectedKey={selectedFolderKey}
+                  onSelect={(key) => {
+                    setSelectedFolderKey(key);
+                    setShowMobileFolders(false);
+                  }}
+                  onCreate={handleCreateFolder}
+                  onRename={handleRenameFolder}
+                  onDelete={handleDeleteFolder}
+                  onDropDocuments={handleFileDocuments}
+                />
+              </div>
             </aside>
             <div className="flex-1 min-w-0 overflow-y-auto scrollbar-thin">
             {documentsLoading ? (

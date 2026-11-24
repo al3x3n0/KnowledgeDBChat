@@ -9,7 +9,6 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
   Settings,
-  Play,
   Loader2,
   Sparkles,
   X,
@@ -21,6 +20,7 @@ import toast from 'react-hot-toast';
 
 import api from '../services/api';
 import WorkflowEditor from '../components/workflows/WorkflowEditor';
+import WorkflowRunButton from '../components/workflows/WorkflowRunButton';
 import { useWorkflowStore } from '../components/workflows/useWorkflowStore';
 
 interface ValidationIssue {
@@ -171,25 +171,6 @@ const WorkflowEditorPage: React.FC = () => {
     }
   };
 
-  // Execute workflow
-  const handleExecute = async () => {
-    if (!metadata.id) {
-      toast.error('Save the workflow first');
-      return;
-    }
-
-    try {
-      await api.post(`/workflows/${metadata.id}/execute/async`, {
-        trigger_type: 'manual',
-        trigger_data: {},
-        inputs: {},
-      });
-      toast.success('Workflow execution started');
-    } catch (error: any) {
-      toast.error('Failed to start workflow');
-    }
-  };
-
   // Go back with confirmation
   const handleBack = () => {
     if (isDirty) {
@@ -322,13 +303,12 @@ const WorkflowEditorPage: React.FC = () => {
           )}
 
           {metadata.id && metadata.isActive && (
-            <button
-              onClick={handleExecute}
-              className="flex items-center space-x-1 px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700"
-            >
-              <Play className="w-4 h-4" />
-              <span>Run</span>
-            </button>
+            <WorkflowRunButton
+              key={metadata.id}
+              workflowId={metadata.id}
+              inEditor
+              hasUnsavedChanges={isDirty}
+            />
           )}
         </div>
       </header>

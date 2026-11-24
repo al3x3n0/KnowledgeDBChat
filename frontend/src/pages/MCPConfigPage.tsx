@@ -2,8 +2,9 @@
  * MCP Configuration page for managing MCP tools and access control per API key.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from 'react-query';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   Server,
   Key,
@@ -15,31 +16,48 @@ import {
   ChevronRight,
   RefreshCw,
   AlertTriangle,
-  Info,
-  ExternalLink,
   Copy,
+  Activity,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 import { apiClient } from '../services/api';
 import {
   MCPKeyConfigResponse,
+  APIKeyListResponse,
   MCPToolInfo,
   MCPToolConfigResponse,
   DocumentSource,
 } from '../types';
 import Button from '../components/common/Button';
+import MCPProfileBuilder from '../components/mcp/MCPProfileBuilder';
+import MCPProfileKeyRotation from '../components/mcp/MCPProfileKeyRotation';
+import MCPProfileUsage from '../components/mcp/MCPProfileUsage';
+import MCPClientSetup, { copyMCPValue } from '../components/mcp/MCPClientSetup';
 
 const MCPConfigPage: React.FC = () => {
   const queryClient = useQueryClient();
-  const [selectedKeyId, setSelectedKeyId] = useState<string | null>(null);
+  const [preferredKeyId, setPreferredKeyId] = useState<string | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const managingApiKeys = searchParams.get('view') === 'api-keys';
+  const program = searchParams.get('program')?.trim() || undefined;
+  const noteId = searchParams.get('note')?.trim() || undefined;
+  const sourceId = searchParams.get('source')?.trim() || undefined;
+  const linkedNote = useQuery(['mcpProfileNote', noteId], () => apiClient.listMCPProfileNotes('', noteId), {
+    enabled: Boolean(noteId) && !managingApiKeys,
+    retry: false,
+  });
 
   // Fetch API keys
-  const { data: keysData, isLoading: keysLoading } = useQuery(
+  const keys = useQuery(
     'apiKeys',
     () => apiClient.listAPIKeys(false),
     { refetchOnWindowFocus: false }
   );
+  const activeKeys = (keys.data?.api_keys || []).filter((key) => key.is_active && !key.revoked_at);
+  const visibleKeys = activeKeys.filter((key) => Boolean(key.is_mcp_profile) !== managingApiKeys);
+  const selectedKey = visibleKeys.find((key) => key.id === preferredKeyId) || visibleKeys[0];
+  const selectedKeyId = selectedKey?.id;
 
   // Fetch available MCP tools
   const { data: mcpTools } = useQuery(
@@ -63,27 +81,14 @@ const MCPConfigPage: React.FC = () => {
   );
 
   // Fetch document sources for source access configuration
-  const { data: sources } = useQuery(
+  const { data: sources, isLoading: sourcesLoading } = useQuery(
     'documentSources',
     () => apiClient.getDocumentSources(),
     { refetchOnWindowFocus: false }
   );
-
-  const apiKeys = keysData?.api_keys || [];
-  const activeKeys = apiKeys.filter((k) => k.is_active && !k.revoked_at);
-
-  // Auto-select first key if none selected
-  useEffect(() => {
-    if (!selectedKeyId && activeKeys.length > 0) {
-      setSelectedKeyId(activeKeys[0].id);
-    }
-  }, [selectedKeyId, activeKeys]);
-
-  const handleCopyEndpoint = () => {
-    const endpoint = `${window.location.origin}/api/v1/mcp`;
-    navigator.clipboard.writeText(endpoint);
-    toast.success('MCP endpoint copied to clipboard');
-  };
+  const linkedSource = sourceId
+    ? sources?.find((source) => source.id === sourceId && source.is_active) ?? null
+    : undefined;
 
   return (
     <div className="max-w-6xl mx-auto p-6">
@@ -91,88 +96,82 @@ const MCPConfigPage: React.FC = () => {
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
           <Server className="w-7 h-7" />
-          MCP Configuration
+          {managingApiKeys ? 'MCP Access for API Keys' : 'MCP Profiles'}
         </h1>
         <p className="text-gray-600 mt-1">
-          Configure Model Context Protocol (MCP) access for external AI agents
+          {managingApiKeys
+            ? 'Manage tool and source access for existing general-purpose API keys.'
+            : 'Share selected research programs, notes, and sources with an AI client.'}
         </p>
+        {managingApiKeys ? (
+          <Link to="/mcp-config" className="mt-2 inline-block text-sm text-primary-700 underline">Back to MCP Profiles</Link>
+        ) : activeKeys.some((key) => !key.is_mcp_profile) && (
+          <Link to="/mcp-config?view=api-keys" className="mt-2 inline-block text-sm text-primary-700 underline">Manage MCP access for API keys</Link>
+        )}
       </div>
 
-      {/* MCP Info Banner */}
-      <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-        <div className="flex gap-3">
-          <Info className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
-          <div className="text-sm text-blue-800">
-            <p className="font-medium">About MCP Integration</p>
-            <p className="mt-1">
-              MCP (Model Context Protocol) allows external AI agents like Claude Desktop or custom
-              integrations to interact with your knowledge base. Configure which tools and sources
-              each API key can access.
+      {!managingApiKeys && ((noteId && linkedNote.isLoading) || (sourceId && sourcesLoading) ? (
+        <p className="mb-6 text-sm text-gray-600" role="status">Loading the linked profile context…</p>
+      ) : (
+        <>
+          {noteId && !linkedNote.data?.[0] && (
+            <p className="mb-4 text-sm text-amber-800" role="alert">The linked research note is unavailable. You can still create a profile.</p>
+          )}
+          {linkedSource === null && (
+            <p className="mb-4 text-sm text-amber-800" role="alert">
+              The linked document source is unavailable. Select an active source to share documents.
             </p>
-            <div className="mt-3 flex items-center gap-4">
-              <div className="flex items-center gap-2">
-                <span className="text-gray-600">MCP Endpoint:</span>
-                <code className="bg-blue-100 px-2 py-0.5 rounded font-mono text-xs">
-                  {window.location.origin}/api/v1/mcp
-                </code>
-                <button
-                  onClick={handleCopyEndpoint}
-                  className="p-1 hover:bg-blue-100 rounded"
-                  title="Copy endpoint"
-                >
-                  <Copy className="w-4 h-4 text-blue-600" />
-                </button>
-              </div>
-              <a
-                href="https://modelcontextprotocol.io/docs"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1 text-blue-600 hover:underline"
-              >
-                MCP Docs
-                <ExternalLink className="w-3 h-3" />
-              </a>
-            </div>
-          </div>
-        </div>
-      </div>
+          )}
+          <MCPProfileBuilder
+            key={JSON.stringify([program, noteId, sourceId])}
+            initialSelection={{ program, note: linkedNote.data?.[0], source: linkedSource }}
+            onClose={() => {
+              if (!program && !noteId && !sourceId) return;
+              const next = new URLSearchParams(searchParams);
+              next.delete('program');
+              next.delete('note');
+              next.delete('source');
+              setSearchParams(next, { replace: true });
+            }}
+            onCreated={(id) => {
+              setPreferredKeyId(id);
+              void queryClient.invalidateQueries('apiKeys');
+            }}
+          />
+        </>
+      ))}
 
-      {keysLoading ? (
+      {keys.isLoading ? (
         <div className="bg-white rounded-lg shadow p-8 text-center">
           <RefreshCw className="w-8 h-8 text-gray-400 animate-spin mx-auto mb-4" />
-          <p className="text-gray-600">Loading API keys...</p>
+          <p className="text-gray-600">{managingApiKeys ? 'Loading API keys…' : 'Loading profiles…'}</p>
         </div>
-      ) : activeKeys.length === 0 ? (
-        <div className="bg-white rounded-lg shadow p-8 text-center">
-          <Key className="w-12 h-12 text-gray-300 mx-auto mb-4" />
-          <h3 className="text-lg font-medium text-gray-900 mb-2">No API Keys</h3>
-          <p className="text-gray-600 mb-4">
-            Create an API key first to configure MCP access.
-          </p>
-          <Button onClick={() => (window.location.href = '/api-keys')}>
-            Go to API Keys
-          </Button>
+      ) : keys.isError ? (
+        <div role="alert" className="flex items-center gap-3 rounded-lg border bg-white p-4 text-sm">
+          {managingApiKeys ? 'Could not load API keys.' : 'Could not load MCP profiles.'}
+          <Button variant="secondary" onClick={() => keys.refetch()}>Retry</Button>
         </div>
+      ) : visibleKeys.length === 0 ? (
+        <p className="text-sm text-gray-600">{managingApiKeys ? 'No active general-purpose API keys.' : 'No MCP profiles yet.'}</p>
       ) : (
-        <div className="flex gap-6">
+        <div className="flex flex-col gap-6 lg:flex-row">
           {/* API Key Selector */}
-          <div className="w-64 flex-shrink-0">
+          <div className="w-full flex-shrink-0 lg:w-64">
             <div className="bg-white rounded-lg shadow">
               <div className="px-4 py-3 border-b">
-                <h3 className="font-medium text-gray-900">API Keys</h3>
+                <h3 className="font-medium text-gray-900">{managingApiKeys ? 'API Keys' : 'Your profiles'}</h3>
               </div>
               <div className="divide-y">
-                {activeKeys.map((key) => (
+                {visibleKeys.map((key) => (
                   <button
                     key={key.id}
-                    onClick={() => setSelectedKeyId(key.id)}
+                    onClick={() => setPreferredKeyId(key.id)}
                     className={`w-full px-4 py-3 text-left flex items-center justify-between hover:bg-gray-50 transition-colors ${
                       selectedKeyId === key.id ? 'bg-primary-50' : ''
                     }`}
                   >
                     <div>
                       <div className="font-medium text-gray-900 text-sm">{key.name}</div>
-                      <div className="text-xs text-gray-500 font-mono">{key.key_prefix}...</div>
                     </div>
                     <ChevronRight
                       className={`w-4 h-4 ${
@@ -186,10 +185,12 @@ const MCPConfigPage: React.FC = () => {
           </div>
 
           {/* Configuration Panel */}
-          <div className="flex-1">
+          <div className="min-w-0 flex-1">
             {selectedKeyId && (
               <MCPKeyConfigPanel
+                key={selectedKeyId}
                 keyId={selectedKeyId}
+                keyPrefix={selectedKey?.key_prefix}
                 config={mcpConfig}
                 tools={mcpTools || []}
                 sources={sources || []}
@@ -210,14 +211,15 @@ const MCPConfigPage: React.FC = () => {
 // MCP Key Configuration Panel
 const MCPKeyConfigPanel: React.FC<{
   keyId: string;
+  keyPrefix?: string;
   config: MCPKeyConfigResponse | null | undefined;
   tools: MCPToolInfo[];
   sources: DocumentSource[];
   isLoading: boolean;
   onRefresh: () => void;
-}> = ({ keyId, config, tools, sources, isLoading, onRefresh }) => {
+}> = ({ keyId, keyPrefix, config, tools, sources, isLoading, onRefresh }) => {
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState<'general' | 'tools' | 'sources'>('general');
+  const [activeTab, setActiveTab] = useState<'general' | 'connection' | 'tools' | 'sources' | 'usage'>('general');
 
   // Update MCP config mutation
   const updateConfigMutation = useMutation(
@@ -300,14 +302,21 @@ const MCPKeyConfigPanel: React.FC<{
     );
   }
 
+  const isProfile = config.mcp_programs != null;
   const tabs = [
     { id: 'general', name: 'General', icon: Shield },
+    { id: 'connection', name: 'Connection', icon: Key },
     { id: 'tools', name: 'Tools', icon: Wrench },
     { id: 'sources', name: 'Sources', icon: Database },
-  ];
+    { id: 'usage', name: 'Usage', icon: Activity },
+  ].filter(({ id }) => isProfile || id !== 'usage');
+  const configuredTools = config.tool_configs.filter(
+    (tool) => config.allowed_tools == null || config.allowed_tools.includes(tool.tool_name)
+  );
+  const endpoint = apiClient.getMCPEndpoint();
 
   // Group tools by category
-  const toolsByCategory = config.tool_configs.reduce(
+  const toolsByCategory = configuredTools.reduce(
     (acc, tool) => {
       const category = tool.category || 'other';
       if (!acc[category]) acc[category] = [];
@@ -323,7 +332,7 @@ const MCPKeyConfigPanel: React.FC<{
       <div className="px-6 py-4 border-b flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold text-gray-900">{config.api_key_name}</h2>
-          <p className="text-sm text-gray-500">Configure MCP access for this API key</p>
+          <p className="text-sm text-gray-500">{isProfile ? 'Profile access and connection details' : 'MCP access for this API key'}</p>
         </div>
         <div className="flex items-center gap-2">
           {config.mcp_enabled ? (
@@ -342,7 +351,7 @@ const MCPKeyConfigPanel: React.FC<{
 
       {/* Tabs */}
       <div className="border-b px-6">
-        <nav className="flex gap-4">
+        <nav className="flex flex-wrap gap-x-4">
           {tabs.map((tab) => {
             const Icon = tab.icon;
             return (
@@ -365,8 +374,50 @@ const MCPKeyConfigPanel: React.FC<{
 
       {/* Tab Content */}
       <div className="p-6">
+        {isProfile && activeTab === 'usage' && <MCPProfileUsage keyId={keyId} />}
+        {activeTab === 'connection' && (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-end gap-2">
+              <label className="min-w-0 flex-1 text-sm font-medium text-gray-700">
+                MCP endpoint
+                <input readOnly value={endpoint} className="mt-1 block w-full rounded-md border bg-gray-50 px-3 py-2 font-mono text-sm" />
+              </label>
+              <Button variant="secondary" onClick={() => void copyMCPValue(endpoint, 'MCP endpoint')}>
+                <Copy className="mr-2 h-4 w-4" /> Copy endpoint
+              </Button>
+            </div>
+            {keyPrefix && <p className="text-sm text-gray-600">Key prefix <code>{keyPrefix}…</code></p>}
+            <MCPClientSetup key={keyPrefix} profileId={keyId} endpoint={endpoint} keyPrefix={keyPrefix} />
+            {isProfile && keyPrefix && (
+              <MCPProfileKeyRotation
+                profileId={keyId}
+                keyPrefix={keyPrefix}
+                onRotated={(prefix) => {
+                  queryClient.setQueryData<APIKeyListResponse | undefined>('apiKeys', (current) =>
+                    current && {
+                      ...current,
+                      api_keys: current.api_keys.map((key) =>
+                        key.id === keyId ? { ...key, key_prefix: prefix } : key
+                      ),
+                    }
+                  );
+                }}
+                onRefresh={() => void queryClient.invalidateQueries('apiKeys')}
+              />
+            )}
+          </div>
+        )}
         {activeTab === 'general' && (
           <div className="space-y-6">
+            {isProfile && (
+              <MCPProfileBuilder
+                profile={config}
+                onSaved={(updated) => {
+                  queryClient.setQueryData(['mcpConfig', keyId], updated);
+                  void queryClient.invalidateQueries('apiKeys');
+                }}
+              />
+            )}
             {/* MCP Enabled Toggle */}
             <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
               <div>
@@ -389,11 +440,26 @@ const MCPKeyConfigPanel: React.FC<{
               </label>
             </div>
 
-            {/* Source Access Mode */}
+            {isProfile && (
+              <div className="p-4 bg-gray-50 rounded-lg">
+                <h3 className="font-medium text-gray-900">Research programs</h3>
+                <p className="mt-1 text-sm text-gray-600">
+                  {config.mcp_programs?.join(', ') || 'No research programs selected'}
+                </p>
+              </div>
+            )}
+            {!!config.research_notes?.length && (
+              <div className="p-4 bg-gray-50 rounded-lg">
+                <h3 className="font-medium text-gray-900">Research notes</h3>
+                <ul className="mt-1 list-inside list-disc text-sm text-gray-600">
+                  {config.research_notes.map((note) => <li key={note.id}>{note.title}</li>)}
+                </ul>
+              </div>
+            )}
             <div className="p-4 bg-gray-50 rounded-lg">
               <h3 className="font-medium text-gray-900 mb-2">Source Access Mode</h3>
               <p className="text-sm text-gray-500 mb-4">
-                Control which document sources can be accessed via MCP
+                Choose the sources available to document browsing, search, and chat.
               </p>
               <div className="space-y-2">
                 <label className="flex items-center gap-3 p-3 bg-white rounded-lg border cursor-pointer hover:bg-gray-50">
@@ -410,7 +476,7 @@ const MCPKeyConfigPanel: React.FC<{
                   <div>
                     <div className="font-medium text-gray-900">All Sources</div>
                     <div className="text-sm text-gray-500">
-                      Allow access to all document sources
+                      Use the shared knowledge base
                     </div>
                   </div>
                 </label>
@@ -428,7 +494,7 @@ const MCPKeyConfigPanel: React.FC<{
                   <div>
                     <div className="font-medium text-gray-900">Restricted</div>
                     <div className="text-sm text-gray-500">
-                      Only allow access to explicitly configured sources (configure in Sources tab)
+                      Use the sources and permissions set in the Sources tab
                     </div>
                   </div>
                 </label>
@@ -439,7 +505,7 @@ const MCPKeyConfigPanel: React.FC<{
             <div className="grid grid-cols-3 gap-4">
               <div className="p-4 bg-gray-50 rounded-lg text-center">
                 <div className="text-2xl font-bold text-gray-900">
-                  {config.tool_configs.filter((t) => t.is_enabled).length}
+                  {configuredTools.filter((t) => t.is_enabled).length}
                 </div>
                 <div className="text-sm text-gray-500">Tools Enabled</div>
               </div>
@@ -518,7 +584,7 @@ const MCPKeyConfigPanel: React.FC<{
                 <p className="mt-1">
                   {config.source_access_mode === 'all'
                     ? 'Source access mode is set to "All Sources". The restrictions below will not apply until you switch to "Restricted" mode in the General tab.'
-                    : 'Only the sources listed below will be accessible via MCP. Add sources to grant access.'}
+                    : 'Document browsing, search, and chat use the sources and permissions below.'}
                 </p>
               </div>
             </div>

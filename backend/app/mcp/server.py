@@ -5,14 +5,19 @@ This module provides MCP-compatible endpoints that external AI agents
 can use to interact with the KnowledgeDB platform.
 """
 
+import json
 import time
+from functools import partial
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse, Response
 from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.mcp.auth import (
     MCPAuthContext,
@@ -21,13 +26,19 @@ from app.mcp.auth import (
     log_api_usage,
     validate_api_key,
 )
+from app.mcp.executor import research_program_context
+from app.mcp.prompts import get_profile_prompt, list_profile_prompts
+from app.mcp.resources import list_profile_resources, read_profile_resource
 from app.mcp.tools.chat import ChatTool
 from app.mcp.tools.docker_execute import DockerExecuteTool
 from app.mcp.tools.documents import MAX_LIST_LIMIT, MAX_LIST_OFFSET, DocumentsTool
 from app.mcp.tools.generation import GenerationTool
+from app.mcp.tools.research_notes import RESEARCH_NOTES_SCHEMA, read_research_notes
 from app.mcp.tools.sandbox_skills import SandboxSkillTool
 from app.mcp.tools.search import SearchTool
 from app.mcp.tools.web_scrape import WebScrapeTool
+from app.models.mcp_config import MCP_TOOLS, RESEARCH_NOTES_TOOL, RESEARCH_PROGRAM_TOOL
+from app.services.agent_harness_backbone import PROTOCOL_VERSIONS, handle_rpc
 
 # Initialize tools
 search_tool = SearchTool()
@@ -90,6 +101,35 @@ class MCPServerInfo(BaseModel):
 
 
 TOOL_CALL_PATH = "/tools/call"
+RPC_USAGE_METHODS = frozenset(
+    {
+        "initialize",
+        "notifications/initialized",
+        "ping",
+        "tools/list",
+        "tools/call",
+        "resources/list",
+        "resources/read",
+        "resources/templates/list",
+        "prompts/list",
+        "prompts/get",
+    }
+)
+
+
+def rpc_activity_path(endpoint: str, message: Any) -> str:
+    """Label a request using only known operations and tool names."""
+    if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
+        return f"{endpoint}/rpc/invalid"
+    method = message.get("method")
+    if not isinstance(method, str) or method not in RPC_USAGE_METHODS:
+        return f"{endpoint}/rpc/unknown"
+    params = message.get("params")
+    if method == "tools/call" and isinstance(params, dict):
+        name = params.get("name")
+        if isinstance(name, str) and name in MCP_TOOLS:
+            return f"{endpoint}/rpc/{method}/{name}"
+    return f"{endpoint}/rpc/{method}"
 
 
 async def get_mcp_auth(
@@ -121,11 +161,19 @@ async def get_mcp_auth(
 
     # A tool call logs itself with its outcome and duration. The other
     # routes logged nothing, so they would not have counted towards a limit.
-    if not request.url.path.endswith(TOOL_CALL_PATH):
+    endpoint = request.url.path
+    if not endpoint.endswith(TOOL_CALL_PATH):
+        if request.method == "POST" and endpoint.endswith(mcp_router.prefix):
+            # Starlette caches the request body for the transport handler.
+            try:
+                message = await request.json()
+            except ValueError:
+                message = None
+            endpoint = rpc_activity_path(endpoint, message)
         await log_api_usage(
             db=db,
             api_key_id=auth.api_key.id,
-            endpoint=request.url.path,
+            endpoint=endpoint,
             method=request.method,
             status_code=200,
             ip_address=request.client.host if request.client else None,
@@ -164,6 +212,16 @@ async def list_tools(
         )
 
     all_tools = [
+        (
+            RESEARCH_NOTES_TOOL,
+            "List selected research notes or read one by ID",
+            RESEARCH_NOTES_SCHEMA,
+        ),
+        (
+            RESEARCH_PROGRAM_TOOL,
+            "Read selected research program descriptions and tool schemas",
+            {"type": "object", "properties": {}},
+        ),
         (
             "search",
             "Search documents in the knowledge base using semantic search",
@@ -233,8 +291,9 @@ async def list_tools(
 
     # Filter tools based on API key configuration
     tools = []
+    allowed = await auth.allowed_tools(db)
     for name, description, schema in all_tools:
-        if auth.api_key.is_tool_allowed(name):
+        if name in allowed:
             # Apply platform policies too (deny-by-policy removes from list)
             try:
                 from app.services.tool_policy_engine import evaluate_tool_policy
@@ -288,11 +347,7 @@ async def call_tool(
         )
 
     # Check if tool is allowed for this API key
-    if not auth.api_key.is_tool_allowed(tool_name):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Tool '{tool_name}' is not allowed for this API key",
-        )
+    await auth.require_tool(tool_name, db)
 
     # Platform tool policies (deny-by-policy, approval gate)
     try:
@@ -359,7 +414,15 @@ async def call_tool(
         result: Dict[str, Any] = {}
 
         # Route to appropriate tool
-        if tool_name == "search":
+        if tool_name == RESEARCH_PROGRAM_TOOL:
+            result = research_program_context(auth.api_key.mcp_programs)
+
+        elif tool_name == RESEARCH_NOTES_TOOL:
+            result = await read_research_notes(
+                db, auth.api_key.id, auth.user_id, args.get("note_id")
+            )
+
+        elif tool_name == "search":
             result = await search_tool.execute(
                 auth=auth,
                 db=db,
@@ -487,19 +550,20 @@ async def call_tool(
 
         # Log usage
         response_time_ms = int((time.time() - start_time) * 1000)
-        await log_api_usage(
-            db=db,
-            api_key_id=auth.api_key.id,
-            endpoint=f"/mcp/tools/call/{tool_name}",
-            method="POST",
-            status_code=200,
-            ip_address=request.client.host if request.client else None,
-            user_agent=request.headers.get("User-Agent"),
-            response_time_ms=response_time_ms,
-        )
+        if request.url.path.endswith(TOOL_CALL_PATH):
+            await log_api_usage(
+                db=db,
+                api_key_id=auth.api_key.id,
+                endpoint=f"/mcp/tools/call/{tool_name}",
+                method="POST",
+                status_code=200,
+                ip_address=request.client.host if request.client else None,
+                user_agent=request.headers.get("User-Agent"),
+                response_time_ms=response_time_ms,
+            )
 
         # Check for errors in result
-        is_error = "error" in result and result.get("error")
+        is_error = bool(result.get("error"))
 
         return MCPToolCallResponse(
             content=[{"type": "text", "text": result}],
@@ -513,16 +577,17 @@ async def call_tool(
 
         # Log error
         response_time_ms = int((time.time() - start_time) * 1000)
-        await log_api_usage(
-            db=db,
-            api_key_id=auth.api_key.id,
-            endpoint=f"/mcp/tools/call/{tool_name}",
-            method="POST",
-            status_code=500,
-            ip_address=request.client.host if request.client else None,
-            user_agent=request.headers.get("User-Agent"),
-            response_time_ms=response_time_ms,
-        )
+        if request.url.path.endswith(TOOL_CALL_PATH):
+            await log_api_usage(
+                db=db,
+                api_key_id=auth.api_key.id,
+                endpoint=f"/mcp/tools/call/{tool_name}",
+                method="POST",
+                status_code=500,
+                ip_address=request.client.host if request.client else None,
+                user_agent=request.headers.get("User-Agent"),
+                response_time_ms=response_time_ms,
+            )
 
         return MCPToolCallResponse(
             content=[{"type": "text", "text": {"error": str(e)}}],
@@ -535,6 +600,97 @@ async def call_tool(
 # =============================================================================
 
 
+@mcp_router.post("")
+async def streamable_mcp(
+    request: Request,
+    auth: MCPAuthContext = Depends(get_mcp_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    origin = request.headers.get("origin")
+    if origin is not None and origin not in settings.cors_allowed_origins:
+        raise HTTPException(403, "MCP origin is not allowed")
+    if not auth.api_key.is_mcp_enabled():
+        raise HTTPException(403, "MCP access is disabled for this API key")
+    protocol = request.headers.get("mcp-protocol-version")
+    if protocol is not None and protocol not in PROTOCOL_VERSIONS:
+        raise HTTPException(400, "Unsupported MCP protocol version")
+    try:
+        message = await request.json()
+    except ValueError:
+        return JSONResponse(
+            {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32700, "message": "Parse error"},
+            },
+            status_code=400,
+        )
+
+    tools = []
+    if isinstance(message, dict) and message.get("method") in (
+        "tools/list",
+        "tools/call",
+    ):
+        available = await list_tools(auth, db)
+        tools = [tool.model_dump() for tool in available.tools]
+
+    async def invoke(name: str, arguments: dict) -> dict:
+        try:
+            response = await call_tool(
+                request, MCPToolCallRequest(name=name, arguments=arguments), auth, db
+            )
+        except HTTPException as exc:
+            return {"text": str(exc.detail), "is_error": True}
+        return {
+            "text": "\n".join(
+                item["text"]
+                if isinstance(item["text"], str)
+                else json.dumps(jsonable_encoder(item["text"]))
+                for item in response.content
+            ),
+            "is_error": response.isError,
+        }
+
+    is_profile = auth.api_key.mcp_programs is not None
+    answer = await handle_rpc(
+        message,
+        tools=tools,
+        call=invoke,
+        list_resources=partial(list_profile_resources, auth, db)
+        if is_profile
+        else None,
+        read_resource=partial(read_profile_resource, auth, db) if is_profile else None,
+        list_prompts=partial(list_profile_prompts, auth, db) if is_profile else None,
+        get_prompt=partial(get_profile_prompt, auth, db) if is_profile else None,
+    )
+    return JSONResponse(answer) if answer is not None else Response(status_code=202)
+
+
+async def call_compatibility_tool(
+    request: Request,
+    auth: MCPAuthContext,
+    db: AsyncSession,
+    name: str,
+    arguments: dict,
+):
+    if auth.api_key.mcp_programs is not None:
+        raise HTTPException(403, "Use the MCP tool call endpoint with this key")
+
+    response = await call_tool(
+        request, MCPToolCallRequest(name=name, arguments=arguments), auth, db
+    )
+    item = response.content[0]
+    if response.isError and item.get("approval_id"):
+        raise HTTPException(
+            409,
+            detail={
+                "status": "approval_required",
+                "approval_id": item["approval_id"],
+            },
+        )
+    return item["text"]
+
+
 @mcp_router.post("/search")
 async def search_endpoint(
     request: Request,
@@ -543,13 +699,17 @@ async def search_endpoint(
 ):
     """Direct search endpoint."""
     body = await request.json()
-    return await search_tool.execute(
-        auth=auth,
-        db=db,
-        query=body.get("query", ""),
-        limit=body.get("limit", 10),
-        source_ids=body.get("source_ids"),
-        file_types=body.get("file_types"),
+    return await call_compatibility_tool(
+        request,
+        auth,
+        db,
+        "search",
+        {
+            "query": body.get("query", ""),
+            "limit": body.get("limit", 10),
+            "source_ids": body.get("source_ids"),
+            "file_types": body.get("file_types"),
+        },
     )
 
 
@@ -561,19 +721,24 @@ async def chat_endpoint(
 ):
     """Direct chat endpoint."""
     body = await request.json()
-    return await chat_tool.execute(
-        auth=auth,
-        db=db,
-        question=body.get("question", ""),
-        source_ids=body.get("source_ids"),
-        document_ids=body.get("document_ids"),
-        max_context_chunks=body.get("max_context_chunks", 5),
-        include_sources=body.get("include_sources", True),
+    return await call_compatibility_tool(
+        request,
+        auth,
+        db,
+        "chat",
+        {
+            "question": body.get("question", ""),
+            "source_ids": body.get("source_ids"),
+            "document_ids": body.get("document_ids"),
+            "max_context_chunks": body.get("max_context_chunks", 5),
+            "include_sources": body.get("include_sources", True),
+        },
     )
 
 
 @mcp_router.get("/documents")
 async def list_documents_endpoint(
+    request: Request,
     limit: int = Query(20, ge=1, le=MAX_LIST_LIMIT),
     offset: int = Query(0, ge=0, le=MAX_LIST_OFFSET),
     source_id: Optional[str] = None,
@@ -583,42 +748,47 @@ async def list_documents_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     """Direct list documents endpoint."""
-    return await documents_tool.list_documents(
-        auth=auth,
-        db=db,
-        limit=limit,
-        offset=offset,
-        source_id=source_id,
-        file_type=file_type,
-        search=search,
+    return await call_compatibility_tool(
+        request,
+        auth,
+        db,
+        "list_documents",
+        {
+            "limit": limit,
+            "offset": offset,
+            "source_id": source_id,
+            "file_type": file_type,
+            "search": search,
+        },
     )
 
 
 @mcp_router.get("/documents/{document_id}")
 async def get_document_endpoint(
+    request: Request,
     document_id: str,
     include_content: bool = True,
     auth: MCPAuthContext = Depends(get_mcp_auth),
     db: AsyncSession = Depends(get_db),
 ):
     """Direct get document endpoint."""
-    return await documents_tool.get_document(
-        auth=auth,
-        db=db,
-        document_id=document_id,
-        include_content=include_content,
+    return await call_compatibility_tool(
+        request,
+        auth,
+        db,
+        "get_document",
+        {"document_id": document_id, "include_content": include_content},
     )
 
 
 @mcp_router.get("/sources")
 async def list_sources_endpoint(
+    request: Request,
     limit: int = Query(50, ge=1, le=MAX_LIST_LIMIT),
     auth: MCPAuthContext = Depends(get_mcp_auth),
     db: AsyncSession = Depends(get_db),
 ):
     """Direct list sources endpoint."""
-    return await documents_tool.list_sources(
-        auth=auth,
-        db=db,
-        limit=limit,
+    return await call_compatibility_tool(
+        request, auth, db, "list_sources", {"limit": limit}
     )

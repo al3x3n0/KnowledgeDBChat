@@ -42,7 +42,7 @@ from app.models.research_campaign import (
 )
 from app.services import agent_campaign_priority as priority
 from app.services.agent_loop_policy import finding_identity
-from app.services.agent_run_waiting import WAITING_ON_APPROVAL
+from app.services.agent_run_waiting import WAITING_ON_APPROVAL, final_jobs
 from app.services.agent_run_waiting import waiting_on as _waiting_on
 
 DEFAULT_MAX_JOBS = 10
@@ -50,6 +50,25 @@ DEFAULT_MAX_JOBS = 10
 # candidates in a report are a reading list, not a plan.
 MAX_ITEMS_FROM_ONE_JOB = 5
 _JOB_NAME_LENGTH = AgentJob.__table__.c.name.type.length
+
+_SCHEDULING_TRANSITIONS = {
+    "pause": ({CampaignStatus.ACTIVE}, CampaignStatus.PAUSED),
+    "resume": ({CampaignStatus.PAUSED}, CampaignStatus.ACTIVE),
+    "stop": ({CampaignStatus.ACTIVE, CampaignStatus.PAUSED}, CampaignStatus.CANCELLED),
+}
+
+
+def change_scheduling(campaign: ResearchCampaign, action: str) -> None:
+    """Change the scheduler state of a campaign locked by the caller."""
+    allowed, target = _SCHEDULING_TRANSITIONS[action]
+    if campaign.status == target:
+        return
+    if campaign.status not in allowed:
+        raise ValueError("This campaign has already ended.")
+    campaign.status = target
+    campaign.updated_at = datetime.utcnow()
+    if target == CampaignStatus.CANCELLED:
+        campaign.completed_at = campaign.updated_at
 
 
 async def create_campaign(
@@ -253,6 +272,7 @@ PlanApprover = Callable[..., Awaitable[Any]]
 async def _approve_own_plan(
     db: AsyncSession,
     campaign: ResearchCampaign,
+    item: ResearchCampaignItem,
     run: Sequence[AgentJob],
     approve: Optional[PlanApprover],
 ) -> Optional[Dict[str, Any]]:
@@ -270,7 +290,7 @@ async def _approve_own_plan(
     from app.services import agent_self_planned_pipeline
     from app.services.agent_runtime_finalizer import CHAIN_GATE_CHECKPOINT
 
-    for job in run:
+    for job in final_jobs(run):
         if str(job.status or "") != AgentJobStatus.PAUSED.value:
             continue
         if str(job.current_phase or "") != "awaiting_approval":
@@ -314,15 +334,21 @@ async def _approve_own_plan(
             f"({limits['max_stages']} stages, {limits['max_minutes']} min): "
             f"{stages} stage(s), about {minutes} min."
         )
-        await approve(job, db, approver=approver, note=note)
-        logger.info(f"Campaign {campaign.id} approved job {job.id}'s plan: {note}")
-        return {
+        decision = {
             "job": str(job.id),
             "approved": True,
             "stages": stages,
             "minutes": minutes,
             "reason": note,
         }
+        # The chain approval can commit and release the campaign's row lock.
+        # Include the decision in that commit and leave scheduling to the next tick.
+        earlier = item.outcome if isinstance(item.outcome, dict) else {}
+        item.outcome = {**earlier, "plan_approval": decision}
+        campaign.updated_at = datetime.utcnow()
+        await approve(job, db, approver=approver, note=note)
+        logger.info(f"Campaign {campaign.id} approved job {job.id}'s plan: {note}")
+        return decision
     return None
 
 
@@ -359,17 +385,18 @@ async def _reconcile(
         run = await _run_of(db, job)
         waiting = _waiting_on(run)
         if waiting == WAITING_ON_APPROVAL:
-            decision = await _approve_own_plan(db, campaign, run, approve)
+            decision = await _approve_own_plan(db, campaign, item, run, approve)
             if decision is not None:
+                plan_decisions.append(decision)
+                if decision["approved"]:
+                    waiting_on = _waiting_on(await _run_of(db, job))
+                    break
                 # Kept on the item, so the page can say who approved what,
                 # or why the campaign left it for a person.
                 item.outcome = {
                     **(item.outcome if isinstance(item.outcome, dict) else {}),
                     "plan_approval": decision,
                 }
-                plan_decisions.append(decision)
-                if decision["approved"]:
-                    waiting = _waiting_on(await _run_of(db, job))
         if waiting:
             waiting_on = waiting
             continue
@@ -718,7 +745,10 @@ async def advance(
     reconciled = await _reconcile(db, campaign, approve)
 
     all_items = await _items(db, campaign)
-    triage = await _triage(db, campaign, all_items)
+    approved_plan = any(
+        decision["approved"] for decision in reconciled["plan_decisions"]
+    )
+    triage = {"dropped": 0} if approved_plan else await _triage(db, campaign, all_items)
 
     running = [i for i in all_items if i.status == CampaignItemStatus.RUNNING]
     pending = [i for i in all_items if i.status == CampaignItemStatus.PENDING]
@@ -727,7 +757,7 @@ async def advance(
     launched_job: Optional[AgentJob] = None
     chose: Optional[Dict[str, Any]] = None
 
-    if running:
+    if approved_plan or running:
         # Nothing starts while something is running. The reason to have a
         # campaign rather than a batch is that each result can change what is
         # asked next, and a job launched before the previous one lands cannot
@@ -759,8 +789,9 @@ async def advance(
         # finished", and neither is the same as no answer at all.
         await conclude_campaign(db, campaign)
 
-    campaign.updated_at = datetime.utcnow()
-    await db.flush()
+    if not approved_plan:
+        campaign.updated_at = datetime.utcnow()
+        await db.flush()
 
     return {
         "campaign": str(campaign.id),
@@ -791,19 +822,16 @@ async def advance(
     }
 
 
-async def _what_it_waits_on(
+async def _current_run(
     db: AsyncSession, items: Sequence[ResearchCampaignItem]
-) -> Optional[str]:
-    """What the running item's run is waiting for, read without settling it."""
+) -> tuple[Optional[ResearchCampaignItem], List[AgentJob]]:
     for item in items:
         if item.status != CampaignItemStatus.RUNNING or item.job_id is None:
             continue
-        job = (
-            await db.execute(select(AgentJob).where(AgentJob.id == item.job_id))
-        ).scalar_one_or_none()
+        job = await db.get(AgentJob, item.job_id)
         if job is not None:
-            return _waiting_on(await _run_of(db, job))
-    return None
+            return item, await _run_of(db, job)
+    return None, []
 
 
 async def remaining_jobs(db: AsyncSession, campaign_id: Any) -> Optional[int]:
@@ -817,7 +845,9 @@ async def remaining_jobs(db: AsyncSession, campaign_id: Any) -> Optional[int]:
     return max(0, int(campaign.max_jobs or 0) - int(campaign.jobs_launched or 0))
 
 
-async def summarize(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, Any]:
+async def summarize(
+    db: AsyncSession, campaign: ResearchCampaign, *, with_evidence: bool = True
+) -> Dict[str, Any]:
     """What the campaign has done, for an operator or a report."""
     items = await _items(db, campaign)
     by_status: Dict[str, int] = {}
@@ -830,11 +860,33 @@ async def summarize(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, A
         for item in settled
         if isinstance(item.outcome, dict) and item.outcome.get("contract_satisfied")
     ]
+    current, run = await _current_run(db, items)
+    waiting = _waiting_on(run)
+    current_item = None
+    if current is not None:
+        current_job = next(
+            (job for job in reversed(final_jobs(run)) if _waiting_on([job]) == waiting),
+            run[0],
+        )
+        current_item = {
+            "id": str(current.id),
+            "title": current.title,
+            "job_id": str(current_job.id),
+        }
+    used = int(campaign.jobs_launched or 0) + max(0, len(run) - 1)
+    remaining = max(0, int(campaign.max_jobs or 0) - used)
+    latest_result = (
+        _latest_result(items, run, current, waiting) if with_evidence else None
+    )
     return {
         "name": campaign.name,
         "status": campaign.status,
         "goal": campaign.goal,
-        "waiting_on": await _what_it_waits_on(db, items),
+        "waiting_on": waiting,
+        "current_item": current_item,
+        "latest_result": latest_result,
+        "remaining_jobs": remaining,
+        "jobs_used": used,
         # The limits under which it approves its own plans; None means a
         # person approves every one.
         "plan_approval": (
@@ -846,10 +898,13 @@ async def summarize(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, A
             (
                 item.outcome["plan_approval"]["reason"]
                 for item in items
-                if item.status == CampaignItemStatus.RUNNING
+                if item is current
+                and current_item is not None
+                and waiting == WAITING_ON_APPROVAL
                 and isinstance(item.outcome, dict)
                 and isinstance(item.outcome.get("plan_approval"), dict)
                 and not item.outcome["plan_approval"].get("approved")
+                and item.outcome["plan_approval"].get("job") == current_item["job_id"]
             ),
             None,
         ),
@@ -881,6 +936,56 @@ async def summarize(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, A
     }
 
 
+def _latest_result(
+    items: Sequence[ResearchCampaignItem],
+    run: Sequence[AgentJob],
+    current: Optional[ResearchCampaignItem],
+    waiting: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    settled = sorted(
+        (
+            item
+            for item in items
+            if item.status in (CampaignItemStatus.DONE, CampaignItemStatus.FAILED)
+            and item.job_id is not None
+            and isinstance(item.outcome, dict)
+        ),
+        key=lambda item: item.updated_at or item.created_at,
+        reverse=True,
+    )
+    records = [(item, item.outcome) for item in settled]
+    if current is not None and waiting is None:
+        records.insert(
+            0,
+            (
+                current,
+                {
+                    "conclusion": str((run[0].results or {}).get("conclusion") or "")[
+                        :600
+                    ],
+                    "finding_counts": _counts(
+                        [
+                            finding
+                            for job in final_jobs(run)
+                            for finding in _findings_of(job)
+                        ]
+                    ),
+                },
+            ),
+        )
+    for item, outcome in records:
+        conclusion = outcome.get("conclusion")
+        count = sum((outcome.get("finding_counts") or {}).values())
+        if conclusion or count:
+            return {
+                "title": item.title,
+                "job_id": str(item.job_id),
+                "conclusion": conclusion,
+                "finding_count": count,
+            }
+    return None
+
+
 async def active_campaigns(db: AsyncSession, limit: int = 50) -> List[ResearchCampaign]:
     """Campaigns a scheduler should advance."""
     rows = await db.execute(
@@ -910,12 +1015,16 @@ async def advance_all(
     for campaign_id in ids:
         try:
             campaign = await db.get(
-                ResearchCampaign, campaign_id, populate_existing=True
+                ResearchCampaign,
+                campaign_id,
+                populate_existing=True,
+                with_for_update=True,
             )
             if campaign is None:
                 continue
-            results.append(await advance(db, campaign, approve))
+            result = await advance(db, campaign, approve)
             await db.commit()
+            results.append(result)
         except Exception as exc:
             await db.rollback()
             logger.warning(f"Could not advance campaign {campaign_id}: {exc}")

@@ -148,6 +148,28 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
+  const writeUp = useMutation(
+    () => apiClient.createSynthesisJob({
+      job_type: 'research_report',
+      title: `Write-up: ${job.name}`,
+      topic: job.goal,
+      document_ids: [],
+      agent_job_ids: [String(job.id)],
+    }),
+    {
+      onSuccess: (synthesis) => {
+        toast.success('Write-up started from this run');
+        navigate(`/synthesis?job=${encodeURIComponent(synthesis.id)}`);
+      },
+      onError: (error: any) => {
+        toast.error(error?.response?.data?.detail || 'Could not start the write-up');
+      },
+    }
+  );
+  const params = new URLSearchParams(location.search);
+  const campaignJobId = params.get('campaign_job') || params.get('queue_job');
+  const linkedCampaignId = campaignJobId === String(job.id) ? params.get('campaign') : null;
+  const campaignId = String(job.config?.campaign_id || linkedCampaignId || '').trim();
 
   // Fourteen values the graph and scope views read off the job, derived once
   // in a pure function so they can be tested without rendering, and shared
@@ -678,7 +700,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
 
     const openDocument = (docId: string) => {
       if (!docId) return;
-      navigate('/documents', { state: { openDocId: String(docId) } });
+      navigate('/documents', { state: { selectedDocumentId: String(docId) } });
     };
 
     const openReadingList = (rlId: string) => {
@@ -771,17 +793,17 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
       <div className="bg-white border border-gray-200 rounded-lg h-full overflow-hidden flex flex-col">
         {/* Header */}
         <div className="p-4 border-b border-gray-200">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-3">
-              <div className={`p-2 rounded-lg ${typeConfig.color}`}>
+          <div className="mb-2 space-y-2">
+            <div className="flex items-start gap-3 pr-6">
+              <div className={`shrink-0 p-2 rounded-lg ${typeConfig.color}`}>
                 <TypeIcon className="w-5 h-5" />
               </div>
-              <div>
-                <h2 className="text-lg font-semibold">{job.name}</h2>
+              <div className="min-w-0">
+                <h2 className="break-words text-lg font-semibold leading-snug">{job.name}</h2>
                 <p className="text-sm text-gray-500">{typeConfig.label}</p>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {/* The link that was missing in this direction.
                   The Control Plane already offers "Open in Autonomous Agents"
                   on an agent-job node; nothing here went the other way, so the
@@ -800,6 +822,14 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                 <Activity className="w-3.5 h-3.5" />
                 Control Plane
               </Link>
+              {campaignId && (
+                <Link
+                  to={`/campaigns?campaign=${encodeURIComponent(campaignId)}`}
+                  className="inline-flex items-center gap-1 rounded-lg border border-gray-300 px-2.5 py-1.5 text-xs text-gray-700 hover:bg-gray-200"
+                >
+                  Open campaign
+                </Link>
+              )}
               <div className={`flex items-center gap-1 px-3 py-1.5 rounded-full ${statusConfig.bgColor} ${statusConfig.color}`}>
                 <StatusIcon className={`w-4 h-4 ${job.status === 'running' ? 'animate-spin' : ''}`} />
                 <span className="font-medium capitalize">{job.status}</span>
@@ -899,7 +929,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
           )}
 
           {/* Actions */}
-          <div className="flex items-center gap-2 mt-3">
+          <div className="mt-3 flex flex-wrap items-center gap-2">
             <Button
               size="sm"
               variant="ghost"
@@ -1117,23 +1147,8 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
             {job.status === 'completed' && (
               <Button
                 size="sm"
-                onClick={async () => {
-                  try {
-                    const synthesis = await apiClient.createSynthesisJob({
-                      job_type: 'report',
-                      title: `Write-up: ${job.name}`,
-                      document_ids: [],
-                      agent_job_ids: [String(job.id)],
-                      description: `Synthesised from what "${job.name}" established.`,
-                    });
-                    toast.success('Write-up started from this run');
-                    navigate(`/synthesis?job=${synthesis.id}`);
-                  } catch (error: any) {
-                    toast.error(
-                      error?.response?.data?.detail || 'Could not start the write-up'
-                    );
-                  }
-                }}
+                onClick={() => writeUp.mutate()}
+                loading={writeUp.isLoading}
               >
                 <FileText className="w-4 h-4 mr-1" />
                 Write this up
@@ -1429,7 +1444,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                           onClick={() => navigate(buildAutonomousAgentsUrl(undefined, { tab: 'fleet', fleetId: promotedPortfolioId }), { replace: true })}
                           className="!px-2 !py-1 !h-auto text-xs"
                         >
-                          Open fleet
+                          Open portfolio
                         </Button>
                       ) : null}
                     </div>
@@ -1458,33 +1473,33 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                             value={promotionDraft.target_mode}
                             onChange={(e) => setPromotionDraft((prev) => ({ ...prev, target_mode: e.target.value as 'profile_only' | 'profile_with_portfolio' }))}
                           >
-                            <option value="profile_only">Profile only</option>
-                            <option value="profile_with_portfolio">Profile + fleet</option>
+                            <option value="profile_only">Topic monitor only</option>
+                            <option value="profile_with_portfolio">Topic monitor and portfolio</option>
                           </select>
                         </div>
                         {promotionDraft.target_mode === 'profile_with_portfolio' ? (
                           <div>
-                            <label className="block text-xs font-medium mb-1">Fleet target</label>
+                            <label className="block text-xs font-medium mb-1">Portfolio target</label>
                             <select
                               className="w-full rounded border border-cyan-200 bg-white px-3 py-2 text-sm"
                               value={promotionDraft.portfolio_mode}
                               onChange={(e) => setPromotionDraft((prev) => ({ ...prev, portfolio_mode: e.target.value as 'existing' | 'new' }))}
                             >
-                              <option value="new">Create new fleet</option>
-                              <option value="existing">Attach to existing fleet</option>
+                              <option value="new">Create a portfolio</option>
+                              <option value="existing">Attach to a portfolio</option>
                             </select>
                           </div>
                         ) : null}
                         {promotionDraft.target_mode === 'profile_with_portfolio' && promotionDraft.portfolio_mode === 'existing' ? (
                           <div className="md:col-span-2">
-                            <label className="block text-xs font-medium mb-1">Existing fleet</label>
+                            <label className="block text-xs font-medium mb-1">Existing portfolio</label>
                             <select
                               className="w-full rounded border border-cyan-200 bg-white px-3 py-2 text-sm"
                               value={promotionDraft.portfolio_id}
                               disabled={promotionResearchPortfoliosLoading}
                               onChange={(e) => setPromotionDraft((prev) => ({ ...prev, portfolio_id: e.target.value }))}
                             >
-                              <option value="">{promotionResearchPortfoliosLoading ? 'Loading fleets…' : 'Select a fleet'}</option>
+                              <option value="">{promotionResearchPortfoliosLoading ? 'Loading portfolios…' : 'Select a portfolio'}</option>
                               {promotionResearchPortfolios.map((portfolio) => (
                                 <option key={String(portfolio.id)} value={String(portfolio.id)}>
                                   {String(portfolio.title || portfolio.id)}
@@ -1495,7 +1510,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                         ) : null}
                         {promotionDraft.target_mode === 'profile_with_portfolio' && promotionDraft.portfolio_mode === 'new' ? (
                           <div className="md:col-span-2">
-                            <label className="block text-xs font-medium mb-1">New fleet title</label>
+                            <label className="block text-xs font-medium mb-1">New portfolio title</label>
                             <input
                               className="w-full rounded border border-cyan-200 bg-white px-3 py-2 text-sm"
                               value={promotionDraft.portfolio_title}
@@ -1518,7 +1533,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                               checked={promotionDraft.run_portfolio_now}
                               onChange={(e) => setPromotionDraft((prev) => ({ ...prev, run_portfolio_now: e.target.checked }))}
                             />
-                            Run fleet once now
+                            Run portfolio once now
                           </label>
                         ) : null}
                         <div className="md:col-span-2 text-xs text-cyan-900">
@@ -2183,7 +2198,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
           {/* What the run actually found, and whether it is what was asked
               for. Above the execution graph because the evidence is the
               product; the graph is how it was reached. */}
-          <EvidenceSection job={job} />
+          <EvidenceSection job={job} onOpenDocument={openDocument} />
 
           {/* And, for a swarm, what several agents made of that evidence
               independently. Beside the findings rather than in a tab: a

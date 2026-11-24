@@ -34,6 +34,7 @@ import {
   FolderGit2,
   GitBranch,
   GitPullRequest,
+  Home,
   Key,
   Layers,
   Inbox,
@@ -97,6 +98,7 @@ function item(
 
 /** The one entry that carries a count: what is waiting on this person. */
 export const REVIEW_ROUTE = '/review';
+export const HOME_ROUTE = '/home';
 
 /**
  * A door is one of the four things this application is for.
@@ -116,6 +118,7 @@ export const NAV_CATALOG: NavDoor[] = [
     sections: [
       item('Chat', '/chat', MessageCircle),
       item('Search', '/search', Search),
+      item('Home', HOME_ROUTE, Home),
     ],
   },
   {
@@ -139,21 +142,22 @@ export const NAV_CATALOG: NavDoor[] = [
     // Where the work runs. Workflows belong here rather than in a department
     // of their own: a workflow is a run written down in advance.
     id: 'rnd',
-    name: 'R&D',
+    name: 'Research & Agents',
     icon: Zap,
     sections: [
       // Every decision a person owes, whichever door it was made behind:
       // runs waiting for sign-off, approvals, patches, drafts, the inbox.
       // First, because it is what to look at before starting anything new.
       item('Review', REVIEW_ROUTE, ClipboardCheck),
-      item('Runs', '/autonomous-agents', Zap),
+      item('Agent Runs', '/autonomous-agents', Zap),
       item('Campaigns', '/campaigns', Rocket),
       // A portfolio accumulates; a campaign concludes. Neighbours, not synonyms.
-      item('Research Fleet', '/research/fleet', Layers),
+      item('Research Portfolios', '/research/fleet', Layers),
+      item('Topic Monitors', '/settings/domain-profiles', Compass),
       item('Control Plane', '/agent-control-plane', Activity),
-      item('Pipelines', '/pipelines', GitBranch),
-      item('Workflows', '/workflows', Workflow),
-      item('Agents', '/agent-builder', Bot),
+      item('Research Pipelines', '/pipelines', GitBranch),
+      item('Document Workflows', '/workflows', Workflow),
+      item('Agent Builder', '/agent-builder', Bot),
     ],
   },
   {
@@ -166,6 +170,7 @@ export const NAV_CATALOG: NavDoor[] = [
       item('LaTeX Studio', '/latex', Sigma, 'latex'),
       item('Repo Reports', '/repo-reports', FolderGit2),
       item('Draft Reviews', '/artifact-drafts', ClipboardCheck),
+      item('MCP Profiles', '/mcp-config', Server),
       // The rest of the same pipeline as Patch PRs: an item here becomes a
       // patch there. It was a tab on the Runs page, which split coding work
       // across a page and a tab on an unrelated one.
@@ -179,13 +184,9 @@ export const NAV_CATALOG: NavDoor[] = [
     icon: Settings,
     utility: true,
     sections: [
-      // A standing line of enquiry and its automation policy: configuration
-      // for how research runs, which is what this door is for.
-      item('Domain Profiles', '/settings/domain-profiles', Compass),
       item('Tools', '/tools', Wrench),
       item('AI Hub', '/ai-hub', Cpu),
       item('API Keys', '/api-keys', Key),
-      item('MCP Config', '/mcp-config', Server),
       item('Usage', '/usage', BarChart3, 'admin'),
       item('Routing Observability', '/usage/routing', Activity, 'admin'),
       item('Routing Experiments', '/usage/experiments', FlaskConical, 'admin'),

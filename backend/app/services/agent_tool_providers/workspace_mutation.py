@@ -1685,14 +1685,22 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         ]
         verified = any(f.get("verified") is True for f in verifications)
 
+        claimed_conditions = params.get("claimed_conditions")
+        measured_conditions = params.get("measured_conditions")
+        claimed_conditions = (
+            claimed_conditions if isinstance(claimed_conditions, dict) else {}
+        )
+        measured_conditions = (
+            measured_conditions if isinstance(measured_conditions, dict) else {}
+        )
         comparison = claims.compare(
             claimed_value=_as_float(params.get("claimed_value")),
             measured_value=_as_float(params.get("measured_value")),
             claimed_unit=params.get("claimed_unit"),
             measured_unit=params.get("measured_unit"),
             measurement_source=params.get("measurement_source"),
-            claimed_conditions=params.get("claimed_conditions"),
-            measured_conditions=params.get("measured_conditions"),
+            claimed_conditions=claimed_conditions,
+            measured_conditions=measured_conditions,
             tolerance=_as_float(params.get("tolerance")),
         )
 
@@ -1736,7 +1744,20 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 "established, so this measurement cannot settle the paper's claim."
             )
 
-        evidence = comparison.as_evidence()
+        evidence = {
+            **comparison.as_evidence(),
+            "claimed_unit": str(params.get("claimed_unit") or "").strip()[:80],
+            "measured_unit": str(params.get("measured_unit") or "").strip()[:80],
+            "claimed_conditions": claimed_conditions,
+            "measured_conditions": measured_conditions,
+            "claim_document_id": str(params.get("claim_document_id") or "").strip()[
+                :80
+            ],
+            "claim_location": str(params.get("claim_location") or "").strip()[:240],
+            "measurement_source": str(params.get("measurement_source") or "").strip()[
+                :500
+            ],
+        }
         return {
             "success": True,
             "data": evidence,
@@ -1745,7 +1766,6 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                     "type": "reproduction_verdict",
                     "subject": str(params.get("subject") or ""),
                     "metric": str(params.get("metric") or ""),
-                    "measurement_source": str(params.get("measurement_source") or ""),
                     **evidence,
                 }
             ],

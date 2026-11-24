@@ -54,6 +54,7 @@ class APIKeyResponse(BaseModel):
     name: str
     description: Optional[str] = None
     key_prefix: str  # First 8 chars for identification
+    is_mcp_profile: bool = False
     scopes: Optional[List[str]] = None
     rate_limit_per_minute: int
     rate_limit_per_day: int

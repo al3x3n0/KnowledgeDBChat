@@ -13,18 +13,40 @@ from typing import Any, Dict
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent_core import research_programs
 from app.mcp.auth import MCPAuthContext
 from app.mcp.tools.chat import ChatTool
 from app.mcp.tools.documents import DocumentsTool
 from app.mcp.tools.generation import GenerationTool
+from app.mcp.tools.research_notes import read_research_notes
 from app.mcp.tools.search import SearchTool
 from app.mcp.tools.web_scrape import WebScrapeTool
+from app.models.mcp_config import RESEARCH_NOTES_TOOL, RESEARCH_PROGRAM_TOOL
 
 _search_tool = SearchTool()
 _documents_tool = DocumentsTool()
 _chat_tool = ChatTool()
 _generation_tool = GenerationTool()
 _web_scrape_tool = WebScrapeTool()
+
+
+def research_program_context(program_names: list[str]) -> Dict[str, Any]:
+    programs = {program.name: program for program in research_programs.installed()}
+    return {
+        "programs": [
+            {
+                "name": name,
+                "version": programs[name].version,
+                "description": programs[name].description,
+                "tools": [spec.schema() for spec in programs[name].tool_specs],
+            }
+            for name in program_names
+            if name in programs
+        ],
+        "unavailable_programs": [
+            name for name in program_names if name not in programs
+        ],
+    }
 
 
 async def execute_mcp_tool(
@@ -37,6 +59,14 @@ async def execute_mcp_tool(
     name = str(tool_name or "").strip()
     if not name:
         return {"error": "Missing tool name"}
+
+    await auth.require_tool(name, db)
+    if name == RESEARCH_PROGRAM_TOOL:
+        return research_program_context(auth.api_key.mcp_programs)
+    if name == RESEARCH_NOTES_TOOL:
+        return await read_research_notes(
+            db, auth.api_key.id, auth.user_id, args.get("note_id")
+        )
 
     if name == "search":
         return await _search_tool.execute(

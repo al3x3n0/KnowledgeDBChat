@@ -124,14 +124,15 @@ class TestIncomparableIsNotFailure:
 
 
 class TestNotationRatherThanSubstance:
-    def test_percent_and_multiplier_say_the_same_thing(self):
+    @pytest.mark.parametrize("measured_unit", ["x", "×"])
+    def test_percent_and_multiplier_say_the_same_thing(self, measured_unit):
         # "40% faster" and "1.4x" agree. Reading 40 against 1.4 reports a
         # catastrophic failure that did not happen.
         result = claims.compare(
             claimed_value=40.0,
             claimed_unit="percent",
             measured_value=1.42,
-            measured_unit="x",
+            measured_unit=measured_unit,
             measurement_source="wall clock",
         )
         assert result.verdict == claims.VERDICT_REPRODUCED

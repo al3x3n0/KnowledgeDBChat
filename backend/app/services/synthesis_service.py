@@ -43,14 +43,18 @@ from app.services.vector_store import vector_store_service
 RETRIEVAL_FINDING_TYPES = {"document", "paper"}
 
 
-def _findings_the_run_established(findings: Any) -> List[Dict[str, Any]]:
-    """The run's own contributions, in order, minus what it merely retrieved."""
+def _findings_the_run_established(
+    findings: Any, disputed_indices: set[int]
+) -> List[Dict[str, Any]]:
+    """The run's own contributions, with the same indices as its evidence view."""
     if not isinstance(findings, list):
         return []
     return [
         f
-        for f in findings
-        if isinstance(f, dict)
+        for index, f in enumerate(f for f in findings if isinstance(f, dict))
+        if index not in disputed_indices
+        and f.get("inherited") is not True
+        and f.get("recalled") is not True
         and str(f.get("type") or "").strip().lower() not in RETRIEVAL_FINDING_TYPES
     ]
 
@@ -339,7 +343,13 @@ class SynthesisService:
             job.progress = 85
             job.current_stage = "Generating output"
             job.result_content = result["content"]
-            job.result_metadata = result.get("metadata", {})
+            metadata = dict(result.get("metadata") or {})
+            if agent_runs and note_context is None and run_context is None:
+                metadata["agent_run_sources"] = [
+                    {"id": run["id"], "name": run["metadata"]["run_name"]}
+                    for run in agent_runs
+                ]
+            job.result_metadata = metadata
             job.artifacts = result.get("artifacts", [])
             await db.commit()
 
@@ -426,7 +436,7 @@ class SynthesisService:
                 "success": True,
                 "job_id": str(job.id),
                 "content": result["content"],
-                "metadata": result.get("metadata", {}),
+                "metadata": job.result_metadata or {},
             }
 
         except Exception as e:
@@ -490,6 +500,7 @@ class SynthesisService:
         a way to read someone else's runs.
         """
         from app.models.agent_job import AgentJob
+        from app.services.agent_retraction_service import disputed_findings
         from app.services.agent_run_synthesis_service import (
             summarize_findings_for_prompt,
         )
@@ -513,7 +524,13 @@ class SynthesisService:
                     continue
 
                 findings = (job.results or {}).get("findings")
-                established = _findings_the_run_established(findings)
+                disputed = await disputed_findings(db, user_id=user_id, job_id=job.id)
+                established = _findings_the_run_established(findings, set(disputed))
+                # Put decisions near the front of a run's context so a long
+                # list of measurements cannot crowd its verdict out.
+                established.sort(
+                    key=lambda finding: finding.get("type") != "reproduction_verdict"
+                )
                 lines = summarize_findings_for_prompt(established)
                 if not lines:
                     # A run with nothing of its own contributes nothing to
@@ -541,6 +558,7 @@ class SynthesisService:
                         "metadata": {
                             "source_kind": "agent_run",
                             "agent_job_id": str(job.id),
+                            "run_name": job.name,
                             "job_type": job.job_type,
                             "status": job.status,
                             "iterations": job.iteration,
@@ -1365,7 +1383,9 @@ Your report should:
 - Be evidence-based with proper citations
 - Have clear, logical structure
 - Present balanced analysis
-- Draw well-supported conclusions"""
+- Draw well-supported conclusions
+- Preserve the recorded paper claim, measurement units, conditions, and verdict when writing about reproduction
+- Describe an incomparable result as unresolved and report the recorded blockers and caveats"""
 
         user_prompt = f"""Generate a research report from the following {len(documents)} source documents.
 {f'Research topic: {topic}' if topic else ''}

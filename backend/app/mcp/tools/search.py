@@ -3,7 +3,6 @@ MCP Search tool for semantic document search.
 """
 
 from typing import Any, Dict, List, Optional
-from uuid import UUID
 
 from loguru import logger
 from sqlalchemy import select
@@ -90,14 +89,12 @@ class SearchTool:
         limit = bounded_int(limit, 10, 1, MAX_RESULTS)
 
         try:
-            # Every signed-in caller may read every document, so only a named
-            # source narrows the search. The ids of *all* documents used to be
-            # loaded here, capped at 10,000, and results filtered against
-            # them: in a larger knowledge base every document past that cap
-            # was silently unsearchable.
+            # Resolve document IDs only when the key or the request limits
+            # the search to specific sources.
             document_ids: Optional[List[str]] = None
-            if source_ids:
-                source_uuids = [parse_uuid(sid) for sid in source_ids]
+            allowed_sources = auth.source_filter("search")
+            if source_ids or allowed_sources is not None:
+                source_uuids = [parse_uuid(sid) for sid in (source_ids or [])]
                 if any(uid is None for uid in source_uuids):
                     return {
                         "results": [],
@@ -105,8 +102,16 @@ class SearchTool:
                         "query": query,
                         "error": "source_ids must be UUIDs",
                     }
+                query_ids = select(Document.id)
+                if source_uuids:
+                    query_ids = query_ids.where(Document.source_id.in_(source_uuids))
+                if allowed_sources is not None:
+                    query_ids = query_ids.where(Document.source_id.in_(allowed_sources))
                 document_ids = [
-                    str(doc_id) for doc_id in await self._documents_of(db, source_uuids)
+                    str(doc_id)
+                    for doc_id in await db.scalars(
+                        query_ids.limit(MAX_SOURCE_DOCUMENTS)
+                    )
                 ]
                 if not document_ids:
                     return {
@@ -168,14 +173,3 @@ class SearchTool:
         except Exception as e:
             logger.error(f"MCP search error: {e}")
             return {"results": [], "total": 0, "query": query, "error": str(e)}
-
-    async def _documents_of(
-        self, db: AsyncSession, source_ids: List[UUID]
-    ) -> List[UUID]:
-        """The documents held by these sources."""
-        result = await db.execute(
-            select(Document.id)
-            .where(Document.source_id.in_(source_ids))
-            .limit(MAX_SOURCE_DOCUMENTS)
-        )
-        return [row[0] for row in result.fetchall()]

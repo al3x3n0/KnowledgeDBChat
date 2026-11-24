@@ -33,6 +33,7 @@ export type CheckAgentJobDetail = None<
 >;
 export type CheckAgentJobEvidenceValue = None<Extra<T.AgentJobEvidenceValue, S['AgentJobEvidenceValue']>>;
 export type CheckAgentJobEvidenceItem = None<Extra<T.AgentJobEvidenceItem, S['AgentJobEvidenceItem']>>;
+export type CheckAgentJobReproductionEvidence = None<Extra<T.AgentJobReproductionEvidence, S['AgentJobReproductionEvidence']>>;
 export type CheckAgentJobEvidenceRequirement = None<Extra<T.AgentJobEvidenceRequirement, S['AgentJobEvidenceRequirement']>>;
 export type CheckAgentJobEvidence = None<Extra<T.AgentJobEvidence, S['AgentJobEvidenceResponse']>>;
 export type CheckAgentJobWorkspaceEntry = None<Extra<T.AgentJobWorkspaceEntry, S['AgentJobWorkspaceEntry']>>;

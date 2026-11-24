@@ -5,17 +5,19 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from 'react-query';
-import { FileText, Search, Trash2, Copy, Download, Plus, Tag, Eye, Quote } from 'lucide-react';
+import { FileText, Search, Trash2, Copy, Download, Plus, Tag, Eye, Quote, Server } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 import { apiClient } from '../services/api';
-import type { BenchmarkSuite, ExperimentPlan, ExperimentRun, ResearchNote } from '../types';
+import type { BenchmarkSuite, ExperimentRun, ResearchNote } from '../types';
 import Button from '../components/common/Button';
+import AgentRunSourceLinks from '../components/agent/AgentRunSourceLinks';
 import RecoveryAuditPanel from '../components/agent/RecoveryAuditPanel';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import JsonViewer from '../components/common/JsonViewer';
+import { experimentComparisonUrl } from '../utils/experimentComparison';
 import {
   isExperimentRecoveryOpen,
   summarizeExperimentRecoveryGuidance,
@@ -204,7 +206,7 @@ const ResearchNotesPage: React.FC = () => {
     }
 
     const match = (data?.items || []).find((n) => n.id === urlSelectedNoteId);
-    if (match) setSelectedNote(match);
+    if (match) setSelectedNote((current) => current?.id === match.id ? current : match);
 
     let cancelled = false;
     apiClient
@@ -446,10 +448,21 @@ const ResearchNotesPage: React.FC = () => {
     }
   );
 
-  const { data: experimentPlansData, refetch: refetchExperimentPlans } = useQuery(
+  const { data: experimentPlansData, isLoading: loadingExperimentPlans, isError: experimentPlansError, refetch: refetchExperimentPlans } = useQuery(
     ['experiment-plans', selectedNote?.id],
     () => apiClient.listExperimentPlansForNote(selectedNote!.id, 10),
     { enabled: !!selectedNote?.id, staleTime: 5000 }
+  );
+  const plans = experimentPlansData?.plans;
+  const linkedPlanInList = plans?.find((plan) => plan.id === urlPlanId);
+  const wantsLinkedPlan = Boolean(urlPlanId && selectedNote?.id === urlSelectedNoteId);
+  const linkedPlanQuery = useQuery(
+    ['experiment-plan', urlPlanId],
+    () => apiClient.getExperimentPlan(urlPlanId!),
+    {
+      enabled: Boolean(wantsLinkedPlan && (plans || experimentPlansError) && !linkedPlanInList),
+      retry: false,
+    }
   );
 
   const { data: gitSourcesData } = useQuery(
@@ -554,10 +567,14 @@ const ResearchNotesPage: React.FC = () => {
     });
   }, [experimentSourceId, resolvedSelectedGitSourceSummary]);
 
-  const latestExperimentPlan: ExperimentPlan | null = useMemo(() => {
-    const plans = (experimentPlansData as any)?.plans || [];
-    return plans.length ? (plans[0] as ExperimentPlan) : null;
-  }, [experimentPlansData]);
+  const linkedPlan = linkedPlanInList ?? linkedPlanQuery.data;
+  const openingLinkedPlan = wantsLinkedPlan && (loadingExperimentPlans || linkedPlanQuery.isLoading);
+  const invalidLinkedPlan = wantsLinkedPlan &&
+    (linkedPlanQuery.isError || (linkedPlan && linkedPlan.research_note_id !== selectedNote?.id));
+  // A link can pin an older plan. The note normally shows its newest plan.
+  const latestExperimentPlan = linkedPlan && linkedPlan.research_note_id === selectedNote?.id
+    ? linkedPlan
+    : openingLinkedPlan ? null : plans?.[0] ?? null;
 
   const latestPlanExecutionHandoff = useMemo(() => {
     if (!latestExperimentPlan) return null;
@@ -637,9 +654,7 @@ const ResearchNotesPage: React.FC = () => {
     experimentRunRefs.current[runId] = node;
   }, []);
 
-  const experimentRuns: ExperimentRun[] = useMemo(() => {
-    return ((experimentRunsData as any)?.runs || []) as ExperimentRun[];
-  }, [experimentRunsData]);
+  const experimentRuns: ExperimentRun[] = useMemo(() => experimentRunsData?.runs ?? [], [experimentRunsData]);
 
   const isDeepLinkedLatestPlan = useMemo(() => {
     const targetPlanId = String(urlPlanId || '').trim();
@@ -651,14 +666,15 @@ const ResearchNotesPage: React.FC = () => {
     if (!targetRunId) return '';
     return experimentRuns.some((run) => String(run.id) === targetRunId) ? targetRunId : '';
   }, [experimentRuns, urlRunId]);
+  const visibleExperimentRuns = experimentRuns.slice(0, 10);
+  const linkedRun = deepLinkedRunId && experimentRuns.find((run) => run.id === deepLinkedRunId);
+  if (linkedRun && !visibleExperimentRuns.includes(linkedRun)) visibleExperimentRuns.push(linkedRun);
 
   useEffect(() => {
     if (!urlSelectedNoteId) return;
-    const targetRunId = String(urlRunId || '').trim();
-    const targetPlanId = String(urlPlanId || '').trim();
     const targetNode =
-      (targetRunId ? experimentRunRefs.current[targetRunId] : null)
-      || (targetPlanId && latestExperimentPlan && String(latestExperimentPlan.id) === targetPlanId ? latestPlanRef.current : null);
+      (deepLinkedRunId ? experimentRunRefs.current[deepLinkedRunId] : null)
+      || (isDeepLinkedLatestPlan ? latestPlanRef.current : null);
     if (!targetNode) return;
     const timeoutId = window.setTimeout(() => {
       if (typeof targetNode.scrollIntoView === 'function') {
@@ -666,7 +682,7 @@ const ResearchNotesPage: React.FC = () => {
       }
     }, 75);
     return () => window.clearTimeout(timeoutId);
-  }, [latestExperimentPlan, urlPlanId, urlRunId, urlSelectedNoteId, experimentRuns]);
+  }, [deepLinkedRunId, isDeepLinkedLatestPlan, urlSelectedNoteId]);
 
   const areRunsComparable = useCallback((primary: ExperimentRun, comparison: ExperimentRun): boolean => {
     if (!primary?.benchmark_family || !comparison?.benchmark_family) return false;
@@ -1452,8 +1468,8 @@ const ResearchNotesPage: React.FC = () => {
   };
 
   return (
-    <div className="p-6 h-full flex flex-col">
-      <div className="flex items-center justify-between mb-6">
+    <div className="flex min-h-full min-w-0 flex-col p-4 pb-20 lg:h-full lg:p-6">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3 lg:mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Research Notes</h1>
           <p className="text-gray-500">Capture hypotheses, experiment plans, and insights</p>
@@ -1464,8 +1480,8 @@ const ResearchNotesPage: React.FC = () => {
         </Button>
       </div>
 
-      <div className="flex items-center gap-3 mb-4">
-        <div className="relative flex-1">
+      <div className={`mb-4 flex-wrap items-center gap-3 ${selectedNote ? 'hidden lg:flex' : 'flex'}`}>
+        <div className="relative min-w-0 flex-1 basis-40">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           <input
             className="w-full border border-gray-300 rounded-lg pl-10 pr-4 py-2 text-sm"
@@ -1474,7 +1490,7 @@ const ResearchNotesPage: React.FC = () => {
             onChange={(e) => setSearchQuery(e.target.value)}
           />
         </div>
-        <div className="relative w-64">
+        <div className="relative min-w-0 flex-1 basis-32 lg:max-w-64">
           <Tag className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           <input
             className="w-full border border-gray-300 rounded-lg pl-10 pr-4 py-2 text-sm"
@@ -1505,8 +1521,8 @@ const ResearchNotesPage: React.FC = () => {
         </label>
       </div>
 
-      <div className="flex-1 flex gap-6 min-h-0">
-        <div className="w-2/3 overflow-y-auto">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 lg:flex-row lg:gap-6">
+        <div className={`min-w-0 flex-1 lg:overflow-y-auto ${selectedNote ? 'hidden lg:block' : ''}`}>
           {isLoading ? (
             <div className="flex justify-center items-center h-full">
               <LoadingSpinner />
@@ -1520,7 +1536,7 @@ const ResearchNotesPage: React.FC = () => {
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid gap-4 sm:grid-cols-2">
               {filteredNotes.map((note: any) => (
                 <div
                   key={note.id}
@@ -1620,12 +1636,13 @@ const ResearchNotesPage: React.FC = () => {
           )}
         </div>
 
-        <div className="w-1/3">
+        <div className={`min-w-0 lg:w-2/5 ${selectedNote ? '' : 'hidden lg:block'}`}>
           {selectedNote ? (
             <div className="bg-white border border-gray-200 rounded-lg h-full overflow-hidden flex flex-col">
               <div className="p-4 border-b border-gray-200">
-                <h2 className="text-lg font-semibold truncate">{selectedNote.title}</h2>
-                <div className="flex items-center gap-2 mt-3">
+                <Link to="/research-notes" className="mb-1 inline-block text-sm text-primary-700 hover:underline lg:hidden">Back to notes</Link>
+                <h2 className="break-words text-lg font-semibold">{selectedNote.title}</h2>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
                   <Button size="sm" variant="secondary" onClick={() => copyMarkdown(selectedNote)}>
                     <Copy className="w-4 h-4 mr-1" />
                     Copy
@@ -1634,6 +1651,13 @@ const ResearchNotesPage: React.FC = () => {
                     <Download className="w-4 h-4 mr-1" />
                     Download MD
                   </Button>
+                  <Link
+                    to={`/mcp-config?note=${encodeURIComponent(selectedNote.id)}`}
+                    className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-gray-100 px-3 py-1.5 text-sm font-medium text-gray-900 hover:bg-gray-200"
+                  >
+                    <Server className="h-4 w-4" aria-hidden="true" />
+                    Publish as MCP profile
+                  </Link>
                   <Button
                     size="sm"
                     variant="secondary"
@@ -1714,12 +1738,41 @@ const ResearchNotesPage: React.FC = () => {
                   </div>
                 )}
 
+                {selectedNote.attribution?.saved_from_context_pack?.trace_id && (
+                  <div className="mb-3 space-y-2 rounded-lg bg-gray-50 p-3">
+                    <h3 className="text-xs font-semibold text-gray-700">Provenance</h3>
+                    <Link className="inline-block text-sm text-primary-700 hover:underline"
+                      to={`/context-packs/${encodeURIComponent(selectedNote.attribution.saved_from_context_pack.trace_id)}`}>
+                      Open source context pack
+                    </Link>
+                    {Array.isArray(selectedNote.attribution.saved_from_context_pack.citations) &&
+                      selectedNote.attribution.saved_from_context_pack.citations.length > 0 && (
+                        <details className="text-sm text-gray-700">
+                          <summary className="cursor-pointer">Source citations</summary>
+                          <ul className="mt-2 space-y-1">
+                            {selectedNote.attribution.saved_from_context_pack.citations.map((citation: {
+                              key: string; doc_id: string; chunk_id: string | null; excerpt: string;
+                            }) => (
+                              <li key={`${citation.doc_id}:${citation.chunk_id || ''}`}>
+                                <Link to="/documents" state={{ openDocId: citation.doc_id, highlightChunkId: citation.chunk_id }}
+                                  className="text-primary-700 hover:underline">
+                                  {citation.key} · {citation.excerpt || 'Open source document'}
+                                </Link>
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      )}
+                  </div>
+                )}
                 {selectedNote.source_synthesis_job_id && (
-                  <div className="mb-3 text-xs text-gray-600 bg-gray-50 rounded-lg p-3">
-                    <div className="font-medium text-gray-700 mb-1">Provenance</div>
-                    <div className="truncate">
-                      Source synthesis job: {selectedNote.source_synthesis_job_id}
-                    </div>
+                  <div className="mb-3 space-y-2 rounded-lg bg-gray-50 p-3">
+                    <h3 className="text-xs font-semibold text-gray-700">Provenance</h3>
+                    <AgentRunSourceLinks sources={selectedNote.attribution?.saved_from_synthesis?.result_metadata?.agent_run_sources} />
+                    <Link className="inline-block text-sm text-primary-700 hover:underline"
+                      to={`/synthesis?job=${encodeURIComponent(selectedNote.source_synthesis_job_id)}`}>
+                      Open source synthesis
+                    </Link>
                     {sourceReevaluationNoteId ? (
                       <div className="mt-2">
                         <Button
@@ -2609,6 +2662,9 @@ const ResearchNotesPage: React.FC = () => {
                     </div>
                   ) : null}
 
+                  {invalidLinkedPlan && (
+                    <p role="status" className="text-sm text-gray-600">The linked plan could not be opened.</p>
+                  )}
                   {latestExperimentPlan ? (
                     <div
                       ref={latestPlanRef}
@@ -2617,7 +2673,13 @@ const ResearchNotesPage: React.FC = () => {
                       className={`space-y-3 rounded border px-3 py-2 transition-colors ${isDeepLinkedLatestPlan ? 'border-primary-400 bg-primary-50/40' : 'border-transparent'}`}
                     >
                       <div className="text-xs text-gray-600">
-                        Latest plan: <span className="font-medium text-gray-800">{latestExperimentPlan.title}</span>
+                        {latestExperimentPlan.id === plans?.[0]?.id ? 'Latest plan' : 'Experiment plan'}{' '}
+                        <span className="font-medium text-gray-800">{latestExperimentPlan.title}</span>
+                        {plans?.[0] && latestExperimentPlan.id !== plans[0].id && (
+                          <Link className="ml-2 text-primary-700 hover:underline" to={`/research-notes?note=${encodeURIComponent(latestExperimentPlan.research_note_id)}`}>
+                            View latest plan
+                          </Link>
+                        )}
                         {latestExperimentPlan.created_at ? (
                           <span className="text-gray-500"> · {new Date(latestExperimentPlan.created_at).toLocaleString()}</span>
                         ) : null}
@@ -2880,7 +2942,14 @@ const ResearchNotesPage: React.FC = () => {
                       </details>
 
                       <div>
-                        <div className="font-medium text-gray-700 mb-1">Runs</div>
+                        <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                          <div className="font-medium text-gray-700">Runs</div>
+                          {experimentRuns.length >= 2 && (
+                            <Link to={experimentComparisonUrl(latestExperimentPlan.id)} className="text-sm font-medium text-primary-700 hover:underline">
+                              Compare runs
+                            </Link>
+                          )}
+                        </div>
                         <div className="flex items-center gap-2 mb-2">
                           <input
                             className="flex-1 border border-gray-300 rounded px-2 py-1 text-xs"
@@ -2921,7 +2990,7 @@ const ResearchNotesPage: React.FC = () => {
                           <div className="text-xs text-gray-500">No runs yet.</div>
                         ) : (
                           <div className="space-y-2">
-                            {experimentRuns.slice(0, 10).map((r) => {
+                            {visibleExperimentRuns.map((r) => {
                               const experimentRun = (r.experiment_run && typeof r.experiment_run === 'object')
                                 ? r.experiment_run
                                 : null;
@@ -3039,9 +3108,12 @@ const ResearchNotesPage: React.FC = () => {
                                         </div>
                                       ) : null}
                                       {comparisonRun ? (
-                                        <div className="mt-1 text-[11px] text-gray-600">
-                                          Comparison run {String(comparisonRun.id)}
-                                        </div>
+                                        <Link
+                                          className="mt-1 inline-block text-[11px] text-primary-700 hover:underline"
+                                          to={experimentComparisonUrl(latestExperimentPlan.id, comparisonRun.id, r.id)}
+                                        >
+                                          Compare with {comparisonRun.name}
+                                        </Link>
                                       ) : null}
                                       {experimentRun ? (
                                         <div className="mt-2 flex flex-wrap gap-1 text-[11px]">
@@ -3567,6 +3639,8 @@ const ResearchNotesPage: React.FC = () => {
                         )}
                       </div>
                     </div>
+                  ) : openingLinkedPlan ? (
+                    <p role="status" className="text-sm text-gray-600">Opening linked experiment plan…</p>
                   ) : (
                     <div className="text-xs text-gray-500">
                       No experiment plan yet. Generate one to get a datasets/metrics/ablations template and start tracking runs.

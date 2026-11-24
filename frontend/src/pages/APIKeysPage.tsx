@@ -4,6 +4,7 @@
 
 import React, { useState } from 'react';
 import { useMutation, useQuery } from 'react-query';
+import { Link } from 'react-router-dom';
 import {
   Key,
   Plus,
@@ -27,12 +28,12 @@ import Button from '../components/common/Button';
 
 // Available scopes for API keys
 const AVAILABLE_SCOPES = [
-  { id: 'read', label: 'Read', description: 'Read-only access to documents and search' },
-  { id: 'write', label: 'Write', description: 'Create and modify documents' },
-  { id: 'chat', label: 'Chat', description: 'Access chat and agent functionality' },
-  { id: 'documents', label: 'Documents', description: 'Full document management' },
-  { id: 'workflows', label: 'Workflows', description: 'Execute workflows' },
-  { id: 'admin', label: 'Admin', description: 'Full administrative access' },
+  { id: 'read', label: 'Read', description: 'View documents and search' },
+  { id: 'write', label: 'Write', description: 'Upload, change, and delete documents' },
+  { id: 'chat', label: 'Chat', description: 'Use chat and view agent information' },
+  { id: 'documents', label: 'Documents', description: 'Manage documents and sources through the REST API' },
+  { id: 'workflows', label: 'Workflows', description: 'View, run, and cancel existing workflows' },
+  { id: 'admin', label: 'Full account access', description: 'Use all API operations permitted by your account role' },
 ];
 
 const APIKeysPage: React.FC = () => {
@@ -78,9 +79,12 @@ const APIKeysPage: React.FC = () => {
             <p className="font-medium">Using API Keys</p>
             <p className="mt-1">
               Include your API key in the <code className="bg-blue-100 px-1 rounded">X-API-Key</code> header
-              when making requests to the API. API keys provide the same access as your user account,
-              filtered by the scopes you select.
+              when making requests to the API. Your account role and the selected scopes determine which
+              operations the key can use. MCP tools also require the tool's scope and configuration.
             </p>
+            <Link className="mt-2 inline-block font-medium underline" to="/mcp-config?view=api-keys">
+              Manage MCP access for API keys
+            </Link>
             <p className="mt-2 font-mono text-xs bg-blue-100 p-2 rounded">
               curl -H "X-API-Key: taic_your_key_here" {window.location.origin}/api/v1/documents/
             </p>

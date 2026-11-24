@@ -60,15 +60,16 @@ export function useNavigation(): Navigation {
   const { user } = useAuth();
   const location = useLocation();
   const queryClient = useQueryClient();
+  const preferencesKey = [...NAV_PREFERENCES_QUERY_KEY, user?.id];
 
-  const { data: latexStatus } = useQuery<LatexStatusResponse>(
+  const { data: latexStatus, isLoading: latexLoading } = useQuery<LatexStatusResponse>(
     ['latex-status-nav'],
     () => apiClient.getLatexStatus(),
     { staleTime: 5 * 60 * 1000, retry: 1 }
   );
 
-  const { data: preferences, isLoading } = useQuery(
-    NAV_PREFERENCES_QUERY_KEY,
+  const { data: preferences, isLoading: preferencesLoading } = useQuery(
+    preferencesKey,
     () => apiClient.getMyPreferences(),
     { staleTime: 5 * 60 * 1000, retry: 1 }
   );
@@ -78,7 +79,7 @@ export function useNavigation(): Navigation {
     return ui.nav || {};
   }, [preferences]);
 
-  const { contributions } = usePluginUi();
+  const { contributions, isLoading: pluginsLoading } = usePluginUi();
 
   const contributedNav: ContributedNavEntry[] = useMemo(
     () =>
@@ -141,7 +142,7 @@ export function useNavigation(): Navigation {
       apiClient.updateMyPreferences({ ui: { nav: next } }),
     {
       onSuccess: (saved) => {
-        queryClient.setQueryData(NAV_PREFERENCES_QUERY_KEY, saved);
+        queryClient.setQueryData(preferencesKey, saved);
       },
     }
   );
@@ -158,7 +159,9 @@ export function useNavigation(): Navigation {
     activeItem,
     activeDoor,
     landing: landingPath(catalog, nav),
-    isLoading,
+    isLoading: preferencesLoading ||
+      (nav.landing === '/latex' && latexLoading) ||
+      Boolean(nav.landing?.startsWith('/p/') && pluginsLoading),
     save,
     isSaving: mutation.isLoading,
   };

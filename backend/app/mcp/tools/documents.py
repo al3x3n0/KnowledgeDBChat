@@ -120,6 +120,9 @@ class DocumentsTool:
         try:
             # Build query
             query = select(Document)
+            allowed_sources = auth.source_filter("read")
+            if allowed_sources is not None:
+                query = query.where(Document.source_id.in_(allowed_sources))
 
             if source_id:
                 query = query.where(Document.source_id == UUID(source_id))
@@ -183,7 +186,11 @@ class DocumentsTool:
 
         try:
             doc_uuid = UUID(document_id)
-            result = await db.execute(select(Document).where(Document.id == doc_uuid))
+            query = select(Document).where(Document.id == doc_uuid)
+            allowed_sources = auth.source_filter("read")
+            if allowed_sources is not None:
+                query = query.where(Document.source_id.in_(allowed_sources))
+            result = await db.execute(query)
             doc = result.scalar_one_or_none()
 
             if not doc:
@@ -235,12 +242,16 @@ class DocumentsTool:
         logger.info(f"MCP list_sources: user={auth.user.username}")
 
         try:
-            result = await db.execute(
+            query = (
                 select(DocumentSource)
                 .where(DocumentSource.is_active.is_(True))
                 .order_by(DocumentSource.name)
                 .limit(limit)
             )
+            allowed_sources = auth.source_filter("read")
+            if allowed_sources is not None:
+                query = query.where(DocumentSource.id.in_(allowed_sources))
+            result = await db.execute(query)
             sources = result.scalars().all()
 
             counts: Dict[Any, int] = {}

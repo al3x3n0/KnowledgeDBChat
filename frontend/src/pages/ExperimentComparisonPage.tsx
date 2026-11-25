@@ -6,7 +6,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import Button from '../components/common/Button';
 import { apiClient } from '../services/api';
 import type { ExperimentPlan, ExperimentRun } from '../types';
-import { compareExperimentMeasurements, experimentComparisonIssues, suggestExperimentPair } from '../utils/experimentComparison';
+import { compareExperimentMeasurements, experimentComparisonIssues, experimentRepeatCounts, suggestExperimentPair } from '../utils/experimentComparison';
 
 const numberFormat = new Intl.NumberFormat(undefined, { maximumSignificantDigits: 8 });
 const ratioFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
@@ -29,8 +29,7 @@ const RunEvidence: React.FC<{ label: string; run: ExperimentRun; plan: Experimen
   });
   const cases = run.benchmark_case_ids || [];
   const source = run.experiment_run?.source_name || run.experiment_run?.source_id || run.config?.source_id;
-  const repeats = run.results?.measurement_summary?.repeat_count ?? run.results?.repeat_count;
-  const configuredRepeats = run.repeat_count ?? run.measurement_summary?.repeat_count;
+  const { actual: repeats, configured: configuredRepeats } = experimentRepeatCounts(run);
   return (
     <article className="min-w-0 space-y-3 rounded-lg border border-gray-200 bg-white p-3.5 sm:p-4" aria-label={`${label} evidence`}>
       <div>
@@ -47,6 +46,8 @@ const RunEvidence: React.FC<{ label: string; run: ExperimentRun; plan: Experimen
         <dd className="text-gray-900">{cases.length ? cases.join(', ') : 'Unrecorded'}</dd>
         <dt className="text-gray-600">Sandbox</dt>
         <dd className="text-gray-900">{run.sandbox_profile_id || 'Unrecorded'}</dd>
+        <dt className="text-gray-600">Recipe</dt>
+        <dd className="text-gray-900">{run.recipe_id || 'Unrecorded'}{run.recipe_version != null && ` · v${run.recipe_version}`}</dd>
         {source && (
           <>
             <dt className="text-gray-600">Source</dt>

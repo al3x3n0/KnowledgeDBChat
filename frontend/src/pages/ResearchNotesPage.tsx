@@ -31,6 +31,7 @@ const ResearchNotesPage: React.FC = () => {
   const navigate = useNavigate();
 
   const [selectedNote, setSelectedNote] = useState<ResearchNote | null>(null);
+  const sourceCampaignId = selectedNote?.attribution?.saved_from_synthesis?.result_metadata?.campaign_write_up?.id;
   const [searchQuery, setSearchQuery] = useState('');
   const [tagFilter, setTagFilter] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -1769,6 +1770,12 @@ const ResearchNotesPage: React.FC = () => {
                   <div className="mb-3 space-y-2 rounded-lg bg-gray-50 p-3">
                     <h3 className="text-xs font-semibold text-gray-700">Provenance</h3>
                     <AgentRunSourceLinks sources={selectedNote.attribution?.saved_from_synthesis?.result_metadata?.agent_run_sources} />
+                    {sourceCampaignId && (
+                      <Link className="block text-sm text-primary-700 hover:underline"
+                        to={`/campaigns?campaign=${encodeURIComponent(sourceCampaignId)}`}>
+                        Open source campaign
+                      </Link>
+                    )}
                     <Link className="inline-block text-sm text-primary-700 hover:underline"
                       to={`/synthesis?job=${encodeURIComponent(selectedNote.source_synthesis_job_id)}`}>
                       Open source synthesis

@@ -164,12 +164,55 @@ async def test_a_job_at_work_is_told_apart_from_one_waiting_on_a_person(
     job = await _launched(db_session, campaign)
 
     assert (await campaigns.advance(db_session, campaign))["waiting_on"] == "job"
+    assert (await campaigns.summarize(db_session, campaign))["wait_state"] == "queued"
 
     job.status = AgentJobStatus.PAUSED.value
     job.current_phase = "blocked_needs_input"
     await db_session.commit()
 
     assert (await campaigns.advance(db_session, campaign))["waiting_on"] == "person"
+
+
+@pytest.mark.parametrize(
+    ("status", "phase", "wait_state"),
+    [
+        ("paused", "waiting_sandbox", "sandbox"),
+        ("paused", "awaiting_external", "external"),
+        ("completed", "completed", "finalizing"),
+    ],
+)
+async def test_automatic_campaign_waits_point_to_the_run(
+    db_session, test_user, status, phase, wait_state
+):
+    campaign = await _campaign(db_session, test_user)
+    job = await _launched(db_session, campaign)
+    job.status = status
+    job.current_phase = phase
+    if status == "completed":
+        job.execution_lease_expires_at = utc_now() + timedelta(minutes=1)
+    await db_session.commit()
+
+    assert (await campaigns.advance(db_session, campaign))["waiting_on"] == "job"
+    summary = await campaigns.summarize(db_session, campaign)
+    assert summary["wait_state"] == wait_state
+    assert summary["current_item"]["job_id"] == str(job.id)
+
+
+@pytest.mark.parametrize(
+    ("phase", "wait_state"), [("planning", "paused"), ("needs_review", "review")]
+)
+async def test_a_manual_hold_identifies_the_action_needed(
+    db_session, test_user, phase, wait_state
+):
+    campaign = await _campaign(db_session, test_user)
+    job = await _launched(db_session, campaign)
+    job.status = "paused"
+    job.current_phase = phase
+    await db_session.commit()
+
+    summary = await campaigns.summarize(db_session, campaign)
+    assert summary["waiting_on"] == "person"
+    assert summary["wait_state"] == wait_state
 
 
 async def test_the_question_is_not_settled_while_its_stages_run(db_session, test_user):
@@ -231,6 +274,9 @@ async def test_a_stage_that_just_ended_is_given_time_to_start_the_next(
     await db_session.commit()
 
     assert (await campaigns.advance(db_session, campaign))["settled"] == 1
+    item = (await campaigns._items(db_session, campaign))[0]
+    assert item.status == CampaignItemStatus.FAILED
+    assert item.outcome["blockers"] == ["specify never ran."]
 
 
 # --------------------------------------------------------------------------
@@ -276,11 +322,84 @@ async def test_a_stage_that_failed_is_on_the_record(db_session, test_user):
     await campaigns.advance(db_session, campaign)
 
     item = (await campaigns._items(db_session, campaign))[0]
+    assert item.status == CampaignItemStatus.FAILED
+    assert item.outcome["blockers"] == ["specify ended with status failed."]
     assert item.outcome["stages"][1] == {
         "stage": "specify",
         "job_status": "failed",
         "contract_satisfied": False,
     }
+
+
+async def test_a_completed_stage_with_missing_evidence_leaves_the_question_incomplete(
+    db_session, test_user
+):
+    campaign = await _campaign(db_session, test_user)
+    root = await _launched(db_session, campaign)
+    await _proposes_and_completes(db_session, root)
+    _, stage = await _approved_and_run(db_session, root)
+    stage.results = {
+        "goal_contract": {
+            "enabled": True,
+            "satisfied": False,
+            "missing": ["algorithm_spec"],
+        }
+    }
+
+    assert (await campaigns.advance(db_session, campaign))["settled"] == 1
+    item = (await campaigns._items(db_session, campaign))[0]
+    assert item.status == CampaignItemStatus.FAILED
+    assert item.outcome["blockers"] == [
+        "specify did not produce all required evidence."
+    ]
+    assert item.outcome["contract_missing"] == ["algorithm_spec"]
+
+
+async def test_only_the_current_attempt_supplies_campaign_evidence(
+    db_session, test_user
+):
+    campaign = await _campaign(db_session, test_user)
+    root = await _launched(db_session, campaign)
+    await _proposes_and_completes(db_session, root)
+    find, original = await _approved_and_run(db_session, root, second="failed")
+    await _ends(
+        db_session,
+        original,
+        status="failed",
+        findings=[{"type": "algorithm_spec", "title": "Obsolete spec"}],
+    )
+    retry = AgentJob(
+        user_id=test_user.id,
+        name=original.name,
+        goal=original.goal,
+        root_job_id=root.id,
+        parent_job_id=find.id,
+        config={**original.config, "auto_retry_of": str(original.id)},
+        created_at=original.created_at + timedelta(seconds=1),
+    )
+    db_session.add(retry)
+    await _ends(
+        db_session,
+        retry,
+        findings=[{"type": "algorithm_spec", "title": "Current spec"}],
+    )
+    retry.results = {
+        **retry.results,
+        "conclusion": {"answer": "Specification verified", "confidence": "high"},
+    }
+
+    assert (await campaigns.advance(db_session, campaign))["settled"] == 1
+    item = (await campaigns._items(db_session, campaign))[0]
+    assert item.status == CampaignItemStatus.DONE
+    assert item.outcome["finding_counts"]["algorithm_spec"] == 1
+    assert item.outcome["result_job_id"] == str(retry.id)
+    assert item.outcome["conclusion"] == "Specification verified (confidence: high)"
+    assert campaign.jobs_launched == 5
+    titles = [
+        entry["title"] for entry in await campaigns._all_findings(db_session, campaign)
+    ]
+    assert "Current spec" in titles
+    assert "Obsolete spec" not in titles
 
 
 async def test_the_conclusion_is_drawn_from_what_the_stages_found(

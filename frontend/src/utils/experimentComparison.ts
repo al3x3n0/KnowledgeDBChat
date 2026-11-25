@@ -20,6 +20,11 @@ interface Measurement {
 const isCompleted = (run: ExperimentRun) => (run.status === 'completed' || run.status === 'succeeded') &&
   run.experiment_run?.ok !== false && run.results?.ok !== false;
 
+const profileMetadata = new Set([
+  'name', 'description', 'created_at', 'updated_at', 'created_by_user_id', 'enabled', 'system_managed', 'is_default',
+]);
+const recipeMetadata = new Set(['decision_summary', 'hypothesis', 'supporting_evidence', 'supporting_sources']);
+
 export function experimentComparisonUrl(planId: string, baselineId?: string, candidateId?: string) {
   const base = `/research-notes/experiments/${encodeURIComponent(planId)}/compare`;
   if (!baselineId && !candidateId) return base;
@@ -58,6 +63,29 @@ function measurements(run: ExperimentRun) {
   return result;
 }
 
+function snapshotValue(value: unknown): string | undefined {
+  return JSON.stringify(value, (_key, entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+    return Object.fromEntries(Object.keys(entry).sort().map((key) => [key, entry[key]]));
+  });
+}
+
+function snapshotDifferences(
+  left: Record<string, unknown> | null | undefined,
+  right: Record<string, unknown> | null | undefined,
+  metadata: ReadonlySet<string>,
+) {
+  const keys = new Set([...Object.keys(left ?? {}), ...Object.keys(right ?? {})]);
+  return Array.from(keys).filter((key) => !metadata.has(key) && snapshotValue(left?.[key]) !== snapshotValue(right?.[key])).sort();
+}
+
+export function experimentRepeatCounts(run: ExperimentRun) {
+  return {
+    actual: numericValue(run.results?.measurement_summary?.repeat_count ?? run.results?.repeat_count),
+    configured: numericValue(run.repeat_count ?? run.measurement_summary?.repeat_count),
+  };
+}
+
 export function experimentComparisonIssues(baseline: ExperimentRun, candidate: ExperimentRun): string[] {
   const issues: string[] = [];
   if (!isCompleted(baseline) || !isCompleted(candidate)) {
@@ -76,9 +104,27 @@ export function experimentComparisonIssues(baseline: ExperimentRun, candidate: E
     Array.from(baselineCases).some((id) => !candidateCases.has(id))) {
     issues.push('The runs cover different benchmark cases.');
   }
-  if (baseline.sandbox_profile_id && candidate.sandbox_profile_id &&
-    baseline.sandbox_profile_id !== candidate.sandbox_profile_id) {
-    issues.push('The runs used different sandbox profiles.');
+  if ((baseline.sandbox_profile_id || null) !== (candidate.sandbox_profile_id || null)) {
+    issues.push(baseline.sandbox_profile_id && candidate.sandbox_profile_id
+      ? 'The runs used different sandbox profiles.' : 'The sandbox profile is missing from one run.');
+  }
+  const profileChanges = snapshotDifferences(baseline.profile_snapshot, candidate.profile_snapshot, profileMetadata);
+  if (profileChanges.length) {
+    issues.push(`Recorded sandbox setup differs (${profileChanges.join(', ')}).`);
+  }
+  if ((baseline.recipe_id || null) !== (candidate.recipe_id || null) ||
+    (baseline.recipe_version ?? null) !== (candidate.recipe_version ?? null)) {
+    issues.push('The recorded recipe or recipe version differs.');
+  }
+  const recipeChanges = snapshotDifferences(baseline.recipe_snapshot, candidate.recipe_snapshot, recipeMetadata);
+  if (recipeChanges.length) {
+    issues.push(`Recorded recipe setup differs (${recipeChanges.join(', ')}).`);
+  }
+  const before = experimentRepeatCounts(baseline);
+  const after = experimentRepeatCounts(candidate);
+  if ((before.actual !== null && after.actual !== null && before.actual !== after.actual) ||
+    (before.configured !== null && after.configured !== null && before.configured !== after.configured)) {
+    issues.push('The runs used different repeat counts.');
   }
   return issues;
 }

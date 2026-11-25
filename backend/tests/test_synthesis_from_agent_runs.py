@@ -18,6 +18,25 @@ from app.services.synthesis_service import synthesis_service
 pytestmark = pytest.mark.unit
 
 
+@pytest.mark.parametrize("run_count", [25, 500])
+def test_campaign_prompt_keeps_evidence_from_every_run_within_its_budget(run_count):
+    runs = [
+        {
+            "metadata": {"run_name": "Recorded experiment " * 12},
+            "recorded_findings": f"- measured cycles={index}\n"
+            + "More measurements.\n" * 500,
+        }
+        for index in range(run_count)
+    ]
+
+    context = synthesis_service._prepare_campaign_run_context(runs)
+
+    assert len(context) <= 60000
+    assert context.count("[Source: Run ") == run_count
+    for index in range(run_count):
+        assert f"- measured cycles={index}\n" in context
+
+
 async def _make_run(
     db, user_id, *, name="throughput study", findings=None, goal="Measure it"
 ):

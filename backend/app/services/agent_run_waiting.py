@@ -32,6 +32,27 @@ WAITING_ON_JOB = "job"
 WAITING_ON_APPROVAL = "approval"
 WAITING_ON_PERSON = "person"
 
+_WAIT_PRIORITY = {
+    "queued": 0,
+    "finalizing": 1,
+    "running": 2,
+    "sandbox": 3,
+    "external": 4,
+    "paused": 5,
+    "review": 6,
+    WAITING_ON_PERSON: 7,
+    WAITING_ON_APPROVAL: 8,
+}
+
+_PAUSED_PHASES = {
+    "waiting_sandbox": "sandbox",
+    "awaiting_external": "external",
+    "awaiting_approval": WAITING_ON_APPROVAL,
+    "blocked_needs_input": WAITING_ON_PERSON,
+    "awaiting_reconciliation": "review",
+    "needs_review": "review",
+}
+
 
 def _config(job: Any) -> Dict[str, Any]:
     config = getattr(job, "config", None)
@@ -98,34 +119,39 @@ def still_writing_up(job: Any, now: Optional[datetime] = None) -> bool:
     return expires is not None and expires > (now or datetime.now(timezone.utc))
 
 
-def waiting_on(run: Sequence[Any]) -> Optional[str]:
-    """What a run is waiting for, or None when all of it has ended.
-
-    A run paused for a person is named apart from one that is working: a
-    campaign that has stopped until somebody approves a plan looks, from its
-    counters, exactly like one whose job is still running.
-    """
-    waiting: Optional[str] = None
+def run_wait_state(run: Sequence[Any]) -> tuple[Optional[str], Any]:
+    """Return the most relevant wait and the current attempt that owns it."""
+    selected: tuple[Optional[str], Any] = (None, None)
     for job in final_jobs(run):
         status = str(job.status or "")
-        if still_writing_up(job):
-            if waiting != WAITING_ON_PERSON:
-                waiting = WAITING_ON_JOB
-            continue
+        phase = str(getattr(job, "current_phase", None) or "")
         if status in TERMINAL_JOB_STATUSES:
-            if hands_over(job):
-                waiting = waiting or WAITING_ON_JOB
-            continue
-        if status == AgentJobStatus.PAUSED.value:
-            if str(job.current_phase or "") == "waiting_sandbox":
-                waiting = waiting or WAITING_ON_JOB
+            if not (still_writing_up(job) or hands_over(job)):
                 continue
-            if str(job.current_phase or "") == "awaiting_approval":
-                return WAITING_ON_APPROVAL
-            waiting = WAITING_ON_PERSON
-        elif waiting != WAITING_ON_PERSON:
-            waiting = WAITING_ON_JOB
-    return waiting
+            state = "finalizing"
+        elif status == AgentJobStatus.PAUSED.value:
+            state = _PAUSED_PHASES.get(phase, "paused")
+            if state not in ("sandbox", "external") and still_writing_up(job):
+                state = "running"
+        else:
+            state = "queued" if status == AgentJobStatus.PENDING.value else "running"
+        if selected[0] is None or _WAIT_PRIORITY[state] >= _WAIT_PRIORITY[selected[0]]:
+            selected = (state, job)
+    return selected
+
+
+def waiting_on(run: Sequence[Any]) -> Optional[str]:
+    """Return the coarse wait used by the scheduler and evaluations."""
+    state, _ = run_wait_state(run)
+    return wait_category(state)
+
+
+def wait_category(state: Optional[str]) -> Optional[str]:
+    if state is None or state in (WAITING_ON_APPROVAL, WAITING_ON_PERSON):
+        return state
+    if state in ("paused", "review"):
+        return WAITING_ON_PERSON
+    return WAITING_ON_JOB
 
 
 __all__ = [
@@ -136,6 +162,8 @@ __all__ = [
     "WAITING_ON_PERSON",
     "final_jobs",
     "hands_over",
+    "run_wait_state",
     "still_writing_up",
+    "wait_category",
     "waiting_on",
 ]

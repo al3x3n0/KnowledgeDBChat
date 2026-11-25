@@ -1,7 +1,7 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from 'react-query';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 
 import CampaignsPage from '../CampaignsPage';
 
@@ -11,6 +11,7 @@ jest.mock('../../services/api', () => ({
     getResearchCampaign: jest.fn(),
     createResearchCampaign: jest.fn(),
     actionResearchCampaign: jest.fn(),
+    createSynthesisJob: jest.fn(),
   },
 }));
 
@@ -35,11 +36,17 @@ const campaign = (over = {}) => ({
   ...over,
 });
 
+function CurrentRoute() {
+  const { pathname, search } = useLocation();
+  return <output aria-label="Current route">{pathname}{search}</output>;
+}
+
 function renderCampaigns(path = '/campaigns') {
   return render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { cacheTime: 0 } } })}>
       <MemoryRouter initialEntries={[path]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <CampaignsPage />
+        <CurrentRoute />
       </MemoryRouter>
     </QueryClientProvider>
   );
@@ -121,6 +128,46 @@ describe('CampaignsPage', () => {
     expect(await screen.findByText(/It helps by 18%/)).toBeInTheDocument();
     expect(screen.getByText(/31ms with, 38ms without/)).toBeInTheDocument();
     expect(screen.getByText(/Only one kernel measured/)).toBeInTheDocument();
+  });
+
+  it.each([
+    ['queued', 'Queued for a worker', 'job'],
+    ['sandbox', 'Waiting for a sandbox experiment', 'job'],
+    ['external', 'Waiting for an external service', 'job'],
+    ['finalizing', 'Finalizing results', 'job'],
+    ['paused', 'Run paused', 'person'],
+    ['review', 'Run needs review', 'person'],
+  ])('renders the %s activity without a response action', async (waitState, message, waitingOn) => {
+    const working = campaign({ status: 'active', summary: {
+      waiting_on: waitingOn, wait_state: waitState,
+      current_item: { id: 'q1', title: 'Measure the kernel', job_id: 'current-attempt' },
+    } });
+    apiClient.listResearchCampaigns.mockResolvedValue({ items: [working], total: 1 });
+    apiClient.getResearchCampaign.mockResolvedValue(working);
+    renderCampaigns('/campaigns?campaign=c1');
+
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /respond|approval/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open run' })).toHaveAttribute('href', '/autonomous-agents?job=current-attempt&campaign=c1&campaign_job=current-attempt');
+    expect(screen.queryByRole('button', { name: 'Write up campaign' })).not.toBeInTheDocument();
+  });
+
+  it('shows missing evidence and starts a campaign-backed Synthesis report', async () => {
+    apiClient.getResearchCampaign.mockResolvedValue(campaign({
+      status: 'exhausted',
+      items: [{ id: 'q1', title: 'Repeat the benchmark', origin: 'seed', status: 'failed', blockers: ['The benchmark did not produce all required evidence.'] }],
+    }));
+    apiClient.createSynthesisJob.mockResolvedValue({ id: 'report-1' });
+    renderCampaigns('/campaigns?campaign=c1');
+
+    expect(await screen.findByText(/incomplete · asked at the start/)).toBeInTheDocument();
+    expect(screen.getByText('The benchmark did not produce all required evidence.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Write up campaign' }));
+
+    await waitFor(() => expect(screen.getByLabelText('Current route')).toHaveTextContent('/synthesis?job=report-1'));
+    expect(apiClient.createSynthesisJob).toHaveBeenCalledWith({
+      job_type: 'research_report', title: 'Write-up: Prefetcher study', document_ids: [], campaign_id: 'c1',
+    });
   });
 
   it('says a finished campaign recorded no conclusion, rather than showing a blank', async () => {

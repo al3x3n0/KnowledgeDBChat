@@ -228,6 +228,7 @@ export interface ResearchCampaignItem {
   origin: string;
   generation: number;
   job_id?: string | null;
+  blockers?: string[];
 }
 
 export interface CampaignPlanApproval {
@@ -239,6 +240,7 @@ export type ResearchCampaignAction = 'pause' | 'resume' | 'stop';
 
 interface ResearchCampaignSummary {
   waiting_on?: 'approval' | 'person' | 'job' | null;
+  wait_state?: 'approval' | 'person' | 'queued' | 'running' | 'sandbox' | 'external' | 'finalizing' | 'paused' | 'review' | null;
   plan_held?: string | null;
   jobs_used?: number;
   remaining_jobs?: number;
@@ -5079,6 +5081,13 @@ export interface SynthesisJob {
   result_metadata?: {
     documents_analyzed?: number;
     agent_run_sources?: Array<{ id: string; name: string }>;
+    campaign_write_up?: {
+      id: string;
+      name: string;
+      status: string;
+      open_questions: Array<{ title: string; reason: string }>;
+      gaps: string[];
+    };
     word_count?: number;
     themes_found?: string[];
     key_findings?: string[];

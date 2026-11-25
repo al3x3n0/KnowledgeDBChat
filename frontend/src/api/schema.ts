@@ -25353,6 +25353,8 @@ export interface components {
         };
         /** ResearchCampaignItemResponse */
         ResearchCampaignItemResponse: {
+            /** Blockers */
+            blockers?: string[];
             /** Detail */
             detail?: string | null;
             /**
@@ -28274,6 +28276,11 @@ export interface components {
              * @description Autonomous run IDs whose recorded findings become source material. Their measurements reach the synthesis with their numbers, so the document can cite what a run measured instead of it being retyped.
              */
             agent_job_ids?: string[];
+            /**
+             * Campaign Id
+             * @description Use a finished campaign's contributing runs for a research report
+             */
+            campaign_id?: string | null;
             /**
              * Comparison Run Id
              * @description Comparison experiment run ID for compiler regression explanation

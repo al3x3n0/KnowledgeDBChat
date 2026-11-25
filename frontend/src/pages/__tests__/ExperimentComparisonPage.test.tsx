@@ -88,6 +88,32 @@ describe('ExperimentComparisonPage', () => {
     expect(screen.queryByText('-20%')).not.toBeInTheDocument();
   });
 
+  it('withholds deltas for changed sandbox and recipe settings under the same profile ID', async () => {
+    api.listExperimentRuns.mockResolvedValue({ runs: [
+      { ...candidate, profile_snapshot: { docker_image: 'benchmark:v2' }, recipe_id: 'compare', recipe_version: 2 },
+      { ...baseline, profile_snapshot: { docker_image: 'benchmark:v1' }, recipe_id: 'compare', recipe_version: 1 },
+    ] });
+    renderComparison('?baseline=base&candidate=next');
+
+    expect(await screen.findByText('Recorded sandbox setup differs (docker_image).')).toBeInTheDocument();
+    expect(screen.getByText('The recorded recipe or recipe version differs.')).toBeInTheDocument();
+    expect(within(screen.getByRole('article', { name: 'Candidate evidence' })).getByText('compare · v2')).toBeInTheDocument();
+    const runtime = within(screen.getByRole('row', { name: /Runtime/ }));
+    expect(runtime.getByText('100 ms')).toBeInTheDocument();
+    expect(runtime.getByText('80 ms')).toBeInTheDocument();
+    expect(runtime.getByLabelText('Change unavailable')).toBeInTheDocument();
+  });
+
+  it('compares equivalent execution settings when only display metadata or JSON property order changes', async () => {
+    api.listExperimentRuns.mockResolvedValue({ runs: [
+      { ...candidate, profile_snapshot: { name: 'Renamed profile', limits: { timeout: 60, network: false } } },
+      { ...baseline, profile_snapshot: { name: 'Old profile name', limits: { network: false, timeout: 60 } } },
+    ] });
+    renderComparison();
+
+    expect(await screen.findByText('-20%')).toBeInTheDocument();
+  });
+
   it('honors linked IDs and excludes planned estimates and baseline metadata', async () => {
     const planned: ExperimentRun = {
       ...candidate,

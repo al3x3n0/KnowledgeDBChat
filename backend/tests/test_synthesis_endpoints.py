@@ -4,11 +4,16 @@ from datetime import datetime
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
+from celery.contrib.testing.worker import start_worker
+from sqlalchemy.ext.asyncio import async_sessionmaker
+
+from app.core.celery import celery_app
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.models.document import Document, DocumentSource
 from app.models.domain_research_profile import DomainResearchProfile
 from app.models.experiment import ExperimentPlan, ExperimentRun
 from app.models.notification import Notification
+from app.models.research_campaign import ResearchCampaign, ResearchCampaignItem
 from app.models.research_note import ResearchNote
 from app.models.research_paper import PaperClaim, ResearchPaper
 from app.models.synthesis_job import SynthesisJob
@@ -60,7 +65,7 @@ def test_run_only_write_up_can_be_saved_with_its_sources(
     generate = AsyncMock(
         return_value="# Cache study report\n\nThe trace took 500 cycles."
     )
-    monkeypatch.setattr(synthesis_service.llm, "generate_response", generate)
+    monkeypatch.setattr(type(synthesis_service.llm), "generate_response", generate)
     request = {
         "job_type": "research_report",
         "title": "Write-up: Cache validation run",
@@ -101,6 +106,171 @@ def test_run_only_write_up_can_be_saved_with_its_sources(
     saved_provenance = saved.json()["attribution"]["saved_from_synthesis"]
     assert saved_provenance["job_id"] == synthesis_id
     assert saved_provenance["result_metadata"]["agent_run_sources"] == source_runs
+
+
+def test_campaign_write_up_carries_current_owned_evidence_and_open_questions_into_note(
+    client, db_session, test_user, admin_user, auth_headers, monkeypatch
+):
+    from app.services.synthesis_service import synthesis_service
+    from app.tasks import synthesis_tasks
+
+    campaign = ResearchCampaign(
+        id=uuid4(),
+        user_id=test_user.id,
+        name="Cache study",
+        goal="Compare cache sizes",
+        status="exhausted",
+        conclusion_detail={"gaps": ["One workload measured."]},
+    )
+    active_campaign = ResearchCampaign(
+        id=uuid4(), user_id=test_user.id, name="Still active", goal="Measure it"
+    )
+    other_campaign = ResearchCampaign(
+        id=uuid4(),
+        user_id=admin_user.id,
+        name="Private",
+        goal="Private",
+        status="completed",
+    )
+    root = AgentJob(
+        id=uuid4(),
+        user_id=test_user.id,
+        name="Initial attempt",
+        goal="Measure cycles",
+        status="failed",
+        results={
+            "findings": [
+                {
+                    "type": "simulated_measurement",
+                    "title": "Obsolete measurement",
+                    "cycles": 900,
+                }
+            ]
+        },
+    )
+    retry = AgentJob(
+        id=uuid4(),
+        user_id=test_user.id,
+        name="Current attempt",
+        goal="Measure cycles with the following long instructions: "
+        + "details " * 1000,
+        status="completed",
+        root_job_id=root.id,
+        parent_job_id=root.id,
+        config={"auto_retry_of": str(root.id)},
+        results={
+            "findings": [
+                {
+                    "type": "simulated_measurement",
+                    "title": "Current measurement",
+                    "cycles": 500,
+                }
+            ]
+        },
+    )
+
+    async def seed():
+        db_session.add_all([campaign, active_campaign, other_campaign, root])
+        await db_session.flush()
+        db_session.add_all(
+            [
+                retry,
+                ResearchCampaignItem(
+                    campaign_id=campaign.id,
+                    title="Measure the first workload",
+                    job_id=root.id,
+                    status="done",
+                ),
+                ResearchCampaignItem(
+                    campaign_id=campaign.id,
+                    title="Measure the second workload",
+                    status="pending",
+                ),
+            ]
+        )
+        await db_session.commit()
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(seed())
+    queue = f"test-campaign-write-up-{uuid4()}"
+    monkeypatch.setenv("CELERY_BROKER_URL", "memory://")
+    monkeypatch.setenv("CELERY_RESULT_BACKEND", "cache+memory://")
+    monkeypatch.setitem(celery_app.conf, "task_default_queue", queue)
+    monkeypatch.setitem(celery_app.conf, "task_always_eager", False)
+    sessions = async_sessionmaker(db_session.bind, expire_on_commit=False)
+    monkeypatch.setattr(synthesis_tasks, "create_celery_session", lambda: sessions)
+    events = []
+    monkeypatch.setattr(
+        synthesis_tasks.job_support,
+        "publish_sync",
+        lambda channel, event: events.append((channel, event)),
+    )
+
+    queued = []
+    delay = synthesis_tasks.execute_synthesis_task.delay
+
+    def enqueue(*args):
+        queued.append(delay(*args))
+
+    monkeypatch.setattr(synthesis_tasks.execute_synthesis_task, "delay", enqueue)
+    generate = AsyncMock(
+        return_value="# Cache study report\n\nThe first workload took 500 cycles."
+    )
+    monkeypatch.setattr(type(synthesis_service.llm), "generate_response", generate)
+    request = {"job_type": "research_report", "title": "Write-up: Cache study"}
+
+    for rejected_campaign, status in [(active_campaign, 409), (other_campaign, 404)]:
+        rejected = client.post(
+            "/api/v1/synthesis",
+            headers=auth_headers,
+            json={**request, "campaign_id": str(rejected_campaign.id)},
+        )
+        assert rejected.status_code == status
+    assert queued == []
+
+    with start_worker(celery_app, queues=[queue], perform_ping_check=False):
+        created = client.post(
+            "/api/v1/synthesis",
+            headers=auth_headers,
+            json={**request, "campaign_id": str(campaign.id)},
+        )
+        assert created.status_code == 200, created.text
+        payload = created.json()
+        synthesis_id = payload["id"]
+        assert payload["agent_job_ids"] == [str(retry.id)]
+        assert payload["topic"] == campaign.goal
+        assert len(queued) == 1
+        result = queued[0].get(timeout=15, disable_sync_subtasks=False)
+
+    assert result["success"] is True and result["job_id"] == synthesis_id
+    assert events[-1][0] == f"synthesis_progress:{synthesis_id}"
+    assert events[-1][1]["type"] == "complete"
+    prompt = generate.await_args.kwargs["query"]
+    assert "cycles=500" in prompt
+    assert prompt.index("cycles=500") < prompt.index("Goal: Measure cycles")
+    assert "Obsolete measurement" not in prompt
+    assert "Measure the second workload" in prompt
+    fetched = client.get(f"/api/v1/synthesis/{synthesis_id}", headers=auth_headers)
+    assert fetched.status_code == 200, fetched.text
+    finished = fetched.json()
+    assert finished["status"] == "completed"
+    assert "## Open campaign questions" in finished["result_content"]
+    assert "One workload measured." in finished["result_content"]
+
+    saved = client.post(
+        f"/api/v1/synthesis/{synthesis_id}/save-as-note", headers=auth_headers, json={}
+    )
+    assert saved.status_code == 201, saved.text
+    note = saved.json()
+    assert "Measure the second workload" in note["content_markdown"]
+    provenance = note["attribution"]["saved_from_synthesis"]["result_metadata"]
+    assert provenance["agent_run_sources"] == [
+        {"id": str(retry.id), "name": retry.name}
+    ]
+    assert provenance["campaign_write_up"]["id"] == str(campaign.id)
+    assert provenance["campaign_write_up"]["open_questions"] == [
+        {"title": "Measure the second workload", "reason": "No run was scheduled."}
+    ]
 
 
 def test_create_decision_memo_synthesis_job(

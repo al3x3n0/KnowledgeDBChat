@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import React, { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from 'react-query';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 
 import { apiClient } from '../services/api';
 import NewCampaignModal from '../components/agent/NewCampaignModal';
@@ -37,7 +37,7 @@ const ITEM_ICON: Record<string, React.ReactNode> = {
 const ItemRow: React.FC<{ item: ResearchCampaignItem; status: string }> = ({ item, status }) => (
   <div className="flex items-start gap-2 py-1.5">
     <span className="mt-0.5 flex-shrink-0">
-      {ITEM_ICON[status] || <CircleDashed className="h-3.5 w-3.5 text-gray-400" />}
+      {ITEM_ICON[status === 'incomplete' ? 'failed' : status] || <CircleDashed className="h-3.5 w-3.5 text-gray-400" />}
     </span>
     <div className="min-w-0 flex-1 break-words">
       <p className="text-sm text-gray-900">{item.title}</p>
@@ -52,6 +52,11 @@ const ItemRow: React.FC<{ item: ResearchCampaignItem; status: string }> = ({ ite
             ? ' · taken from the goal'
             : ' · asked at the start'}
       </p>
+      {Boolean(item.blockers?.length) && (
+        <ul className="mt-1 space-y-0.5 text-xs text-gray-700">
+          {item.blockers?.map((blocker, index) => <li key={index}>{blocker}</li>)}
+        </ul>
+      )}
       {item.detail && (
         <details className="mt-1">
           <summary className="cursor-pointer text-xs text-primary-700">Instructions</summary>
@@ -76,6 +81,16 @@ const WAITING_ON: Record<string, string> = {
   person: 'waiting for an answer from you',
 };
 
+const RUN_ACTIVITY: Record<string, string> = {
+  queued: 'Queued for a worker',
+  running: 'Running',
+  sandbox: 'Waiting for a sandbox experiment',
+  external: 'Waiting for an external service',
+  finalizing: 'Finalizing results',
+  paused: 'Run paused',
+  review: 'Run needs review',
+};
+
 const SECTION_LABEL = 'text-xs font-semibold text-gray-600';
 
 function campaignRunUrl(campaignId: string, jobId: string) {
@@ -87,11 +102,13 @@ const CampaignProgress: React.FC<{ campaign: ResearchCampaign }> = ({ campaign }
   const { id, status, summary } = campaign;
   const current = summary?.current_item;
   const waiting = summary?.waiting_on;
+  const activity = RUN_ACTIVITY[summary?.wait_state ?? ''];
   const remaining = summary?.remaining_jobs ?? Math.max(0, campaign.max_jobs - campaign.jobs_launched);
   const canSchedule = status === 'active' || status === 'paused';
   const next = canSchedule && remaining > 0 ? summary?.next_up?.[0] : undefined;
   const latest = summary?.latest_result;
-  const needsDecision = waiting === 'approval' || waiting === 'person';
+  const needsResponse = waiting === 'person' && !activity;
+  const needsDecision = waiting === 'approval' || needsResponse;
 
   return (
     <div className="space-y-3">
@@ -116,7 +133,7 @@ const CampaignProgress: React.FC<{ campaign: ResearchCampaign }> = ({ campaign }
           )}
           {!needsDecision && (
             <p className="text-sm text-gray-600">
-              {waiting === 'job' && 'Still running'}
+              {activity || (waiting === 'job' && 'Still running')}
               {!waiting && !current && 'Waiting for the scheduler.'}
               {!waiting && current && (status === 'active'
                 ? 'Run finished. Results will be processed on the next scheduler pass.'
@@ -138,7 +155,7 @@ const CampaignProgress: React.FC<{ campaign: ResearchCampaign }> = ({ campaign }
               )}
               {current && (
                 <Link to={campaignRunUrl(id, current.job_id)} className="text-primary-700 hover:underline">
-                  {waiting === 'person' ? 'Open run to respond' : 'Open run'}
+                  {needsResponse ? 'Open run to respond' : 'Open run'}
                 </Link>
               )}
               {!current && needsDecision && (
@@ -182,9 +199,12 @@ const CampaignProgress: React.FC<{ campaign: ResearchCampaign }> = ({ campaign }
 
 function questionStatus(campaign: ResearchCampaign, item: ResearchCampaignItem) {
   if (campaign.status === 'cancelled' && item.status === 'pending') return 'unscheduled';
+  if (item.status === 'failed' && item.blockers?.length) return 'incomplete';
   if (item.id === campaign.summary?.current_item?.id) {
     const waiting = campaign.summary.waiting_on;
     if (waiting === 'approval') return 'needs approval';
+    const activity = RUN_ACTIVITY[campaign.summary.wait_state ?? ''];
+    if (activity) return activity.toLowerCase();
     if (waiting === 'person') return 'needs a response';
     if (!waiting) return 'run finished';
   }
@@ -250,10 +270,21 @@ const Conclusion: React.FC<{ campaign: ResearchCampaign }> = ({ campaign }) => {
 
 const CampaignsPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const selectedId = searchParams.get('campaign') || '';
   const queryClient = useQueryClient();
   const [starting, setStarting] = useState(false);
   const [stopping, setStopping] = useState<ResearchCampaign | null>(null);
+
+  const writeUp = useMutation(
+    (campaign: ResearchCampaign) => apiClient.createSynthesisJob({
+      job_type: 'research_report',
+      title: `Write-up: ${campaign.name}`,
+      document_ids: [],
+      campaign_id: campaign.id,
+    }),
+    { onSuccess: (job) => navigate(`/synthesis?job=${encodeURIComponent(job.id)}`) },
+  );
 
   const list = useQuery(['research-campaigns'], () => apiClient.listResearchCampaigns({ limit: 100 }), {
     refetchInterval: (data) => data?.items?.some((campaign) => campaign.status === 'active') ? 30000 : false,
@@ -382,7 +413,10 @@ const CampaignsPage: React.FC = () => {
             const summary = detail ?? campaign;
             const launched = summary.summary?.jobs_used ?? summary.jobs_launched;
             const budget = summary.max_jobs || 0;
-            const waiting = WAITING_ON[summary.summary?.waiting_on ?? ''];
+            const waiting = RUN_ACTIVITY[summary.summary?.wait_state ?? '']?.toLowerCase() ||
+              WAITING_ON[summary.summary?.waiting_on ?? ''];
+            const canWriteUp = detail && ['completed', 'exhausted', 'cancelled'].includes(detail.status) &&
+              (detail.summary?.jobs_used ?? detail.jobs_launched) > 0;
             return (
               <div
                 key={campaign.id}
@@ -440,13 +474,26 @@ const CampaignsPage: React.FC = () => {
                     {selected.isLoading && <p className="text-sm text-gray-600" role="status">Loading campaign details…</p>}
                     {detail && (
                       <>
-                        {(detail.conclusion || detail.conclusion_detail ||
+                        {(canWriteUp || detail.conclusion || detail.conclusion_detail ||
                           (detail.status !== 'active' && detail.status !== 'paused' && detail.status !== 'cancelled')) && (
                           <div>
-                            <h2 className={SECTION_LABEL}>Conclusion</h2>
-                            <div className="mt-1">
-                              <Conclusion campaign={detail} />
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <h2 className={SECTION_LABEL}>Conclusion</h2>
+                              {canWriteUp && (
+                                <Button size="sm" variant="secondary" disabled={writeUp.isLoading} onClick={() => writeUp.mutate(detail)}>
+                                  {writeUp.isLoading && writeUp.variables?.id === detail.id ? 'Starting write-up…' : 'Write up campaign'}
+                                </Button>
+                              )}
                             </div>
+                            {(detail.status !== 'cancelled' || detail.conclusion || detail.conclusion_detail) && (
+                              <div className="mt-1"><Conclusion campaign={detail} /></div>
+                            )}
+                            {writeUp.isError && writeUp.variables?.id === detail.id && (
+                              <p role="alert" className="mt-1 text-sm text-red-700">
+                                {(writeUp.error as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+                                  'Could not start the campaign write-up.'}
+                              </p>
+                            )}
                           </div>
                         )}
                         <CampaignProgress campaign={detail} />

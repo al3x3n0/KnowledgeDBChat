@@ -7,7 +7,7 @@
 
 import React, { useMemo, useRef, useState, useEffect } from 'react';
 import { useIsMutating, useQuery, useMutation, useQueryClient } from 'react-query';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   FileText,
   Plus,
@@ -716,8 +716,14 @@ const SynthesisPage: React.FC = () => {
               Delete
             </Button>
           </div>
-          {Boolean(job.result_metadata?.agent_run_sources?.length) && (
-            <div className="mt-3 rounded-md bg-gray-50 p-2">
+          {(job.result_metadata?.campaign_write_up || Boolean(job.result_metadata?.agent_run_sources?.length)) && (
+            <div className="mt-3 space-y-2 rounded-md bg-gray-50 p-2">
+              {job.result_metadata?.campaign_write_up && (
+                <Link className="text-sm text-primary-700 hover:underline"
+                  to={`/campaigns?campaign=${encodeURIComponent(job.result_metadata.campaign_write_up.id)}`}>
+                  Open source campaign
+                </Link>
+              )}
               <AgentRunSourceLinks sources={job.result_metadata?.agent_run_sources} />
             </div>
           )}

@@ -92,12 +92,16 @@ describe('SynthesisPage', () => {
       id: 'writeup', job_type: 'research_report', title: 'Write-up of a cache run',
       document_ids: [], agent_job_ids: ['cache-run'], output_format: 'markdown',
       status: 'completed', progress: 100, result_content: '# Report\n\nCached results',
-      result_metadata: { agent_run_sources: [{ id: 'cache-run', name: 'Cache validation run' }] },
+      result_metadata: {
+        agent_run_sources: [{ id: 'cache-run', name: 'Cache validation run' }],
+        campaign_write_up: { id: 'cache-campaign' },
+      },
     });
     apiClient.saveSynthesisJobAsResearchNote.mockResolvedValue({ id: 'writeup-note' });
     renderWithProviders('/synthesis?job=writeup');
 
     expect(await screen.findByRole('link', { name: 'Cache validation run' })).toHaveAttribute('href', '/autonomous-agents?job=cache-run');
+    expect(screen.getByRole('link', { name: 'Open source campaign' })).toHaveAttribute('href', '/campaigns?campaign=cache-campaign');
     expect(apiClient.getSynthesisJob).toHaveBeenCalledWith('writeup');
     fireEvent.click(screen.getByRole('button', { name: 'Save and open note' }));
 

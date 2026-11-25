@@ -42,7 +42,15 @@ from app.models.research_campaign import (
 )
 from app.services import agent_campaign_priority as priority
 from app.services.agent_loop_policy import finding_identity
-from app.services.agent_run_waiting import WAITING_ON_APPROVAL, final_jobs
+from app.services.agent_run_synthesis_service import conclusion_line
+from app.services.agent_run_waiting import (
+    TERMINAL_JOB_STATUSES,
+    WAITING_ON_APPROVAL,
+    final_jobs,
+    run_wait_state,
+    still_writing_up,
+    wait_category,
+)
 from app.services.agent_run_waiting import waiting_on as _waiting_on
 
 DEFAULT_MAX_JOBS = 10
@@ -183,7 +191,11 @@ async def _run_of(db: AsyncSession, job: AgentJob) -> List[AgentJob]:
         (
             await db.execute(
                 select(AgentJob)
-                .where(AgentJob.root_job_id == job.id, AgentJob.id != job.id)
+                .where(
+                    AgentJob.root_job_id == job.id,
+                    AgentJob.id != job.id,
+                    AgentJob.user_id == job.user_id,
+                )
                 .order_by(AgentJob.created_at.asc())
             )
         )
@@ -196,6 +208,42 @@ async def _run_of(db: AsyncSession, job: AgentJob) -> List[AgentJob]:
 def _stage_name(job: AgentJob) -> str:
     config = job.config if isinstance(job.config, dict) else {}
     return str(config.get("pipeline_stage") or job.name or "")[:120]
+
+
+def _run_blockers(attempts: Sequence[AgentJob]) -> List[str]:
+    from app.services.agent_self_planned_pipeline import proposal_of
+
+    blockers = []
+    stage_ids = {
+        attempt.config.get("pipeline_stage")
+        for attempt in attempts
+        if isinstance(attempt.config, dict)
+    }
+    for attempt in attempts:
+        label = _stage_name(attempt) or "Initial investigation"
+        contract = _contract_of(attempt)
+        if str(attempt.status) != "completed":
+            blockers.append(f"{label} ended with status {attempt.status}.")
+        elif contract.get("satisfied") is False and (
+            "enabled" not in contract or not attempt.goal_contract_satisfied()
+        ):
+            blockers.append(f"{label} did not produce all required evidence.")
+        proposal = proposal_of(attempt) or {}
+        for stage in proposal.get("stages") or []:
+            if stage not in stage_ids:
+                blockers.append(f"{stage} never ran.")
+    return blockers
+
+
+def _result_preview(attempts: Sequence[AgentJob]) -> Dict[str, Any]:
+    for attempt in reversed(attempts):
+        recorded = (attempt.results or {}).get("conclusion")
+        conclusion = (
+            recorded[:600] if isinstance(recorded, str) else conclusion_line(recorded)
+        )
+        if conclusion or _findings_of(attempt):
+            return {"conclusion": conclusion, "result_job_id": str(attempt.id)}
+    return {}
 
 
 def _ceilings() -> Dict[str, int]:
@@ -379,7 +427,8 @@ async def _reconcile(
             # pretending it succeeded would be worse than recording that it
             # cannot be settled.
             item.status = CampaignItemStatus.FAILED
-            item.outcome = {"error": "the job for this item no longer exists"}
+            error = "The run for this question no longer exists."
+            item.outcome = {"error": error, "blockers": [error]}
             settled += 1
             continue
         run = await _run_of(db, job)
@@ -401,14 +450,11 @@ async def _reconcile(
             waiting_on = waiting
             continue
 
-        contract = _contract_of(job)
-        findings = [finding for member in run for finding in _findings_of(member)]
-        stages = run[1:]
-        item.status = (
-            CampaignItemStatus.DONE
-            if str(job.status) == "completed"
-            else CampaignItemStatus.FAILED
-        )
+        attempts = final_jobs(run)
+        blockers = _run_blockers(attempts)
+        findings = [finding for member in attempts for finding in _findings_of(member)]
+        stages = [member for member in attempts if member.id != job.id]
+        item.status = CampaignItemStatus.FAILED if blockers else CampaignItemStatus.DONE
         earlier = item.outcome if isinstance(item.outcome, dict) else {}
         item.outcome = {
             **(
@@ -418,15 +464,24 @@ async def _reconcile(
             ),
             "job_status": str(job.status or ""),
             "iterations": int(job.iteration or 0),
-            "contract_satisfied": bool(contract.get("satisfied")),
-            "contract_missing": (contract.get("missing") or [])[:6],
+            "contract_satisfied": not blockers
+            and any(
+                _contract_of(attempt).get("satisfied") is True for attempt in attempts
+            ),
+            "contract_missing": [
+                entry
+                for attempt in attempts
+                for entry in (_contract_of(attempt).get("missing") or [])
+            ][:6],
+            "blockers": blockers[:12],
             "finding_counts": _counts(findings),
-            "conclusion": str((job.results or {}).get("conclusion") or "")[:600],
+            **_result_preview(attempts),
         }
-        if stages:
+        if len(run) > 1:
             # The stages are jobs this campaign caused, so they come out of
             # its budget, counted here because only now is the number known.
-            campaign.jobs_launched = int(campaign.jobs_launched or 0) + len(stages)
+            campaign.jobs_launched = int(campaign.jobs_launched or 0) + len(run) - 1
+        if stages:
             item.outcome["stages"] = [
                 {
                     "stage": _stage_name(stage),
@@ -670,12 +725,69 @@ async def _all_findings(
         ).scalar_one_or_none()
         if job is None:
             continue
-        for member in await _run_of(db, job):
+        for member in final_jobs(await _run_of(db, job)):
             for finding in _findings_of(member):
                 enriched = dict(finding)
                 enriched.setdefault("subject", item.title)
                 collected.append(enriched)
     return collected
+
+
+async def write_up_context(
+    db: AsyncSession, campaign: ResearchCampaign
+) -> tuple[List[str], Dict[str, Any]]:
+    """Current evidence sources and remaining questions for a campaign report."""
+    from app.services.agent_run_synthesis_service import summarize_findings_for_prompt
+    from app.services.synthesis_service import established_agent_findings
+
+    run_ids = []
+    open_questions = []
+    for item in await _items(db, campaign):
+        root = await db.get(AgentJob, item.job_id) if item.job_id else None
+        attempts = (
+            final_jobs(await _run_of(db, root))
+            if root is not None and root.user_id == campaign.user_id
+            else []
+        )
+        finished = [
+            attempt
+            for attempt in attempts
+            if str(attempt.status) in TERMINAL_JOB_STATUSES
+            and not still_writing_up(attempt)
+        ]
+        contributes = False
+        for attempt in finished:
+            findings = await established_agent_findings(db, attempt)
+            if summarize_findings_for_prompt(findings):
+                run_ids.append(str(attempt.id))
+                contributes = True
+
+        reason = None
+        if item.status == CampaignItemStatus.DROPPED:
+            reason = item.priority_reason or "The campaign dropped this question."
+        elif not attempts:
+            reason = (
+                "The run is unavailable." if item.job_id else "No run was scheduled."
+            )
+        elif len(finished) != len(attempts):
+            reason = "Work on this question has yet to finish."
+        else:
+            blockers = _run_blockers(finished)
+            if blockers:
+                reason = " ".join(blockers)
+            elif not contributes:
+                reason = "No usable findings were recorded."
+        if reason:
+            open_questions.append({"title": item.title, "reason": reason})
+
+    conclusion = campaign.conclusion_detail or {}
+    return list(dict.fromkeys(run_ids)), {
+        "id": str(campaign.id),
+        "name": campaign.name,
+        "status": campaign.status,
+        "open_questions": open_questions,
+        "gaps": conclusion.get("gaps") or [],
+    }
 
 
 async def conclude_campaign(
@@ -693,7 +805,7 @@ async def conclude_campaign(
     finished, and losing the whole finalization over the summary would be the
     wrong trade.
     """
-    from app.services.agent_run_synthesis_service import conclude, conclusion_line
+    from app.services.agent_run_synthesis_service import conclude
     from app.services.llm_service import LLMService, load_user_llm_settings
 
     findings = await _all_findings(db, campaign)
@@ -701,7 +813,10 @@ async def conclude_campaign(
     # The budget running out is something the caller knows and no individual
     # finding records. Saying it here is what keeps "we did not find out" from
     # being confused with "we found out that no".
+    failed = len(await _items(db, campaign, CampaignItemStatus.FAILED))
     extra_gaps: List[str] = []
+    if failed:
+        extra_gaps.append(f"{failed} question(s) ended without all required evidence.")
     if str(campaign.status) == CampaignStatus.EXHAUSTED:
         pending = len(await _items(db, campaign, CampaignItemStatus.PENDING))
         extra_gaps.append(
@@ -861,13 +976,11 @@ async def summarize(
         if isinstance(item.outcome, dict) and item.outcome.get("contract_satisfied")
     ]
     current, run = await _current_run(db, items)
-    waiting = _waiting_on(run)
+    wait_state, waiting_job = run_wait_state(run)
+    waiting = wait_category(wait_state)
     current_item = None
     if current is not None:
-        current_job = next(
-            (job for job in reversed(final_jobs(run)) if _waiting_on([job]) == waiting),
-            run[0],
-        )
+        current_job = waiting_job or run[0]
         current_item = {
             "id": str(current.id),
             "title": current.title,
@@ -883,6 +996,7 @@ async def summarize(
         "status": campaign.status,
         "goal": campaign.goal,
         "waiting_on": waiting,
+        "wait_state": wait_state,
         "current_item": current_item,
         "latest_result": latest_result,
         "remaining_jobs": remaining,
@@ -955,20 +1069,15 @@ def _latest_result(
     )
     records = [(item, item.outcome) for item in settled]
     if current is not None and waiting is None:
+        attempts = final_jobs(run)
         records.insert(
             0,
             (
                 current,
                 {
-                    "conclusion": str((run[0].results or {}).get("conclusion") or "")[
-                        :600
-                    ],
+                    **_result_preview(attempts),
                     "finding_counts": _counts(
-                        [
-                            finding
-                            for job in final_jobs(run)
-                            for finding in _findings_of(job)
-                        ]
+                        [finding for job in attempts for finding in _findings_of(job)]
                     ),
                 },
             ),
@@ -979,7 +1088,7 @@ def _latest_result(
         if conclusion or count:
             return {
                 "title": item.title,
-                "job_id": str(item.job_id),
+                "job_id": outcome.get("result_job_id") or str(item.job_id),
                 "conclusion": conclusion,
                 "finding_count": count,
             }

@@ -59,6 +59,18 @@ def _findings_the_run_established(
     ]
 
 
+async def established_agent_findings(
+    db: AsyncSession, job: Any
+) -> List[Dict[str, Any]]:
+    from app.services.agent_retraction_service import disputed_findings
+
+    findings = (job.results or {}).get("findings")
+    if not findings:
+        return []
+    disputed = await disputed_findings(db, user_id=job.user_id, job_id=job.id)
+    return _findings_the_run_established(findings, set(disputed))
+
+
 class SynthesisService:
     """Service for multi-document synthesis and report generation."""
 
@@ -500,7 +512,6 @@ class SynthesisService:
         a way to read someone else's runs.
         """
         from app.models.agent_job import AgentJob
-        from app.services.agent_retraction_service import disputed_findings
         from app.services.agent_run_synthesis_service import (
             summarize_findings_for_prompt,
         )
@@ -524,8 +535,7 @@ class SynthesisService:
                     continue
 
                 findings = (job.results or {}).get("findings")
-                disputed = await disputed_findings(db, user_id=user_id, job_id=job.id)
-                established = _findings_the_run_established(findings, set(disputed))
+                established = await established_agent_findings(db, job)
                 # Put decisions near the front of a run's context so a long
                 # list of measurements cannot crowd its verdict out.
                 established.sort(
@@ -550,6 +560,8 @@ class SynthesisService:
                             f"Goal: {job.goal}\n\n"
                             f"Findings recorded by this run:\n{body}"
                         ),
+                        "recorded_findings": body,
+                        "run_goal": job.goal,
                         # No summary: the context builder prefers a summary
                         # over the content, and this one was the goal, so the
                         # model saw what the run set out to do and never a
@@ -1373,9 +1385,37 @@ Generate a knowledge synthesis including:
                 "Conclusion",
             ],
         )
-        doc_context = self._prepare_document_context(documents, max_chars=60000)
-
         sections_text = "\n".join(f"- {s}" for s in sections)
+
+        campaign = options.get("campaign_write_up")
+        source_label = "source documents"
+        source_heading = "Source Documents"
+        if campaign:
+            doc_context = self._prepare_campaign_run_context(documents)
+            source_label = "contributing runs"
+            source_heading = "Run Evidence Excerpts"
+        else:
+            doc_context = self._prepare_document_context(documents, max_chars=60000)
+        campaign_context = ""
+        if campaign:
+            open_questions = "\n".join(
+                f"- **{' '.join(entry['title'].split())}** · {' '.join(entry['reason'].split())}"
+                for entry in campaign["open_questions"]
+            )
+            gaps = "\n".join(
+                f"- {' '.join(str(gap).split())}" for gap in campaign["gaps"]
+            )
+            campaign_context = "\n\n".join(
+                part
+                for part in (
+                    f"Campaign: {campaign['name']} ({campaign['status']})",
+                    f"## Open campaign questions\n\n{open_questions}"
+                    if open_questions
+                    else "",
+                    f"## Campaign conclusion caveats\n\n{gaps}" if gaps else "",
+                )
+                if part
+            )
 
         system_prompt = """You are an academic researcher creating a formal research report.
 Your report should:
@@ -1387,10 +1427,10 @@ Your report should:
 - Preserve the recorded paper claim, measurement units, conditions, and verdict when writing about reproduction
 - Describe an incomparable result as unresolved and report the recorded blockers and caveats"""
 
-        user_prompt = f"""Generate a research report from the following {len(documents)} source documents.
+        user_prompt = f"""Generate a research report from the following {len(documents)} {source_label}.
 {f'Research topic: {topic}' if topic else ''}
 
-Source Documents:
+{source_heading}:
 {doc_context}
 
 Structure the report with these sections:
@@ -1398,9 +1438,17 @@ Structure the report with these sections:
 
 For each section:
 - Provide substantial, well-reasoned content
-- Reference source documents with [Source: Title] citations
+- Reference {source_label} with [Source: Title] citations
 - Maintain academic tone and rigor
 - Build logical flow between sections"""
+        if campaign:
+            user_prompt += (
+                "\n\nUse the campaign record below to qualify the findings. "
+                "Treat its open questions as unresolved and carry its caveats into the discussion. "
+                "Use the run excerpts as the evidence for this report. "
+                "The campaign record will be appended to the report.\n\n"
+                f"{campaign_context[:12000]}"
+            )
 
         if progress_callback:
             await progress_callback(35, "Generating research report")
@@ -1417,6 +1465,11 @@ For each section:
         if progress_callback:
             await progress_callback(70, "Processing report")
 
+        if campaign:
+            response = (
+                f"{response.rstrip()}\n\n## Campaign record\n\n{campaign_context}"
+            )
+
         artifacts = []
 
         return {
@@ -1427,6 +1480,7 @@ For each section:
                 "word_count": len(response.split()),
                 "topic": topic,
                 "report_type": "research",
+                **({"campaign_write_up": campaign} if campaign else {}),
             },
             "artifacts": artifacts,
         }
@@ -2652,6 +2706,25 @@ Schema:
             },
             "artifacts": [],
         }
+
+    def _prepare_campaign_run_context(self, runs: List[Dict[str, Any]]) -> str:
+        """Give each run space for evidence within the research report budget."""
+        if not runs:
+            return ""
+        separator = "\n\n---\n\n"
+        per_run = min(5000, (60000 + len(separator)) // len(runs) - len(separator))
+        excerpts = []
+        for index, run in enumerate(runs, start=1):
+            name = " ".join(run["metadata"]["run_name"].split())[: per_run // 3]
+            header = f"[Source: Run {index} · {name}]\n"
+            evidence = run["recorded_findings"]
+            if run.get("run_goal"):
+                evidence += f"\n\nGoal: {run['run_goal']}"
+            room = per_run - len(header)
+            if len(evidence) > room:
+                evidence = evidence[: room - 1].rstrip() + "…"
+            excerpts.append(header + evidence)
+        return separator.join(excerpts)
 
     def _prepare_document_context(
         self,

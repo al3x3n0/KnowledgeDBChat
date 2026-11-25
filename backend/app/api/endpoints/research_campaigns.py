@@ -53,7 +53,14 @@ async def _respond(
             )
         ).scalars()
         update["items"] = [
-            ResearchCampaignItemResponse.model_validate(row) for row in rows
+            ResearchCampaignItemResponse.model_validate(row).model_copy(
+                update={
+                    "blockers": row.outcome.get("blockers", [])
+                    if isinstance(row.outcome, dict)
+                    else []
+                }
+            )
+            for row in rows
         ]
     return base.model_copy(update=update)
 

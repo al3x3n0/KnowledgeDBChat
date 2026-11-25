@@ -21,6 +21,7 @@ from app.core.database import get_db
 from app.models.agent_job import AgentJob
 from app.models.document import DocumentSource
 from app.models.experiment import ExperimentRun
+from app.models.research_campaign import CampaignStatus, ResearchCampaign
 from app.models.research_note import ResearchNote
 from app.models.research_paper import ResearchPaper
 from app.models.synthesis_job import SynthesisJob, SynthesisJobStatus, SynthesisJobType
@@ -69,6 +70,10 @@ class SynthesisJobCreate(BaseModel):
     )
     research_note_id: Optional[str] = Field(
         None, description="Optional research note ID for note-backed synthesis"
+    )
+    campaign_id: Optional[UUID] = Field(
+        None,
+        description="Use a finished campaign's contributing runs for a research report",
     )
     experiment_run_ids: List[str] = Field(
         default_factory=list,
@@ -824,6 +829,45 @@ async def create_synthesis_job(
     research_note_id = (request.research_note_id or "").strip()
     primary_run_id = (request.primary_run_id or "").strip()
     comparison_run_id = (request.comparison_run_id or "").strip()
+    options = dict(request.options or {})
+    options.pop("campaign_write_up", None)
+    if request.campaign_id is not None:
+        from app.services.research_campaign_service import write_up_context
+
+        if request.job_type != SynthesisJobType.RESEARCH_REPORT.value:
+            raise HTTPException(
+                status_code=400, detail="Campaign write-ups require a research report"
+            )
+        if (
+            request.document_ids
+            or request.paper_ids
+            or request.agent_job_ids
+            or search_query
+            or research_note_id
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Campaign write-ups use the campaign's own evidence sources",
+            )
+        campaign = await db.get(ResearchCampaign, request.campaign_id)
+        if campaign is None or campaign.user_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        if campaign.status not in (
+            CampaignStatus.COMPLETED,
+            CampaignStatus.EXHAUSTED,
+            CampaignStatus.CANCELLED,
+        ):
+            raise HTTPException(status_code=409, detail="The campaign is still open")
+        contributing_runs, context = await write_up_context(db, campaign)
+        if not contributing_runs:
+            raise HTTPException(
+                status_code=409,
+                detail="No finished runs recorded usable findings for this campaign",
+            )
+        options["campaign_write_up"] = context
+        request = request.model_copy(
+            update={"agent_job_ids": contributing_runs, "topic": campaign.goal}
+        )
     if (
         request.paper_ids
         and request.job_type != SynthesisJobType.GAP_ANALYSIS_HYPOTHESES.value
@@ -1079,7 +1123,7 @@ async def create_synthesis_job(
         search_query=search_query or None,
         topic=request.topic,
         options={
-            **(request.options or {}),
+            **options,
             **(
                 {
                     "experiment_run_ids": [

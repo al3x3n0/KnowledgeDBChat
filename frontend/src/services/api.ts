@@ -4389,6 +4389,7 @@ class ApiClient {
     paper_ids?: string[];
     /** Autonomous runs whose recorded findings become source material. */
     agent_job_ids?: string[];
+    campaign_id?: string;
     research_note_id?: string;
     experiment_run_ids?: string[];
     primary_run_id?: string;

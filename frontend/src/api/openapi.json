@@ -36598,6 +36598,13 @@
       },
       "ResearchCampaignItemResponse": {
         "properties": {
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
           "detail": {
             "anyOf": [
               {
@@ -44174,6 +44181,19 @@
             },
             "title": "Agent Job Ids",
             "type": "array"
+          },
+          "campaign_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Use a finished campaign's contributing runs for a research report",
+            "title": "Campaign Id"
           },
           "comparison_run_id": {
             "anyOf": [

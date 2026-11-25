@@ -57,6 +57,7 @@ class ResearchCampaignItemResponse(BaseModel):
     origin: str
     generation: int = 0
     job_id: Optional[UUID] = None
+    blockers: List[str] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 

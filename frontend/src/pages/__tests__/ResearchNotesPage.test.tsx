@@ -312,12 +312,14 @@ describe('ResearchNotesPage', () => {
       source_synthesis_job_id: 'writeup',
       attribution: { saved_from_synthesis: { result_metadata: {
         agent_run_sources: [{ id: 'cache-run', name: 'Cache validation run' }],
+        campaign_write_up: { id: 'cache-campaign' },
       } } },
     });
     renderWithProviders();
 
     expect(await screen.findByRole('link', { name: 'Cache validation run' })).toHaveAttribute('href', '/autonomous-agents?job=cache-run');
     expect(screen.getByRole('link', { name: 'Open source synthesis' })).toHaveAttribute('href', '/synthesis?job=writeup');
+    expect(screen.getByRole('link', { name: 'Open source campaign' })).toHaveAttribute('href', '/campaigns?campaign=cache-campaign');
   });
 
   it('opens a linked older plan and keeps an older source run visible', async () => {

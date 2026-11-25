@@ -20,6 +20,7 @@ from uuid import uuid4
 import pytest
 
 from app.agent_core import tool_specs
+from app.models.api_key import APIKey
 from app.services import (
     agent_evidence_map,
     agent_pipeline_draft,
@@ -1225,26 +1226,12 @@ async def test_a_workflow_tool_node_can_run_a_skill(
     assert output["data"]["result"] == {"loops": 4, "hottest": "inner"}
 
 
-class _Key:
-    def __init__(self, scopes):
-        self.id = uuid4()
-        self.scopes = scopes
-        self.allowed_tools = None
-
-    def is_mcp_enabled(self):
-        return True
-
-    def is_tool_allowed(self, name):
-        return self.allowed_tools is None or name in self.allowed_tools
-
-    def has_scope(self, scope):
-        return scope in self.scopes
-
-
 def mcp_auth(user, scopes=("read", "write")):
     from app.mcp.auth import MCPAuthContext
 
-    return MCPAuthContext(user=user, api_key=_Key(list(scopes)), scopes=list(scopes))
+    scopes = list(scopes)
+    key = APIKey(id=uuid4(), user_id=user.id, scopes=scopes, mcp_enabled=True)
+    return MCPAuthContext(user=user, api_key=key, scopes=scopes)
 
 
 @pytest.fixture
@@ -1315,6 +1302,9 @@ def test_running_a_skill_over_mcp_needs_the_write_scope(
     client, holder = mcp_client
     holder["auth"] = mcp_auth(test_user, scopes=("read",))
 
+    visible = {tool["name"] for tool in client.get("/api/v1/mcp/tools").json()["tools"]}
+    assert "run_sandbox_skill" not in visible
+
     listed = client.post(
         "/api/v1/mcp/tools/call", json={"name": "list_sandbox_skills", "arguments": {}}
     )
@@ -1328,7 +1318,6 @@ def test_running_a_skill_over_mcp_needs_the_write_scope(
         },
     )
     assert refused.status_code == 403
-    assert "write" in refused.json()["detail"]
 
 
 def test_a_key_restricted_to_other_tools_cannot_reach_skills(

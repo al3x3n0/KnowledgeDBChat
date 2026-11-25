@@ -61,6 +61,9 @@ services        agent runtime     and swarms        system gateway
 See [Architecture](docs/ARCHITECTURE_ASCII.md) for the canonical text map and
 [Architecture diagrams](docs/ARCHITECTURE_DIAGRAMS.md) for Mermaid views.
 
+Use the [`kdbc` Rust CLI](tools/kdbc/README.md) to search the library, save
+Context Packs as notes, and publish or verify MCP profiles from the terminal.
+
 ## Autonomous execution model
 
 An autonomous job is a durable state machine, not a single model request:

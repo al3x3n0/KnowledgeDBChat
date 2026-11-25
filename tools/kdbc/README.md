@@ -50,6 +50,26 @@ The watch command prints status changes to stderr and the final execution as
 JSON. Failed or cancelled executions also return a nonzero exit code. A watch
 timeout leaves the execution running so you can resume watching it by ID.
 
+## Write up a campaign
+
+Use `campaigns list` or `campaigns get` to find a finished campaign. `write-up`
+queues a Synthesis report with the campaign's contributing runs and open
+questions. Use the `id` from its JSON response as `SYNTHESIS_ID`.
+
+```sh
+kdbc campaigns get "$CAMPAIGN_ID"
+kdbc campaigns write-up "$CAMPAIGN_ID"
+kdbc synthesis watch "$SYNTHESIS_ID" --timeout 600
+kdbc synthesis get "$SYNTHESIS_ID" --markdown
+kdbc notes save-synthesis "$SYNTHESIS_ID"
+```
+
+`synthesis get` returns the full job JSON by default. `synthesis watch` reports
+progress on stderr and prints the final job JSON, with a nonzero exit for a
+failed or cancelled job. The report and saved note include campaign and run
+provenance. Pass `--title` to set a custom report or note title. To publish
+the note through MCP, use its returned `id` with `mcp create --note`.
+
 ## Publish and verify an MCP profile
 
 Find program and tool names with `kdbc mcp options`. If you have a Context
@@ -115,6 +135,6 @@ checks the selected programs, sources, notes, and prompts when you create
 the profile. Each create issues a new profile and key.
 
 Commands return JSON by default. `auth login` returns the token as text,
-`context --text` returns the Context Pack text, and `--markdown` returns note
-Markdown. Errors go to stderr with a nonzero exit
+`context --text` returns the Context Pack text, and `--markdown` returns
+report or note Markdown. Errors go to stderr with a nonzero exit
 status. The CLI does not store credentials on disk.

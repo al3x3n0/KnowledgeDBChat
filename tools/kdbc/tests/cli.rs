@@ -11,6 +11,8 @@ const NOTE: &str = "5f89821a-4c01-4130-8267-c7d7a31c331e";
 const SOURCE: &str = "6159cd56-4995-43b3-bbc9-fcfece28c29f";
 const WORKFLOW: &str = "745f36df-7f3c-444a-a3a3-b18493442c3e";
 const EXECUTION: &str = "4cc6b44f-5d14-4fc6-802e-aef8480a9bb5";
+const CAMPAIGN: &str = "fe5b2673-1408-4f5d-9b28-9ff3af5c1a99";
+const SYNTHESIS: &str = "97636fd1-6869-4b1b-83c6-ebc7685be4fa";
 
 struct Exchange {
     request: String,
@@ -294,6 +296,126 @@ fn failed_workflow_watch_exits_nonzero_and_still_returns_json() {
         failed
     );
     assert!(String::from_utf8_lossy(&result.stderr).contains(EXECUTION));
+    worker.join().unwrap();
+}
+
+#[test]
+fn writes_up_a_campaign_and_saves_the_synthesis_as_a_note() {
+    let markdown = "# Cache behavior\n\n## Open campaign questions\n\n- Measure a larger workload.";
+    let metadata = json!({
+        "campaign_write_up":{"id":CAMPAIGN},
+        "agent_run_sources":[{"id":EXECUTION,"name":"Cache benchmark"}]
+    });
+    let completed = json!({
+        "id":SYNTHESIS, "status":"completed", "result_content":markdown,
+        "result_metadata":metadata
+    });
+    let read_job = |response| Exchange {
+        request: format!("GET /lab/api/v1/synthesis/{SYNTHESIS}"),
+        token: Some("account-token"),
+        body: Value::Null,
+        status: "200 OK",
+        response,
+    };
+    let (url, worker) = serve(vec![
+        Exchange {
+            request: format!("GET /lab/api/v1/research/campaigns/{CAMPAIGN}"),
+            token: Some("account-token"),
+            body: Value::Null,
+            status: "200 OK",
+            response: json!({"id":CAMPAIGN,"name":"Cache behavior","status":"exhausted"}),
+        },
+        Exchange {
+            request: "POST /lab/api/v1/synthesis".into(),
+            token: Some("account-token"),
+            body: json!({"job_type":"research_report","campaign_id":CAMPAIGN,"title":"Write-up: Cache behavior"}),
+            status: "200 OK",
+            response: json!({"id":SYNTHESIS,"status":"pending"}),
+        },
+        read_job(json!({"id":SYNTHESIS,"status":"analyzing"})),
+        read_job(json!({"id":SYNTHESIS,"status":"generating"})),
+        read_job(completed.clone()),
+        read_job(completed.clone()),
+        Exchange {
+            request: format!("POST /lab/api/v1/synthesis/{SYNTHESIS}/save-as-note"),
+            token: Some("account-token"),
+            body: json!({}),
+            status: "201 Created",
+            response: json!({
+                "id":NOTE, "content_markdown":markdown,
+                "attribution":{"saved_from_synthesis":{"result_metadata":metadata}}
+            }),
+        },
+    ]);
+
+    let queued = output(run(&url, &["campaigns", "write-up", CAMPAIGN], b""));
+    let job_id = queued["id"].as_str().unwrap();
+    assert_eq!(job_id, SYNTHESIS);
+    let watched = run(
+        &url,
+        &["synthesis", "watch", job_id, "--interval", "1"],
+        b"",
+    );
+    let progress = String::from_utf8_lossy(&watched.stderr);
+    assert!(progress.contains("is analyzing"));
+    assert!(progress.contains("is generating"));
+    assert_eq!(output(watched), completed);
+
+    let viewed = run(&url, &["synthesis", "get", job_id, "--markdown"], b"");
+    assert!(
+        viewed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&viewed.stderr)
+    );
+    assert_eq!(viewed.stdout, format!("{markdown}\n").as_bytes());
+
+    let note = output(run(&url, &["notes", "save-synthesis", job_id], b""));
+    assert_eq!(note["id"], NOTE);
+    assert_eq!(note["content_markdown"], markdown);
+    assert_eq!(
+        note["attribution"]["saved_from_synthesis"]["result_metadata"],
+        metadata
+    );
+    worker.join().unwrap();
+}
+
+#[test]
+fn surfaces_the_platform_error_when_a_campaign_cannot_be_written_up() {
+    let (url, worker) = serve(vec![Exchange {
+        request: "POST /lab/api/v1/synthesis".into(),
+        token: Some("account-token"),
+        body: json!({"job_type":"research_report","campaign_id":CAMPAIGN,"title":"Cache report"}),
+        status: "409 Conflict",
+        response: json!({"detail":"The campaign is still open"}),
+    }]);
+    let result = run(
+        &url,
+        &["campaigns", "write-up", CAMPAIGN, "--title", "Cache report"],
+        b"",
+    );
+    assert!(!result.status.success());
+    assert!(result.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("The campaign is still open"));
+    worker.join().unwrap();
+}
+
+#[test]
+fn failed_synthesis_watch_exits_nonzero_and_preserves_the_failure_record() {
+    let status = json!({"id":SYNTHESIS,"status":"failed","error":"Model response was empty"});
+    let (url, worker) = serve(vec![Exchange {
+        request: format!("GET /lab/api/v1/synthesis/{SYNTHESIS}"),
+        token: Some("account-token"),
+        body: Value::Null,
+        status: "200 OK",
+        response: status.clone(),
+    }]);
+    let result = run(&url, &["synthesis", "watch", SYNTHESIS], b"");
+    assert!(!result.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&result.stdout).unwrap(),
+        status
+    );
+    assert!(String::from_utf8_lossy(&result.stderr).contains("Synthesis job"));
     worker.join().unwrap();
 }
 

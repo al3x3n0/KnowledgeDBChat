@@ -1,5 +1,6 @@
 mod client;
 mod profile_spec;
+mod watch;
 mod workflows;
 
 use std::io::{self, IsTerminal, Read, Write};
@@ -12,6 +13,7 @@ use uuid::Uuid;
 
 use client::Platform;
 use profile_spec::ProfileCreate;
+use watch::{watch, WatchOptions, WatchTarget};
 use workflows::Workflows;
 
 #[derive(Parser)]
@@ -50,10 +52,15 @@ enum Command {
     },
     /// List document sources and their IDs.
     Sources,
-    /// List and read research campaigns.
+    /// Inspect research campaigns and queue written reports.
     Campaigns {
         #[command(subcommand)]
         command: Campaigns,
+    },
+    /// Inspect a synthesis job or wait for its result.
+    Synthesis {
+        #[command(subcommand)]
+        command: Synthesis,
     },
     /// Inspect a retrieval trace and its Context Pack.
     Context {
@@ -128,6 +135,30 @@ enum Campaigns {
     },
     /// Read a research campaign by ID.
     Get { id: Uuid },
+    /// Queue a research report from a finished campaign's evidence.
+    WriteUp {
+        campaign_id: Uuid,
+        /// Override the report title derived from the campaign name.
+        #[arg(long, value_parser = parse_title)]
+        title: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum Synthesis {
+    /// Read a synthesis job by ID.
+    Get {
+        job_id: Uuid,
+        /// Print the completed report's Markdown instead of JSON.
+        #[arg(long)]
+        markdown: bool,
+    },
+    /// Wait for a synthesis job to finish and print its final state.
+    Watch {
+        job_id: Uuid,
+        #[command(flatten)]
+        options: WatchOptions,
+    },
 }
 
 #[derive(Subcommand)]
@@ -148,6 +179,13 @@ enum Notes {
     },
     /// Save an owned Context Pack as a research note.
     SaveContext { trace_id: Uuid },
+    /// Save a completed synthesis job as a research note.
+    SaveSynthesis {
+        job_id: Uuid,
+        /// Override the title of the saved note.
+        #[arg(long, value_parser = parse_title)]
+        title: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -228,6 +266,50 @@ fn run(cli: Cli) -> Result<()> {
         Command::Campaigns {
             command: Campaigns::Get { id },
         } => platform.get(&format!("research/campaigns/{id}"), &[])?,
+        Command::Campaigns {
+            command: Campaigns::WriteUp { campaign_id, title },
+        } => {
+            let title = match title {
+                Some(title) => title,
+                None => {
+                    let campaign =
+                        platform.get(&format!("research/campaigns/{campaign_id}"), &[])?;
+                    let name = campaign["name"]
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                        .context(
+                            "Campaign response has no name. Use --title to name the report.",
+                        )?;
+                    format!("Write-up: {name}")
+                }
+            };
+            let job = platform.post(
+                "synthesis",
+                Some(&json!({"job_type":"research_report", "campaign_id":campaign_id, "title":title})),
+            )?;
+            job["id"]
+                .as_str()
+                .and_then(|id| Uuid::parse_str(id).ok())
+                .context("Queue response did not contain a valid synthesis job ID")?;
+            job
+        }
+        Command::Synthesis {
+            command: Synthesis::Get { job_id, markdown },
+        } => {
+            let job = platform.get(&format!("synthesis/{job_id}"), &[])?;
+            if markdown {
+                let markdown = job["result_content"]
+                    .as_str()
+                    .filter(|text| job["status"] == "completed" && !text.trim().is_empty())
+                    .with_context(|| format!("Synthesis job {job_id} has no completed Markdown"))?;
+                return output_text(markdown);
+            }
+            job
+        }
+        Command::Synthesis {
+            command: Synthesis::Watch { job_id, options },
+        } => watch(&platform, WatchTarget::Synthesis, job_id, options)?,
         Command::Context { trace_id, text } => {
             let trace = platform.get(&format!("retrieval-traces/{trace_id}"), &[])?;
             if text {
@@ -266,6 +348,15 @@ fn run(cli: Cli) -> Result<()> {
         Command::Notes {
             command: Notes::SaveContext { trace_id },
         } => platform.post(&format!("research-notes/context-packs/{trace_id}"), None)?,
+        Command::Notes {
+            command: Notes::SaveSynthesis { job_id, title },
+        } => {
+            let payload = match title {
+                Some(title) => json!({"title":title}),
+                None => json!({}),
+            };
+            platform.post(&format!("synthesis/{job_id}/save-as-note"), Some(&payload))?
+        }
         Command::Review => platform.get("review", &[])?,
         Command::Mcp { command } => match command {
             Profiles::Options => platform.get("mcp-config/profile-options", &[])?,
@@ -315,6 +406,14 @@ fn run(cli: Cli) -> Result<()> {
         },
     };
     output_json(&result)
+}
+
+fn parse_title(value: &str) -> std::result::Result<String, String> {
+    let title = value.trim();
+    if title.is_empty() || title.chars().count() > 500 {
+        return Err("Use a title between 1 and 500 characters".to_owned());
+    }
+    Ok(title.to_owned())
 }
 
 fn output_json(result: &Value) -> Result<()> {

@@ -1,15 +1,14 @@
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
-use std::thread;
-use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::{client::Platform, output_json};
+use crate::client::Platform;
+use crate::watch::{watch, WatchOptions, WatchTarget};
 
 #[derive(Subcommand)]
 pub enum Workflows {
@@ -32,12 +31,8 @@ pub enum Workflows {
     /// Wait for an execution to finish and print its final state.
     Watch {
         execution_id: Uuid,
-        /// Seconds between status checks.
-        #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u64).range(1..=60))]
-        interval: u64,
-        /// Maximum number of seconds to watch.
-        #[arg(long, default_value_t = 900, value_parser = clap::value_parser!(u64).range(1..=86400))]
-        timeout: u64,
+        #[command(flatten)]
+        options: WatchOptions,
     },
 }
 
@@ -80,52 +75,8 @@ impl Workflows {
             }
             Self::Watch {
                 execution_id,
-                interval,
-                timeout,
-            } => watch_execution(
-                platform,
-                execution_id,
-                Duration::from_secs(interval),
-                Duration::from_secs(timeout),
-            ),
+                options,
+            } => watch(platform, WatchTarget::Workflow, execution_id, options),
         }
-    }
-}
-
-fn watch_execution(
-    platform: &Platform,
-    execution_id: Uuid,
-    interval: Duration,
-    timeout: Duration,
-) -> Result<Value> {
-    let path = format!("workflows/executions/{execution_id}");
-    let deadline = Instant::now() + timeout;
-    let mut previous_status = String::new();
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            bail!("Stopped waiting for execution {execution_id}. Run workflows watch again to keep tracking it.");
-        }
-        let execution = platform
-            .get_with_timeout(&path, &[], remaining.min(Duration::from_secs(60)))
-            .with_context(|| format!("Could not check execution {execution_id}"))?;
-        let status = execution["status"]
-            .as_str()
-            .context("Execution response has no status")?;
-        match status {
-            "completed" => return Ok(execution),
-            "failed" | "cancelled" => {
-                output_json(&execution)?;
-                bail!("Workflow execution {execution_id} {status}");
-            }
-            "pending" | "running" => {
-                if previous_status != status {
-                    eprintln!("Execution {execution_id} is {status}");
-                    previous_status = status.to_owned();
-                }
-            }
-            _ => bail!("Workflow execution {execution_id} returned unknown status {status:?}"),
-        }
-        thread::sleep(interval.min(deadline.saturating_duration_since(Instant::now())));
     }
 }

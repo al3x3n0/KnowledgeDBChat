@@ -27,6 +27,10 @@ test('shows the native Copilot and Cursor formats and copies the selected config
       },
     });
     expect(screen.getByText('~/.copilot/mcp-config.json')).toBeInTheDocument();
+    const documentation = screen.getByRole('link', { name: 'Client documentation' });
+    expect(documentation).toHaveAttribute('target', '_blank');
+    expect(documentation).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(documentation).toHaveAttribute('href', 'https://code.visualstudio.com/docs/agents/reference/mcp-configuration');
 
     fireEvent.change(screen.getByLabelText('MCP client'), { target: { value: 'cursor' } });
     const cursor = screen.getByRole('textbox', { name: 'Cursor MCP configuration' }) as HTMLTextAreaElement;
@@ -39,6 +43,7 @@ test('shows the native Copilot and Cursor formats and copies the selected config
       },
     });
     expect(screen.getByText('.cursor/mcp.json')).toBeInTheDocument();
+    expect(documentation).toHaveAttribute('href', 'https://cursor.com/docs/mcp');
 
     fireEvent.click(screen.getByRole('button', { name: 'Copy configuration' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(cursor.value));

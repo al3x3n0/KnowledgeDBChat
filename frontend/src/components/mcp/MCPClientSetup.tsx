@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Copy } from 'lucide-react';
 import toast from 'react-hot-toast';
 
+import { safeExternalUrl } from '../../utils/safeUrl';
 import Button from '../common/Button';
 import MCPConnectionCheck from './MCPConnectionCheck';
 
@@ -71,7 +72,15 @@ export default function MCPClientSetup({ profileId, endpoint, newKey, keyPrefix 
         <p className="text-sm text-gray-700">
           Set <code className="break-all">{keyVariable}</code> to your profile’s API key
           in the environment where {selected.name} runs, then restart the client.
-          {' '}<a href={selected.documentation} target="_blank" rel="noreferrer" className="text-primary-700 underline">Client documentation</a>
+          {' '}
+          <a
+            href={safeExternalUrl(selected.documentation)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-primary-700 underline"
+          >
+            Client documentation
+          </a>
         </p>
         <textarea
           aria-label={`${selected.name} MCP configuration`}

@@ -44,9 +44,14 @@ def is_visible_to(item: CodingBacklogItem, user_id: Any) -> bool:
 
 
 async def get_visible_item(
-    db: AsyncSession, item_id: UUID, user_id: UUID
+    db: AsyncSession, item_id: UUID, user_id: UUID, *, lock: bool = False
 ) -> CodingBacklogItem:
-    item = await db.get(CodingBacklogItem, item_id)
+    if lock:
+        item = await db.get(
+            CodingBacklogItem, item_id, with_for_update=True, populate_existing=True
+        )
+    else:
+        item = await db.get(CodingBacklogItem, item_id)
     if item is None or not is_visible_to(item, user_id):
         raise BacklogItemNotFound(str(item_id))
     return item

@@ -24,7 +24,7 @@ jest.mock('react-hot-toast', () => ({
 jest.mock('../../../services/api', () => ({
   apiClient: {
     downloadCodePatchProposal: jest.fn(),
-    applyCodePatchProposal: jest.fn(),
+    createPatchPR: jest.fn(),
   },
 }));
 

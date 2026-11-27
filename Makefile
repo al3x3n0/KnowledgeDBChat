@@ -1,6 +1,7 @@
 .PHONY: help setup build start stop restart logs test clean validate-env check-health doctor fmt lint typecheck-frontend test-backend-coverage \
 	helm-lint helm-template helm-validate helm-test helm-smoke minikube-up minikube-reinstall minikube-down \
-	k8s-status k8s-logs-backend k8s-logs-celery k8s-logs-migrate k8s-test k8s-shell-backend k8s-uninstall
+	k8s-status k8s-logs-backend k8s-logs-celery k8s-logs-migrate k8s-test k8s-shell-backend k8s-uninstall \
+	sandbox-coding sandbox-coding-smoke
 
 # Prefer legacy `docker-compose` if installed, otherwise use `docker compose`.
 DC ?= $(shell command -v docker-compose >/dev/null 2>&1 && echo docker-compose || echo "docker compose")
@@ -322,6 +323,7 @@ helm-smoke: ## Install the chart on the current cluster and assert its wiring (n
 # tools/candidate-coster in a discarded stage, and gem5 must be arm64. Those
 # are encoded here rather than left in the README for someone to retype.
 SANDBOX_REGISTRY ?= ghcr.io/al3x3n0
+SANDBOX_PYTHON ?= $(or $(wildcard backend/venv/bin/python),python3)
 
 sandbox-base: ## Build the shared sandbox base image (clang, lld, python3)
 	docker build -t $(SANDBOX_REGISTRY)/kdbc-sandbox-base:latest \
@@ -339,7 +341,15 @@ sandbox-microarch: sandbox-base ## Build the microarch-research image
 	docker build -t $(SANDBOX_REGISTRY)/kdbc-microarch-research:latest \
 	  deploy/sandbox-images/microarch-research
 
-sandbox-images: sandbox-compiler sandbox-polyglot sandbox-microarch ## Build every sandbox image this repo can build
+sandbox-coding: ## Build the isolated repository command and test image
+	docker build -t $(SANDBOX_REGISTRY)/kdbc-coding-workspace:latest \
+	  deploy/sandbox-images/coding-workspace
+
+sandbox-coding-smoke: sandbox-coding ## Build and run the coding sandbox integration check
+	$(SANDBOX_PYTHON) backend/scripts/smoke_coding_sandbox.py \
+	  --image $(SANDBOX_REGISTRY)/kdbc-coding-workspace:latest
+
+sandbox-images: sandbox-compiler sandbox-polyglot sandbox-microarch sandbox-coding ## Build every sandbox image this repo can build
 	@echo "Built from this repository. A research program's images (gem5, BOLT,"
 	@echo "pass-dev, profiling, AXIS) are built from the program's repository:"
 	@echo "see its Makefile."
@@ -349,6 +359,7 @@ sandbox-images: sandbox-compiler sandbox-polyglot sandbox-microarch ## Build eve
 # (the program's Makefile does this for you).
 EXTRA_SANDBOX_IMAGES ?=
 SANDBOX_IMAGE_NAMES := kdbc-sandbox-base kdbc-compiler-research kdbc-polyglot-slim \
+                      kdbc-coding-workspace \
                        kdbc-microarch-research $(EXTRA_SANDBOX_IMAGES)
 
 SANDBOX_IMAGE_FINGERPRINT := {{.Created}}{{range .RootFS.Layers}} {{.}}{{end}}

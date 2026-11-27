@@ -4866,6 +4866,9 @@ export interface PatchPR {
   proposal_ids: string[];
   checks?: Record<string, any>;
   approvals?: Array<Record<string, any>>;
+  diff_unified?: string | null;
+  diff_sha256?: string | null;
+  approval_valid?: boolean;
   merged_at?: string;
   created_at: string;
   updated_at: string;
@@ -4895,11 +4898,13 @@ export interface PatchPRUpdateRequest {
 
 export interface PatchPRApproveRequest {
   note?: string;
+  diff_sha256?: string;
 }
 
 export interface PatchPRMergeRequest {
   dry_run?: boolean;
   require_approved?: boolean;
+  diff_sha256?: string;
 }
 
 export interface PatchPRMergeResponse {

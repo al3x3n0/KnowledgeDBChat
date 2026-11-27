@@ -112,6 +112,16 @@ class AgentCodingRunnerService:
             await db.commit()
             return {"status": "failed", "error": job.error}
 
+        from app.models.user import User
+        from app.services.coding_source_access import can_access_coding_source
+
+        user = await db.get(User, job.user_id)
+        if user is None or not await can_access_coding_source(db, user, source_uuid):
+            job.status = AgentJobStatus.FAILED.value
+            job.error = "Not authorized for this source"
+            await db.commit()
+            return {"status": "failed", "error": job.error}
+
         source_type = str(getattr(source, "source_type", "") or "").strip().lower()
         cfg = job.config if isinstance(job.config, dict) else {}
         failure_symptom = str(cfg.get("failure_symptom") or "").strip()
@@ -654,19 +664,16 @@ class AgentCodingRunnerService:
         Produces:
           - job.results.code_patch_kb_apply
         """
-        from hashlib import sha256 as _sha256
         from uuid import UUID as _UUID
 
-        from sqlalchemy import and_ as _and
-        from sqlalchemy import or_ as _or
-
         from app.models.code_patch_proposal import CodePatchProposal
-        from app.models.document import Document
+        from app.models.coding_backlog import CodingBacklogItem
+        from app.models.user import User
         from app.services.code_patch_apply_service import (
             UnifiedDiffApplyError,
             code_patch_apply_service,
         )
-        from app.services.document_service import DocumentService
+        from app.services.coding_source_access import can_access_coding_source
 
         _emit = phase_reporter(job, "code_patch_apply_to_kb")
 
@@ -888,6 +895,19 @@ class AgentCodingRunnerService:
             job.error = "Proposal missing source_id"
             await db.commit()
             return {"status": "failed", "error": job.error}
+        expected_diff = proposal.diff_unified
+
+        user = await db.get(User, job.user_id)
+        if user is None or not await can_access_coding_source(
+            db,
+            user,
+            proposal.source_id,
+            write=not dry_run,
+        ):
+            job.status = AgentJobStatus.FAILED.value
+            job.error = "Not authorized for this source"
+            await db.commit()
+            return {"status": "failed", "error": job.error}
 
         # Human-in-the-loop gate: do not allow autonomous jobs to directly write patches to the KB
         # unless explicitly enabled at deployment level.
@@ -986,7 +1006,75 @@ class AgentCodingRunnerService:
         _emit(10, "parsing", "Parsing unified diff")
         await db.commit()
 
+        backlog_id = cfg.get("coding_backlog_item_id")
+        backlog = None
+        if backlog_id:
+            try:
+                backlog_uuid = _UUID(str(backlog_id))
+            except ValueError:
+                backlog_uuid = None
+            if backlog_uuid:
+                backlog = await db.get(
+                    CodingBacklogItem,
+                    backlog_uuid,
+                    with_for_update=True,
+                    populate_existing=True,
+                )
+        await db.refresh(job, with_for_update=True)
+        if job.status == AgentJobStatus.CANCELLED.value or (
+            backlog_id
+            and (
+                backlog is None
+                or backlog.user_id != job.user_id
+                or backlog.source_id != proposal.source_id
+                or backlog.status in {"cancelled", "completed"}
+                or (backlog.require_patch_pr and not dry_run)
+            )
+        ):
+            job.status = AgentJobStatus.CANCELLED.value
+            job.completed_at = datetime.utcnow()
+            job.error = "Patch application cancelled by backlog or job state"
+            await db.commit()
+            return {"status": job.status, "error": job.error}
+
+        source_id = proposal.source_id
+        await db.refresh(proposal, with_for_update=True)
+        if (
+            proposal.source_id != source_id
+            or proposal.diff_unified != expected_diff
+            or proposal.status == "rejected"
+        ):
+            job.status = AgentJobStatus.FAILED.value
+            job.error = "Proposal source or review state changed"
+            await db.commit()
+            return {"status": "failed", "error": job.error}
+
+        if proposal.status == "applied":
+            job.results = {
+                **base_results,
+                "code_patch_kb_apply": {
+                    "enabled": True,
+                    "ok": True,
+                    "dry_run": dry_run,
+                    "did_apply": False,
+                    "already_applied": True,
+                    "proposal_id": str(proposal.id),
+                    "proposal_strategy": proposal_strategy,
+                    "source_id": str(proposal.source_id),
+                    "enabled_key": enabled_key,
+                    "applied_files": [],
+                    "errors": [],
+                },
+            }
+            _emit(100, "completed", "Proposal was already applied")
+            job.status = AgentJobStatus.COMPLETED.value
+            job.completed_at = datetime.utcnow()
+            await db.commit()
+            return {"status": job.status, "results": job.results}
+
         try:
+            if (proposal.proposal_metadata or {}).get("diff_truncated_from"):
+                raise UnifiedDiffApplyError("The proposal contains a truncated diff")
             file_diffs = code_patch_apply_service.parse(proposal.diff_unified or "")
         except UnifiedDiffApplyError as exc:
             job.results = dict(base_results)
@@ -1020,79 +1108,24 @@ class AgentCodingRunnerService:
             await db.commit()
             return {"status": "failed", "results": job.results, "error": job.error}
 
-        service = DocumentService()
-        applied: list[dict] = []
-        errors: list[dict] = []
-
-        _emit(
-            30,
-            "applying",
-            f"Applying patch to {len(file_diffs)} file(s){' (dry-run)' if dry_run else ''}",
+        applied, errors = await code_patch_apply_service.apply_to_library(
+            db,
+            source_id=proposal.source_id,
+            user_id=job.user_id,
+            file_diffs=file_diffs,
+            dry_run=dry_run,
+            base_hashes=(proposal.proposal_metadata or {}).get("base_hashes"),
         )
-        await db.commit()
-
-        for idx, fd in enumerate(file_diffs[:200]):
-            path = (fd.path or "").strip()
-            if not path:
-                continue
-
-            res = await db.execute(
-                select(Document)
-                .where(
-                    _and(
-                        Document.source_id == proposal.source_id,
-                        _or(
-                            Document.file_path == path,
-                            Document.source_identifier == path,
-                            Document.title == path,
-                        ),
-                    )
-                )
-                .limit(1)
-            )
-            doc = res.scalar_one_or_none()
-            if not doc:
-                errors.append({"path": path, "error": "Document not found"})
-                continue
-
-            try:
-                new_text, debug = code_patch_apply_service.apply_to_text(
-                    doc.content or "", fd
-                )
-            except UnifiedDiffApplyError as exc:
-                errors.append({"path": path, "error": str(exc)})
-                continue
-
-            if not dry_run:
-                doc.content = new_text
-                doc.content_hash = _sha256(new_text.encode("utf-8")).hexdigest()
-                doc.is_processed = False
-                doc.processing_error = None
-
-                try:
-                    await service.reprocess_document(doc.id, db, user_id=job.user_id)
-                except Exception:
-                    pass
-
-            applied.append({"path": path, "document_id": str(doc.id), "debug": debug})
-            _emit(
-                30 + int(50 * (idx + 1) / max(1, min(len(file_diffs), 200))),
-                "applying",
-                f"Patched: {path}",
-            )
-            await db.commit()
 
         ok = len(errors) == 0
         if not dry_run:
-            proposal.proposal_metadata = (
-                proposal.proposal_metadata
-                if isinstance(proposal.proposal_metadata, dict)
-                else {}
-            )
-            proposal.proposal_metadata["apply_results"] = {
-                "applied": applied,
-                "errors": errors,
-                "dry_run": False,
+            proposal.proposal_metadata = {
+                **(proposal.proposal_metadata or {}),
+                "apply_results": {
+                    "applied": applied,
+                    "errors": errors,
+                    "dry_run": False,
+                },
             }
             proposal.status = "applied" if ok else "proposed"
 
@@ -1571,15 +1604,19 @@ class AgentCodingRunnerService:
             await db.commit()
             return {"status": "failed", "error": job.error}
 
-        item = await db.get(CodingBacklogItem, item_uuid)
+        item = await db.get(
+            CodingBacklogItem, item_uuid, with_for_update=True, populate_existing=True
+        )
         if not item or str(item.user_id) != str(job.user_id):
             job.status = AgentJobStatus.FAILED.value
             job.error = "Coding backlog item not found"
             await db.commit()
             return {"status": "failed", "error": job.error}
 
+        await db.refresh(job, with_for_update=True)
+        if job.status == AgentJobStatus.CANCELLED.value:
+            return {"status": job.status}
         _emit(5, "loading", f"Loaded backlog item {item.title}")
-        await db.commit()
 
         inherited = (
             cfg.get("inherited_data")
@@ -1595,12 +1632,14 @@ class AgentCodingRunnerService:
             str(cfg.get("coding_backlog_previous_child_kind") or "").strip().lower()
         )
 
-        if str(item.status or "").lower() in {"paused", "cancelled"}:
-            item.latest_summary = {
-                "status": str(item.status or ""),
-                "note": "Backlog item is paused or cancelled; no new child job was spawned.",
+        if str(item.status or "").lower() in {"paused", "cancelled", "completed"}:
+            job.results = {
+                "coding_backlog": {
+                    **(item.latest_summary or {}),
+                    "status": item.status,
+                    "note": "Backlog state prevents starting a new child job.",
+                }
             }
-            job.results = {"coding_backlog": item.latest_summary}
             job.status = AgentJobStatus.COMPLETED.value
             job.completed_at = datetime.utcnow()
             await db.commit()
@@ -2240,7 +2279,7 @@ class AgentCodingRunnerService:
             active_slice["completed_at"] = datetime.utcnow().isoformat()
             active_slice["awaiting_operator_action"] = True
             active_slice["allowed_slice_actions"] = [
-                "apply_override",
+                *([] if item.require_patch_pr else ["apply_override"]),
                 "create_patch_pr",
                 "keep_proposal_only",
                 "relaunch_slice",

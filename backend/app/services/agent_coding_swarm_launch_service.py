@@ -31,6 +31,10 @@ from app.services.agent_swarm_collaboration_service import (
     normalize_uuid_str_list,
     store_swarm_collaboration,
 )
+from app.services.coding_source_access import (
+    can_access_coding_source,
+    is_source_owned_by_user,
+)
 
 CodingSwarmLaunchRequest: TypeAlias = (
     AgentJobQuickStartBugTriageSwarmRequest
@@ -106,19 +110,7 @@ class AgentCodingSwarmLaunchService:
             )
         return preset
 
-    @staticmethod
-    def is_source_owned_by_user(source: DocumentSource, user: User) -> bool:
-        config = source.config or {}
-        if not isinstance(config, dict):
-            return False
-        requested_by = config.get("requested_by") or config.get("requestedBy")
-        requested_by_user_id = config.get("requested_by_user_id") or config.get(
-            "requestedByUserId"
-        )
-        return requested_by in {
-            user.username,
-            str(user.id),
-        } or requested_by_user_id == str(user.id)
+    is_source_owned_by_user = staticmethod(is_source_owned_by_user)
 
     def build_goal(
         self,
@@ -377,14 +369,7 @@ class AgentCodingSwarmLaunchService:
             profile_id=getattr(request, "profile_id", None),
             preset_key=preset_key,
         )
-        profile_grants_access = bool(
-            profile is not None and is_profile_visible_to_user(profile, current_user)
-        )
-        if (
-            not current_user.is_admin()
-            and not self.is_source_owned_by_user(source, current_user)
-            and not profile_grants_access
-        ):
+        if not await can_access_coding_source(db, current_user, source.id):
             raise AgentCodingSwarmLaunchError(
                 "Not authorized for this source",
                 status_code=403,

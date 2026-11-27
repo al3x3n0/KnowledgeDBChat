@@ -1,0 +1,45 @@
+name: Coding sandbox
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/coding-sandbox.yml'
+      - 'Makefile'
+      - 'backend/app/agent_core/research_programs.py'
+      - 'backend/app/core/cache.py'
+      - 'backend/app/core/config.py'
+      - 'backend/app/core/feature_flags.py'
+      - 'backend/app/services/agent_sandbox_runtime.py'
+      - 'backend/app/services/coding_workspace_execution.py'
+      - 'backend/app/services/sandbox_*.py'
+      - 'backend/app/services/shared_slots.py'
+      - 'backend/app/utils/tree_copy.py'
+      - 'backend/requirements.txt'
+      - 'backend/scripts/smoke_coding_sandbox.py'
+      - 'deploy/sandbox-images/coding-workspace/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coding-sandbox-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Coding sandbox smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install runtime dependencies
+        run: |
+          grep -E '^(loguru|pydantic|pydantic-settings|redis)==' backend/requirements.txt > "$RUNNER_TEMP/coding-sandbox-requirements.txt"
+          python -m pip install -r "$RUNNER_TEMP/coding-sandbox-requirements.txt"
+      - name: Build and exercise the sandbox
+        # Match the Linux worker that owns the disposable workspace mount.
+        run: make sandbox-coding-smoke SANDBOX_PYTHON="sudo $(command -v python)"

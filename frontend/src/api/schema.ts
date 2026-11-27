@@ -4143,9 +4143,7 @@ export interface paths {
         put?: never;
         /**
          * Apply Code Patch To Kb
-         * @description Apply this patch proposal to KnowledgeDB code documents (best-effort).
-         *
-         *     This updates Document.content for matching files under the proposal's `source_id`.
+         * @description Apply a proposal through its approved Patch PR.
          */
         post: operations["apply_code_patch_to_kb_api_v1_code_patches__proposal_id__apply_post"];
         delete?: never;
@@ -23613,6 +23611,8 @@ export interface components {
         };
         /** PatchPRApproveRequest */
         PatchPRApproveRequest: {
+            /** Diff Sha256 */
+            diff_sha256?: string | null;
             /** Note */
             note?: string | null;
         };
@@ -23685,6 +23685,8 @@ export interface components {
         };
         /** PatchPRMergeRequest */
         PatchPRMergeRequest: {
+            /** Diff Sha256 */
+            diff_sha256?: string | null;
             /**
              * Dry Run
              * @default true
@@ -23719,6 +23721,11 @@ export interface components {
         };
         /** PatchPRResponse */
         PatchPRResponse: {
+            /**
+             * Approval Valid
+             * @default false
+             */
+            approval_valid: boolean;
             /** Approvals */
             approvals?: Record<string, never>[] | null;
             /** Checks */
@@ -23730,6 +23737,10 @@ export interface components {
             created_at: string;
             /** Description */
             description?: string | null;
+            /** Diff Sha256 */
+            diff_sha256?: string | null;
+            /** Diff Unified */
+            diff_unified?: string | null;
             /**
              * Id
              * Format: uuid

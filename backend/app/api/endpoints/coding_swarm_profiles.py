@@ -122,8 +122,10 @@ async def _get_visible_profile_or_404(
 
 
 async def _validate_source(
-    db: AsyncSession, source_id: UUID, user_id: UUID
+    db: AsyncSession, source_id: UUID, current_user: User
 ) -> DocumentSource:
+    from app.services.coding_source_access import can_access_coding_source
+
     source = await db.get(DocumentSource, source_id)
     if not source:
         raise HTTPException(status_code=404, detail="Document source not found")
@@ -133,9 +135,10 @@ async def _validate_source(
             status_code=400,
             detail="Coding swarm profiles require a git-backed document source",
         )
-    source_user_id = getattr(source, "user_id", None)
-    if source_user_id is not None and str(source_user_id) != str(user_id):
-        raise HTTPException(status_code=404, detail="Document source not found")
+    if not await can_access_coding_source(db, current_user, source_id, write=True):
+        raise HTTPException(
+            status_code=403, detail="Not authorized to create a profile for this source"
+        )
     return source
 
 
@@ -223,7 +226,7 @@ async def create_coding_swarm_profile(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
-    await _validate_source(db, payload.source_id, current_user.id)
+    await _validate_source(db, payload.source_id, current_user)
     if payload.is_default:
         await _clear_other_defaults(
             db, user_id=current_user.id, source_id=payload.source_id

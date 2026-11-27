@@ -123,7 +123,11 @@ async def _store_patch_proposal(
     user_id = getattr(job, "user_id", None) or ctx.user_id
     if ctx.db is None or user_id is None:
         return None
+    from uuid import UUID
+
     from app.models.code_patch_proposal import CodePatchProposal
+
+    source_id = UUID(proposal["source_id"]) if proposal.get("source_id") else None
 
     metadata = {
         "files_touched": proposal["files"],
@@ -132,6 +136,7 @@ async def _store_patch_proposal(
         "lines_removed": proposal["lines_removed"],
         "workspace_id": proposal["workspace_id"],
         "origin": "propose_code_patch",
+        "base_hashes": proposal.get("base_hashes", {}),
     }
     if "diff_truncated_from" in proposal:
         metadata["diff_truncated_from"] = proposal["diff_truncated_from"]
@@ -139,7 +144,10 @@ async def _store_patch_proposal(
     if job is not None:
         row = (
             await ctx.db.execute(
-                select(CodePatchProposal).where(CodePatchProposal.job_id == job.id)
+                select(CodePatchProposal)
+                .where(CodePatchProposal.job_id == job.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
     if row is not None and row.status != "proposed":
@@ -159,6 +167,7 @@ async def _store_patch_proposal(
         )
         ctx.db.add(row)
     row.title = proposal["title"][:500]
+    row.source_id = source_id
     row.summary = proposal["rationale"] or None
     row.diff_unified = proposal["diff"]
     row.proposal_metadata = metadata
@@ -776,14 +785,12 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         opposite responses.
         """
         import asyncio
-        import os
 
-        from app.core.config import settings as app_settings
-        from app.core.feature_flags import get_flag
         from app.services.coding_test_gate import (
             DEFAULT_TEST_COMMANDS,
             read_test_output,
         )
+        from app.services.coding_workspace_execution import run_workspace_command
 
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
@@ -791,17 +798,6 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         )
         if ws is None:
             return {"error": "No active coding workspace"}
-
-        enabled = await get_flag("unsafe_code_execution_enabled")
-        if not enabled and not bool(
-            getattr(app_settings, "ENABLE_UNSAFE_CODE_EXECUTION", False)
-        ):
-            return {
-                "error": (
-                    "Running tests requires unsafe_code_execution_enabled; "
-                    "the suite runs real processes in the workspace."
-                )
-            }
 
         command = str(params.get("command") or "").strip()
         inferred_from = ""
@@ -822,19 +818,12 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 )
             }
 
-        timeout = min(int(params.get("timeout_seconds", 300) or 300), 900)
+        timeout = bounded_int(params.get("timeout_seconds"), 300, 1, 900)
         try:
-            proc = await asyncio.wait_for(
-                asyncio.create_subprocess_shell(
-                    command,
-                    cwd=str(ws.base_path),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                ),
-                timeout=10,
-            )
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout
+            exit_code, stdout, stderr = await run_workspace_command(
+                ws.base_path,
+                command,
+                timeout=timeout,
             )
         except asyncio.TimeoutError:
             return {
@@ -849,9 +838,9 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             return {"error": f"Could not run the tests: {exc}"}
 
         outcome = read_test_output(
-            stdout_bytes.decode("utf-8", errors="replace")[:20000],
-            stderr_bytes.decode("utf-8", errors="replace")[:20000],
-            proc.returncode,
+            stdout[:20000],
+            stderr[:20000],
+            exit_code,
         )
         evidence = outcome.as_evidence()
         evidence["command"] = command
@@ -963,6 +952,12 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 if line.startswith("-") and not line.startswith("---")
             ),
             "workspace_id": getattr(ws, "workspace_id", None),
+            "source_id": getattr(ws, "source_id", None),
+            "base_hashes": {
+                path: ws.original_hashes[path]
+                for path in files
+                if path in ws.original_hashes
+            },
         }
         if len(diff) > len(stored_diff):
             proposal["diff_truncated_from"] = len(diff)
@@ -995,11 +990,10 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
         import asyncio
-        import os
         from datetime import datetime
 
         from app.core.config import settings as app_settings
-        from app.core.feature_flags import get_flag
+        from app.services.coding_workspace_execution import run_workspace_command
 
         state = ctx.state if isinstance(ctx.state, dict) else {}
         ws = executor.workspace_manager.get_or_default(
@@ -1019,61 +1013,44 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 "error": "Command rejected by coding harness safety policy",
                 "data": {"blocked_commands": unsafe_commands},
             }
-        enabled = await get_flag("unsafe_code_execution_enabled")
-        if enabled is None:
-            enabled = bool(getattr(app_settings, "ENABLE_UNSAFE_CODE_EXECUTION", False))
-        if not enabled:
-            return {
-                "error": "Shell execution requires unsafe_code_execution_enabled feature flag"
-            }
-        timeout = min(int(params.get("timeout_seconds", 30) or 30), 120)
-        extra_env = params.get("env") if isinstance(params.get("env"), dict) else {}
-        env = {**os.environ, **extra_env, "HOME": str(ws.base_path)}
+        timeout = bounded_int(params.get("timeout_seconds"), 30, 1, 300)
+        extra_env = params.get("env") if isinstance(params.get("env"), dict) else None
         max_output = int(
             getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_STDOUT_CHARS", 20000) or 20000
         )
         try:
-            proc = await asyncio.wait_for(
-                asyncio.create_subprocess_exec(
-                    "/bin/sh",
-                    "-lc",
-                    command,
-                    cwd=str(ws.base_path),
-                    env=env,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                ),
-                timeout=5,
+            exit_code, stdout, stderr = await run_workspace_command(
+                ws.base_path,
+                command,
+                timeout=timeout,
+                env=extra_env,
             )
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout
-            )
-            stdout_str = stdout_bytes.decode("utf-8", errors="replace")[:max_output]
-            stderr_str = stderr_bytes.decode("utf-8", errors="replace")[:max_output]
+            stdout_str = stdout[:max_output]
+            stderr_str = stderr[:max_output]
             history = state.get("coding_command_history")
             if not isinstance(history, list):
                 history = []
             history.append(
                 {
                     "command": command[:200],
-                    "exit_code": proc.returncode,
+                    "exit_code": exit_code,
                     "stdout_preview": stdout_str[:200],
                     "timestamp": datetime.utcnow().isoformat(),
                 }
             )
             state["coding_command_history"] = history[-50:]
-            command_succeeded = proc.returncode == 0
+            command_succeeded = exit_code == 0
             result = {
                 "success": command_succeeded,
                 "data": {
-                    "exit_code": proc.returncode,
+                    "exit_code": exit_code,
                     "stdout": stdout_str,
                     "stderr": stderr_str,
                     "command": command[:200],
                 },
             }
             if not command_succeeded:
-                result["error"] = f"Command exited with status {proc.returncode}"
+                result["error"] = f"Command exited with status {exit_code}"
             elif bool((ctx.job.config or {}).get("coding_harness_may_mutate")):
                 workspace_status = executor.workspace_manager.get_status(ws)
                 if int(workspace_status.get("changes_count") or 0) > 0:

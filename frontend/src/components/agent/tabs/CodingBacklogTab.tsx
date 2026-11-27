@@ -573,7 +573,7 @@ export const CodingBacklogTab: React.FC<CodingBacklogTabProps> = ({
                           <option value="fixed_through_backlog">Fixed through backlog</option>
                           <option value="promoted_to_repair">Promoted to repair</option>
                         </select>
-                        {['draft', 'failed', 'completed'].includes(item.status) ? (
+                        {['draft', 'failed'].includes(item.status) ? (
                           <Button
                             size="sm"
                             variant="primary"
@@ -588,7 +588,7 @@ export const CodingBacklogTab: React.FC<CodingBacklogTabProps> = ({
                             variant="secondary"
                             onClick={() => codingBacklogActionMutation.mutate({ itemId: item.id, action: 'pause' })}
                           >
-                            Pause
+                            Pause scheduling
                           </Button>
                         ) : null}
                         {item.status === 'paused' ? (

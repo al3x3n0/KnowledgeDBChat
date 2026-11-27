@@ -24,7 +24,10 @@ and the gate flips from `5 passed, 1 failed` to `6 passed, 0 failed`.
 
 import pytest
 
-from app.services.code_patch_apply_service import CodePatchApplyService
+from app.services.code_patch_apply_service import (
+    CodePatchApplyService,
+    UnifiedDiffApplyError,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -50,13 +53,14 @@ WELL_FORMED = """--- a/src/intervals.py
 
 
 class TestTheTriggerIsReal:
-    def test_a_hunk_header_without_line_numbers_parses_to_nothing(self):
+    def test_a_hunk_header_without_line_numbers_is_rejected(self):
         """The exact input that produced a successful no-op patch.
 
         A bare `@@` is what a model writes when it is describing a change
         rather than emitting a diff, so this is not an exotic case.
         """
-        assert CodePatchApplyService().parse(MALFORMED) == []
+        with pytest.raises(UnifiedDiffApplyError, match="Missing hunks"):
+            CodePatchApplyService().parse(MALFORMED)
 
     def test_a_proper_unified_diff_parses(self):
         parsed = CodePatchApplyService().parse(WELL_FORMED)

@@ -10,7 +10,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from loguru import logger
-from sqlalchemy import and_, desc, func, or_, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -92,15 +92,21 @@ async def update_code_patch(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    proposal = await db.get(CodePatchProposal, proposal_id)
+    proposal = await db.get(
+        CodePatchProposal, proposal_id, with_for_update=True, populate_existing=True
+    )
     if not proposal or proposal.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Not found")
 
     if payload.status is not None:
-        s = str(payload.status).strip().lower()
-        if s not in {"proposed", "applied", "rejected"}:
+        status = str(payload.status).strip().lower()
+        if status not in {"proposed", "applied", "rejected"}:
             raise HTTPException(status_code=422, detail="Invalid status")
-        proposal.status = s
+        if status != proposal.status and "applied" in (status, proposal.status):
+            raise HTTPException(
+                status_code=409, detail="The apply workflow manages applied proposals"
+            )
+        proposal.status = status
 
     try:
         await db.commit()
@@ -118,101 +124,39 @@ async def apply_code_patch_to_kb(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Apply this patch proposal to KnowledgeDB code documents (best-effort).
-
-    This updates Document.content for matching files under the proposal's `source_id`.
-    """
-    from hashlib import sha256
-
-    from app.models.document import Document
-    from app.services.code_patch_apply_service import (
-        UnifiedDiffApplyError,
-        code_patch_apply_service,
-    )
-    from app.services.document_service import DocumentService
+    """Apply a proposal through its approved Patch PR."""
+    from app.api.endpoints.patch_prs import merge_patch_pr
+    from app.models.patch_pr import PatchPR
+    from app.schemas.patch_pr import PatchPRMergeRequest
 
     proposal = await db.get(CodePatchProposal, proposal_id)
     if not proposal or proposal.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Not found")
-    if not proposal.source_id:
-        raise HTTPException(
-            status_code=422, detail="Proposal missing source_id (cannot apply)"
+    review = await db.scalar(
+        select(PatchPR)
+        .where(
+            PatchPR.user_id == current_user.id,
+            PatchPR.selected_proposal_id == proposal.id,
+            PatchPR.status.in_(("approved", "merged")),
         )
-
-    try:
-        file_diffs = code_patch_apply_service.parse(proposal.diff_unified or "")
-    except UnifiedDiffApplyError as exc:
-        raise HTTPException(status_code=422, detail=f"Invalid diff: {exc}")
-
-    if not file_diffs:
-        raise HTTPException(status_code=422, detail="No file diffs found")
-
-    service = DocumentService()
-    applied: list[dict] = []
-    errors: list[dict] = []
-
-    for fd in file_diffs:
-        path = (fd.path or "").strip()
-        if not path:
-            continue
-
-        # Try to find the code document for this path.
-        res = await db.execute(
-            select(Document)
-            .where(
-                and_(
-                    Document.source_id == proposal.source_id,
-                    or_(
-                        Document.file_path == path,
-                        Document.source_identifier == path,
-                        Document.title == path,
-                    ),
-                )
-            )
-            .limit(1)
-        )
-        doc = res.scalar_one_or_none()
-        if not doc:
-            errors.append({"path": path, "error": "Document not found"})
-            continue
-
-        try:
-            new_text, debug = code_patch_apply_service.apply_to_text(
-                doc.content or "", fd
-            )
-        except UnifiedDiffApplyError as exc:
-            errors.append({"path": path, "error": str(exc)})
-            continue
-
-        doc.content = new_text
-        doc.content_hash = sha256(new_text.encode("utf-8")).hexdigest()
-        doc.is_processed = False
-        doc.processing_error = None
-        applied.append({"path": path, "document_id": str(doc.id), "debug": debug})
-
-        # Best-effort reprocess to update chunks/vector index.
-        try:
-            await service.reprocess_document(doc.id, db, user_id=current_user.id)
-        except Exception:
-            pass
-
-    proposal.proposal_metadata = (
-        proposal.proposal_metadata
-        if isinstance(proposal.proposal_metadata, dict)
-        else {}
+        .order_by((PatchPR.status == "merged").desc(), PatchPR.updated_at.desc())
+        .limit(1)
+        .with_for_update()
     )
-    proposal.proposal_metadata["apply_results"] = {"applied": applied, "errors": errors}
-    if errors:
-        proposal.status = "proposed"
-    else:
-        proposal.status = "applied"
+    if review is None:
+        raise HTTPException(
+            status_code=409, detail="Approve this proposal in a Patch PR first"
+        )
 
-    await db.commit()
-
+    result = await merge_patch_pr(
+        review.id,
+        PatchPRMergeRequest(dry_run=False),
+        current_user,
+        db,
+    )
     return {
-        "proposal_id": str(proposal.id),
-        "status": proposal.status,
-        "applied": applied,
-        "errors": errors,
+        "proposal_id": str(proposal_id),
+        "status": "applied" if result.ok else "proposed",
+        "applied": result.applied_files,
+        "errors": result.errors,
     }

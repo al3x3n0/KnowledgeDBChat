@@ -19,10 +19,12 @@ import os
 import socket
 import subprocess
 import uuid
+from contextlib import suppress
 from typing import Any, List, Optional, Sequence, Tuple
 
 from app.core.config import settings
 from app.services import shared_slots
+from app.services.sandbox_invocation import current as current_invocation
 from app.services.sandbox_workspace import (
     SANDBOX_GID,
     SANDBOX_UID,
@@ -268,6 +270,33 @@ def sandbox_slots_key() -> str:
     return f"sandbox:slots:{socket.gethostname()}:{host or 'default'}"
 
 
+async def _communicate_until_done(
+    process: asyncio.subprocess.Process,
+    timeout_seconds: int,
+) -> tuple[bytes, bytes]:
+    invocation = current_invocation.get()
+    if invocation is None or invocation.cancelled is None:
+        return await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_seconds
+    communication = asyncio.create_task(process.communicate())
+    try:
+        while not communication.done():
+            if await invocation.cancelled():
+                raise InterruptedError("Agent job cancelled during sandbox execution")
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            await asyncio.wait({communication}, timeout=min(2.0, remaining))
+        return communication.result()
+    finally:
+        if not communication.done():
+            communication.cancel()
+            with suppress(asyncio.CancelledError):
+                await communication
+
+
 async def run_in_sandbox(
     script: str,
     workdir: str,
@@ -337,11 +366,10 @@ async def run_in_sandbox(
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=timeout_seconds
-            )
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            process.kill()
+            stdout, stderr = await _communicate_until_done(process, timeout_seconds)
+        except (Exception, asyncio.CancelledError):
+            with suppress(ProcessLookupError):
+                process.kill()
             try:
                 # Shielded, because the cancellation path is where this
                 # matters most and awaiting plainly inside a cancelled task

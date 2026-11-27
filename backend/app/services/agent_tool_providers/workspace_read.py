@@ -16,22 +16,6 @@ from app.services.agent_tool_providers.base import (
 def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvider:
     """Read-oriented workspace tools for AutonomousAgentExecutor."""
 
-    async def _document_source_exists(db: Any, source_id: str) -> bool:
-        from uuid import UUID
-
-        from sqlalchemy import select
-
-        from app.models.document import DocumentSource
-
-        try:
-            key = UUID(str(source_id))
-        except (TypeError, ValueError):
-            return False
-        row = await db.execute(
-            select(DocumentSource.id).where(DocumentSource.id == key)
-        )
-        return row.scalar_one_or_none() is not None
-
     async def _clone_and_index_repo(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -46,12 +30,17 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
             return {"error": "Either source_id or repo_url is required"}
         fallback_note = ""
         if source_id:
-            # A source id that names nothing used to load zero documents and
-            # report success with files_count 0. Measured: a run's critic
-            # suggested a placeholder UUID, the clone "succeeded" empty, the
-            # repo_url passed in the SAME call was ignored, and three
-            # iterations went to confirming the workspace was empty.
-            if not await _document_source_exists(ctx.db, source_id):
+            from uuid import UUID
+
+            from app.models.document import DocumentSource
+            from app.models.user import User
+            from app.services.coding_source_access import can_access_coding_source
+
+            try:
+                key = UUID(source_id)
+            except ValueError:
+                key = None
+            if key is None or await ctx.db.get(DocumentSource, key) is None:
                 if not repo_url:
                     return {
                         "error": (
@@ -65,6 +54,12 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
                     "repo_url instead. Leave source_id out when giving a URL."
                 )
                 source_id = ""
+            else:
+                user = await ctx.db.get(User, job.user_id)
+                if user is None or not await can_access_coding_source(
+                    ctx.db, user, key
+                ):
+                    return {"error": "Not authorized for this source"}
         try:
             if source_id:
                 ws = await executor.workspace_manager.create_from_source(

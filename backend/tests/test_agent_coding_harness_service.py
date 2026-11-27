@@ -374,9 +374,7 @@ async def test_command_tool_marks_nonzero_exit_as_failed_observation(
     tmp_path,
     monkeypatch,
 ):
-    import asyncio
-
-    from app.core import feature_flags
+    from app.services import coding_workspace_execution
 
     manager = CodingWorkspaceManager()
     workspace = CodingWorkspace(
@@ -395,20 +393,16 @@ async def test_command_tool_marks_nonzero_exit_as_failed_observation(
         state={"coding_workspace_id": workspace.workspace_id},
     )
 
-    async def _enabled(_name):
-        return True
+    async def _sandbox_command(path, command, *, timeout, env):
+        assert path == tmp_path
+        assert command == "pytest -q"
+        assert timeout == 5
+        assert env is None
+        return 1, "", "1 failed"
 
-    class _Process:
-        returncode = 1
-
-        async def communicate(self):
-            return b"", b"1 failed"
-
-    async def _create_process(*_args, **_kwargs):
-        return _Process()
-
-    monkeypatch.setattr(feature_flags, "get_flag", _enabled)
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", _create_process)
+    monkeypatch.setattr(
+        coding_workspace_execution, "run_workspace_command", _sandbox_command
+    )
 
     result = await provider.execute(
         "run_command",

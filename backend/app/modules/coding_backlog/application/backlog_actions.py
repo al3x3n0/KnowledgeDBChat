@@ -19,8 +19,10 @@ from datetime import datetime
 from typing import Any, Awaitable, Callable, Dict, Optional
 from uuid import UUID
 
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.agent_job import AgentJob, AgentJobStatus
 from app.models.code_patch_proposal import CodePatchProposal
 from app.models.coding_backlog import CodingBacklogItem
 from app.models.patch_pr import PatchPR
@@ -52,6 +54,7 @@ from app.services.coding_backlog_items import (
     normalize_item_decomposition,
     recompute_portfolio_progress,
 )
+from app.services.config_values import uuid_list
 
 
 @dataclass
@@ -177,9 +180,7 @@ async def _update_backlog_note(ctx: ActionContext) -> None:
 
 
 async def _start(ctx: ActionContext) -> None:
-    item = ctx.item
-    db = ctx.db
-    await create_orchestrator_job(item, db=db, start_immediately=True)
+    await create_orchestrator_job(ctx.item, db=ctx.db, start_immediately=True)
 
 
 async def _pause(ctx: ActionContext) -> None:
@@ -202,6 +203,34 @@ async def _pause(ctx: ActionContext) -> None:
     item.decomposition = decomposition
 
 
+async def _cancel_active_jobs(ctx: ActionContext) -> None:
+    item = ctx.item
+    ids = {
+        job_id for job_id in [item.orchestrator_job_id, item.current_job_id] if job_id
+    }
+    ids.update(UUID(job_id) for job_id in uuid_list(item.child_job_ids, 1000))
+    if not ids:
+        return
+    jobs = await ctx.db.scalars(
+        select(AgentJob)
+        .where(
+            AgentJob.user_id == item.user_id,
+            AgentJob.status.in_(("pending", "running", "paused")),
+            or_(
+                AgentJob.id.in_(ids),
+                AgentJob.parent_job_id.in_(ids),
+                AgentJob.root_job_id.in_(ids),
+            ),
+        )
+        .order_by(AgentJob.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    for job in jobs:
+        job.status = AgentJobStatus.CANCELLED.value
+        job.completed_at = item.completed_at
+
+
 async def _cancel(ctx: ActionContext) -> None:
     item = ctx.item
     decomposition = ctx.decomposition
@@ -213,6 +242,7 @@ async def _cancel(ctx: ActionContext) -> None:
     item.status = "cancelled"
     item.completed_at = datetime.utcnow()
     item.updated_at = datetime.utcnow()
+    await _cancel_active_jobs(ctx)
     append_backlog_timeline(
         decomposition,
         timeline_entry(
@@ -249,6 +279,7 @@ async def _close(ctx: ActionContext) -> None:
     )
     item.completed_at = datetime.utcnow()
     item.updated_at = datetime.utcnow()
+    await _cancel_active_jobs(ctx)
     append_backlog_timeline(
         decomposition,
         timeline_entry(
@@ -272,6 +303,8 @@ async def _close(ctx: ActionContext) -> None:
 
 async def _apply_override(ctx: ActionContext) -> None:
     item = ctx.item
+    if item.require_patch_pr:
+        raise ActionRefused("conflict", "This item requires a Patch PR")
     db = ctx.db
     decomposition = ctx.decomposition
     slice_state = ctx.slice_state
@@ -749,6 +782,25 @@ async def perform(
         raise ActionRefused(
             "forbidden", "Only the backlog owner can perform this action"
         )
+    allowed_states = {
+        "start": {"draft", "failed"},
+        "resume": {"paused"},
+        "pause": {"running"},
+        "cancel": {"draft", "running", "paused", "failed", "awaiting_operator"},
+    }
+    completed_actions = {
+        "start": "running",
+        "resume": "running",
+        "pause": "paused",
+        "cancel": "cancelled",
+    }
+    if name in allowed_states:
+        if item.status == completed_actions[name]:
+            return
+        if item.status not in allowed_states[name]:
+            raise ActionRefused(
+                "conflict", f"Cannot {name} an item in {item.status} state"
+            )
     if chosen.on_slice and slice_state is None:
         raise ActionRefused("invalid", "slice_id is required for this action")
     if (

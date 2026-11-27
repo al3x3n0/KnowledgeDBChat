@@ -179,6 +179,7 @@ class TestRefusals:
         item = await _item(
             db_session,
             owner,
+            status="running",
             visibility="shared",
             shared_with_user_ids=[str(test_user.id)],
         )
@@ -349,9 +350,12 @@ class TestLifecycle:
     async def test_starting_creates_the_orchestrator_and_queues_it(
         self, db_session, test_user, queued, action
     ):
-        item = await _item(db_session, test_user)
+        item = await _item(
+            db_session, test_user, status="paused" if action == "resume" else "draft"
+        )
 
         done = await _act(db_session, test_user, item, action)
+        await _act(db_session, test_user, item, action)
 
         jobs = await _jobs(db_session)
         assert done.status == "running"
@@ -378,6 +382,18 @@ class TestLifecycle:
     @pytest.mark.asyncio
     async def test_cancelling(self, db_session, test_user):
         item = await _item(db_session, test_user, status="running")
+        queued_job = AgentJob(
+            user_id=test_user.id,
+            name="Apply patch",
+            goal="Apply the selected proposal",
+            job_type="analysis",
+            status="pending",
+        )
+        db_session.add(queued_job)
+        await db_session.flush()
+        item.current_job_id = queued_job.id
+        item.child_job_ids = [str(queued_job.id), "invalid-legacy-id"]
+        await db_session.commit()
 
         done = await _act(
             db_session, test_user, item, "cancel", closure_reason="Duplicate"
@@ -387,6 +403,17 @@ class TestLifecycle:
         assert done.completed_at is not None
         assert done.latest_summary["status"] == "cancelled"
         assert done.latest_summary["closure_reason"] == "duplicate"
+        await db_session.refresh(queued_job)
+        assert queued_job.status == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_start_cannot_reopen_a_cancelled_item(
+        self, db_session, test_user, queued
+    ):
+        item = await _item(db_session, test_user, status="cancelled")
+        status, _ = await _refused(db_session, test_user, item, "start")
+        assert status == 409
+        assert queued == []
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

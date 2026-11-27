@@ -15,7 +15,6 @@
 
 import React, { useMemo } from 'react';
 import toast from 'react-hot-toast';
-import { useQueryClient } from 'react-query';
 import { useNavigate } from 'react-router-dom';
 
 import { apiClient } from '../../services/api';
@@ -104,7 +103,17 @@ export const RunOutputSection: React.FC<RunOutputSectionProps> = ({
   unsafeExecBadge,
 }) => {
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
+  const openPatchReview = async (proposalId: string, title?: string) => {
+    try {
+      const review = await apiClient.createPatchPR({
+        title: title || 'Review coding patch',
+        initial_proposal_id: proposalId,
+      });
+      navigate(`/patch-prs?pr=${encodeURIComponent(review.id)}`);
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || e?.message || 'Could not open patch review');
+    }
+  };
 
   // The whole view: it is one derivation and the markup below reads most of it.
   const {
@@ -172,25 +181,9 @@ export const RunOutputSection: React.FC<RunOutputSectionProps> = ({
               <Button
                 size="sm"
                 variant="secondary"
-                onClick={async () => {
-                  const ok = window.confirm(
-                    'Apply this patch to KnowledgeDB code documents now? This updates the stored file contents.'
-                  );
-                  if (!ok) return;
-                  try {
-                    const res = await apiClient.applyCodePatchProposal(codePatchProposal.proposal_id);
-                    if ((res.errors || []).length > 0) {
-                      toast.error(`Applied with errors: ${(res.errors || []).length}`);
-                    } else {
-                      toast.success('Patch applied to KB');
-                    }
-                    queryClient.invalidateQueries(['agent-jobs']);
-                  } catch (e: any) {
-                    toast.error(e?.response?.data?.detail || e?.message || 'Failed to apply patch');
-                  }
-                }}
+                onClick={() => openPatchReview(codePatchProposal.proposal_id, codePatchProposal.title)}
               >
-                Apply to KB
+                Review patch
               </Button>
               <Button
                 size="sm"
@@ -220,22 +213,9 @@ export const RunOutputSection: React.FC<RunOutputSectionProps> = ({
                     <Button
                       size="sm"
                       variant="secondary"
-                      onClick={async () => {
-                        const ok = window.confirm(
-                          'Apply this patch to KnowledgeDB code documents now? This updates the stored file contents.'
-                        );
-                        if (!ok) return;
-                        try {
-                          const res = await apiClient.applyCodePatchProposal(p.proposal_id);
-                          if ((res.errors || []).length > 0) toast.error(`Applied with errors: ${(res.errors || []).length}`);
-                          else toast.success('Patch applied to KB');
-                          queryClient.invalidateQueries(['agent-jobs']);
-                        } catch (e: any) {
-                          toast.error(e?.response?.data?.detail || e?.message || 'Failed to apply patch');
-                        }
-                      }}
+                      onClick={() => openPatchReview(p.proposal_id, p.title)}
                     >
-                      Apply to KB
+                      Review patch
                     </Button>
                     <Button size="sm" variant="ghost" onClick={() => copyText(p.proposal_id, 'Proposal ID')}>
                       Copy ID

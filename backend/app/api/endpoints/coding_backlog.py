@@ -37,6 +37,7 @@ from app.services.coding_backlog_items import (
 from app.services.coding_backlog_items import (
     default_decomposition as _default_decomposition,
 )
+from app.services.coding_source_access import can_access_coding_source
 from app.services.collaboration_service import build_collaboration_summary
 from app.services.collaboration_service import (
     build_collaboration_user_lookup as _build_backlog_user_lookup,
@@ -88,10 +89,10 @@ _is_backlog_visible_to_user = backlog_store.is_visible_to
 
 
 async def _get_visible_backlog_item_or_404(
-    db: AsyncSession, item_id: UUID, user_id: UUID
+    db: AsyncSession, item_id: UUID, user_id: UUID, *, lock: bool = False
 ) -> CodingBacklogItem:
     try:
-        return await backlog_store.get_visible_item(db, item_id, user_id)
+        return await backlog_store.get_visible_item(db, item_id, user_id, lock=lock)
     except backlog_store.BacklogItemNotFound:
         raise HTTPException(status_code=404, detail="Not found")
 
@@ -261,6 +262,8 @@ async def create_coding_backlog_item(
     source = await db.get(DocumentSource, payload.source_id)
     if not source:
         raise HTTPException(status_code=404, detail="Document source not found")
+    if not await can_access_coding_source(db, current_user, source.id):
+        raise HTTPException(status_code=403, detail="Not authorized for this source")
     collaboration_payload = _normalize_collaboration(
         (
             payload.collaboration
@@ -347,7 +350,9 @@ async def update_coding_backlog_item(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    item = await _get_visible_backlog_item_or_404(db, item_id, current_user.id)
+    item = await _get_visible_backlog_item_or_404(
+        db, item_id, current_user.id, lock=True
+    )
     if str(item.user_id) != str(current_user.id):
         raise HTTPException(
             status_code=403, detail="Only the backlog owner can edit this item"
@@ -431,7 +436,9 @@ async def act_on_coding_backlog_item(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    item = await _get_visible_backlog_item_or_404(db, item_id, current_user.id)
+    item = await _get_visible_backlog_item_or_404(
+        db, item_id, current_user.id, lock=True
+    )
     try:
         await backlog_actions.perform(
             db,

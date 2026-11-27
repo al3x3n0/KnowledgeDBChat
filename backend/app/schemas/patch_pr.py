@@ -41,6 +41,9 @@ class PatchPRResponse(BaseModel):
     proposal_ids: List[str] = []
     checks: Optional[Dict[str, Any]] = None
     approvals: Optional[List[Dict[str, Any]]] = None
+    diff_unified: Optional[str] = None
+    diff_sha256: Optional[str] = None
+    approval_valid: bool = False
     merged_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
@@ -74,11 +77,13 @@ class PatchPRUpdateRequest(BaseModel):
 
 class PatchPRApproveRequest(BaseModel):
     note: Optional[str] = Field(default=None, max_length=5000)
+    diff_sha256: Optional[str] = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
 class PatchPRMergeRequest(BaseModel):
     dry_run: bool = True
     require_approved: bool = True
+    diff_sha256: Optional[str] = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
 class PatchPRMergeResponse(BaseModel):

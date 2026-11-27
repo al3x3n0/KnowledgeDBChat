@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from hashlib import sha256
+from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from loguru import logger
 from sqlalchemy import and_, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +30,61 @@ from app.schemas.patch_pr import (
 from app.services.auth_service import get_current_user
 
 router = APIRouter()
+
+
+async def _owned_pr(
+    db: AsyncSession, pr_id: UUID, user_id: UUID, *, lock: bool = False
+) -> PatchPR:
+    statement = select(PatchPR).where(PatchPR.id == pr_id, PatchPR.user_id == user_id)
+    if lock:
+        statement = statement.with_for_update().execution_options(
+            populate_existing=True
+        )
+    pr = await db.scalar(statement)
+    if pr is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return pr
+
+
+async def _selected_proposal(
+    db: AsyncSession, pr: PatchPR, *, lock: bool = False
+) -> Optional[CodePatchProposal]:
+    if not pr.selected_proposal_id:
+        return None
+    statement = select(CodePatchProposal).where(
+        CodePatchProposal.id == pr.selected_proposal_id,
+        CodePatchProposal.user_id == pr.user_id,
+    )
+    if lock:
+        statement = statement.with_for_update().execution_options(
+            populate_existing=True
+        )
+    return await db.scalar(statement)
+
+
+def _diff_sha256(proposal: CodePatchProposal) -> str:
+    return sha256((proposal.diff_unified or "").encode("utf-8")).hexdigest()
+
+
+def _matching_approval(pr: PatchPR, proposal: CodePatchProposal) -> bool:
+    digest = _diff_sha256(proposal)
+    return any(
+        isinstance(approval, dict)
+        and approval.get("user_id") == str(pr.user_id)
+        and approval.get("proposal_id") == str(proposal.id)
+        and approval.get("diff_sha256") == digest
+        for approval in (pr.approvals or [])
+    )
+
+
+async def _detail(db: AsyncSession, pr: PatchPR) -> PatchPRResponse:
+    proposal = await _selected_proposal(db, pr)
+    response = PatchPRResponse.model_validate(pr)
+    if proposal and proposal.diff_unified:
+        response.diff_unified = proposal.diff_unified
+        response.diff_sha256 = _diff_sha256(proposal)
+        response.approval_valid = _matching_approval(pr, proposal)
+    return response
 
 
 def _now_iso() -> str:
@@ -80,10 +135,8 @@ async def get_patch_pr(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    pr = await db.get(PatchPR, pr_id)
-    if not pr or pr.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Not found")
-    return PatchPRResponse.model_validate(pr)
+    pr = await _owned_pr(db, pr_id, current_user.id)
+    return await _detail(db, pr)
 
 
 @router.post("", response_model=PatchPRResponse)
@@ -103,6 +156,10 @@ async def create_patch_pr(
         proposal = await db.get(CodePatchProposal, initial_proposal_uuid)
         if not proposal or proposal.user_id != current_user.id:
             raise HTTPException(status_code=404, detail="initial_proposal_id not found")
+        if source_uuid and source_uuid != proposal.source_id:
+            raise HTTPException(
+                status_code=422, detail="Proposal belongs to a different source"
+            )
         selected_proposal_id = proposal.id
         proposal_ids = [str(proposal.id)]
         source_uuid = source_uuid or proposal.source_id
@@ -121,7 +178,7 @@ async def create_patch_pr(
     db.add(pr)
     await db.commit()
     await db.refresh(pr)
-    return PatchPRResponse.model_validate(pr)
+    return await _detail(db, pr)
 
 
 @router.post("/from-chain", response_model=PatchPRResponse)
@@ -206,15 +263,26 @@ async def create_patch_pr_from_chain(
                 }
             )
 
-    proposals: list[CodePatchProposal] = []
+    proposal_uuids: list[UUID] = []
     for pid in proposal_ids:
         try:
-            pu = UUID(pid)
-        except Exception:
+            proposal_uuids.append(UUID(pid))
+        except ValueError:
             continue
-        p = await db.get(CodePatchProposal, pu)
-        if p and p.user_id == current_user.id:
-            proposals.append(p)
+
+    proposals = list(
+        (
+            await db.scalars(
+                select(CodePatchProposal).where(
+                    CodePatchProposal.user_id == current_user.id,
+                    or_(
+                        CodePatchProposal.id.in_(proposal_uuids),
+                        CodePatchProposal.job_id.in_([job.id for job in jobs]),
+                    ),
+                )
+            )
+        ).all()
+    )
 
     if not proposals:
         raise HTTPException(
@@ -264,7 +332,7 @@ async def create_patch_pr_from_chain(
     db.add(pr)
     await db.commit()
     await db.refresh(pr)
-    return PatchPRResponse.model_validate(pr)
+    return await _detail(db, pr)
 
 
 @router.patch("/{pr_id}", response_model=PatchPRResponse)
@@ -274,9 +342,13 @@ async def update_patch_pr(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    pr = await db.get(PatchPR, pr_id)
-    if not pr or pr.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Not found")
+    pr = await _owned_pr(db, pr_id, current_user.id, lock=True)
+    if pr.status == "merged" and (
+        payload.status is not None or payload.selected_proposal_id is not None
+    ):
+        raise HTTPException(
+            status_code=409, detail="An applied patch cannot change state or proposal"
+        )
 
     if payload.title is not None:
         pr.title = str(payload.title).strip()[:500]
@@ -284,9 +356,10 @@ async def update_patch_pr(
         pr.description = payload.description
     if payload.status is not None:
         s = str(payload.status).strip().lower()
-        if s not in {"draft", "open", "approved", "merged", "rejected"}:
+        if s not in {"draft", "open", "rejected"}:
             raise HTTPException(status_code=422, detail="Invalid status")
         pr.status = s
+        pr.approvals = []
     if payload.selected_proposal_id is not None:
         sel_uuid = _as_uuid(payload.selected_proposal_id, field="selected_proposal_id")
         if sel_uuid:
@@ -295,8 +368,15 @@ async def update_patch_pr(
                 raise HTTPException(
                     status_code=404, detail="selected_proposal_id not found"
                 )
-            pr.selected_proposal_id = proposal.id
-            hist = pr.proposal_ids if isinstance(pr.proposal_ids, list) else []
+            if pr.source_id and pr.source_id != proposal.source_id:
+                raise HTTPException(
+                    status_code=422, detail="Proposal belongs to a different source"
+                )
+            if pr.selected_proposal_id != proposal.id:
+                pr.selected_proposal_id = proposal.id
+                pr.approvals = []
+                pr.status = "open"
+            hist = list(pr.proposal_ids or [])
             pid = str(proposal.id)
             if pid not in set(str(x) for x in hist):
                 hist.append(pid)
@@ -305,7 +385,7 @@ async def update_patch_pr(
 
     await db.commit()
     await db.refresh(pr)
-    return PatchPRResponse.model_validate(pr)
+    return await _detail(db, pr)
 
 
 @router.post("/{pr_id}/approve", response_model=PatchPRResponse)
@@ -315,25 +395,40 @@ async def approve_patch_pr(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    pr = await db.get(PatchPR, pr_id)
-    if not pr or pr.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Not found")
+    pr = await _owned_pr(db, pr_id, current_user.id, lock=True)
+    if pr.status not in {"draft", "open", "approved"}:
+        raise HTTPException(status_code=409, detail="Patch is not open for approval")
+    proposal = await _selected_proposal(db, pr, lock=True)
+    if not proposal or not proposal.diff_unified:
+        raise HTTPException(status_code=422, detail="No patch diff to approve")
+    if proposal.status == "applied":
+        raise HTTPException(status_code=409, detail="The proposal was already applied")
+    if proposal.status == "rejected":
+        raise HTTPException(
+            status_code=409, detail="The selected proposal was rejected"
+        )
+    digest = _diff_sha256(proposal)
+    if payload.diff_sha256 is not None and payload.diff_sha256 != digest:
+        raise HTTPException(
+            status_code=409, detail="The selected diff changed. Review it again."
+        )
 
-    approvals = pr.approvals if isinstance(pr.approvals, list) else []
-    approvals.append(
-        {
-            "user_id": str(current_user.id),
-            "at": _now_iso(),
-            "note": (payload.note or None),
-        }
-    )
-    pr.approvals = approvals
-    if pr.status in {"draft", "open"}:
+    if not _matching_approval(pr, proposal):
+        pr.approvals = [
+            {
+                "user_id": str(current_user.id),
+                "at": _now_iso(),
+                "note": payload.note or None,
+                "proposal_id": str(proposal.id),
+                "diff_sha256": digest,
+            }
+        ]
+    if pr.status != "approved":
         pr.status = "approved"
 
     await db.commit()
     await db.refresh(pr)
-    return PatchPRResponse.model_validate(pr)
+    return await _detail(db, pr)
 
 
 @router.post("/{pr_id}/merge", response_model=PatchPRMergeResponse)
@@ -343,136 +438,98 @@ async def merge_patch_pr(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    from hashlib import sha256
-
-    from app.models.document import Document
     from app.services.code_patch_apply_service import (
         UnifiedDiffApplyError,
         code_patch_apply_service,
     )
-    from app.services.document_service import DocumentService
+    from app.services.coding_source_access import can_access_coding_source
 
-    pr = await db.get(PatchPR, pr_id)
-    if not pr or pr.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Not found")
-
-    if bool(payload.require_approved):
-        approvals = pr.approvals if isinstance(pr.approvals, list) else []
-        if not approvals:
-            raise HTTPException(
-                status_code=422, detail="PR must be approved before merge"
-            )
-
-    if not pr.selected_proposal_id:
-        raise HTTPException(status_code=422, detail="PR has no selected_proposal_id")
-
-    proposal = await db.get(CodePatchProposal, pr.selected_proposal_id)
-    if not proposal or proposal.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Selected proposal not found")
-    if not proposal.source_id:
+    pr = await _owned_pr(db, pr_id, current_user.id, lock=True)
+    proposal = await _selected_proposal(db, pr, lock=True)
+    if proposal is None or not proposal.source_id:
         raise HTTPException(
-            status_code=422, detail="Selected proposal missing source_id"
+            status_code=422, detail="No Library source on the selected proposal"
+        )
+    if pr.source_id and pr.source_id != proposal.source_id:
+        raise HTTPException(
+            status_code=422, detail="Proposal belongs to a different source"
+        )
+    if payload.diff_sha256 is not None and payload.diff_sha256 != _diff_sha256(
+        proposal
+    ):
+        raise HTTPException(
+            status_code=409, detail="The selected diff changed. Review it again."
+        )
+    if not await can_access_coding_source(
+        db, current_user, proposal.source_id, write=True
+    ):
+        raise HTTPException(status_code=403, detail="Not authorized for this source")
+    if not payload.dry_run and pr.status == "merged":
+        return PatchPRMergeResponse(
+            pr_id=str(pr.id),
+            dry_run=False,
+            ok=True,
+            selected_proposal_id=str(proposal.id),
+            applied_files=(pr.checks or {}).get("merge", {}).get("applied_files", []),
+        )
+    if pr.status not in {"draft", "open", "approved"}:
+        raise HTTPException(status_code=409, detail="Patch is not open for application")
+    if proposal.status == "applied":
+        raise HTTPException(status_code=409, detail="The proposal was already applied")
+    if proposal.status == "rejected":
+        raise HTTPException(
+            status_code=409, detail="The selected proposal was rejected"
+        )
+    if not payload.dry_run and not _matching_approval(pr, proposal):
+        raise HTTPException(
+            status_code=422, detail="Approve the selected diff before applying it"
         )
 
     try:
         file_diffs = code_patch_apply_service.parse(proposal.diff_unified or "")
     except UnifiedDiffApplyError as exc:
-        raise HTTPException(status_code=422, detail=f"Invalid diff: {exc}")
+        raise HTTPException(status_code=422, detail=f"Invalid diff: {exc}") from exc
     if not file_diffs:
         raise HTTPException(status_code=422, detail="No file diffs found")
-
-    applied_files: list[dict] = []
-    errors: list[dict] = []
-
-    service = DocumentService()
-
-    for fd in file_diffs:
-        path = (fd.path or "").strip()
-        if not path:
-            continue
-
-        res = await db.execute(
-            select(Document)
-            .where(
-                and_(
-                    Document.source_id == proposal.source_id,
-                    or_(
-                        Document.file_path == path,
-                        Document.source_identifier == path,
-                        Document.title == path,
-                    ),
-                )
-            )
-            .limit(1)
+    metadata = proposal.proposal_metadata or {}
+    if metadata.get("diff_truncated_from"):
+        raise HTTPException(
+            status_code=422, detail="The proposal contains a truncated diff"
         )
-        doc = res.scalar_one_or_none()
-        if not doc:
-            errors.append({"path": path, "error": "Document not found"})
-            continue
 
-        try:
-            new_text, debug = code_patch_apply_service.apply_to_text(
-                doc.content or "", fd
-            )
-        except UnifiedDiffApplyError as exc:
-            errors.append({"path": path, "error": str(exc)})
-            continue
-
-        applied_files.append({"path": path, "document_id": str(doc.id), "debug": debug})
-
-        if not bool(payload.dry_run):
-            doc.content = new_text
-            doc.content_hash = sha256(new_text.encode("utf-8")).hexdigest()
-            doc.is_processed = False
-            doc.processing_error = None
-            try:
-                await service.reprocess_document(doc.id, db, user_id=current_user.id)
-            except Exception:
-                pass
-
-    ok = len(errors) == 0
-    merge_record: Dict[str, Any] = {
-        "at": _now_iso(),
-        "dry_run": bool(payload.dry_run),
-        "proposal_id": str(proposal.id),
-        "ok": ok,
-        "applied_files": applied_files,
-        "errors": errors,
+    applied_files, errors = await code_patch_apply_service.apply_to_library(
+        db,
+        source_id=proposal.source_id,
+        user_id=current_user.id,
+        file_diffs=file_diffs,
+        dry_run=payload.dry_run,
+        base_hashes=metadata.get("base_hashes"),
+    )
+    ok = not errors
+    pr.checks = {
+        **(pr.checks or {}),
+        ("dry_run" if payload.dry_run else "merge"): {
+            "at": _now_iso(),
+            "dry_run": payload.dry_run,
+            "proposal_id": str(proposal.id),
+            "diff_sha256": _diff_sha256(proposal),
+            "ok": ok,
+            "applied_files": applied_files,
+            "errors": errors,
+        },
     }
-
-    pr.checks = pr.checks if isinstance(pr.checks, dict) else {}
-    pr.checks["merge"] = merge_record
-
-    if bool(payload.dry_run):
-        await db.commit()
-        return PatchPRMergeResponse(
-            pr_id=str(pr.id),
-            dry_run=True,
-            ok=ok,
-            selected_proposal_id=str(proposal.id),
-            applied_files=applied_files,
-            errors=errors,
-        )
-
-    if ok:
+    if ok and not payload.dry_run:
         pr.status = "merged"
         pr.merged_at = datetime.utcnow()
-        pr.source_id = pr.source_id or proposal.source_id
+        pr.source_id = proposal.source_id
         proposal.status = "applied"
-    else:
-        pr.status = pr.status if pr.status in {"draft", "open", "approved"} else "open"
-
-    try:
-        await db.commit()
-    except Exception as exc:
-        logger.error(f"Failed to merge PatchPR: {exc}")
-        raise HTTPException(status_code=500, detail="Failed to merge")
-
-    return PatchPRMergeResponse(
+    response = PatchPRMergeResponse(
         pr_id=str(pr.id),
-        dry_run=False,
+        dry_run=payload.dry_run,
         ok=ok,
         selected_proposal_id=str(proposal.id),
         applied_files=applied_files,
         errors=errors,
     )
+    await db.commit()
+    return response

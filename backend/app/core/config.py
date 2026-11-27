@@ -562,9 +562,11 @@ class Settings(BaseSettings):
     # proposal_only.
     AGENT_BLOCKER_AUTO_CODING_ENABLED: bool = False
 
+    CODING_WORKSPACE_SANDBOX_IMAGE: str = "ghcr.io/al3x3n0/kdbc-coding-workspace:latest"
     SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES: str = (
         "ghcr.io/al3x3n0/kdbc-compiler-research:latest,"
         "ghcr.io/al3x3n0/kdbc-polyglot-slim:latest,"
+        "ghcr.io/al3x3n0/kdbc-coding-workspace:latest,"
         "ghcr.io/al3x3n0/kdbc-microarch-research:latest,"
         "python:3.11-slim"
     )

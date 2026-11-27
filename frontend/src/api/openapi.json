@@ -32212,6 +32212,18 @@
       },
       "PatchPRApproveRequest": {
         "properties": {
+          "diff_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diff Sha256"
+          },
           "note": {
             "anyOf": [
               {
@@ -32419,6 +32431,18 @@
       },
       "PatchPRMergeRequest": {
         "properties": {
+          "diff_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diff Sha256"
+          },
           "dry_run": {
             "default": true,
             "title": "Dry Run",
@@ -32485,6 +32509,11 @@
       },
       "PatchPRResponse": {
         "properties": {
+          "approval_valid": {
+            "default": false,
+            "title": "Approval Valid",
+            "type": "boolean"
+          },
           "approvals": {
             "anyOf": [
               {
@@ -32525,6 +32554,28 @@
               }
             ],
             "title": "Description"
+          },
+          "diff_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diff Sha256"
+          },
+          "diff_unified": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diff Unified"
           },
           "id": {
             "format": "uuid",
@@ -66279,7 +66330,7 @@
     },
     "/api/v1/code-patches/{proposal_id}/apply": {
       "post": {
-        "description": "Apply this patch proposal to KnowledgeDB code documents (best-effort).\n\nThis updates Document.content for matching files under the proposal's `source_id`.",
+        "description": "Apply a proposal through its approved Patch PR.",
         "operationId": "apply_code_patch_to_kb_api_v1_code_patches__proposal_id__apply_post",
         "parameters": [
           {

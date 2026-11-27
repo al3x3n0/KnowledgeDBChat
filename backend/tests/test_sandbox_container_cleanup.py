@@ -13,6 +13,7 @@ import asyncio
 import pytest
 
 from app.services import agent_sandbox_runtime as runtime
+from app.services.sandbox_invocation import invocation
 
 
 class FakeProcess:
@@ -50,25 +51,41 @@ def abandoned(monkeypatch):
 
 
 class TestTheContainerIsTornDown:
-    async def test_a_timed_out_run_removes_its_container(self, abandoned):
+    async def test_operator_cancellation_removes_the_container(
+        self, abandoned, tmp_path
+    ):
+        process, removed, _spawn = abandoned
+
+        async def cancelled():
+            return True
+
+        with invocation("coding-job", "run-tests", cancelled=cancelled):
+            with pytest.raises(InterruptedError, match="cancelled"):
+                await runtime.run_in_sandbox(
+                    "pytest", str(tmp_path), image="img", timeout_seconds=20
+                )
+
+        assert process.killed and removed
+
+    async def test_a_timed_out_run_removes_its_container(self, abandoned, tmp_path):
         process, removed, _spawn = abandoned
 
         with pytest.raises(asyncio.TimeoutError):
             await runtime.run_in_sandbox(
-                "sleep 600", "/tmp", image="img", timeout_seconds=0.05
+                "sleep 600", str(tmp_path), image="img", timeout_seconds=0.05
             )
 
         assert process.killed, "the client was not killed"
         assert removed, "the container was left running"
 
-    async def test_a_cancelled_run_removes_its_container(self, abandoned):
+    async def test_a_cancelled_run_removes_its_container(self, abandoned, tmp_path):
         """A job cancelled mid-run abandons its container just as thoroughly,
         and that path is the one a user actually triggers."""
         process, removed, _spawn = abandoned
 
         task = asyncio.create_task(
             runtime.run_in_sandbox(
-                "sleep 600", "/tmp", image="img", timeout_seconds=600
+                "sleep 600", str(tmp_path), image="img", timeout_seconds=600
             )
         )
         await asyncio.sleep(0.05)
@@ -78,14 +95,16 @@ class TestTheContainerIsTornDown:
 
         assert removed, "the container was left running"
 
-    async def test_the_container_removed_is_the_one_that_was_started(self, abandoned):
+    async def test_the_container_removed_is_the_one_that_was_started(
+        self, abandoned, tmp_path
+    ):
         """Naming it is the whole mechanism: without a name there is no handle
         on the container at all once the client is gone."""
         _process, removed, spawn = abandoned
 
         with pytest.raises(asyncio.TimeoutError):
             await runtime.run_in_sandbox(
-                "sleep 600", "/tmp", image="img", timeout_seconds=0.05
+                "sleep 600", str(tmp_path), image="img", timeout_seconds=0.05
             )
 
         command = spawn.command
@@ -94,17 +113,21 @@ class TestTheContainerIsTornDown:
 
 
 class TestTheCommandItself:
-    def test_a_named_run_carries_its_name(self):
+    def test_a_named_run_carries_its_name(self, tmp_path):
         command = runtime.docker_command(
-            image="img", workdir="/w", script="true", timeout_seconds=10, name="box"
+            image="img",
+            workdir=str(tmp_path),
+            script="true",
+            timeout_seconds=10,
+            name="box",
         )
 
         assert command[command.index("--name") + 1] == "box"
 
-    def test_an_unnamed_run_is_unchanged(self):
+    def test_an_unnamed_run_is_unchanged(self, tmp_path):
         """Callers that build a command themselves keep the posture they had."""
         command = runtime.docker_command(
-            image="img", workdir="/w", script="true", timeout_seconds=10
+            image="img", workdir=str(tmp_path), script="true", timeout_seconds=10
         )
 
         assert "--name" not in command
@@ -148,17 +171,17 @@ class TestThereIsOneConfinedRun:
             f"call docker_command() instead: {builders}"
         )
 
-    def test_a_program_can_be_run_directly_and_the_mount_made_read_only(self):
+    def test_a_program_can_be_run_directly_and_the_mount_made_read_only(self, tmp_path):
         command = runtime.docker_command(
             image="img",
-            workdir="/tmp/w",
+            workdir=str(tmp_path),
             argv=["python", "-I", "-S", "demo.py"],
             pids_limit="64",
             name="n",
             read_only=True,
         )
         assert command[-4:] == ["python", "-I", "-S", "demo.py"]
-        assert "/tmp/w:/work:ro" in command
+        assert f"{tmp_path}:/work:ro" in command
         assert command[command.index("--pids-limit") + 1] == "64"
         # The posture is not optional, whatever else is.
         for flag, value in (
@@ -203,21 +226,21 @@ class TestThereIsOneConfinedRun:
 
 
 class TestACustomDockerTool:
-    def _command(self, **config):
+    def _command(self, tmp_path, **config):
         from app.schemas.docker_tool import DockerToolConfig
         from app.services.docker_tool_executor import DockerToolExecutor
 
         return DockerToolExecutor()._build_docker_command(
             config=DockerToolConfig(image="img", command=["true"], **config),
-            workspace_dir="/tmp/w",
+            workspace_dir=str(tmp_path),
             container_name="kdbc-sandbox-abc",
         )
 
-    def test_it_is_named_so_a_timeout_can_remove_it(self):
-        command = self._command()
+    def test_it_is_named_so_a_timeout_can_remove_it(self, tmp_path):
+        command = self._command(tmp_path)
         assert command[command.index("--name") + 1] == "kdbc-sandbox-abc"
 
-    def test_it_cannot_gain_privileges_or_fork_without_bound(self):
-        command = self._command()
+    def test_it_cannot_gain_privileges_or_fork_without_bound(self, tmp_path):
+        command = self._command(tmp_path)
         assert command[command.index("--security-opt") + 1] == "no-new-privileges"
         assert "--pids-limit" in command

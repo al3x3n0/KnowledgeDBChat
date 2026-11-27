@@ -32,6 +32,23 @@ An image must also be listed in `SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES`
 | `compiler-research` | `compile_c_snippet`, `benchmark_c_snippet`, `analyze_snippet_cycles` | base + llvm (incl. `llvm-mca`), cmake, ninja, `candidate-coster`, prebuilt Rust crates |
 | `polyglot-slim` | `benchmark_c_snippet`, `check_implementation` | clang, rustc, python3 and nothing else |
 | `microarch-research` | scientific-validation runs | base + linux-perf, pytest |
+| `coding-workspace` | `run_command`, `run_repo_tests` | Python and pytest, Node and npm, Go, Rust and Cargo, Git, Make and a C toolchain |
+
+Build the coding workspace image with `make sandbox-coding`. Docker deployments
+load it into the sandbox daemon with `make sandbox-load`. On Kubernetes, publish
+the image to a registry the Jobs can pull from and set
+`CODING_WORKSPACE_SANDBOX_IMAGE` to its allowlisted reference.
+
+`make sandbox-coding-smoke` builds the image and runs the application's Docker
+sandbox against a synthetic repository. It checks Python, Node.js, Go, Rust,
+and C execution, workspace isolation, and container cleanup after timeout and
+cancellation. Set `SANDBOX_PYTHON` to a Python installation with the backend
+dependencies if the default interpreter lacks them.
+
+Coding commands run against a disposable repository copy with networking disabled.
+Projects that need dependencies beyond the base toolchains can use an allowlisted
+image with those dependencies preinstalled. Use workspace edit tools to save
+changes for a patch proposal.
 
 The images a research program's tools run in (gem5, BOLT, pass-dev,
 profiling, AXIS) are built from that program's repository, not from here;

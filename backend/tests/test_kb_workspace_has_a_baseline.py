@@ -184,6 +184,8 @@ async def test_a_run_can_propose_what_it_changed(db_session, test_user, workspac
         "src/parser.py",
         "tests/test_parser.py",
     ]
+    assert result["data"]["source_id"] == str(source.id)
     row = await db_session.get(CodePatchProposal, UUID(result["data"]["proposal_id"]))
+    assert row.source_id == source.id
     assert "+end = len(items)" in row.diff_unified
     assert "tests/test_parser.py" in row.diff_unified

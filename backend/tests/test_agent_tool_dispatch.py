@@ -642,12 +642,8 @@ def test_no_two_providers_claim_the_same_tool_name():
 class _NoSourceDB:
     """A session in which no document source exists."""
 
-    async def execute(self, *_args, **_kwargs):
-        class _Result:
-            def scalar_one_or_none(self):
-                return None
-
-        return _Result()
+    async def get(self, _model, _key):
+        return None
 
 
 class _EmptyWorkspaceManager:

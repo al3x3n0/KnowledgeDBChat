@@ -127,7 +127,8 @@ async def _store_patch_proposal(
 
     from app.models.code_patch_proposal import CodePatchProposal
 
-    source_id = UUID(proposal["source_id"]) if proposal.get("source_id") else None
+    source_ref = proposal.get("source_id")
+    source_id = UUID(str(source_ref)) if source_ref else None
 
     metadata = {
         "files_touched": proposal["files"],
@@ -936,6 +937,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
 
         files = _diff_files(diff)
         stored_diff = diff[:200000]
+        source_id = getattr(ws, "source_id", None)
         proposal = {
             "title": title,
             "rationale": str(params.get("rationale") or ""),
@@ -952,7 +954,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 if line.startswith("-") and not line.startswith("---")
             ),
             "workspace_id": getattr(ws, "workspace_id", None),
-            "source_id": getattr(ws, "source_id", None),
+            "source_id": str(source_id) if source_id else None,
             "base_hashes": {
                 path: ws.original_hashes[path]
                 for path in files
